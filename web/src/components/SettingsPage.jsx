@@ -138,6 +138,8 @@ export function SettingsPage({
   onThemeChange,
   onColorThemeChange,
   onFontSizeChange = () => {},
+  sidebarSessionTime = true,
+  onSidebarSessionTimeChange = () => {},
 }) {
   const {
     theme,
@@ -282,6 +284,8 @@ export function SettingsPage({
               setColorTheme={setColorTheme}
               fontSize={fontSize}
               onFontSizeChange={onFontSizeChange}
+              sidebarSessionTime={sidebarSessionTime}
+              onSidebarSessionTimeChange={onSidebarSessionTimeChange}
             />
           )}
           {activeNavKey === 'config' && <SectionConfig />}
@@ -1162,6 +1166,8 @@ function SectionAppearance({
   setColorTheme,
   fontSize,
   onFontSizeChange,
+  sidebarSessionTime,
+  onSidebarSessionTimeChange,
 }) {
   return (
     <>
@@ -1229,6 +1235,18 @@ function SectionAppearance({
             </button>
           );
         })}
+      </div>
+      <div className="h-px bg-border my-5" />
+      <div className="text-[14px] font-semibold mb-1">侧边栏</div>
+      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div>
+          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
+        </div>
+        <Toggle
+          on={sidebarSessionTime}
+          onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
       </div>
     </>
   );

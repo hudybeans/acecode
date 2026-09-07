@@ -144,6 +144,74 @@ TEST(ConfigWebUiPreferencesSave, NonDefaultAppearanceRoundTrips) {
     std::filesystem::remove(path, ec);
 }
 
+// 场景:产品对「侧栏是否显示任务时间」有分歧,做成可配置项。期望:默认开,
+// 只有显式 false 才关,非布尔值保留默认,默认值不写进 config.json(稀疏落盘
+// 约定),非默认值能完整往返。
+TEST(ConfigWebUiPreferencesSidebarSessionTime, DefaultsToShown) {
+    WebUiPreferencesConfig prefs;
+    EXPECT_TRUE(prefs.sidebar_session_time);
+
+    AppConfig cfg;
+    EXPECT_TRUE(cfg.web_ui.sidebar_session_time);
+}
+
+TEST(ConfigWebUiPreferencesSidebarSessionTime, ExplicitFalseLoads) {
+    const auto path = temp_config_path("session-time-false");
+    write_json(path, nlohmann::json{
+        {"web_ui", {{"sidebar_session_time", false}}},
+    });
+
+    AppConfig cfg = load_config_from_path(path.string());
+    EXPECT_FALSE(cfg.web_ui.sidebar_session_time);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(ConfigWebUiPreferencesSidebarSessionTime, NonBooleanKeepsDefault) {
+    const auto path = temp_config_path("session-time-invalid");
+    write_json(path, nlohmann::json{
+        {"web_ui", {{"sidebar_session_time", "no"}}},
+    });
+
+    AppConfig cfg = load_config_from_path(path.string());
+    EXPECT_TRUE(cfg.web_ui.sidebar_session_time);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(ConfigWebUiPreferencesSidebarSessionTime, OnlyNonDefaultIsPersisted) {
+    const auto path = temp_config_path("session-time-roundtrip");
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    AppConfig cfg;
+    // 默认值不落盘:整个 web_ui 块应当仍然缺席。
+    save_config(cfg, path.string());
+    {
+        std::ifstream ifs(path);
+        ASSERT_TRUE(ifs.is_open());
+        const auto saved = nlohmann::json::parse(ifs);
+        EXPECT_FALSE(saved.contains("web_ui"));
+    }
+
+    cfg.web_ui.sidebar_session_time = false;
+    save_config(cfg, path.string());
+    {
+        std::ifstream ifs(path);
+        ASSERT_TRUE(ifs.is_open());
+        const auto saved = nlohmann::json::parse(ifs);
+        ASSERT_TRUE(saved.contains("web_ui"));
+        EXPECT_EQ(saved["web_ui"]["sidebar_session_time"], false);
+    }
+
+    AppConfig loaded = load_config_from_path(path.string());
+    EXPECT_FALSE(loaded.web_ui.sidebar_session_time);
+
+    std::filesystem::remove(path, ec);
+}
+
 TEST(ConfigWebUiPreferencesValidation, AcceptsOnlyCanonicalValues) {
     EXPECT_TRUE(is_valid_web_ui_theme("system"));
     EXPECT_TRUE(is_valid_web_ui_theme("light"));

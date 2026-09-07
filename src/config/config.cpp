@@ -992,6 +992,14 @@ static AppConfig load_config_from_path_once(
                             LOG_WARN("[config] invalid 'web_ui.font_size', using 'medium'");
                         }
                     }
+                    if (uij.contains("sidebar_session_time")) {
+                        if (uij["sidebar_session_time"].is_boolean()) {
+                            cfg.web_ui.sidebar_session_time =
+                                uij["sidebar_session_time"].get<bool>();
+                        } else {
+                            LOG_WARN("[config] invalid 'web_ui.sidebar_session_time', using true");
+                        }
+                    }
                 }
             }
             if (j.contains("models_dev") && j["models_dev"].is_object()) {
@@ -2123,6 +2131,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             web_uij["color_theme"] = cfg.web_ui.color_theme;
         if (cfg.web_ui.font_size != web_ui_d.font_size)
             web_uij["font_size"] = cfg.web_ui.font_size;
+        if (cfg.web_ui.sidebar_session_time != web_ui_d.sidebar_session_time)
+            web_uij["sidebar_session_time"] = cfg.web_ui.sidebar_session_time;
         if (!web_uij.empty()) j["web_ui"] = std::move(web_uij);
 
         MemoryConfig mem_d;

@@ -181,6 +181,9 @@ struct WebUiPreferencesConfig {
     std::string theme = "system";       // system | light | dark
     std::string color_theme = "blue";   // blue | orange
     std::string font_size = "medium";   // small | medium | large
+    // Sidebar session rows show a relative timestamp. Product default is on;
+    // turning it off leaves the time visible only in the row hover card.
+    bool sidebar_session_time = true;
 };
 
 struct ModelsDevConfig {

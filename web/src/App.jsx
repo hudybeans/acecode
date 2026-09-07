@@ -62,6 +62,7 @@ import {
 import {
   DEFAULT_UI_PREFS,
   effectiveFontSize,
+  effectiveSidebarSessionTime,
   effectiveSidePanelListCollapsed,
   UI_PREFS_STORAGE_KEY,
   validateUiPrefs,
@@ -262,6 +263,7 @@ export function App() {
   const initialUiPrefs = useMemo(() => ({
     ...DEFAULT_UI_PREFS,
     fontSize: initialAppearance.fontSize,
+    sidebarSessionTime: initialAppearance.sidebarSessionTime,
   }), [initialAppearance]);
   const [uiPrefs, setUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
@@ -290,10 +292,14 @@ export function App() {
   // grid4/grid9 入口暂时隐藏:主界面固定单会话,避免旧 localStorage 把用户卡在未完善视图。
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);
+  const sidebarSessionTime = effectiveSidebarSessionTime(uiPrefs);
   const applyAppearance = useCallback((next) => {
     setTheme(effectiveAppearanceTheme(next.theme));
     setColorTheme(next.colorTheme);
-    setUiPrefs({ fontSize: next.fontSize });
+    setUiPrefs({
+      fontSize: next.fontSize,
+      sidebarSessionTime: next.sidebarSessionTime,
+    });
   }, [setColorTheme, setTheme, setUiPrefs]);
   const appearanceControllerRef = useRef(null);
   if (!appearanceControllerRef.current) {
@@ -302,6 +308,7 @@ export function App() {
         theme: bootstrapAppearance?.theme || theme,
         colorTheme,
         fontSize,
+        sidebarSessionTime,
       },
       apply: applyAppearance,
       save: (payload) => api.setUiPreferences(payload),
@@ -2016,6 +2023,7 @@ export function App() {
           onOpenExpertComponents={openExpertComponents}
           pendingPermissionSessionIds={pendingPermissionSessionIdsForSidebar}
           pendingQuestionSessionIds={pendingQuestionSessionIdsForSidebar}
+          showSessionTime={sidebarSessionTime}
         />
         {view === 'single' && !sidebarCollapsed && (
           <div
@@ -2128,6 +2136,8 @@ export function App() {
               changeAppearance({ colorTheme: nextColorTheme })
             )}
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
+            sidebarSessionTime={sidebarSessionTime}
+            onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}
           />
         )}
         <SearchPalette

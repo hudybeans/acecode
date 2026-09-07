@@ -77,6 +77,7 @@ json ui_preferences_to_json(const WebUiPreferencesConfig& cfg) {
         {"theme", cfg.theme},
         {"color_theme", cfg.color_theme},
         {"font_size", cfg.font_size},
+        {"sidebar_session_time", cfg.sidebar_session_time},
     };
 }
 

@@ -2249,6 +2249,13 @@ void WebServer::Impl::register_ui_preferences() {
                                     "font_size must be small, medium, or large");
                 }
             }
+            if (body.contains("sidebar_session_time")) {
+                has_supported_field = true;
+                if (!body["sidebar_session_time"].is_boolean()) {
+                    return json_err(400, "BAD_REQUEST",
+                                    "sidebar_session_time must be a boolean");
+                }
+            }
             if (!has_supported_field) {
                 return json_err(400, "BAD_REQUEST",
                                 "no supported UI preference field was provided");
@@ -2268,6 +2275,10 @@ void WebServer::Impl::register_ui_preferences() {
             if (body.contains("font_size")) {
                 deps.app_config->web_ui.font_size =
                     body["font_size"].get<std::string>();
+            }
+            if (body.contains("sidebar_session_time")) {
+                deps.app_config->web_ui.sidebar_session_time =
+                    body["sidebar_session_time"].get<bool>();
             }
             try {
                 if (!deps.config_path.empty()) {
