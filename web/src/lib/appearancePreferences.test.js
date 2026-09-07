@@ -28,7 +28,20 @@ await run('appearance defaults preserve system preference, blue, and medium', ()
     theme: 'system',
     colorTheme: 'blue',
     fontSize: 'medium',
+    // 侧栏时间是产品默认开的显示项:空输入必须归一成 true,否则升级用户
+    // 一进来就发现时间列没了。
+    sidebarSessionTime: true,
   });
+  // 只有显式 false 才关;缺键、null、非布尔值都按开处理,免得旧 daemon 的
+  // 半截报文把这一列意外关掉。
+  assert.equal(
+    normalizeAppearancePreferences({ sidebar_session_time: false }, darkScope).sidebarSessionTime,
+    false,
+  );
+  assert.equal(
+    normalizeAppearancePreferences({ sidebar_session_time: null }, darkScope).sidebarSessionTime,
+    true,
+  );
 });
 
 await run('desktop bootstrap is normalized before first render', () => {
@@ -44,11 +57,13 @@ await run('desktop bootstrap is normalized before first render', () => {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
   assert.deepEqual(appearanceBootstrapPreferences(scope), {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
 });
 

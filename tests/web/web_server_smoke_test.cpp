@@ -7126,6 +7126,44 @@ TEST(WebServerHttp, PutUiPreferencesPersistsCompleteAppearance) {
     EXPECT_EQ(saved.web_ui.font_size, "large");
 }
 
+// 场景:侧栏任务时间开关经 ui-preferences 往返。期望:GET 默认返回 true;
+// PUT false 时内存与磁盘同步落到 false,且不碰其它外观字段;非布尔值 400 拒绝。
+// 该字段对旧前端是纯增量,所以只做类型校验、不引入枚举白名单。
+TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRoundTrips) {
+    WebServerFixture fx;
+    {
+        auto get = cpr::Get(cpr::Url{fx.url("/api/config/ui-preferences")});
+        ASSERT_EQ(get.status_code, 200) << get.text;
+        EXPECT_EQ(json::parse(get.text)["sidebar_session_time"], true);
+    }
+
+    json req = {{"sidebar_session_time", false}};
+    auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+                        cpr::Header{{"Content-Type", "application/json"}},
+                        cpr::Body{req.dump()});
+    ASSERT_EQ(put.status_code, 200) << put.text;
+    EXPECT_EQ(json::parse(put.text)["sidebar_session_time"], false);
+    EXPECT_FALSE(fx.cfg.web_ui.sidebar_session_time);
+    // 单字段 PUT 不能顺手把其它外观字段冲回默认。
+    EXPECT_EQ(fx.cfg.web_ui.theme, "system");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+    EXPECT_EQ(fx.cfg.web_ui.font_size, "medium");
+
+    const auto saved = acecode::load_config_from_path(
+        (fx.tmp_dir / "config.json").string());
+    EXPECT_FALSE(saved.web_ui.sidebar_session_time);
+}
+
+TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRejectsNonBoolean) {
+    WebServerFixture fx;
+    json req = {{"sidebar_session_time", "no"}};
+    auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+                        cpr::Header{{"Content-Type", "application/json"}},
+                        cpr::Body{req.dump()});
+    EXPECT_EQ(put.status_code, 400) << put.text;
+    EXPECT_TRUE(fx.cfg.web_ui.sidebar_session_time);
+}
+
 TEST(WebServerHttp, PutUiPreferencesPartialUpdatePreservesOtherAppearanceFields) {
     WebServerFixture fx;
     fx.server->with_app_config_lock([&] {

@@ -12,6 +12,7 @@ export const DEFAULT_APPEARANCE_PREFERENCES = Object.freeze({
   theme: 'system',
   colorTheme: DEFAULT_COLOR_THEME,
   fontSize: DEFAULT_FONT_SIZE,
+  sidebarSessionTime: true,
 });
 
 const FONT_SIZE_SET = new Set(FONT_SIZE_VALUES);
@@ -36,6 +37,12 @@ function inputFontSize(value) {
   return value?.font_size ?? value?.fontSize;
 }
 
+// 布尔字段刻意宽松:只有显式 false 才关。旧 daemon 不返回这个键时按默认(开)
+// 处理,不能让它把整份外观偏好判成「不支持」——那会连主题一起回退。
+function inputSidebarSessionTime(value) {
+  return (value?.sidebar_session_time ?? value?.sidebarSessionTime) !== false;
+}
+
 export function effectiveAppearanceTheme(value, scope = globalThis) {
   return value === 'light' || value === 'dark'
     ? value
@@ -56,6 +63,7 @@ export function normalizeAppearancePreferences(value, scope = globalThis) {
     fontSize: FONT_SIZE_SET.has(fontSize)
       ? fontSize
       : DEFAULT_APPEARANCE_PREFERENCES.fontSize,
+    sidebarSessionTime: inputSidebarSessionTime(value),
   };
 }
 
@@ -72,6 +80,7 @@ export function parseAppearancePreferences(value, scope = globalThis) {
     theme: value.theme,
     colorTheme,
     fontSize,
+    sidebarSessionTime: inputSidebarSessionTime(value),
   };
 }
 
@@ -89,6 +98,9 @@ export function mergeAppearancePreferences(current, patch, scope = globalThis) {
     theme: patch?.theme ?? current?.theme,
     colorTheme: patch?.colorTheme ?? patch?.color_theme ?? current?.colorTheme,
     fontSize: patch?.fontSize ?? patch?.font_size ?? current?.fontSize,
+    sidebarSessionTime: patch?.sidebarSessionTime
+      ?? patch?.sidebar_session_time
+      ?? current?.sidebarSessionTime,
   }, scope);
 }
 
@@ -99,6 +111,7 @@ export function appearancePreferencesToApi(value, scope = globalThis) {
     theme: normalized.theme,
     color_theme: normalized.colorTheme,
     font_size: normalized.fontSize,
+    sidebar_session_time: normalized.sidebarSessionTime,
   };
 }
 

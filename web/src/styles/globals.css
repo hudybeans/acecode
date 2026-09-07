@@ -1995,6 +1995,13 @@ body {
   cursor: wait;
   opacity: 0.5;
 }
+/* 会话行右侧是一个槽位,不是两栏:静止时显示日期(或「权限请求 / 等待回复」
+   徽标),hover / 键盘聚焦时整块换成置顶与归档图标。两者互斥,所以静止态不给
+   图标预留宽度,标题能多占一截。定时任务 / 工作树会话的标记图标是状态而非
+   悬停操作,始终显示。 */
+.ace-sidebar-session-row:is(:hover, :focus-within) .ace-sidebar-row-idle-slot {
+  display: none;
+}
 .ace-sidebar-session-row {
   position: relative;
 }

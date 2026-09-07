@@ -15,6 +15,9 @@ export const DEFAULT_UI_PREFS = {
   sidePanelMaximized: false,
   showAceCodeAvatar: false,
   fontSize: DEFAULT_FONT_SIZE,
+  // 侧栏会话行是否显示相对时间。产品默认开;关掉之后时间只在行的
+  // hover 卡片里出现,不会彻底消失。
+  sidebarSessionTime: true,
 };
 
 const ALLOWED_VIEWS = new Set(['single', 'grid4', 'grid9']);
@@ -28,7 +31,8 @@ export function validateUiPrefs(v) {
     && (v.sidebarCollapsed == null || typeof v.sidebarCollapsed === 'boolean')
     && (v.sidePanelMaximized == null || typeof v.sidePanelMaximized === 'boolean')
     && (v.showAceCodeAvatar == null || typeof v.showAceCodeAvatar === 'boolean')
-    && (v.fontSize == null || ALLOWED_FONT_SIZES.has(v.fontSize));
+    && (v.fontSize == null || ALLOWED_FONT_SIZES.has(v.fontSize))
+    && (v.sidebarSessionTime == null || typeof v.sidebarSessionTime === 'boolean');
 }
 
 export function effectiveShowAceCodeAvatar(uiPrefs) {
@@ -43,4 +47,8 @@ export function effectiveFontSize(uiPrefs) {
   return ALLOWED_FONT_SIZES.has(uiPrefs?.fontSize)
     ? uiPrefs.fontSize
     : DEFAULT_FONT_SIZE;
+}
+
+export function effectiveSidebarSessionTime(uiPrefs) {
+  return uiPrefs?.sidebarSessionTime !== false;
 }
