@@ -1953,10 +1953,13 @@ int main(int argc, char** argv) {
     host.bind("aceDesktop_toggleMaximizeWindow", [&](const std::string& /*req*/) -> std::string {
         return nlohmann::json{{"ok", host.toggle_maximize_window()}}.dump();
     });
-    // 前端 TopBar 在 mount 时调一次拿初始最大化态;后续靠下方 set_window_state_change_handler
-    // 推送的 aceDesktop_onMaximizeStateChanged 回调实时更新图标(矩形 ↔ 双层方框)。
+    // 前端 TopBar 在 mount 时调一次拿初始窗口态;后续靠下方两个 handler 推送
+    // maximize/fullscreen 变化。macOS fullscreen 独立于 zoom/maximize。
     host.bind("aceDesktop_isWindowMaximized", [&](const std::string& /*req*/) -> std::string {
-        return nlohmann::json{{"maximized", host.is_window_maximized()}}.dump();
+        return nlohmann::json{
+            {"maximized", host.is_window_maximized()},
+            {"fullscreen", host.is_window_fullscreen()},
+        }.dump();
     });
     host.bind("aceDesktop_closeWindow", [&](const std::string& /*req*/) -> std::string {
         return nlohmann::json{{"ok", host.close_window()}}.dump();
@@ -2004,6 +2007,16 @@ int main(int argc, char** argv) {
             ");}}catch(e){}})();";
         host.eval(js);
     });
+    host.set_window_fullscreen_change_handler(
+        [&host, &agent_browser](bool fullscreen) {
+            agent_browser.refresh_layout();
+            const std::string js = std::string(
+                "(function(){try{if(window.aceDesktop_onFullscreenStateChanged){"
+                "window.aceDesktop_onFullscreenStateChanged(") +
+                (fullscreen ? "true" : "false") +
+                ");}}catch(e){}})();";
+            host.eval(js);
+        });
 
     host.set_window_visibility_handler([&agent_browser](bool visible) {
         agent_browser.set_parent_visible(visible);

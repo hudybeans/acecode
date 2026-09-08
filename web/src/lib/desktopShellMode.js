@@ -64,6 +64,13 @@ export function isMacDesktopShell(win = typeof window !== 'undefined' ? window :
   return isDesktopShell(win) && win.__ACECODE_OS__ === 'macos';
 }
 
+export function shouldInsetMacTopBar(
+  fullscreen,
+  win = typeof window !== 'undefined' ? window : undefined,
+) {
+  return isMacDesktopShell(win) && !fullscreen;
+}
+
 // 'shell' = WebView2 桌面壳;'webapp' = Edge app 兼容模式;'browser' = 普通浏览器直连。
 export function desktopUiMode(win = typeof window !== 'undefined' ? window : undefined) {
   if (isDesktopShell(win)) return 'shell';

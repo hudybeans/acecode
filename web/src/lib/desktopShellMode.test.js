@@ -18,6 +18,7 @@ import {
   isWebappCompat,
   isDesktopShell,
   isMacDesktopShell,
+  shouldInsetMacTopBar,
   desktopUiMode,
 } from './desktopShellMode.js';
 
@@ -144,4 +145,16 @@ run('native macOS chrome follows the shell host OS, not the browser platform', (
   assert.equal(isMacDesktopShell(browser), false);
   assert.equal(isMacDesktopShell(null), false);
   assert.equal(isMacDesktopShell(undefined), false);
+});
+
+run('macOS top bar reserves traffic-light space only outside native fullscreen', () => {
+  const mac = makeWin({ shell: true });
+  mac.__ACECODE_OS__ = 'macos';
+  assert.equal(shouldInsetMacTopBar(false, mac), true);
+  assert.equal(shouldInsetMacTopBar(true, mac), false);
+
+  const windows = makeWin({ shell: true });
+  windows.__ACECODE_OS__ = 'windows';
+  assert.equal(shouldInsetMacTopBar(false, windows), false);
+  assert.equal(shouldInsetMacTopBar(true, windows), false);
 });
