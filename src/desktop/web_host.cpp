@@ -64,6 +64,8 @@ std::function<void()> g_existing_instance_focus_handler;
 #ifdef __APPLE__
 std::function<void(bool)> g_mac_window_state_handler;
 bool g_mac_last_known_maximized = false;
+std::function<void(bool)> g_mac_window_fullscreen_handler;
+bool g_mac_last_known_fullscreen = false;
 NSWindow* g_mac_reopen_window = nil;
 webview::webview* g_mac_quit_webview = nullptr;
 using MacApplicationReopenImp = BOOL (*)(id, SEL, NSApplication*, BOOL);
@@ -85,6 +87,34 @@ void notify_mac_window_state_if_changed(NSWindow* window) {
     if (g_mac_window_state_handler) {
         g_mac_window_state_handler(maximized);
     }
+}
+
+bool mac_window_is_fullscreen(NSWindow* window) {
+    return window &&
+           (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
+}
+
+void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
+    if (!window) return;
+    const bool fullscreen = mac_window_is_fullscreen(window);
+    if (fullscreen == g_mac_last_known_fullscreen) return;
+    g_mac_last_known_fullscreen = fullscreen;
+    if (g_mac_window_fullscreen_handler) {
+        g_mac_window_fullscreen_handler(fullscreen);
+    }
+}
+
+id install_mac_window_fullscreen_observer(webview::webview& w,
+                                          NSNotificationName name) {
+    NSWindow* window = mac_window_from_host(w);
+    if (!window) return nil;
+    return [[NSNotificationCenter defaultCenter]
+        addObserverForName:name
+                    object:window
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(__unused NSNotification* note) {
+                    notify_mac_window_fullscreen_if_changed(window);
+                }];
 }
 
 void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
@@ -124,6 +154,7 @@ void configure_mac_window_chrome(webview::webview& w) {
     show_mac_standard_button(window, NSWindowZoomButton);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
+    g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
 }
 
 void show_mac_window(NSWindow* window) {
@@ -1791,6 +1822,10 @@ struct WebHost::Impl {
         configure_mac_window_chrome(*w);
         install_mac_edit_menu(*w);
         mac_focus_observer = install_mac_focus_existing_observer(*w);
+        mac_enter_fullscreen_observer = install_mac_window_fullscreen_observer(
+            *w, NSWindowDidEnterFullScreenNotification);
+        mac_exit_fullscreen_observer = install_mac_window_fullscreen_observer(
+            *w, NSWindowDidExitFullScreenNotification);
         install_mac_close_handler(*w);
         install_mac_application_reopen_handler(mac_window_from_host(*w));
 #else
@@ -1819,6 +1854,16 @@ struct WebHost::Impl {
             [[NSDistributedNotificationCenter defaultCenter] removeObserver:mac_focus_observer];
             mac_focus_observer = nil;
         }
+        if (mac_enter_fullscreen_observer) {
+            [[NSNotificationCenter defaultCenter]
+                removeObserver:mac_enter_fullscreen_observer];
+            mac_enter_fullscreen_observer = nil;
+        }
+        if (mac_exit_fullscreen_observer) {
+            [[NSNotificationCenter defaultCenter]
+                removeObserver:mac_exit_fullscreen_observer];
+            mac_exit_fullscreen_observer = nil;
+        }
 #endif
         w.reset();
 #ifdef _WIN32
@@ -1844,6 +1889,8 @@ struct WebHost::Impl {
     std::unique_ptr<webview::webview> w;
 #ifdef __APPLE__
     id mac_focus_observer = nil;
+    id mac_enter_fullscreen_observer = nil;
+    id mac_exit_fullscreen_observer = nil;
 #endif
 };
 
@@ -2138,6 +2185,13 @@ bool WebHost::is_window_maximized() const {
 #endif
 #endif
 }
+bool WebHost::is_window_fullscreen() const {
+#ifdef __APPLE__
+    return mac_window_is_fullscreen(mac_window_from_host(*impl_->w));
+#else
+    return false;
+#endif
+}
 WebHost::WebCoreInfo WebHost::web_core_info() const {
     (void)impl_;
     return detect_platform_web_core_info();
@@ -2151,6 +2205,14 @@ void WebHost::set_window_state_change_handler(WindowStateHandler handler) {
 #else
     g_mac_window_state_handler = std::move(handler);
 #endif
+#endif
+}
+void WebHost::set_window_fullscreen_change_handler(
+    WindowFullscreenHandler handler) {
+#ifdef __APPLE__
+    g_mac_window_fullscreen_handler = std::move(handler);
+#else
+    (void)handler;
 #endif
 }
 void WebHost::set_window_visibility_handler(WindowVisibilityHandler handler) {

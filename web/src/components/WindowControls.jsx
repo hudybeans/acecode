@@ -37,6 +37,7 @@ export function nativePointerEvent(event) {
 export function useFramelessWindowState() {
   const framelessDesktop = isFramelessDesktop();
   const [isMaximized, setIsMaximized] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     if (!framelessDesktop) return undefined;
@@ -46,7 +47,10 @@ export function useFramelessWindowState() {
       try {
         const raw = await window.aceDesktop_isWindowMaximized();
         const r = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!cancelled) setIsMaximized(!!(r && r.maximized));
+        if (!cancelled) {
+          setIsMaximized(!!(r && r.maximized));
+          setIsFullscreen(!!(r && r.fullscreen));
+        }
       } catch {
         // bind 偶发抛错 → 保留默认 false
       }
@@ -54,20 +58,26 @@ export function useFramelessWindowState() {
     fetchInitial();
 
     const prev = window.aceDesktop_onMaximizeStateChanged;
+    const prevFullscreen = window.aceDesktop_onFullscreenStateChanged;
     window.aceDesktop_onMaximizeStateChanged = (m) => {
       setIsMaximized(!!m);
       // 也通知前一个监听者(链式),避免 TopBar 与 SettingsPage 共存时丢事件
       if (typeof prev === 'function') prev(m);
+    };
+    window.aceDesktop_onFullscreenStateChanged = (fullscreen) => {
+      setIsFullscreen(!!fullscreen);
+      if (typeof prevFullscreen === 'function') prevFullscreen(fullscreen);
     };
 
     return () => {
       cancelled = true;
       // 还原前一个回调,而不是 delete — 防止 SettingsPage 关闭后 TopBar 失联
       window.aceDesktop_onMaximizeStateChanged = prev || undefined;
+      window.aceDesktop_onFullscreenStateChanged = prevFullscreen || undefined;
     };
   }, [framelessDesktop]);
 
-  return { framelessDesktop, isMaximized };
+  return { framelessDesktop, isMaximized, isFullscreen };
 }
 
 function WindowGlyph({ type }) {
