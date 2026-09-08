@@ -11,6 +11,23 @@
 /* dark 模式由 [data-theme="dark"] 触发,而非 prefers-color-scheme */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* Nonmodal top-layer canvases cover the viewport without taking focus or input. */
+.ace-fullscreen-heat-layer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.ace-fullscreen-heat-layer[data-ace-heat-layer="heat"] { mix-blend-mode: screen; }
+.ace-fullscreen-heat-layer::backdrop { background: transparent; pointer-events: none; }
+
 @theme inline {
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
@@ -1714,6 +1731,10 @@ body {
 .ace-desktop-frameless-topbar {
   user-select: none;
 }
+.ace-desktop-macos-topbar {
+  /* Leave AppKit's native traffic lights clear of the first web action. */
+  padding-left: 80px;
+}
 .ace-topbar-panel-toggle:focus-visible {
   outline: 1px solid var(--ace-fg-2);
   outline-offset: 1px;
@@ -1777,6 +1798,10 @@ body {
   background: rgba(0, 0, 0, 0.35);
 }
 .ace-settings-panel {
+  --ace-settings-nav-bg: rgba(var(--ace-fg-rgb), 0.02);
+  --ace-settings-hover-bg: rgba(var(--ace-fg-rgb), 0.06);
+  --ace-settings-selected-bg: rgba(var(--ace-fg-rgb), 0.1);
+  --ace-settings-divider: rgba(var(--ace-fg-rgb), 0.08);
   /* Windows display scaling reduces the CSS viewport, so reclaim vertical space. */
   --ace-settings-inset-y: clamp(24px, calc(25vh - 150px), 120px);
   width: calc(100vw - 240px);
@@ -1787,7 +1812,7 @@ body {
   max-height: 960px;
   border: 1px solid rgba(var(--ace-border-rgb), 0.88);
   border-radius: 14px;
-  background: var(--ace-bg);
+  background: var(--ace-surface);
   box-shadow: var(--ace-shadow-lg);
   isolation: isolate;
   transition:
@@ -1815,21 +1840,42 @@ body {
 .ace-settings-content .py-2\.5 {
   padding-block: 8px;
 }
-.ace-settings-titlebar {
-  background: var(--ace-bg);
+.ace-settings-main {
+  position: relative;
+  padding-top: 48px;
+  background: var(--ace-surface);
+}
+.ace-settings-window-actions {
+  position: absolute;
+  top: 12px;
+  right: 16px;
 }
 .ace-settings-nav {
   width: 208px;
-  padding: 4px 10px 16px;
-  background: var(--ace-surface-alt);
-  border-right: 1px solid var(--ace-border);
+  padding: 16px 10px;
+  background: var(--ace-settings-nav-bg);
+  border-right: 1px solid var(--ace-settings-divider);
 }
 .ace-settings-nav-item {
   margin-block: 2px;
   border-radius: 6px;
 }
+.ace-settings-nav-item:hover {
+  background: var(--ace-settings-hover-bg);
+}
+.ace-settings-nav-item[aria-current="page"] {
+  background: var(--ace-settings-selected-bg);
+}
+.ace-settings-nav-item:focus-visible,
+.ace-settings-search-result:focus-visible {
+  outline: 2px solid var(--ace-accent);
+  outline-offset: -2px;
+}
 .ace-settings-content {
   scroll-padding-block: 36px;
+}
+.ace-settings-content :where(input, select, textarea).bg-surface-alt {
+  background: var(--ace-surface);
 }
 /* Open groups replace the old stack of outlined cards, preserving input and selection affordances. */
 .ace-settings-content :where(div, section).border.border-border {
@@ -1839,16 +1885,22 @@ body {
   background: transparent;
 }
 .ace-settings-content :where(div, section).flex.border.border-border {
-  border-bottom: 1px solid var(--ace-border);
+  border-bottom: 1px solid var(--ace-settings-divider);
   padding-inline: 0;
   margin-bottom: 0;
   padding-block: 14px;
+}
+/* Rows already own their rule; legacy group dividers now provide only whitespace. */
+.ace-settings-content .h-px.bg-border.my-5 {
+  height: 0;
+  margin-block: 24px;
+  background: transparent;
 }
 .ace-settings-search { margin-bottom: 16px; }
 .ace-settings-search-input {
   display: flex; align-items: center; gap: 8px;
   min-height: 36px; padding: 0 10px;
-  background: var(--ace-bg); border: 1px solid var(--ace-border); border-radius: 6px;
+  background: var(--ace-surface); border: 1px solid var(--ace-border); border-radius: 6px;
 }
 .ace-settings-search-input:focus-within { border-color: var(--ace-accent); }
 .ace-settings-search-input input {
@@ -1861,7 +1913,8 @@ body {
   border-radius: 6px; font-size: 13px; color: var(--ace-fg);
 }
 .ace-settings-search-result small { display: block; color: var(--ace-fg-mute); font-size: 11px; margin-top: 3px; }
-.ace-settings-search-result:hover, .ace-settings-search-result[aria-current="true"] { background: var(--ace-surface-hi); }
+.ace-settings-search-result:hover { background: var(--ace-settings-hover-bg); }
+.ace-settings-search-result[aria-current="true"] { background: var(--ace-settings-selected-bg); }
 .ace-settings-search-match {
   text-decoration-line: underline !important;
   text-decoration-style: wavy !important;
@@ -1874,23 +1927,23 @@ body {
 .ace-settings-group h3 { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
 .ace-settings-group > p { font-size: 12px; color: var(--ace-fg-mute); margin-bottom: 8px; }
 .ace-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-block: 13px; }
-.ace-settings-row + .ace-settings-row { border-top: 1px solid var(--ace-border); }
+.ace-settings-row + .ace-settings-row { border-top: 1px solid var(--ace-settings-divider); }
 .ace-settings-label { flex: 0 0 135px; font-size: 13px; font-weight: 500; }
 .ace-settings-label small { display: block; margin-top: 3px; color: var(--ace-fg-mute); font-size: 11px; font-weight: 400; }
 .ace-settings-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
 .ace-settings-value :is(input, select), .ace-settings-pending input {
   width: 100%; min-width: 0; height: 34px; padding: 0 10px;
   border: 1px solid var(--ace-border); border-radius: 5px;
-  background: var(--ace-bg); color: var(--ace-fg); font-size: 12px; outline: none;
+  background: var(--ace-surface); color: var(--ace-fg); font-size: 12px; outline: none;
 }
 .ace-settings-value input[readonly] { background: transparent; border-color: transparent; padding-left: 0; }
 .ace-settings-value :is(input, select):focus, .ace-settings-pending input:focus { border-color: var(--ace-accent); }
 .ace-settings-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0;
   min-height: 32px; padding: 5px 10px; font-size: 12px; line-height: 20px;
-  color: var(--ace-fg); background: var(--ace-bg); border: 1px solid var(--ace-border); border-radius: 5px;
+  color: var(--ace-fg); background: var(--ace-surface); border: 1px solid var(--ace-border); border-radius: 5px;
 }
-.ace-settings-button:hover { background: var(--ace-surface-hi); }
+.ace-settings-button:hover { background: var(--ace-settings-hover-bg); }
 .ace-settings-button:focus-visible { outline: 2px solid var(--ace-accent); outline-offset: 2px; }
 .ace-settings-button:disabled { opacity: .5; cursor: default; }
 .ace-settings-primary, .ace-settings-primary:hover { background: var(--ace-accent); border-color: var(--ace-accent); color: white; }

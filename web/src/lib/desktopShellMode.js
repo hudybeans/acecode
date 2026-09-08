@@ -60,6 +60,10 @@ export function isDesktopShell(win = typeof window !== 'undefined' ? window : un
   return !!(win.__ACECODE_DESKTOP_SHELL__ || win.aceDesktop_openDevTools || win.aceDesktop_openInExplorer);
 }
 
+export function isMacDesktopShell(win = typeof window !== 'undefined' ? window : undefined) {
+  return isDesktopShell(win) && win.__ACECODE_OS__ === 'macos';
+}
+
 // 'shell' = WebView2 桌面壳;'webapp' = Edge app 兼容模式;'browser' = 普通浏览器直连。
 export function desktopUiMode(win = typeof window !== 'undefined' ? window : undefined) {
   if (isDesktopShell(win)) return 'shell';

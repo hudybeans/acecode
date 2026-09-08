@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { clsx } from '../lib/format.js';
+import { isMacDesktopShell } from '../lib/desktopShellMode.js';
 
 export function isFramelessDesktop() {
   return typeof window !== 'undefined'
@@ -117,6 +118,9 @@ export function WindowControl({ type, title, onClick }) {
 
 // 三连组合 — 用得多就直接用这个,不用三连各自写一遍。
 export function WindowControls({ isMaximized }) {
+  // macOS keeps AppKit's native traffic lights in the transparent title bar.
+  if (isMacDesktopShell()) return null;
+
   return (
     <div className="ace-window-controls" data-ace-no-window-drag="true">
       <WindowControl type="minimize" title="最小化" onClick={() => window.aceDesktop_minimizeWindow?.()} />

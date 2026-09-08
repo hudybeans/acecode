@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useTheme } from '../theme.jsx';
 import { clsx } from '../lib/format.js';
+import { isMacDesktopShell } from '../lib/desktopShellMode.js';
 import {
   TOPBAR_QUICK_ACTIONS,
   invokeTopBarQuickAction,
@@ -157,6 +158,7 @@ export function TopBar({
       className={clsx(
         'ace-topbar px-2 flex items-center gap-1 bg-surface relative z-10 shrink-0',
         framelessDesktop && 'ace-desktop-frameless-topbar',
+        isMacDesktopShell() && 'ace-desktop-macos-topbar',
       )}
       style={{ '--ace-topbar-sidebar-width': sidebarCollapsed ? '0px' : `${sidebarWidth || 0}px` }}
     >

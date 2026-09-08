@@ -3699,7 +3699,7 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 // ---- Diff 视图:summary 行 + 彩色 diff 块 ----
                 Elements rows;
                 if (msg.summary.has_value()) {
-                    const auto& s = *msg.summary;
+                    const auto& s = *msg.summary; 
                     const Color row_color =
                         acecode::tui::tool_result_text_color(tui::theme());
                     std::string metric_str;

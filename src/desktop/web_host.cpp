@@ -87,25 +87,10 @@ void notify_mac_window_state_if_changed(NSWindow* window) {
     }
 }
 
-void hide_mac_standard_button(NSWindow* window, NSWindowButton button) {
+void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
     NSButton* button_view = [window standardWindowButton:button];
     if (!button_view) return;
-    [button_view setHidden:YES];
-}
-
-void hide_mac_titlebar_container(NSWindow* window) {
-    NSView* content_view = [window contentView];
-    NSView* frame_view = [content_view superview];
-    if (!content_view || !frame_view) return;
-
-    [content_view setFrame:[frame_view bounds]];
-    [content_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-
-    for (NSView* subview in [frame_view subviews]) {
-        if (subview == content_view) continue;
-        [subview setHidden:YES];
-    }
-    [frame_view setNeedsLayout:YES];
+    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -132,10 +117,11 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    hide_mac_standard_button(window, NSWindowCloseButton);
-    hide_mac_standard_button(window, NSWindowMiniaturizeButton);
-    hide_mac_standard_button(window, NSWindowZoomButton);
-    hide_mac_titlebar_container(window);
+    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
+    // retain their standard layout, actions, and full-screen behavior.
+    show_mac_standard_button(window, NSWindowCloseButton);
+    show_mac_standard_button(window, NSWindowMiniaturizeButton);
+    show_mac_standard_button(window, NSWindowZoomButton);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
 }

@@ -1,4 +1,4 @@
-// 浮动设置窗口:mask + 左栏导航 + 右栏内容(Codex 风格)。
+// 浮动设置窗口:mask + 贯通的左栏导航与右栏内容。
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
@@ -234,15 +234,59 @@ export function SettingsPage({
         data-settings-window="true"
         data-expanded={expanded ? 'true' : 'false'}
         className={clsx(
-          'ace-settings-panel flex flex-col overflow-hidden',
+          'ace-settings-panel flex overflow-hidden',
           show ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-2 scale-[0.985]',
         )}
       >
-        <div className="ace-settings-titlebar h-10 px-3 flex items-center gap-2 shrink-0 select-none">
-          <span id="settings-window-title" className="flex-1 min-w-0 text-[15px] font-semibold truncate">
-            设置
-          </span>
-          <div className="flex items-center gap-1 shrink-0">
+        <span id="settings-window-title" className="sr-only">设置</span>
+        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+          <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
+            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
+          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
+            const headingId = `settings-nav-group-${group.key}`;
+            return (
+              <div
+                key={group.key}
+                role="group"
+                aria-labelledby={headingId}
+              >
+                <div
+                  id={headingId}
+                  className={clsx(
+                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
+                    groupIndex === 0 ? 'pt-0' : 'pt-2',
+                  )}
+                >
+                  {group.label}
+                </div>
+                {group.items.map((item) => {
+                  const itemIndex = settingsNavIndexForKey(item.key);
+                  const active = activeNav === itemIndex;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      aria-current={active ? 'page' : undefined}
+                      aria-label={item.label}
+                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+                      className={clsx(
+                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
+                        active
+                          ? 'text-fg font-semibold'
+                          : 'text-fg-2',
+                      )}
+                    >
+                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
+        <div className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col">
+          <div className="ace-settings-window-actions flex items-center gap-1 select-none">
             <button
               type="button"
               title={expanded ? '还原' : '展开'}
@@ -263,54 +307,6 @@ export function SettingsPage({
               <VsIcon name="close" size={15} />
             </button>
           </div>
-        </div>
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
-          <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
-            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
-          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
-            const headingId = `settings-nav-group-${group.key}`;
-            return (
-              <div
-                key={group.key}
-                role="group"
-                aria-labelledby={headingId}
-              >
-                <div
-                  id={headingId}
-                  className={clsx(
-                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute opacity-75',
-                    groupIndex === 0 ? 'pt-0' : 'pt-2',
-                  )}
-                >
-                  {group.label}
-                </div>
-                {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key);
-                  const active = activeNav === itemIndex;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
-                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
-                      className={clsx(
-                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
-                        active
-                          ? 'text-fg font-semibold bg-surface-hi'
-                          : 'text-fg-2 hover:bg-surface-hi',
-                      )}
-                    >
-                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </nav>
         <div ref={contentRef} className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
           {activeNavKey === 'general' && (
             <SectionGeneral

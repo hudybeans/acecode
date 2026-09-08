@@ -38,7 +38,8 @@ run('Settings uses a blocking mask and an accessible expandable dialog', () => {
   assert.match(settings, /aria-labelledby="settings-window-title"/);
   assert.match(settings, /data-expanded=\{expanded \? 'true' : 'false'\}/);
   assert.match(settings, /name=\{expanded \? 'screenNormal' : 'screenFull'\}/);
-  assert.match(settings, /ace-settings-titlebar/);
+  assert.match(settings, /id="settings-window-title" className="sr-only"/);
+  assert.doesNotMatch(settings, /ace-settings-titlebar/);
   assert.match(settings, /<nav className="[^"]*shrink-0 select-none"/);
   assert.doesNotMatch(settings, /<WindowControls/);
 });
