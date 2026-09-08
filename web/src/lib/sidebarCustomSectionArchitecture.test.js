@@ -92,3 +92,13 @@ test('compact title bar shares its height with click targets and quick menu anch
   assert.match(topbar, /top: 'var\(--ace-topbar-height\)'/);
   assert.match(topbar, /<VsIcon name="search" size=\{16\}/);
 });
+
+test('macOS fullscreen eases the top-bar actions out of the traffic-light inset', () => {
+  const topbar = source('components/TopBar.jsx');
+  const css = source('styles/globals.css');
+  assert.match(topbar, /shouldInsetMacTopBar\(isFullscreen\) && 'ace-desktop-macos-topbar'/);
+  assert.match(
+    css,
+    /\.ace-desktop-frameless-topbar\s*\{[^}]*padding-left 160ms cubic-bezier\(0\.2, 0, 0, 1\)/s,
+  );
+});

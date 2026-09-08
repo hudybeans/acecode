@@ -1730,6 +1730,17 @@ body {
 }
 .ace-desktop-frameless-topbar {
   user-select: none;
+  /* macOS native fullscreen removes the traffic-light inset after AppKit's
+     transition. Ease the first web action into place instead of snapping it
+     roughly 72px to the left. Keep this deliberately quicker than the native
+     fullscreen animation. This transition also stays enabled when macOS
+     Reduce Motion is on: without it, the large inset change is an abrupt
+     flash rather than a gentler, bounded movement. */
+  transition:
+    padding-left 160ms cubic-bezier(0.2, 0, 0, 1),
+    background-color .25s ease,
+    border-color .25s ease,
+    color .2s ease;
 }
 .ace-desktop-macos-topbar {
   /* Leave AppKit's native traffic lights clear of the first web action. */
