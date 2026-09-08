@@ -3,6 +3,7 @@
 #include "agent_loop_shell_guard.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
+#include "environment/prompt_environment.hpp"
 #include "gitinfo/git_context_collector.hpp"
 #include "utils/encoding.hpp"
 #include "utils/logger.hpp"
@@ -826,6 +827,11 @@ void AgentLoop::worker_main() {
     }
 }
 
+bool AgentLoop::has_pending_work() {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    return busy_.load() || worker_task_active_ || !task_queue_.empty() || !priority_task_queue_.empty();
+}
+
 void AgentLoop::submit(const std::string& user_message) {
     submit(user_message, std::string{});
 }
@@ -1208,12 +1214,15 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2243,12 +2252,15 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;

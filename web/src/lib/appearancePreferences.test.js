@@ -86,6 +86,7 @@ await run('API serialization sends a complete compatibility snapshot', () => {
     theme: 'dark',
     color_theme: 'orange',
     font_size: 'small',
+    sidebar_session_time: true,
   });
 });
 
@@ -111,6 +112,7 @@ await run('canonical restore wins only before a local user mutation', async () =
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'small',
+    sidebarSessionTime: true,
   });
   assert.equal(applied.length, 3);
 });
@@ -131,6 +133,7 @@ await run('color and font changes preserve a canonical system theme preference',
     theme: 'system',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
 });
 
@@ -145,8 +148,8 @@ await run('failed latest save rolls back to the last confirmed appearance', asyn
   });
   await controller.change({ theme: 'dark', colorTheme: 'orange' });
   assert.deepEqual(applied, [
-    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium' },
-    { theme: 'light', colorTheme: 'blue', fontSize: 'medium' },
+    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium', sidebarSessionTime: true },
+    { theme: 'light', colorTheme: 'blue', fontSize: 'medium', sidebarSessionTime: true },
   ]);
   assert.deepEqual(errors, ['disk full']);
 });
@@ -175,5 +178,6 @@ await run('rapid changes serialize saves and keep the newest snapshot', async ()
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'medium',
+    sidebarSessionTime: true,
   });
 });

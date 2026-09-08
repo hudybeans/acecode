@@ -201,3 +201,172 @@ TEST_F(PathsTest, ProjectDirsStopAtHomeThroughDirectoryJunction) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// 数据目录重定向指针(openspec: data-directory-relocation)。
+// 指针文件 <默认目录>/data-dir.redirect.json 有效时,resolve_data_dir 返回指针目标;
+// 无效(目标不存在 / 相对路径 / 文件损坏)时回退默认目录。
+// 用 HOME / USERPROFILE 指向临时目录隔离,fixture 前后都清缓存与 RunMode。
+// ---------------------------------------------------------------------------
+
+#include "utils/utf8_path.hpp"
+
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
+namespace {
+
+namespace fs = std::filesystem;
+
+#ifdef _WIN32
+constexpr const char* kRedirectHomeEnv = "USERPROFILE";
+#else
+constexpr const char* kRedirectHomeEnv = "HOME";
+#endif
+
+void redirect_set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+class DataDirRedirectTest : public ::testing::Test {
+protected:
+    fs::path temp_home;
+    std::string previous_home;
+    bool had_previous_home = false;
+
+    void SetUp() override {
+        acecode::reset_run_mode_for_test();
+        if (const char* existing = std::getenv(kRedirectHomeEnv)) {
+            previous_home = existing;
+            had_previous_home = true;
+        }
+        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        temp_home = fs::temp_directory_path() /
+            ("acecode-paths-redirect-" + std::to_string(now));
+        std::error_code ec;
+        fs::remove_all(temp_home, ec);
+        fs::create_directories(temp_home / ".acecode", ec);
+        redirect_set_env(kRedirectHomeEnv, temp_home.string());
+        acecode::reset_data_dir_cache_for_test();
+    }
+    void TearDown() override {
+        if (had_previous_home) redirect_set_env(kRedirectHomeEnv, previous_home);
+        acecode::reset_run_mode_for_test();
+        std::error_code ec;
+        fs::remove_all(temp_home, ec);
+    }
+
+    std::string default_dir() const {
+        return acecode::resolve_default_data_dir(acecode::RunMode::User);
+    }
+    static bool same_path(const std::string& a, const fs::path& b) {
+        std::error_code ec;
+        return fs::equivalent(acecode::path_from_utf8(a), b, ec) && !ec;
+    }
+};
+
+}  // namespace
+
+// 场景:没有指针文件。
+// 期望:与改动前完全一致 —— 返回 <HOME>/.acecode。
+TEST_F(DataDirRedirectTest, NoPointerKeepsDefault) {
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          temp_home / ".acecode"));
+}
+
+// 场景:指针指向一个存在的绝对目录。
+// 期望:resolve_data_dir 返回该目录;config::get_acecode_dir 同步跟随(所有数据
+// 路径都从它派生)。
+TEST_F(DataDirRedirectTest, ValidPointerMovesDataDir) {
+    const fs::path moved = temp_home / "moved-data";
+    fs::create_directories(moved);
+    acecode::DataDirRedirect r;
+    r.data_dir = acecode::path_to_utf8(moved);
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+    acecode::reset_data_dir_cache_for_test();
+
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User), moved));
+    EXPECT_TRUE(same_path(acecode::get_acecode_dir(), moved));
+}
+
+// 场景:指针指向不存在的目录(例如移动硬盘没插)。
+// 期望:回退默认目录,不抛异常;进程继续可用。
+TEST_F(DataDirRedirectTest, PointerToMissingDirFallsBackToDefault) {
+    acecode::DataDirRedirect r;
+    r.data_dir = acecode::path_to_utf8(temp_home / "does-not-exist");
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+    acecode::reset_data_dir_cache_for_test();
+
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          temp_home / ".acecode"));
+}
+
+// 场景:指针写的是相对路径。
+// 期望:拒绝(不同入口 cwd 不同,相对指针会解析到不同位置),回退默认目录。
+TEST_F(DataDirRedirectTest, RelativePointerIsRejected) {
+    fs::create_directories(temp_home / ".acecode" / "rel");
+    acecode::DataDirRedirect r;
+    r.data_dir = "rel";
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+    acecode::reset_data_dir_cache_for_test();
+
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          temp_home / ".acecode"));
+}
+
+// 场景:指针文件损坏(非 JSON)。
+// 期望:read 返回 nullopt,resolve 回退默认目录。
+TEST_F(DataDirRedirectTest, CorruptPointerIsIgnored) {
+    std::ofstream ofs(acecode::path_from_utf8(
+        acecode::data_dir_redirect_path(default_dir())), std::ios::binary);
+    ofs << "{not json";
+    ofs.close();
+    acecode::reset_data_dir_cache_for_test();
+
+    EXPECT_FALSE(acecode::read_data_dir_redirect(default_dir()).has_value());
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          temp_home / ".acecode"));
+}
+
+// 场景:写入完整指针后读回。
+// 期望:所有字段逐一保持(迁移元数据供清理提示使用);remove 后 read 为 nullopt。
+TEST_F(DataDirRedirectTest, WriteReadRemoveRoundTrip) {
+    acecode::DataDirRedirect r;
+    r.data_dir = acecode::path_to_utf8(temp_home / "target");
+    r.previous_data_dir = acecode::path_to_utf8(temp_home / ".acecode");
+    r.migrated_at_ms = 1234567890123LL;
+    r.previous_size_bytes = 600ULL * 1024 * 1024;
+    r.cleanup_pending = true;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+
+    auto back = acecode::read_data_dir_redirect(default_dir());
+    ASSERT_TRUE(back.has_value());
+    EXPECT_EQ(back->data_dir, r.data_dir);
+    EXPECT_EQ(back->previous_data_dir, r.previous_data_dir);
+    EXPECT_EQ(back->migrated_at_ms, r.migrated_at_ms);
+    EXPECT_EQ(back->previous_size_bytes, r.previous_size_bytes);
+    EXPECT_TRUE(back->cleanup_pending);
+
+    EXPECT_TRUE(acecode::remove_data_dir_redirect(default_dir()));
+    EXPECT_FALSE(acecode::read_data_dir_redirect(default_dir()).has_value());
+    EXPECT_TRUE(acecode::remove_data_dir_redirect(default_dir()))
+        << "重复删除应视为成功";
+}
+
+// 场景:缓存命中后 HOME 变化。
+// 期望:默认目录变了就重新解析,不会把上一个 HOME 的结果错误地沿用给新 HOME
+//(其它测试 fixture 频繁改 HOME,这是它们互不污染的前提)。
+TEST_F(DataDirRedirectTest, CacheFollowsDefaultDirChanges) {
+    (void)acecode::resolve_data_dir(acecode::RunMode::User);
+    const fs::path other_home = temp_home / "other-home";
+    fs::create_directories(other_home / ".acecode");
+    redirect_set_env(kRedirectHomeEnv, other_home.string());
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          other_home / ".acecode"));
+}

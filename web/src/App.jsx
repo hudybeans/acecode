@@ -76,6 +76,7 @@ import { SessionNavigationMask } from './components/SessionNavigationMask.jsx';
 import { SessionContentLoading } from './components/SessionContentLoading.jsx';
 import { TokenPrompt } from './components/TokenPrompt.jsx';
 import { SettingsPage } from './components/SettingsPage.jsx';
+import { WorkspaceCleanupNotice } from './components/WorkspaceCleanupNotice.jsx';
 import { DesktopContextMenu } from './components/DesktopContextMenu.jsx';
 import { Toaster, toast } from './components/Toast.jsx';
 import { SlashCommandsProvider } from './components/SlashCommandsContext.jsx';
@@ -2155,6 +2156,7 @@ export function App() {
         scopeKey={activeId}
       />
       <DesktopContextMenu />
+      <WorkspaceCleanupNotice enabled={authState === 'ok' && !!health && !configRecoveryBlocking} />
       <ConfigRecoveryDialog
         open={configRecoveryDialogOpen}
         notice={configRecoveryNotice}

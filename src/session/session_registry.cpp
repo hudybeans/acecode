@@ -2109,6 +2109,15 @@ bool SessionRegistry::any_busy_in_cwd(const std::string& cwd) const {
     return false;
 }
 
+bool SessionRegistry::any_busy() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& [id, entry] : entries_) {
+        if (!entry || !entry->loop) continue;
+        if (entry->loop->has_pending_work()) return true;
+    }
+    return false;
+}
+
 void SessionRegistry::invalidate_git_snapshots_in_cwd(const std::string& cwd) {
     std::lock_guard<std::mutex> lk(mu_);
     for (const auto& [id, entry] : entries_) {

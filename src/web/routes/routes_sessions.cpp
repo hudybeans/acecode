@@ -1720,6 +1720,8 @@ void WebServer::Impl::register_sessions() {
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
             }
+            // 数据目录迁移期间不接新回合(复制中写会话会丢数据)。
+            if (auto rej = reject_if_migrating(req)) return std::move(*rej);
 
             bool ok = deps.session_client->send_input(id, parsed.input);
             if (!ok) {

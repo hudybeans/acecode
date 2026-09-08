@@ -350,6 +350,16 @@ when known.
 | PUT | `/api/config/remote-web` | enable or disable remote Web mode |
 | GET | `/api/config/upgrade` | read update service config |
 | PUT | `/api/config/upgrade` | write update service config |
+| GET / PUT | `/api/config/toolchains` | read or save Python, Node.js and C# directories |
+| POST | `/api/config/toolchains/detect` | detect installed toolchain directories again |
+| GET | `/api/console/config` | terminal configuration and launch-probe results |
+| POST | `/api/console/config/detect` | probe and save the default terminal again |
+| GET | `/api/config/data-dir` | current data directory, migration and backup status |
+| POST | `/api/config/data-dir/migrate` | copy data to an empty directory; restart required |
+| GET | `/api/config/data-dir/migration` | poll the background migration |
+| POST | `/api/config/data-dir/cleanup` | keep or delete the previous data directory |
+| POST | `/api/dialog/pick-folder` | select a folder without registering a project |
+| POST | `/api/dialog/pick-file` | select a terminal program |
 | GET | `/api/update/status` | check update availability |
 | POST | `/api/update/start` | start explicit WebUI update job |
 | GET | `/api/update/job` | read latest WebUI update job |
@@ -3010,23 +3020,99 @@ Returns detected shell choices and the configured default:
 ```json
 {
   "shells": [
-    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false}
+    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false,"path":"C:/Program Files/PowerShell/7/pwsh.exe","configured_path":"","probed":true,"usable":true,"probe_error":""}
   ],
   "default": "powershell"
 }
 ```
+
+The response also includes `resolved: {id,family,program,console_command,usable,fallback_reason}`.
+`available` describes file discovery; `usable` reflects an actual launch probe when
+`probed` is true. Unprobed choices are checked when selected. The default and new
+PTY sessions use the same resolved terminal as the Agent's command tool.
 
 ### `PUT /api/console/config`
 
 Body:
 
 ```json
-{"default_shell":"powershell","git_bash_path":"C:/Program Files/Git/bin/bash.exe"}
+{"default_shell":"powershell","shell_path":"C:/mytool/pwsh.exe"}
 ```
 
-Both fields are optional. `git_bash_path` is trimmed, dequoted, checked for WSL
-System32 bash, and validated if non-empty. Returns the same payload as
-`GET /api/pty/shells`.
+Both fields are optional. `shell_path` applies to the selected `default_shell`;
+an empty path restores automatic discovery. Non-empty paths must be absolute
+regular files and pass a launch probe. Unknown types, wrong JSON types, missing
+files, WSL bash for the Git Bash type, and failed probes return `400` without
+changing either the saved config or runtime. Persistence failures return `500`.
+The legacy `git_bash_path` field remains accepted. Returns the same payload as
+`GET /api/pty/shells`; running terminals retain their original process.
+
+### Settings environment endpoints
+
+These endpoints use the normal authenticated API access policy.
+
+- `GET /api/config/toolchains` returns `{toolchains:[{id,label,dir,exists,anchor,applied}]}`,
+  where `id` is `python`, `node` or `csharp`. `PUT` accepts a partial object of
+  those directory strings. Empty clears a directory; non-empty values must be
+  existing absolute directories. Validation errors return `400` with
+  `INVALID_FIELD`, `DIRECTORY_NOT_ABSOLUTE` or `DIRECTORY_NOT_FOUND` and leave
+  the complete previous configuration unchanged. Successful saves update the
+  process PATH for subsequently launched tools, hooks, MCP servers and terminals.
+- `POST /api/config/toolchains/detect` searches the original process PATH, skipping
+  Windows Store aliases. Found directories replace those fields; missing tools
+  preserve existing choices. It returns the same list plus `detected:{python,node,csharp}`.
+- `GET /api/console/config` returns `{default_shell,shell_paths,resolved,candidates}`.
+  Each candidate includes `id,label,family,available,needs_path,probed,usable,program,
+  detected_path,configured_path,probe_error`. `POST /api/console/config/detect`
+  reruns launch probes, persists a usable resolution and returns the same shape.
+  Candidates depend on the host platform. Windows tries PowerShell 7, Windows
+  PowerShell, Git Bash and cmd; POSIX uses the login shell and available alternatives.
+- `POST /api/dialog/pick-folder` and `POST /api/dialog/pick-file` return `{path}`,
+  or JSON `null` when cancelled. Native picker support must be enabled by the host;
+  otherwise the response is `501 {error:"PICKER_UNAVAILABLE",message}` and the UI
+  accepts a manually entered path.
+
+### Data directory migration
+
+`GET /api/config/data-dir` returns `effective_dir`, `default_dir`, `redirect_active`,
+`redirect_target`, `migrated_at_ms`, `cleanup_pending` and `migration` (null or the
+job below). Existing backups add `previous_dir` and `previous_size_bytes`. After
+restart, a pending backup larger than 100 MiB also adds
+`cleanup:{previous_dir,size_bytes}`.
+
+`POST /api/config/data-dir/migrate` accepts `{target:"<absolute path>"}` and returns
+`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`, `error`,
+`restart_required`, `started_at_ms` and `finished_at_ms`. Poll
+`GET /api/config/data-dir/migration`; states are `running`, `done` or `failed`.
+Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
+
+Target validation returns `400` with `TARGET_REQUIRED`, `TARGET_NOT_ABSOLUTE`,
+`TARGET_SAME_AS_CURRENT`, `TARGET_INSIDE_CURRENT`, `TARGET_CONTAINS_CURRENT`,
+`TARGET_NOT_A_DIRECTORY`, `TARGET_NOT_EMPTY` or `TARGET_NOT_WRITABLE`. Paths are
+compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY`, another
+live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals return
+`409 CONSOLES_ACTIVE`.
+
+The job pauses the scheduler and copies through a private staging directory,
+excluding top-level `run/`, `tmp/`, the redirect pointer and lock files. SQLite
+databases use online backups, including committed WAL transactions. Symlinks are
+preserved (internal targets follow the new root); inability to preserve them fails
+the copy. Source changes and a newly occupied target abort publication. Failure
+removes only private staging, preserves the source and existing target files,
+and re-enables writes. A pointer-write failure retains the copied target for recovery.
+
+Success atomically publishes the copied directory, writes `data-dir.redirect.json`
+in the platform default data directory, and sets `restart_required:true`. The
+current process continues reading the old root; new turns and authenticated
+mutations are rejected with `409 DATA_DIR_MIGRATION_ACTIVE` until restart.
+
+`POST /api/config/data-dir/cleanup` accepts `{action:"keep"}` or `{action:"delete"}`.
+Both acknowledge the cleanup prompt and return updated directory status. Delete
+requires a restart into the new root, verifies the recorded old directory is not
+the active root or its ancestor, and refuses a still-running old daemon. When the
+backup is the default directory, its redirect pointer is preserved. Failures
+return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
+`500 PERSIST_FAILED`; invalid actions return `400 INVALID_ACTION`.
 
 ### `POST /api/pty`
 

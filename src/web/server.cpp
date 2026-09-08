@@ -70,6 +70,7 @@ void WebServer::Impl::register_routes() {
     register_hooks();
     register_feedback();
     register_pty();
+    register_environment();
     register_websocket();
     register_static();
 }

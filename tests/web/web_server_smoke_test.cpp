@@ -21,6 +21,9 @@
 #include "provider/auth/github_auth.hpp"
 #include "provider/auth/xai_auth.hpp"
 #include "config/config.hpp"
+#include "environment/data_dir_migration.hpp"
+#include "environment/terminal_runtime.hpp"
+#include "environment/toolchains.hpp"
 #include "config/config_recovery.hpp"
 #include "config/saved_models.hpp"
 #include "config/saved_models_revision.hpp"
@@ -805,6 +808,111 @@ struct ScopedEnvOverride {
         set_env_value(name.c_str(), old_value);
     }
 };
+
+struct EnvironmentRuntimeRestore {
+    std::string path = acecode::environment::current_process_path();
+    ~EnvironmentRuntimeRestore() {
+        acecode::environment::set_process_path(path);
+        acecode::environment::reset_toolchain_runtime_for_test();
+        acecode::environment::terminal().reset_for_test();
+        acecode::environment::reset_data_dir_write_gate_for_test();
+        acecode::reset_data_dir_cache_for_test();
+    }
+};
+
+TEST(SettingsEnvironmentSmoke, SavesToolDirectoriesAndRejectsInvalidDraftsAtomically) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    auto put = [&](const std::string& path, const json& body) {
+        return cpr::Put(cpr::Url{fx.url(path)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    };
+    auto good = put("/api/config/toolchains", {{"node", fx.cwd}});
+    ASSERT_EQ(good.status_code, 200) << good.text;
+    EXPECT_EQ(fx.cfg.toolchains.node, fx.cwd);
+    const auto disk = read_text(fx.tmp_dir / "config.json");
+    auto bad = put("/api/config/toolchains", {{"node", "missing-relative-dir"}, {"python", fx.cwd}});
+    EXPECT_EQ(bad.status_code, 400);
+    EXPECT_EQ(fx.cfg.toolchains.node, fx.cwd);
+    EXPECT_TRUE(fx.cfg.toolchains.python.empty());
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), disk);
+    auto terminal = put("/api/console/config", {{"default_shell", "not-a-shell"}, {"shell_path", fx.cwd}});
+    EXPECT_EQ(terminal.status_code, 400) << terminal.text;
+    EXPECT_TRUE(fx.cfg.console.default_shell.empty());
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), disk);
+    auto picker = cpr::Post(cpr::Url{fx.url("/api/dialog/pick-folder")});
+    EXPECT_EQ(picker.status_code, 501);
+    auto file_picker = cpr::Post(cpr::Url{fx.url("/api/dialog/pick-file")});
+    EXPECT_EQ(file_picker.status_code, 501);
+}
+
+TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurtherWrites) {
+    EnvironmentRuntimeRestore restore;
+    RemoveTreeOnExit temp{std::filesystem::temp_directory_path() / ("ace-settings-http-" + std::to_string(std::random_device{}()))};
+    ScopedHomeOverride home(temp.path / "home");
+    acecode::reset_data_dir_cache_for_test();
+    const auto source = acecode::path_from_utf8(acecode::get_acecode_dir());
+    write_text(source / "config.json", "{}");
+    write_text(source / "memory/MEMORY.md", "keep this memory");
+    WebServerFixture fx;
+    const auto target = temp.path / "moved";
+    auto started = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{json{{"target", acecode::path_to_utf8(target)}}.dump()});
+    ASSERT_EQ(started.status_code, 202) << started.text;
+    json progress;
+    for (int i = 0; i < 150; ++i) {
+        auto response = cpr::Get(cpr::Url{fx.url("/api/config/data-dir/migration")});
+        ASSERT_EQ(response.status_code, 200) << response.text;
+        progress = json::parse(response.text);
+        if (progress["state"] != "running") break;
+        std::this_thread::sleep_for(20ms);
+    }
+    ASSERT_EQ(progress["state"], "done") << progress;
+    EXPECT_EQ(read_text(target / "memory/MEMORY.md"), "keep this memory");
+    EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
+    auto blocked = cpr::Put(cpr::Url{fx.url("/api/config/toolchains")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"node":""})"});
+    EXPECT_EQ(blocked.status_code, 409);
+    auto before_restart = json::parse(cpr::Get(cpr::Url{fx.url("/api/config/data-dir")}).text);
+    EXPECT_FALSE(before_restart["redirect_active"].get<bool>());
+    auto premature_delete = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/cleanup")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"action":"delete"})"});
+    EXPECT_EQ(premature_delete.status_code, 409);
+    EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
+    acecode::reset_data_dir_cache_for_test();
+    auto after_restart = json::parse(cpr::Get(cpr::Url{fx.url("/api/config/data-dir")}).text);
+    EXPECT_TRUE(after_restart["redirect_active"].get<bool>());
+    auto keep = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/cleanup")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"action":"keep"})"});
+    ASSERT_EQ(keep.status_code, 200) << keep.text;
+    EXPECT_FALSE(json::parse(keep.text)["cleanup_pending"].get<bool>());
+}
+
+TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    auto response = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(response.status_code, 201) << response.text;
+    auto entry = fx.registry->acquire(json::parse(response.text).at("id").get<std::string>());
+    ASSERT_TRUE(entry);
+    std::mutex mu;
+    std::condition_variable cv;
+    bool released = false;
+    entry->loop->enqueue_control([&] {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [&] { return released; });
+        return true;
+    });
+    EXPECT_TRUE(fx.registry->any_busy());
+    auto migration = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"target", (fx.tmp_dir / "moved").string()}}.dump()});
+    EXPECT_EQ(migration.status_code, 409) << migration.text;
+    { std::lock_guard<std::mutex> lock(mu); released = true; }
+    cv.notify_all();
+    // Join the callback before destroying its synchronization state.
+    entry->loop->shutdown();
+}
 
 std::string lower_ascii(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {

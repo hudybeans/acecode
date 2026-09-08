@@ -1,3 +1,4 @@
+#include "environment/bootstrap.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -3051,6 +3052,7 @@ static AppConfig load_tui_config_and_runtime(HookManager& hook_manager,
                                              const std::string& working_dir,
                                              const std::string& argv0_dir) {
     AppConfig config = load_config();
+    acecode::environment::bootstrap(config, {});
     reconcile_default_skills_on_startup(argv0_dir);
     {
         std::string trust_error;

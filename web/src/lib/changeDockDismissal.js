@@ -40,6 +40,27 @@ export function dismissedDockSignatureFor(dismissals, key) {
   return typeof value === 'string' ? value : '';
 }
 
+// Match the settled result shown in the conversation, including restored history.
+// Footer ownership already distinguishes a final result from errors/interruptions.
+export function hasCompletedTurnResult(items, directives, { busy = false } = {}) {
+  if (busy || !Array.isArray(items)) return false;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === 'msg' && item.role === 'user') return false;
+    if (!directives?.get(item?.id)?.showFooter) continue;
+    if (item.kind === 'completion_summary') {
+      const tool = item.sourceItem?.tool;
+      return tool?.isDone === true && tool.success !== false;
+    }
+    return item.kind === 'msg'
+      && item.role === 'assistant'
+      && !item.streaming
+      && typeof item.content === 'string'
+      && !!item.content.trim();
+  }
+  return false;
+}
+
 // —— 下一轮提交时的整体自动收起(变更 + todo)——
 // 变更部分复用上面的签名 dismissal(新变更签名变化后 dock 自动重现);
 // todo 部分是会话内存级抑制:提交时记住当时的 todo 快照签名,快照没变

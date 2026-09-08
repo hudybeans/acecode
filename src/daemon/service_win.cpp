@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "worker.hpp"
+#include "../environment/bootstrap.hpp"
 #include "../config/config.hpp"
 #include "../hooks/hook_manager.hpp"
 #include "../utils/logger.hpp"
@@ -129,6 +130,7 @@ void WINAPI service_main(DWORD /*argc*/, LPWSTR* /*argv*/) {
     }
 
     AppConfig cfg = load_config();
+    environment::bootstrap(cfg, {});
     LOG_INFO("[service] config loaded: web.bind=" + cfg.web.bind +
              " web.port=" + std::to_string(cfg.web.port) +
              " provider=" + cfg.provider);

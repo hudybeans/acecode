@@ -48,10 +48,61 @@ static std::string get_default_shell() {
 // POSIX 例子压倒性多,光在 # Environment 标 "Shell: cmd.exe" 不足以压住肌肉
 // 记忆 — 用户实测 `mkdir -p testfolder1` 会建出 `-p` 和 `testfolder1` 两个目录。
 // 这里枚举高频 cmd.exe vs POSIX 分歧让 LLM 写出正确语法。POSIX 平台返回空串。
-static std::string get_shell_guidance(bool bash_allowed,
-                                      bool file_write_allowed) {
-#ifdef _WIN32
-    if (!bash_allowed) return "";
+// PowerShell 家族的指引:bash 工具经 -EncodedCommand 运行 PowerShell,LLM 的 POSIX
+// 肌肉记忆(mkdir -p / rm -rf / $VAR / && )在这里同样会翻车,列出高频分歧。
+static std::string get_powershell_guidance(bool file_write_allowed,
+                                           const std::string& program) {
+    const std::string file_write_name =
+        model_tool_name_for_native("file_write");
+    std::ostringstream out;
+    out << "# Shell Command Guidance (PowerShell)\n\n"
+        << "The `bash` tool runs commands through PowerShell (`" << program
+        << " -NoProfile -NonInteractive -EncodedCommand`), NOT through a POSIX shell "
+        << "and NOT through cmd.exe. Use PowerShell syntax. Common traps:\n\n"
+        << "- Create directories: `New-Item -ItemType Directory -Force PATH` (or `mkdir PATH`). "
+        << "`mkdir -p` does NOT exist.\n"
+        << "- Remove: `Remove-Item -Recurse -Force PATH`. There is no `rm -rf`; `rm` is an alias "
+        << "that takes PowerShell parameters.\n"
+        << "- Copy/move: `Copy-Item -Recurse SRC DST`, `Move-Item SRC DST`.\n"
+        << "- Variables: `$env:VAR` for environment variables (not `%VAR%`, not `$VAR`); "
+        << "set with `$env:VAR = \"value\"`.\n"
+        << "- Quoting: single quotes are literal, double quotes interpolate `$var`; escape with "
+        << "the backtick (`), not backslash.\n"
+        << "- Sequencing: `;` runs unconditionally. `&&` / `||` exist only in PowerShell 7+; "
+        << "check `$LASTEXITCODE` after native commands when in doubt.\n"
+        << "- Lookups: `Get-Command X` (not `which`), `Get-ChildItem` (`ls`/`dir`), "
+        << "`Get-Content` (`cat`), `Select-String` (`grep`).\n"
+        << "- Native executables get their arguments after PowerShell parsing: quote arguments "
+        << "containing spaces or special characters, or use `--%` to pass the rest verbatim.\n"
+        << "- Use `$env:ACECODE_TMPDIR` for temporary scripts; ACECode rejects this placeholder "
+        << "if no active session scratch directory is available.\n";
+    if (file_write_allowed) {
+        out << "- For complex or multi-line scripts, prefer creating a real `.ps1` via `"
+            << file_write_name << "` and running it with `& PATH`.\n";
+    }
+    out << "\n";
+    return out.str();
+}
+
+// Windows 上的 Git Bash:POSIX 语法可用,但路径形态要提醒。
+static std::string get_git_bash_guidance(const std::string& program) {
+    std::ostringstream out;
+    out << "# Shell Command Guidance (Git Bash on Windows)\n\n"
+        << "The `bash` tool runs commands through Git Bash (`" << program
+        << " -c`), a POSIX shell on Windows. Use POSIX syntax. Notes:\n\n"
+        << "- Windows paths work as `/c/Users/...` or `C:/Users/...`; avoid backslashes unless quoted.\n"
+        << "- `mkdir -p`, `rm -rf`, `grep`, `sed`, `find` are available; Windows-native "
+        << "commands still run when they are on PATH.\n"
+        << "- Use `$ACECODE_TMPDIR` for temporary scripts; ACECode rejects this placeholder "
+        << "if no active session scratch directory is available.\n\n";
+    return out.str();
+}
+
+// Windows 上 bash_tool 实际通过 `cmd.exe /c` 执行命令,但 LLM 训练语料里
+// POSIX 例子压倒性多,光在 # Environment 标 "Shell: cmd.exe" 不足以压住肌肉
+// 记忆 — 用户实测 `mkdir -p testfolder1` 会建出 `-p` 和 `testfolder1` 两个目录。
+// 这里枚举高频 cmd.exe vs POSIX 分歧让 LLM 写出正确语法。
+static std::string get_cmd_guidance(bool file_write_allowed) {
     const std::string file_write_name =
         model_tool_name_for_native("file_write");
     std::ostringstream out;
@@ -81,11 +132,32 @@ static std::string get_shell_guidance(bool bash_allowed,
     }
     out << "\n";
     return out.str();
+}
+
+// 按终端家族分发指引。environment 为空(未 bootstrap 的旧路径 / 单测)时维持改动前
+// 行为:Windows 给 cmd 指引,POSIX 不给。
+static std::string get_shell_guidance(const SystemPromptEnvironment* environment,
+                                      bool bash_allowed,
+                                      bool file_write_allowed) {
+    if (!bash_allowed) return "";
+    std::string family = environment ? environment->terminal_family : std::string{};
+    const std::string program = environment ? environment->terminal_program : std::string{};
+    if (family.empty()) {
+#ifdef _WIN32
+        family = "cmd";
 #else
-    (void)bash_allowed;
-    (void)file_write_allowed;
-    return "";
+        return "";
 #endif
+    }
+    if (family == "cmd") return get_cmd_guidance(file_write_allowed);
+    if (family == "powershell") {
+        return get_powershell_guidance(file_write_allowed,
+                                       program.empty() ? std::string("pwsh") : program);
+    }
+    if (family == "bash") {
+        return get_git_bash_guidance(program.empty() ? std::string("bash.exe") : program);
+    }
+    return "";
 }
 
 static std::string stable_tool_schema_guidance() {
@@ -103,7 +175,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const ProjectInstructionsConfig* project_instructions_cfg,
                                 const ToolCapabilityPolicy* effective_tool_policy,
                                 const SystemPromptWorktreeState* worktree,
-                                bool active_model_can_read_images) {
+                                bool active_model_can_read_images,
+                                const SystemPromptEnvironment* environment) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -299,10 +372,27 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "limit as the end of the task.\n\n";
 
     // Keep environment facts here only when they do not change with time.
+    // Shell / Toolchains 两行只随配置变化(openspec: agent-default-terminal /
+    // agent-toolchain-directories),environment 为空时维持改动前的输出。
+    const bool has_terminal = environment && !environment->terminal_family.empty();
     oss << "# Environment\n\n"
-        << "- OS: " << get_os_name() << "\n"
-        << "- Shell: " << get_default_shell() << "\n"
-        << "- Working directory: " << cwd << "\n"
+        << "- OS: " << get_os_name() << "\n";
+    if (has_terminal) {
+        oss << "- Shell: " << environment->terminal_family
+            << " (" << environment->terminal_program << ")\n";
+    } else {
+        oss << "- Shell: " << get_default_shell() << "\n";
+    }
+    if (environment && !environment->toolchains.empty()) {
+        oss << "- Toolchains:";
+        bool first = true;
+        for (const auto& [label, dir] : environment->toolchains) {
+            oss << (first ? " " : "; ") << label << "=" << dir;
+            first = false;
+        }
+        oss << "\n";
+    }
+    oss << "- Working directory: " << cwd << "\n"
         << "- Is directory a git repo: "
         << (gitinfo::is_inside_git_repo(cwd) ? "Yes" : "No") << "\n"
         << "- Active model can read images directly: "
@@ -338,7 +428,7 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     }
     oss << "\n";
 
-    oss << get_shell_guidance(bash_allowed, file_write_allowed);
+    oss << get_shell_guidance(environment, bash_allowed, file_write_allowed);
 
     if (bash_allowed) {
         oss << "# User Shell Mode\n\n"

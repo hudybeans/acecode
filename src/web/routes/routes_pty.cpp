@@ -1,6 +1,12 @@
 // routes_pty.cpp — Route registrations extracted from server.cpp
 #include "../server_impl.hpp"
 
+#include "../../environment/shell_command_line.hpp"
+#include "../../environment/terminal_resolver.hpp"
+#include "../../environment/terminal_runtime.hpp"
+
+#include <filesystem>
+
 namespace acecode::web {
 
 using nlohmann::json;
@@ -44,18 +50,54 @@ static json pty_info_json(const PtySessionInfo& info) {
 
 json WebServer::Impl::console_shells_payload() {
     json arr = json::array();
-    const std::string git_bash_path =
-        deps.app_config ? deps.app_config->console.git_bash_path : std::string{};
-    const std::string default_id = deps.app_config
-        ? default_console_shell_id(deps.app_config->console.default_shell, git_bash_path)
-        : std::string{};
-    for (const auto& opt : detect_console_shells(git_bash_path)) {
-        arr.push_back({{"id", opt.id},
-                       {"label", opt.label},
-                       {"available", opt.available},
-                       {"needs_path", opt.needs_path}});
+    ShellPaths shell_paths;
+    std::string configured_default;
+    if (deps.app_config) {
+        shell_paths = deps.app_config->console.shell_paths;
+        configured_default = deps.app_config->console.default_shell;
     }
-    return json{{"shells", arr}, {"default", default_id}};
+    // 启动探测的快照(openspec: agent-default-terminal):默认 id 与 usable 以它为准,
+    // 没探测过(测试 / 未 bootstrap)时退回目录层面的判定。
+    const auto last = acecode::environment::terminal().last();
+    std::string default_id = default_console_shell_id(configured_default, shell_paths);
+    if (last && last->resolved.usable) default_id = last->resolved.id;
+    for (const auto& opt : detect_console_shells(shell_paths)) {
+        json item{{"id", opt.id},
+                  {"label", opt.label},
+                  {"available", opt.available},
+                  {"needs_path", opt.needs_path},
+                  {"path", opt.program},
+                  {"configured_path", opt.configured_path}};
+        bool usable = opt.available;
+        bool probed = false;
+        std::string probe_error;
+        if (last) {
+            for (const auto& c : last->candidates) {
+                if (c.id != opt.id) continue;
+                probed = c.probed;
+                if (c.probed) usable = c.usable;
+                if (!c.program.empty()) item["path"] = c.program;
+                probe_error = c.probe_error;
+                break;
+            }
+        }
+        item["usable"] = usable;
+        item["probed"] = probed;
+        item["probe_error"] = probe_error;
+        arr.push_back(item);
+    }
+    json out{{"shells", arr}, {"default", default_id}};
+    if (last) {
+        out["resolved"] = json{
+            {"id", last->resolved.id},
+            {"family", acecode::environment::terminal_family_name(last->resolved.family)},
+            {"program", last->resolved.program},
+            {"console_command", last->resolved.console_command},
+            {"usable", last->resolved.usable},
+            {"fallback_reason", last->resolved.fallback_reason},
+        };
+    }
+    return out;
 }
 
 struct PtyWsState {
@@ -106,20 +148,23 @@ void WebServer::Impl::register_pty() {
             }
             std::string shell_override;
             if (!shell_id.empty()) {
-                std::string git_bash_path;
+                ConsoleConfig console;
                 if (deps.app_config) {
                     std::shared_lock<std::shared_mutex> config_lock(app_config_mu);
-                    git_bash_path = deps.app_config->console.git_bash_path;
+                    console = deps.app_config->console;
                 }
-                auto cmd = resolve_shell_command_by_id(shell_id, git_bash_path);
-                if (!cmd) {
+                console.default_shell = shell_id;
+                const auto resolution = acecode::environment::resolve_terminal(console);
+                if (!resolution.resolved.usable || resolution.resolved.id != shell_id) {
                     json e{{"error", "shell unavailable"}, {"shell", shell_id}};
                     if (shell_id == "git-bash") e["needs_path"] = true;
                     crow::response r(400, e.dump());
                     r.add_header("Content-Type", "application/json");
                     return with_cors(req, std::move(r));
                 }
-                shell_override = *cmd;
+                shell_override = resolution.resolved.console_command;
+            } else if (const auto last = acecode::environment::terminal().last(); last && !last->resolved.usable) {
+                return with_cors(req, crow::response(400, "no usable terminal; check Settings > Configuration"));
             }
             std::string error;
             auto info = deps.pty_registry->create(cwd_override, title, shell_override, error);
@@ -199,74 +244,62 @@ void WebServer::Impl::register_pty() {
             return with_cors(req, crow::response(204));
         });
 
-        // PUT /api/console/config {default_shell?, git_bash_path?} → 校验 + 持久化
-        // (save_config 原子写,失败回滚)→ 返回刷新后的 shells payload。
+        // Validate a complete draft before publishing either config or runtime state.
         CROW_ROUTE(app, "/api/console/config").methods(crow::HTTPMethod::PUT)
         ([this](const crow::request& req) {
             if (auto rej = require_auth(req)) return std::move(*rej);
-            if (!deps.app_config) return crow::response(503);
-            auto json_err = [&](int status, const std::string& msg) {
-                crow::response r(status);
-                r.body = json{{"error", msg}}.dump();
+            if (!deps.app_config) return with_cors(req, crow::response(503));
+            auto fail = [&](int status, const std::string& message) {
+                crow::response r(status, json{{"error", message}}.dump());
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
             };
-            json body;
-            try { body = json::parse(req.body); }
-            catch (const std::exception& e) {
-                return json_err(400, std::string("bad json: ") + e.what());
+            json body = json::parse(req.body, nullptr, false);
+            if (!body.is_object()) return fail(400, "body must be an object");
+            for (const char* key : {"default_shell", "shell_path", "git_bash_path"}) {
+                if (body.contains(key) && !body[key].is_string()) return fail(400, std::string(key) + " must be a string");
             }
-
-            std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
-            const std::string prev_default = deps.app_config->console.default_shell;
-            const std::string prev_bash = deps.app_config->console.git_bash_path;
-
+            std::lock_guard<std::shared_mutex> lock(app_config_mu);
+            AppConfig next = *deps.app_config;
+            if (body.contains("default_shell")) next.console.default_shell = body["default_shell"].get<std::string>();
+            const auto options = detect_console_shells(next.console.shell_paths);
+            const auto type = next.console.default_shell;
+            if (!type.empty() && std::none_of(options.begin(), options.end(), [&](const auto& o) { return o.id == type; })) {
+                return fail(400, "unknown terminal type");
+            }
+            auto set_path = [&](const std::string& id, std::string path) -> std::string {
+                const auto first = path.find_first_not_of(" \t\r\n");
+                path = first == std::string::npos ? "" : path.substr(first, path.find_last_not_of(" \t\r\n") - first + 1);
+                if (path.size() >= 2 && path.front() == '"' && path.back() == '"') path = path.substr(1, path.size() - 2);
+                if (id.empty()) return "shell_path requires default_shell";
+                if (path.empty()) { next.console.shell_paths.erase(id); return {}; }
+                const auto native = path_from_utf8(path);
+                std::error_code ec;
+                if (!native.is_absolute() || !std::filesystem::is_regular_file(native, ec) || ec) return "shell path must be an existing absolute file path";
+                if (id == "git-bash" && is_wsl_system32_bash(path)) return "WSL bash is not Git Bash";
+                const auto probe = acecode::environment::default_launch_probe();
+                const auto result = probe(path, acecode::environment::probe_arguments(acecode::environment::terminal_family_for_id(id)));
+                if (!result.ok) return "shell path failed the launch check: " + result.error;
+                next.console.shell_paths[id] = path;
+                return {};
+            };
             if (body.contains("git_bash_path")) {
-                if (!body["git_bash_path"].is_string()) {
-                    return json_err(400, "git_bash_path must be a string");
-                }
-                std::string p = body["git_bash_path"].get<std::string>();
-                // 去掉首尾空白与成对双引号(用户常粘进带引号的路径)。
-                auto trim = [](std::string& s) {
-                    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
-                                          s.front() == '\r' || s.front() == '\n')) s.erase(s.begin());
-                    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
-                                          s.back() == '\r' || s.back() == '\n')) s.pop_back();
-                };
-                trim(p);
-                if (p.size() >= 2 && p.front() == '"' && p.back() == '"') {
-                    p = p.substr(1, p.size() - 2);
-                    trim(p);
-                }
-                if (!p.empty()) {
-                    if (is_wsl_system32_bash(p)) {
-                        return json_err(400, "that looks like WSL bash (System32), not Git Bash");
-                    }
-                    std::error_code ec;
-                    auto fs_path = std::filesystem::u8path(p);
-                    if (!std::filesystem::exists(fs_path, ec) ||
-                            std::filesystem::is_directory(fs_path, ec)) {
-                        return json_err(400, "bash path does not exist");
-                    }
-                }
-                deps.app_config->console.git_bash_path = p;
+                const auto error = set_path("git-bash", body["git_bash_path"].get<std::string>());
+                if (!error.empty()) return fail(400, error);
             }
-            if (body.contains("default_shell")) {
-                if (!body["default_shell"].is_string()) {
-                    return json_err(400, "default_shell must be a string");
-                }
-                deps.app_config->console.default_shell = body["default_shell"].get<std::string>();
+            if (body.contains("shell_path")) {
+                const auto error = set_path(type, body["shell_path"].get<std::string>());
+                if (!error.empty()) return fail(400, error);
             }
-
+            const auto resolution = acecode::environment::resolve_terminal(next.console);
+            if (!resolution.resolved.usable) return fail(400, resolution.resolved.fallback_reason);
             try {
-                if (!deps.config_path.empty()) save_config(*deps.app_config, deps.config_path);
-                else save_config(*deps.app_config);
-            } catch (const std::exception& e) {
-                deps.app_config->console.default_shell = prev_default;
-                deps.app_config->console.git_bash_path = prev_bash;
-                return json_err(500, std::string("persist failed: ") + e.what());
-            }
-
+                if (!deps.config_path.empty()) save_config(next, deps.config_path);
+                else save_config(next);
+            } catch (const std::exception& e) { return fail(500, e.what()); }
+            deps.app_config->console = next.console;
+            acecode::environment::terminal().publish(resolution);
+            if (deps.pty_registry) deps.pty_registry->set_default_shell(resolution.resolved.console_command);
             crow::response r(200, console_shells_payload().dump());
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));

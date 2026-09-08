@@ -473,7 +473,13 @@ std::optional<crow::response> WebServer::Impl::require_auth(const crow::request&
     if (qt) query_token = qt;
 
     auto result = auth_result_for_request(req, header_token, query_token);
-    if (result == AuthResult::Allowed) return std::nullopt;
+    if (result == AuthResult::Allowed) {
+        if (req.method != crow::HTTPMethod::GET && req.method != crow::HTTPMethod::Options &&
+            req.url != "/api/config/data-dir/cleanup") {
+            if (auto blocked = reject_if_migrating(req)) return blocked;
+        }
+        return std::nullopt;
+    }
 
     const char* reason = (result == AuthResult::NoToken)
                           ? "no token" : "bad token";

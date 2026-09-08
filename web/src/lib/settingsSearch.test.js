@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { settingsSearchEntries, searchSettings } from './settingsSearch.js';
+const entries = settingsSearchEntries();
+assert.deepEqual(searchSettings(entries, '  '), []);
+assert.deepEqual(searchSettings(entries, 'not-a-real-setting'), []);
+assert.equal(searchSettings(entries, '终端程序路径')[0].section, 'config');
+assert.equal(searchSettings(entries, '终端程序路径')[0].label, '终端程序路径');
+assert.equal(searchSettings(entries, 'terminal program path')[0].label, '终端程序路径');
+assert.equal(searchSettings(entries, 'NODE.JS')[0].label, 'Node.js 工具');
+assert.equal(searchSettings(entries, 'font size')[0].section, 'appearance');
+assert.ok(searchSettings(entries, 'path').length > 3);
+assert.equal(searchSettings(entries, 'upgrade')[0].section, 'config');
+console.log('[pass] bilingual settings search, ranking, cross-section and empty queries');

@@ -1,0 +1,375 @@
+// 覆盖 src/environment/data_dir_migration.{hpp,cpp}:目标校验、排除规则、复制 + 指针、
+// 后台任务壳、旧目录清理与清理提示阈值。全部在临时目录里跑,HOME / USERPROFILE 指向
+// 临时目录以控制"平台默认目录"。
+
+#include <gtest/gtest.h>
+
+#include "environment/data_dir_migration.hpp"
+#include "utils/paths.hpp"
+#include "utils/utf8_path.hpp"
+#include "utils/state_file.hpp"
+
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <sqlite3.h>
+
+namespace fs = std::filesystem;
+using namespace acecode::environment;
+
+namespace {
+
+#ifdef _WIN32
+constexpr const char* kHomeEnv = "USERPROFILE";
+#else
+constexpr const char* kHomeEnv = "HOME";
+#endif
+
+void set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
+void write_file(const fs::path& p, const std::string& content) {
+    fs::create_directories(p.parent_path());
+    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+    ofs << content;
+}
+
+class DataDirMigrationTest : public ::testing::Test {
+protected:
+    fs::path root;         // 临时根
+    fs::path home;         // HOME
+    fs::path default_dir;  // <home>/.acecode(平台默认目录 = 当前数据目录)
+    std::string prev_home;
+    bool had_home = false;
+
+    void SetUp() override {
+        acecode::reset_run_mode_for_test();
+        if (const char* e = std::getenv(kHomeEnv)) { prev_home = e; had_home = true; }
+        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        root = fs::temp_directory_path() / ("acecode-migration-" + std::to_string(now));
+        home = root / "home";
+        default_dir = home / ".acecode";
+        fs::create_directories(default_dir);
+        set_env(kHomeEnv, home.string());
+        acecode::reset_data_dir_cache_for_test();
+    }
+    void TearDown() override {
+        reset_data_dir_write_gate_for_test();
+        if (had_home) set_env(kHomeEnv, prev_home);
+        acecode::reset_run_mode_for_test();
+        std::error_code ec;
+        fs::remove_all(root, ec);
+    }
+
+    // 造一棵典型的数据目录:配置、会话、运行时文件、锁文件、sqlite 三件套。
+    void populate_source(const fs::path& dir) {
+        write_file(dir / "config.json", R"({"provider":""})");
+        write_file(dir / "state.json", "{}");
+        write_file(dir / "config.json.lock", "");
+        write_file(dir / "projects" / "abc" / "sessions" / "s1.jsonl", "line1\nline2\n");
+        write_file(dir / "projects" / "abc" / "workspace.json", "{}");
+        write_file(dir / "memory" / "MEMORY.md", "# memory");
+        write_file(dir / "run" / "daemon.pid", "123");
+        write_file(dir / "tmp" / "scratch.txt", "junk");
+        write_file(dir / "scheduled-loops.sqlite3", "db");
+        write_file(dir / "scheduled-loops.sqlite3-wal", "wal");
+        write_file(dir / "scheduled-loops.sqlite3-shm", "shm");
+    }
+
+    std::string s(const fs::path& p) const { return acecode::path_to_utf8(p); }
+};
+
+}  // namespace
+
+TEST_F(DataDirMigrationTest, InvalidTargetsNeverDeleteExistingData) {
+    populate_source(default_dir);
+    for (const auto& target : {default_dir, home, root / "occupied"}) {
+        write_file(target / "keep.txt", "keep");
+        const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+        EXPECT_EQ(result.state, "failed");
+        EXPECT_TRUE(fs::exists(target / "keep.txt"));
+        EXPECT_TRUE(fs::exists(default_dir / "config.json"));
+    }
+}
+
+TEST_F(DataDirMigrationTest, ChangingSourceDoesNotPublishPointer) {
+    populate_source(default_dir);
+    bool changed = false;
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(root / "moved"),
+        [&](auto copied, auto) {
+            if (copied && !changed) { changed = true; write_file(default_dir / "new-session.jsonl", "new"); }
+        });
+    EXPECT_EQ(result.state, "failed");
+    EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)));
+    EXPECT_TRUE(fs::exists(default_dir / "new-session.jsonl"));
+    for (const auto& entry : fs::directory_iterator(root)) {
+        EXPECT_EQ(entry.path().filename().string().find(".acecode-migration-"), std::string::npos);
+    }
+}
+
+TEST_F(DataDirMigrationTest, CopiesCommittedWalDataUsingDatabaseSnapshot) {
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(s(default_dir / "state.sqlite3").c_str(), &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL; CREATE TABLE messages(body TEXT); INSERT INTO messages VALUES('saved conversation');", nullptr, nullptr, nullptr), SQLITE_OK);
+    const auto target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    sqlite3_close(db);
+    ASSERT_EQ(result.state, "done") << result.error;
+    ASSERT_EQ(sqlite3_open(s(target / "state.sqlite3").c_str(), &db), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db, "SELECT body FROM messages", -1, &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)), "saved conversation");
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    EXPECT_FALSE(fs::exists(target / "state.sqlite3-wal"));
+}
+
+TEST_F(DataDirMigrationTest, FailedJobReopensWritesAndResumesScheduler) {
+    DataDirMigrationJob job;
+    bool resumed = false;
+    std::string error;
+    ASSERT_TRUE(job.start(s(default_dir), s(default_dir), s(root / "moved"), &error,
+        [] { EXPECT_FALSE(acecode::try_write_state_flag("late_background_write", true)); throw std::runtime_error("cannot pause writer"); }, [&] { resumed = true; }));
+    job.wait_for_test();
+    ASSERT_TRUE(job.progress());
+    EXPECT_EQ(job.progress()->state, "failed");
+    EXPECT_FALSE(data_dir_writes_blocked());
+    EXPECT_TRUE(resumed);
+    EXPECT_TRUE(acecode::try_write_state_flag("after_failed_migration", true));
+}
+
+// 场景:目标校验的每一种拒绝原因。
+// 期望:相对路径 / 同目录 / 在当前目录里 / 包含当前目录 / 是文件 / 非空目录 各自
+// 命中稳定错误码;有效的不存在目标被创建为空目录并通过。
+TEST_F(DataDirMigrationTest, ValidateTargetRejectsEachInvalidShape) {
+    populate_source(default_dir);
+    const std::string cur = s(default_dir);
+
+    EXPECT_EQ(validate_migration_target(cur, "relative/dir").error, MigrationTargetError::NotAbsolute);
+    EXPECT_EQ(validate_migration_target(cur, cur).error, MigrationTargetError::SameAsCurrent);
+    EXPECT_EQ(validate_migration_target(cur, s(default_dir / "backup")).error,
+              MigrationTargetError::InsideCurrent);
+    EXPECT_EQ(validate_migration_target(cur, s(home)).error, MigrationTargetError::ContainsCurrent);
+
+    write_file(root / "afile.txt", "x");
+    EXPECT_EQ(validate_migration_target(cur, s(root / "afile.txt")).error,
+              MigrationTargetError::NotADirectory);
+
+    fs::create_directories(root / "nonempty");
+    write_file(root / "nonempty" / "keep.txt", "x");
+    EXPECT_EQ(validate_migration_target(cur, s(root / "nonempty")).error,
+              MigrationTargetError::NotEmpty);
+
+    auto ok = validate_migration_target(cur, s(root / "fresh"));
+    EXPECT_EQ(ok.error, MigrationTargetError::None) << ok.message;
+    EXPECT_TRUE(fs::is_directory(root / "fresh")) << "有效目标应被创建为空目录";
+    EXPECT_FALSE(fs::exists(root / "fresh" / ".acecode-write-probe")) << "探针文件必须清掉";
+
+    EXPECT_STREQ(migration_target_error_code(MigrationTargetError::NotEmpty), "TARGET_NOT_EMPTY");
+    EXPECT_STREQ(migration_target_error_code(MigrationTargetError::InsideCurrent),
+                 "TARGET_INSIDE_CURRENT");
+}
+
+// 场景:大小写 / 尾部分隔符不同的同一目录(Windows 常见)。
+// 期望:仍判为同一目录,不能靠改大小写绕过。
+TEST_F(DataDirMigrationTest, ValidateTargetUsesCanonicalComparison) {
+#ifdef _WIN32
+    populate_source(default_dir);
+    std::string upper = s(default_dir);
+    for (auto& ch : upper) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    EXPECT_EQ(validate_migration_target(s(default_dir), upper + "\\").error,
+              MigrationTargetError::SameAsCurrent);
+#else
+    GTEST_SKIP() << "case-insensitive comparison is Windows-only";
+#endif
+}
+
+// 场景:排除规则。
+// 期望:顶层 run/、tmp/、指针文件、任意 *.lock 被排除;projects/ 下的会话文件与
+// 深层目录不排除;sqlite 三件套被识别为最后复制的一组。
+TEST_F(DataDirMigrationTest, ExclusionRules) {
+    EXPECT_TRUE(migration_excludes_entry(fs::path("run")));
+    EXPECT_TRUE(migration_excludes_entry(fs::path("run") / "daemon.pid"));
+    EXPECT_TRUE(migration_excludes_entry(fs::path("tmp") / "x"));
+    EXPECT_TRUE(migration_excludes_entry(fs::path("config.json.lock")));
+    EXPECT_TRUE(migration_excludes_entry(fs::path("projects") / "a" / ".writer.lock"));
+    EXPECT_TRUE(migration_excludes_entry(fs::path(acecode::kDataDirRedirectFileName)));
+    EXPECT_FALSE(migration_excludes_entry(fs::path("projects") / "a" / "s.jsonl"));
+    EXPECT_FALSE(migration_excludes_entry(fs::path("runbook.md")));
+    EXPECT_FALSE(migration_excludes_entry(fs::path("memory")));
+
+    EXPECT_TRUE(migration_is_sqlite_family(fs::path("scheduled-loops.sqlite3")));
+    EXPECT_TRUE(migration_is_sqlite_family(fs::path("scheduled-loops.sqlite3-wal")));
+    EXPECT_TRUE(migration_is_sqlite_family(fs::path("x") / "state.sqlite3-shm"));
+    EXPECT_FALSE(migration_is_sqlite_family(fs::path("config.json")));
+}
+
+// 场景:完整迁移成功。
+// 期望:目标里有 config.json / projects / memory / sqlite 三件套,没有 run、tmp、
+// *.lock;默认目录里写下指针(目标、旧目录、复制字节数、cleanup_pending);
+// 进度 state=done 且 restart_required;copied 等于被复制文件的总大小。
+TEST_F(DataDirMigrationTest, MigrationCopiesAndWritesPointer) {
+    populate_source(default_dir);
+    const fs::path target = root / "moved";
+    unsigned long long last_total = 0;
+    auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target),
+        [&](unsigned long long, unsigned long long total) { last_total = total; });
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_TRUE(result.restart_required);
+    EXPECT_TRUE(fs::exists(target / "config.json"));
+    EXPECT_TRUE(fs::exists(target / "projects" / "abc" / "sessions" / "s1.jsonl"));
+    EXPECT_TRUE(fs::exists(target / "memory" / "MEMORY.md"));
+    EXPECT_TRUE(fs::exists(target / "scheduled-loops.sqlite3-wal"));
+    EXPECT_FALSE(fs::exists(target / "run"));
+    EXPECT_FALSE(fs::exists(target / "tmp"));
+    EXPECT_FALSE(fs::exists(target / "config.json.lock"));
+    EXPECT_FALSE(fs::exists(target / acecode::kDataDirRedirectFileName));
+
+    // 复制字节数 = 被复制文件大小之和(排除项不计)。
+    unsigned long long expected = 0;
+    for (const char* rel : {"config.json", "state.json", "projects/abc/sessions/s1.jsonl",
+                            "projects/abc/workspace.json", "memory/MEMORY.md",
+                            "scheduled-loops.sqlite3", "scheduled-loops.sqlite3-wal",
+                            "scheduled-loops.sqlite3-shm"}) {
+        expected += fs::file_size(default_dir / rel);
+    }
+    EXPECT_EQ(result.copied_bytes, expected);
+    EXPECT_EQ(result.total_bytes, expected);
+    EXPECT_EQ(last_total, expected);
+
+    auto pointer = acecode::read_data_dir_redirect(s(default_dir));
+    ASSERT_TRUE(pointer.has_value());
+    EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(pointer->data_dir), target));
+    EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(pointer->previous_data_dir), default_dir));
+    EXPECT_EQ(pointer->previous_size_bytes, expected);
+    EXPECT_TRUE(pointer->cleanup_pending);
+    EXPECT_GT(pointer->migrated_at_ms, 0);
+
+    // 指针生效:重新解析后数据目录指向 target。
+    acecode::reset_data_dir_cache_for_test();
+    EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(
+        acecode::resolve_data_dir(acecode::RunMode::User)), target));
+}
+
+// 场景:目标不合法(在当前目录里面)。
+// 期望:state=failed,错误带稳定错误码,不写指针,半成品目标被删掉。
+TEST_F(DataDirMigrationTest, MigrationFailureLeavesNoPointerAndRemovesTarget) {
+    populate_source(default_dir);
+    const fs::path target = default_dir / "inner";
+    auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    EXPECT_EQ(result.state, "failed");
+    EXPECT_NE(result.error.find("TARGET_INSIDE_CURRENT"), std::string::npos);
+    EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)).has_value());
+    EXPECT_FALSE(fs::exists(target));
+}
+
+// 场景:后台任务壳。
+// 期望:start 后 active;跑完 progress 为 done;跑的过程中再次 start 被拒;
+// 结束后可再次 start。
+TEST_F(DataDirMigrationTest, JobRunsInBackgroundAndRejectsConcurrentStart) {
+    populate_source(default_dir);
+    DataDirMigrationJob job;
+    EXPECT_FALSE(job.progress().has_value());
+    std::string err;
+    ASSERT_TRUE(job.start(s(default_dir), s(default_dir), s(root / "moved-a"), &err)) << err;
+    // 极短的复制可能瞬间完成;只断言"若仍在跑则第二次被拒"。
+    if (job.active()) {
+        std::string err2;
+        EXPECT_FALSE(job.start(s(default_dir), s(default_dir), s(root / "moved-b"), &err2));
+        EXPECT_FALSE(err2.empty());
+    }
+    job.wait_for_test();
+    EXPECT_FALSE(job.active());
+    auto p = job.progress();
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(p->state, "done") << p->error;
+    EXPECT_TRUE(p->restart_required);
+    EXPECT_TRUE(data_dir_writes_blocked());
+    EXPECT_FALSE(job.start(s(default_dir), s(default_dir), s(root / "moved-b"), &err));
+}
+
+// 场景:清理旧目录。
+// 期望:旧目录 = 默认目录时只保留指针文件;旧目录是别处时整个目录删除;
+// acknowledge 把 cleanup_pending 清掉。
+TEST_F(DataDirMigrationTest, CleanupPreviousKeepsPointerOnlyInDefaultDir) {
+    populate_source(default_dir);
+    acecode::DataDirRedirect r;
+    r.data_dir = s(root / "elsewhere");
+    r.previous_data_dir = s(default_dir);
+    r.cleanup_pending = true;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+
+    EXPECT_EQ(cleanup_previous_data_dir(s(default_dir), s(default_dir)), "");
+    EXPECT_TRUE(fs::exists(default_dir / acecode::kDataDirRedirectFileName));
+    EXPECT_FALSE(fs::exists(default_dir / "config.json"));
+    EXPECT_FALSE(fs::exists(default_dir / "projects"));
+
+    fs::create_directories(root / "old-elsewhere" / "sub");
+    write_file(root / "old-elsewhere" / "sub" / "f.txt", "x");
+    EXPECT_FALSE(cleanup_previous_data_dir(s(root / "old-elsewhere"), s(default_dir)).empty());
+    EXPECT_TRUE(fs::exists(root / "old-elsewhere" / "sub" / "f.txt"));
+    r.previous_data_dir = s(root / "old-elsewhere");
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+    EXPECT_EQ(cleanup_previous_data_dir(s(root / "old-elsewhere"), s(default_dir)), "");
+    EXPECT_FALSE(fs::exists(root / "old-elsewhere"));
+
+    r.previous_data_dir = s(root / "never-existed");
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+    EXPECT_EQ(cleanup_previous_data_dir(r.previous_data_dir, s(default_dir)), "")
+        << "不存在的旧目录视为已清理";
+
+    EXPECT_EQ(acknowledge_data_dir_cleanup(s(default_dir)), "");
+    auto back = acecode::read_data_dir_redirect(s(default_dir));
+    ASSERT_TRUE(back.has_value());
+    EXPECT_FALSE(back->cleanup_pending);
+}
+
+// 场景:状态汇总与 100 MB 阈值。
+// 期望:大迁移 + pending + 旧目录仍有内容 → cleanup_prompt;小迁移 → 不提示但
+// previous_dir 仍报出;acknowledge 后不再提示;没有指针 → 纯默认状态。
+TEST_F(DataDirMigrationTest, StatusReportsCleanupPromptAboveThreshold) {
+    auto plain = data_dir_status(acecode::RunMode::User);
+    EXPECT_FALSE(plain.redirect_active);
+    EXPECT_TRUE(plain.previous_dir.empty());
+    EXPECT_FALSE(plain.cleanup_prompt);
+    EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(plain.default_dir), default_dir));
+
+    populate_source(default_dir);  // 旧数据留在默认目录
+    const fs::path target = root / "moved";
+    fs::create_directories(target);
+    acecode::DataDirRedirect r;
+    r.data_dir = s(target);
+    r.previous_data_dir = s(default_dir);
+    r.previous_size_bytes = kCleanupPromptThresholdBytes + 1;
+    r.cleanup_pending = true;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+    acecode::reset_data_dir_cache_for_test();
+
+    auto big = data_dir_status(acecode::RunMode::User);
+    EXPECT_TRUE(big.redirect_active);
+    EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(big.effective_dir), target));
+    EXPECT_TRUE(big.previous_exists);
+    EXPECT_TRUE(big.cleanup_pending);
+    EXPECT_TRUE(big.cleanup_prompt);
+
+    r.previous_size_bytes = 40ULL * 1024 * 1024;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+    auto small = data_dir_status(acecode::RunMode::User);
+    EXPECT_FALSE(small.cleanup_prompt);
+    EXPECT_FALSE(small.previous_dir.empty()) << "不足阈值仍要报旧目录供手动删除";
+
+    r.previous_size_bytes = kCleanupPromptThresholdBytes + 1;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+    EXPECT_EQ(acknowledge_data_dir_cleanup(s(default_dir)), "");
+    auto acked = data_dir_status(acecode::RunMode::User);
+    EXPECT_FALSE(acked.cleanup_pending);
+    EXPECT_FALSE(acked.cleanup_prompt);
+}

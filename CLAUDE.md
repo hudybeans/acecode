@@ -19,6 +19,32 @@ ACECode ships one main executable with terminal TUI and daemon subcommands, plus
 
 ## Build And Verification Notes
 
+Settings environment configuration is implemented in `src/environment/` and
+`src/web/routes/routes_environment.cpp`. `bootstrap.cpp` runs after config loading
+in TUI, daemon (including Windows service) and headless startup; headless does not
+persist automatic detection. Terminal launch probes feed one runtime snapshot for
+the Agent command tool, prompt guidance and new console terminals. Validate and
+save a complete console draft before publishing that snapshot.
+
+`toolchains.cpp` preserves the original process PATH and rebuilds its configured
+prefix on each save, so clearing a directory restores original system entries.
+First-launch detection is recorded in `state.json`; explicit re-detection uses the
+original PATH and skips Windows Store Python aliases.
+
+`paths.cpp` reads `data-dir.redirect.json` from the platform default root and caches
+the effective root until restart. Migration copies to private staging, snapshots
+SQLite with its backup API, validates the source/target again and then writes the
+pointer. It refuses busy sessions, open PTYs and other live daemons. The shared
+write gate remains closed after success until restart; failure reopens it and
+resumes the scheduler. Never delete a failed validation target or the live root.
+Backup deletion verifies the pointer and preserves it when cleaning the default root.
+
+The Settings shell uses open groups in `globals.css`; user-provided Claude-style
+references supersede the older boxed-card guidance for this surface.
+`settingsSearch.js` indexes bilingual labels and aliases; SettingsPage locates the
+rendered label and applies an accent-colored wavy underline without rewriting React
+text nodes. The new path row is mounted only after Change is activated.
+
 Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important local facts:
 
 - `acecode_testable` is the shared object library for headless logic and unit tests.

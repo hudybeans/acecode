@@ -243,6 +243,9 @@ public:
     // Returns true while the worker is processing a submitted turn.
     bool is_busy() const { return busy_.load(); }
 
+    // Migration must also wait for submitted work not yet picked up by the worker.
+    bool has_pending_work();
+
     // Append input to the active regular turn. The expected id check and FIFO
     // append happen under one lock, matching Codex turn/steer race semantics.
     TurnSteerResult steer_input(const std::string& expected_turn_id,

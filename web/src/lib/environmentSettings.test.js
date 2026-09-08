@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { migrationPercent, pickEnvironmentPath, shouldOfferCleanup, terminalPath, toolchainPillState } from './environmentSettings.js';
+assert.equal(shouldOfferCleanup({ redirect_active: true, cleanup: { previous_dir: '/old', size_bytes: 100 * 1024 * 1024 } }), false);
+assert.equal(shouldOfferCleanup({ redirect_active: true, cleanup: { previous_dir: '/old', size_bytes: 100 * 1024 * 1024 + 1 } }), true);
+assert.equal(shouldOfferCleanup({ redirect_active: false, cleanup: { previous_dir: '/old', size_bytes: 1000e6 } }), false);
+assert.equal(migrationPercent({ total_bytes: 100, copied_bytes: 40 }), 40);
+assert.equal(terminalPath({ default_shell: 'cmd', shell_paths: { cmd: '/explicit' }, resolved: { id: 'cmd', program: '/fallback' } }), '/explicit');
+assert.equal(toolchainPillState({ dir: '/missing', exists: false }).tone, 'danger');
+const calls = [];
+const client = { pickSettingsFile: async () => { calls.push('rest'); return { path: '/rest' }; }, pickSettingsFolder: async () => null };
+assert.equal(await pickEnvironmentPath('file', client, { aceDesktop_pickPreviewFile: async () => { calls.push('native'); return { ok: true, path: '/native' }; } }), '/native');
+assert.deepEqual(calls, ['native']);
+assert.equal(await pickEnvironmentPath('file', client, {}), '/rest');
+assert.equal(await pickEnvironmentPath('folder', client, {}), null);
+assert.equal(await pickEnvironmentPath('file', client, { aceDesktop_pickPreviewFile: async () => ({ ok: true, cancelled: true }) }), null);
+console.log('[pass] environment settings, cleanup threshold, and picker behavior');

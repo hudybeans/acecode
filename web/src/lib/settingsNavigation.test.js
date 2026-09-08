@@ -95,14 +95,14 @@ test('SettingsPage renders accessible groups inside the scrollable navigation', 
   assert.match(source, /text-fg-mute opacity-75/);
 });
 
-test('SettingsPage keeps narrow viewports usable with an icon rail and compact content padding', () => {
+test('SettingsPage keeps search and labels available with compact content padding', () => {
   const source = readFileSync(
     new URL('../components/SettingsPage.jsx', import.meta.url),
     'utf8',
   );
-  assert.match(source, /<nav className="w-12 sm:w-\[176px\]/);
+  assert.match(source, /<nav className="ace-settings-nav/);
   assert.match(source, /aria-label=\{item\.label\}/);
-  assert.match(source, /justify-center sm:justify-start/);
-  assert.match(source, /hidden sm:inline truncate/);
+  assert.match(source, /<SettingsSearch/);
+  assert.match(source, /<span className="truncate">\{item.label\}/);
   assert.match(source, /px-4 py-3 sm:px-6 sm:py-5/);
 });

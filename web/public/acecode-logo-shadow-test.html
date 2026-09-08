@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ACECode Logo 阴影预览</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: "Segoe UI", sans-serif; background: #dfe3e8; color: #172033; }
+      header { min-height: 82px; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #b9c0ca; }
+      h1 { margin: 0; font-size: 19px; }
+      p { margin: 5px 0 0; color: #536071; font-size: 13px; }
+      code { padding: 7px 10px; border: 1px solid #b9c0ca; border-radius: 6px; background: #edf0f3; font-size: 11px; }
+      main { min-height: calc(100vh - 82px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      figure { position: relative; min-height: 560px; margin: 0; display: grid; place-items: center; overflow: hidden; }
+      .light { background: #fff; color: #121722; }
+      .dark { background: #000; color: #f3f6fb; }
+      figcaption { position: absolute; top: 26px; left: 30px; font: 600 12px "Cascadia Mono", Consolas, monospace; letter-spacing: .06em; }
+      figcaption span { margin-left: 8px; opacity: .55; font-weight: 400; }
+      img { display: block; width: min(384px, calc(100% - 72px)); height: auto; }
+      @media (max-width: 760px) { header { align-items: flex-start; flex-direction: column; } main { grid-template-columns: 1fr; } figure { min-height: 460px; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div><h1>ACECode Logo 阴影与透明度测试</h1><p>同一张 RGBA PNG，无 CSS 阴影或滤镜。</p></div>
+      <code>白色光晕 30% · 384 × 384</code>
+    </header>
+    <main>
+      <figure class="light"><figcaption>白色背景 <span>#FFFFFF</span></figcaption><img src="./acecode-home-logo-shadow.png" alt="白色背景下的 ACECode Logo" /></figure>
+      <figure class="dark"><figcaption>黑色背景 <span>#000000</span></figcaption><img src="./acecode-home-logo-shadow.png" alt="黑色背景下的 ACECode Logo" /></figure>
+    </main>
+  </body>
+</html>

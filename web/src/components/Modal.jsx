@@ -91,7 +91,7 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={labelledBy}
         tabIndex={-1}
-        className="bg-surface border border-border rounded-xl ace-shadow-lg overflow-hidden"
+        className="ace-modal-dialog ace-scrollbar bg-surface border border-border rounded-xl ace-shadow-lg"
         style={{ width }}
         onClick={(e) => e.stopPropagation()}
       >

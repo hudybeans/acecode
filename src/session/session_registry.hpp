@@ -304,6 +304,10 @@ public:
     // 写一半被切分支是数据灾难,保守到整个 workspace 粒度。
     bool any_busy_in_cwd(const std::string& cwd) const;
 
+    // 本 daemon 里是否有任何会话正在跑回合(数据目录迁移的前置门:复制期间
+    // 有会话落盘会让新目录少数据)。
+    bool any_busy() const;
+
     // checkout 成功后标记该 workspace 全部会话的 gitStatus 快照过期
     // (AgentLoop::invalidate_git_snapshot,线程安全)。
     void invalidate_git_snapshots_in_cwd(const std::string& cwd);

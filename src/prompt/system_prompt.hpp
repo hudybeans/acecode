@@ -68,6 +68,16 @@ struct PromptContextCategoryBytes {
 // Optional session worktree facts injected into the static Environment block.
 // These change only on EnterWorktree / ExitWorktree (or resume into one), so
 // they stay in the cacheable system-prompt prefix with cwd.
+// 静态 system prompt 的环境事实(openspec: agent-default-terminal /
+// agent-toolchain-directories)。全部只随配置变化、不随时间变化,进 # Environment
+// 不打穿 prompt cache 前缀。nullptr = 改动前行为(Windows 标 cmd.exe,无工具链行)。
+struct SystemPromptEnvironment {
+    std::string terminal_family;    // "cmd" / "powershell" / "bash" / "posix";空 = 未解析
+    std::string terminal_program;   // 程序路径或裸名
+    // (显示名, 目录),按 Python → Node.js → C# 顺序;空 = 不输出 Toolchains 行。
+    std::vector<std::pair<std::string, std::string>> toolchains;
+};
+
 struct SystemPromptWorktreeState {
     bool active = false;
     std::string worktree_path;
@@ -90,7 +100,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const ProjectInstructionsConfig* project_instructions_cfg = nullptr,
                                 const ToolCapabilityPolicy* effective_tool_policy = nullptr,
                                 const SystemPromptWorktreeState* worktree = nullptr,
-                                bool active_model_can_read_images = true);
+                                bool active_model_can_read_images = true,
+                                const SystemPromptEnvironment* environment = nullptr);
 
 // Build provider-visible, session-scoped context blocks. These are assembled
 // for the current API request only and must not be persisted into the visible

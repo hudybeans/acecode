@@ -10,6 +10,9 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme.jsx';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { SettingsConfigSection } from './SettingsConfigSection.jsx';
+import { SettingsSearch } from './SettingsSearch.jsx';
+import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
 import {
@@ -96,7 +99,6 @@ import {
   waitForRemoteWebMode,
 } from '../lib/remoteWeb.js';
 
-const DEFAULT_UPGRADE_SERVICE_URL = 'http://2017studio.imwork.net:82/aupdate/';
 const FONT_SIZE_OPTIONS = [
   { key: 'small', label: '小' },
   { key: 'medium', label: '中' },
@@ -154,8 +156,49 @@ export function SettingsPage({
   );
   const [show, setShow] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const { i18n } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [composing, setComposing] = useState(false);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchNavigation, setSearchNavigation] = useState(0);
+  const contentRef = useRef(null);
+  const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
+  const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
+  const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
   const closeTimerRef = useRef(null);
   const activeNavKey = SETTINGS_NAV_ITEMS[activeNav]?.key || 'general';
+
+  useEffect(() => {
+    if (composing) return undefined;
+    const timer = setTimeout(() => { setSearchTerm(searchQuery); setSearchIndex(0); }, 180);
+    return () => clearTimeout(timer);
+  }, [searchQuery, composing]);
+  useEffect(() => {
+    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section));
+  }, [selectedResult]);
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root || !selectedResult || selectedResult.section !== activeNavKey) return undefined;
+    let marked;
+    let scrolled = false;
+    const locate = () => {
+      const target = locateSetting(root, selectedResult);
+      if (!target || target === marked) return;
+      marked?.classList.remove('ace-settings-search-match');
+      marked = target;
+      target.classList.add('ace-settings-search-match');
+      if (!scrolled) {
+        const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
+        root.scrollTop += offset - 36;
+        scrolled = true;
+      }
+    };
+    locate();
+    const observer = new MutationObserver(locate);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => { observer.disconnect(); marked?.classList.remove('ace-settings-search-match'); };
+  }, [selectedResult, activeNavKey, searchNavigation]);
 
   useEffect(() => { requestAnimationFrame(() => setShow(true)); }, []);
   useEffect(() => {
@@ -195,7 +238,7 @@ export function SettingsPage({
           show ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-2 scale-[0.985]',
         )}
       >
-        <div className="h-10 px-3 flex items-center gap-2 bg-surface border-b border-border shrink-0 select-none">
+        <div className="ace-settings-titlebar h-10 px-3 flex items-center gap-2 shrink-0 select-none">
           <span id="settings-window-title" className="flex-1 min-w-0 text-[15px] font-semibold truncate">
             设置
           </span>
@@ -222,8 +265,10 @@ export function SettingsPage({
           </div>
         </div>
         <div className="flex-1 flex min-h-0 overflow-hidden">
-        <nav className="w-12 sm:w-[176px] bg-surface-alt border-r border-border py-2 overflow-y-auto shrink-0 select-none">
-          {SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
+        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+          <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
+            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
+          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
             const headingId = `settings-nav-group-${group.key}`;
             return (
               <div
@@ -234,7 +279,7 @@ export function SettingsPage({
                 <div
                   id={headingId}
                   className={clsx(
-                    'sr-only sm:not-sr-only sm:block sm:px-3 sm:pb-1 text-[11px] font-medium text-fg-mute opacity-75',
+                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute opacity-75',
                     groupIndex === 0 ? 'pt-0' : 'pt-2',
                   )}
                 >
@@ -249,16 +294,16 @@ export function SettingsPage({
                       type="button"
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
-                      onClick={() => setActiveNav(itemIndex)}
+                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
                       className={clsx(
-                        'w-full min-h-8 px-0 sm:px-3 py-1 text-[13px] transition border-l-[3px] flex items-center justify-center sm:justify-start gap-2 text-left',
+                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
                         active
-                          ? 'text-accent font-semibold bg-accent-bg border-accent'
-                          : 'text-fg hover:bg-surface-hi border-transparent',
+                          ? 'text-fg font-semibold bg-surface-hi'
+                          : 'text-fg-2 hover:bg-surface-hi',
                       )}
                     >
                       <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
-                      <span className="hidden sm:inline truncate">{item.label}</span>
+                      <span className="truncate">{item.label}</span>
                     </button>
                   );
                 })}
@@ -266,7 +311,7 @@ export function SettingsPage({
             );
           })}
         </nav>
-        <div className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
+        <div ref={contentRef} className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
           {activeNavKey === 'general' && (
             <SectionGeneral
               health={health}
@@ -288,7 +333,7 @@ export function SettingsPage({
               onSidebarSessionTimeChange={onSidebarSessionTimeChange}
             />
           )}
-          {activeNavKey === 'config' && <SectionConfig />}
+          {activeNavKey === 'config' && <SettingsConfigSection />}
           {activeNavKey === 'personalization' && <SectionPersonalization />}
           {activeNavKey === 'skills' && <SectionSkills />}
           {activeNavKey === 'mcp' && <SectionMCP />}
@@ -1307,226 +1352,6 @@ function SectionAbout({ health }) {
             </div>
           )}
         </div>
-      </div>
-    </>
-  );
-}
-
-function SectionConfig() {
-  const [upgradeUrl, setUpgradeUrl] = useState(DEFAULT_UPGRADE_SERVICE_URL);
-  const [upgradeLoading, setUpgradeLoading] = useState(true);
-  const [upgradeSaving, setUpgradeSaving] = useState(false);
-  const [upgradeSaved, setUpgradeSaved] = useState(false);
-  const [upgradeError, setUpgradeError] = useState('');
-  const lastSavedUpgradeUrlRef = useRef(DEFAULT_UPGRADE_SERVICE_URL);
-  const [depPython, setDepPython] = useState(true);
-  const [depNode, setDepNode] = useState(true);
-  const [depCsharp, setDepCsharp] = useState(false);
-  const [diagRunning, setDiagRunning] = useState(false);
-  const [resetRunning, setResetRunning] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setUpgradeLoading(true);
-    setUpgradeError('');
-    api.getUpgradeConfig()
-      .then((cfg) => {
-        if (!cancelled) {
-          const loadedUrl = cfg?.base_url || DEFAULT_UPGRADE_SERVICE_URL;
-          lastSavedUpgradeUrlRef.current = loadedUrl;
-          setUpgradeUrl(loadedUrl);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setUpgradeError(e?.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setUpgradeLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const saveUpgradeUrl = async (candidate = upgradeUrl) => {
-    if (upgradeSaving || upgradeLoading) return false;
-    const baseUrl = candidate.trim();
-    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-      setUpgradeError('升级服务 URL 必须使用 http 或 https');
-      return false;
-    }
-    if (baseUrl === lastSavedUpgradeUrlRef.current) {
-      setUpgradeUrl(baseUrl);
-      return true;
-    }
-    setUpgradeSaving(true);
-    setUpgradeSaved(false);
-    setUpgradeError('');
-    try {
-      const saved = await api.setUpgradeConfig({ base_url: baseUrl });
-      const savedUrl = saved?.base_url || baseUrl;
-      lastSavedUpgradeUrlRef.current = savedUrl;
-      setUpgradeUrl(savedUrl);
-      setUpgradeSaved(true);
-      setTimeout(() => setUpgradeSaved(false), 1500);
-      return true;
-    } catch (e) {
-      const message = e?.message || String(e);
-      setUpgradeError(message);
-      toast({ kind: 'err', text: message });
-      return false;
-    } finally {
-      setUpgradeSaving(false);
-    }
-  };
-
-  const runDiag = () => {
-    setDiagRunning(true);
-    setTimeout(() => {
-      setDiagRunning(false);
-      toast({ kind: 'ok', text: '诊断完成(占位)' });
-    }, 1600);
-  };
-  const runReset = () => {
-    setResetRunning(true);
-    setTimeout(() => {
-      setResetRunning(false);
-      toast({ kind: 'ok', text: '重置完成(占位)' });
-    }, 2400);
-  };
-
-  const dependencies = [
-    { key: 'python', label: 'Python 工具', desc: 'uv / ruff / mypy 等',     checked: depPython, toggle: () => setDepPython((v) => !v) },
-    { key: 'node',   label: 'Node.js 工具', desc: 'pnpm / npm / tsx 等',     checked: depNode,   toggle: () => setDepNode((v) => !v) },
-    { key: 'csharp', label: 'C# 工具',     desc: 'dotnet SDK / Roslyn 等',  checked: depCsharp, toggle: () => setDepCsharp((v) => !v) },
-  ];
-
-  return (
-    <>
-      <h2 className="text-xl font-bold mb-5">配置</h2>
-
-      <div className="text-[14px] font-semibold mb-1">升级服务</div>
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-5">
-        <label htmlFor="upgrade-service-url" className="text-[13px] font-medium mb-2 block">
-          升级服务 URL
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="upgrade-service-url"
-            type="url"
-            value={upgradeUrl}
-            onChange={(e) => {
-              setUpgradeUrl(e.target.value);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-            }}
-            onBlur={() => { void saveUpgradeUrl(); }}
-            disabled={upgradeLoading || upgradeSaving}
-            spellCheck={false}
-            className={clsx(
-              'flex-1 min-w-0 h-8 px-2.5 rounded-md border bg-bg text-fg text-[12px] outline-none transition',
-              upgradeError ? 'border-danger' : 'border-border focus:border-accent',
-            )}
-            placeholder={DEFAULT_UPGRADE_SERVICE_URL}
-          />
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              setUpgradeUrl(DEFAULT_UPGRADE_SERVICE_URL);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-              void saveUpgradeUrl(DEFAULT_UPGRADE_SERVICE_URL);
-            }}
-            disabled={upgradeLoading || upgradeSaving}
-            className="shrink-0 px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi disabled:opacity-50 transition"
-          >
-            默认
-          </button>
-        </div>
-        {upgradeError && <div className="mt-2 text-[12px] text-danger">{upgradeError}</div>}
-        {!upgradeError && (upgradeSaving || upgradeSaved) && (
-          <div className="mt-2 text-[12px] text-fg-mute" aria-live="polite">
-            {upgradeSaving ? '保存中...' : '已保存'}
-          </div>
-        )}
-      </div>
-
-      <div className="text-[14px] font-semibold mb-1">工作空间依赖项</div>
-      <p className="text-[12px] text-fg-mute mb-3">管理 ACECode 安装并提供给 Agent 使用的开发工具</p>
-
-      {/* 依赖项 checkbox 组 */}
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-2">
-        <div className="text-[13px] font-medium mb-0.5">ACECode 依赖项</div>
-        <div className="text-[11px] text-fg-mute mb-2.5">选择捆绑安装的语言工具链</div>
-        <div className="space-y-0.5">
-          {dependencies.map((dep) => (
-            <button
-              key={dep.key}
-              type="button"
-              onClick={dep.toggle}
-              aria-checked={dep.checked}
-              role="checkbox"
-              className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded text-left hover:bg-surface-hi transition"
-            >
-              <span
-                className={clsx(
-                  'w-[18px] h-[18px] rounded flex items-center justify-center text-white text-[11px] font-bold leading-none transition shrink-0',
-                  dep.checked ? 'bg-accent border-2 border-accent' : 'border-2 border-border bg-transparent',
-                )}
-              >
-                {dep.checked && <span>✓</span>}
-              </span>
-              <span className="flex-1 min-w-0">
-                <span className="text-[13px] font-medium block">{dep.label}</span>
-                <span className="text-[11px] text-fg-mute block">{dep.desc}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="h-px bg-border my-5" />
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">诊断 ACECode 工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">检查当前捆绑包并记录诊断日志</div>
-        </div>
-        <button
-          type="button"
-          onClick={runDiag}
-          disabled={diagRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
-        >
-          {diagRunning ? (
-            <>
-              <span className="ace-spinner" style={{ width: 12, height: 12 }} />
-              诊断中…
-            </>
-          ) : '诊断'}
-        </button>
-      </div>
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">重置并重装工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">删除本地捆绑包,重新下载后再加载工具</div>
-        </div>
-        <button
-          type="button"
-          onClick={runReset}
-          disabled={resetRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 transition disabled:opacity-60"
-        >
-          {resetRunning ? (
-            <>
-              <span
-                className="inline-block w-3 h-3 rounded-full border-2 border-danger border-t-transparent"
-                style={{ animation: 'ace-spin 0.8s linear infinite' }}
-              />
-              重置中…
-            </>
-          ) : '重新安装'}
-        </button>
       </div>
     </>
   );

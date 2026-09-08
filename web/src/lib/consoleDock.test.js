@@ -11,6 +11,7 @@ import {
   clampDockHeight,
   consoleCwdForContext,
   createDockTabs,
+  fitDockHeight,
   markTabExited,
   nextReconnectDelay,
   parsePtyFrame,
@@ -147,6 +148,24 @@ run('clampDockHeight enforces bounds and defaults', () => {
   assert.equal(clampDockHeight(5000, 1000), 800);
   assert.equal(clampDockHeight(300, 1000), 300);
   assert.equal(clampDockHeight(NaN, 1000), CONSOLE_DOCK_DEFAULT_HEIGHT);
+});
+
+run('fitDockHeight reserves chat space through shrink and restore', () => {
+  const preference = { height: 500 };
+  assert.equal(fitDockHeight(preference.height, 870), 500);
+  assert.equal(fitDockHeight(preference.height, 570), 290);
+  assert.equal(fitDockHeight(preference.height, 450), 170);
+  assert.equal(fitDockHeight(preference.height, 370), 90);
+  assert.equal(fitDockHeight(preference.height, 870), 500);
+  assert.equal(preference.height, 500);
+});
+
+run('fitDockHeight contains the toolbar even in exceptionally short containers', () => {
+  assert.equal(fitDockHeight(500, 210), 36);
+  assert.equal(fitDockHeight(500, 20), 20);
+  assert.equal(fitDockHeight(500, 0), 0);
+  assert.equal(fitDockHeight(500, -10), 0);
+  assert.equal(fitDockHeight(NaN, 870), CONSOLE_DOCK_DEFAULT_HEIGHT);
 });
 
 // 触发场景:同源页面构建 WS URL。期望:ws://<host>/ws/pty/<id>?cursor=N,

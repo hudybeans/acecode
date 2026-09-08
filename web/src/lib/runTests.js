@@ -1,6 +1,7 @@
 import './questionPicker.test.js';
 import './pendingQuestions.test.js';
 import './expertMenuPosition.test.js';
+import './anchoredMenuPosition.test.js';
 import './stickyUserContext.test.js';
 import './desktopContextMenu.test.js';
 import './sessionExplorerArchitecture.test.js';
@@ -236,6 +237,8 @@ import './projectCreation.test.js';
 import './workspacePicker.test.js';
 import './connectors.test.js';
 import './settingsNavigation.test.js';
+import './environmentSettings.test.js';
+import './settingsSearch.test.js';
 import './settingsWindowArchitecture.test.js';
 import './remoteWeb.test.js';
 import './remoteWebArchitecture.test.js';
