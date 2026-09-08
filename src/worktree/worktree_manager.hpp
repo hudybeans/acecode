@@ -111,4 +111,11 @@ bool remove_worktree(const std::string& repo_root,
 // `git worktree list --porcelain` 的路径列表。失败返回空。
 std::vector<std::string> list_worktree_paths(const std::string& cwd);
 
+// `git status --porcelain --untracked-files=all` 的原始行,供写边界的事后
+// 检测比对快照。--no-optional-locks 不刷新 index、不抢 IDE 的锁。失败
+// (非仓库 / git 缺失 / 超时)返回 nullopt —— 调用方必须把它当"不可知"而
+// 不是"没有改动",否则空基线会把整仓的脏文件都报成新写入。
+std::optional<std::vector<std::string>> list_status_lines(const std::string& repo_cwd,
+                                                          int timeout_ms = 10000);
+
 } // namespace acecode::worktree

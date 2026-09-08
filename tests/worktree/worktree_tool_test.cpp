@@ -166,3 +166,32 @@ TEST_F(WorktreeToolTest, KeepPreservesWorktreeOnDisk) {
     EXPECT_NE(again.output.find("Resumed existing worktree"), std::string::npos);
     EXPECT_EQ(sm_.active_worktree().worktree_path, info.worktree_path);
 }
+
+// 场景:子代理从父会话继承来的 worktree(inherited=true),子代理试图
+// ExitWorktree / EnterWorktree。
+// 期望:两者都拒绝且不动任何状态 —— worktree 归父会话所有,退出会把子代理切回
+// 主 checkout(父会话期望结果落在 worktree 里),remove 更会删掉父会话正在用的
+// 目录;再 Enter 则会把子代理切到另一个 worktree,父会话同样拿不到结果。
+TEST_F(WorktreeToolTest, InheritedWorktreeRefusesExitAndEnter) {
+    ASSERT_TRUE(enter_.execute(R"({"name":"shared"})", ctx_).success);
+    auto info = sm_.active_worktree();
+    info.inherited = true;
+    sm_.set_active_worktree(info);
+    const std::string cwd_before = session_cwd_;
+
+    auto exited = exit_.execute(R"({"action":"keep"})", ctx_);
+    EXPECT_FALSE(exited.success);
+    EXPECT_NE(exited.output.find("belongs to the parent session"), std::string::npos);
+    EXPECT_TRUE(sm_.active_worktree().active());
+    EXPECT_TRUE(sm_.active_worktree().inherited);
+    EXPECT_EQ(session_cwd_, cwd_before);
+
+    auto removed = exit_.execute(R"({"action":"remove","discard_changes":true})", ctx_);
+    EXPECT_FALSE(removed.success);
+    EXPECT_TRUE(fs::exists(path_from_utf8(info.worktree_path)));
+
+    auto entered = enter_.execute(R"({"name":"another"})", ctx_);
+    EXPECT_FALSE(entered.success);
+    EXPECT_NE(entered.output.find("shares the parent session's worktree"), std::string::npos);
+    EXPECT_EQ(sm_.active_worktree().worktree_path, info.worktree_path);
+}

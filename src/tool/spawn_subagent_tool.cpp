@@ -8,8 +8,11 @@
 #include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
 #include "../web/handlers/skill_command_expander.hpp"
+#include "../worktree/worktree_core.hpp"
+#include "../worktree/worktree_manager.hpp"
 
 #include <chrono>
+#include <sstream>
 #include <thread>
 
 namespace acecode {
@@ -50,11 +53,13 @@ std::string last_assistant_text(SessionManager& sm) {
     return {};
 }
 
-enum class WaitKind { Completed, Aborted, Timeout, Gone, ChildInterrupted };
+enum class WaitKind { Completed, Aborted, Timeout, Gone, ChildInterrupted, ChildFailed };
 
 struct WaitOutcome {
     WaitKind    kind = WaitKind::Completed;
     std::string final_text;
+    // ChildFailed:子会话回合的错误文案(AgentLoop::last_turn_error)。
+    std::string error;
 };
 
 // 轮询等待子会话本轮结束。
@@ -97,22 +102,34 @@ WaitOutcome wait_for_subagent(SessionRegistry& registry,
             // 一条明确的「被中断」信号,由父 agent loop 决定重派/换法/上报用户。
             const bool child_interrupted = entry->loop->is_aborting();
             const bool grace_passed = elapsed >= std::chrono::seconds(2);
+            // 回合结束但不是正常跑完(provider 报错 / 上下文超限 / 空回复耗尽 /
+            // max_iterations / hook 拦截)→ ChildFailed 而不是 Completed。曾经
+            // 这里一律报 completed,父会话把子会话临终前的一句"Now let me read
+            // ..."当成果,还以为任务做完了。
+            auto finished = [&]() -> WaitOutcome {
+                if (child_interrupted) {
+                    return {WaitKind::ChildInterrupted, last_assistant_text(*entry->sm), {}};
+                }
+                if (entry->loop->last_turn_failed()) {
+                    return {WaitKind::ChildFailed, last_assistant_text(*entry->sm),
+                            entry->loop->last_turn_error()};
+                }
+                return {WaitKind::Completed, last_assistant_text(*entry->sm), {}};
+            };
             if (observed_busy) {
                 // 曾观测到运行、现已空闲 → 本轮结束。final_text 可能为空
                 // (turn 失败或被 UI 中止),由调用方给出对应文案,不死等。
-                if (child_interrupted) {
-                    return {WaitKind::ChildInterrupted, last_assistant_text(*entry->sm)};
-                }
-                return {WaitKind::Completed, last_assistant_text(*entry->sm)};
+                return finished();
             }
             if (grace_passed) {
-                // 从未观测到 busy:要么 turn 快到在轮询间隙内完成(有新消息),
-                // 要么 submit 后压根没跑起来,要么在观测到 busy 前就被中止。
-                if (child_interrupted) {
-                    return {WaitKind::ChildInterrupted, last_assistant_text(*entry->sm)};
+                // 从未观测到 busy:要么 turn 快到在轮询间隙内完成(有新消息 /
+                // 已有失败结论),要么 submit 后压根没跑起来,要么在观测到 busy
+                // 前就被中止。
+                if (child_interrupted || entry->loop->last_turn_failed()) {
+                    return finished();
                 }
                 if (entry->sm->load_active_messages().size() > baseline_message_count) {
-                    return {WaitKind::Completed, last_assistant_text(*entry->sm)};
+                    return finished();
                 }
                 if (elapsed >= std::chrono::seconds(60)) {
                     return {WaitKind::Timeout, {}};
@@ -191,6 +208,20 @@ ToolResult describe_wait_outcome(const WaitOutcome& outcome,
                            outcome.final_text;
             }
             return r;
+        case WaitKind::ChildFailed:
+            r.success = false;
+            r.output = "[subagent " + session_id + "] failed before finishing" +
+                       (outcome.error.empty() ? std::string(".") : ": " + outcome.error);
+            if (outcome.final_text.empty()) {
+                r.output += "\nIt produced no usable final reply. Decide whether to retry "
+                            "it, continue differently, or report the failure to the user.";
+            } else {
+                r.output += "\nIts last output follows; treat it as partial work, not a "
+                            "completed result. Decide whether to retry it, continue "
+                            "differently, or report the failure to the user:\n\n" +
+                            outcome.final_text;
+            }
+            return r;
         case WaitKind::Timeout:
             r.success = false;
             r.output = "[subagent " + session_id +
@@ -205,6 +236,46 @@ ToolResult describe_wait_outcome(const WaitOutcome& outcome,
                        "] session no longer exists (destroyed).";
             return r;
     }
+}
+
+} // namespace
+
+namespace {
+
+// 子会话结束后对比主 checkout 的 git status:worktree 之外新出现的改动说明
+// 有写入绕过了边界(bash 脚本 / 动态目标 —— 工具层守卫抓不到的那类),附进
+// 父会话的工具结果里,让父代理当场知道,而不是等用户发现主仓脏了。并发的
+// 子会话共享同一个主 checkout,这里只能说"在它运行期间出现",不能断言就
+// 是它写的。基线随之前移,再次 wait 只报告新增的部分。
+void append_workspace_watch_report(SessionRegistry& registry,
+                                   const std::string& child_id,
+                                   ToolResult& result) {
+    auto entry = registry.acquire(child_id);
+    if (!entry || entry->workspace_watch_cwd.empty()) return;
+    auto after = worktree::list_status_lines(entry->workspace_watch_cwd);
+    if (!after) return;
+    const std::vector<std::string> touched =
+        worktree::newly_changed_paths(entry->workspace_watch_baseline, *after);
+    entry->workspace_watch_baseline = std::move(*after);
+    if (touched.empty()) return;
+
+    result.metadata["workspace_touched"] = touched;
+    std::ostringstream oss;
+    oss << "\n\nWARNING: the main checkout " << entry->workspace_watch_cwd
+        << " changed while this subagent ran (" << touched.size()
+        << " path(s)). These writes bypassed the worktree write boundary; verify "
+           "them before trusting the result:";
+    constexpr std::size_t kMaxListed = 20;
+    for (std::size_t i = 0; i < touched.size(); ++i) {
+        if (i == kMaxListed) {
+            oss << "\n  ... (+" << (touched.size() - kMaxListed) << " more)";
+            break;
+        }
+        oss << "\n  - " << touched[i];
+    }
+    result.output += oss.str();
+    LOG_WARN("[subagent] " + child_id + " ran while the main checkout gained " +
+             std::to_string(touched.size()) + " changed path(s) outside the worktree");
 }
 
 } // namespace
@@ -320,8 +391,36 @@ ToolImpl create_spawn_subagent_tool(std::shared_ptr<SubagentToolDeps> deps) {
                 deps->fallback_permissions->mode());
         }
 
+        // 父会话在 worktree 里时,子会话共享同一个 worktree:身份(inherited)
+        // 进子会话 meta,AgentLoop cwd 由 registry 切进 worktree;而 opts.cwd
+        // 传父会话进 worktree 前的 workspace cwd,让子会话与父会话落在同一个
+        // project dir —— 否则「后台任务」面板按父会话 cwd 扫盘找不到已结束的
+        // 子任务。父会话的写边界(worktree / LOOP)一并透传,子会话在 Yolo 下
+        // 才不会裸奔到主 checkout 里写东西。
+        WorktreeSessionInfo parent_worktree;
+        if (ctx.session_manager) {
+            parent_worktree = ctx.session_manager->active_worktree();
+        }
         SessionOptions opts;
         opts.cwd = ctx.cwd;
+        if (parent_worktree.active()) {
+            opts.inherited_worktree = parent_worktree;
+            if (!parent_worktree.original_cwd.empty()) {
+                opts.cwd = parent_worktree.original_cwd;
+            }
+        }
+        opts.write_root = ctx.write_root;
+        if (parent_entry && parent_entry->loop_execution) {
+            // LOOP 运行派生的子会话仍属于这次 run:继承执行策略(写边界 +
+            // <loop-execution> 系统上下文)与 run 身份。
+            opts.loop_execution = true;
+            opts.loop_id = parent_entry->loop_id;
+            opts.loop_run_id = parent_entry->loop_run_id;
+            if (parent_entry->loop) {
+                opts.loop_system_context =
+                    parent_entry->loop->loop_execution_policy().system_context;
+            }
+        }
         opts.model_name = model_name;
         opts.permission_mode = parent_permission_mode;
         opts.subagent_depth = 1;
@@ -342,6 +441,16 @@ ToolImpl create_spawn_subagent_tool(std::shared_ptr<SubagentToolDeps> deps) {
         }
         if (child_id.empty()) {
             return error_result("failed to create subagent session");
+        }
+        if (parent_worktree.active() && !parent_worktree.original_cwd.empty()) {
+            // 主 checkout 快照:读不到(非仓库 / git 缺失)就不监视,空基线会把
+            // 整仓的脏文件都报成子会话写的。
+            if (auto child = deps->registry->acquire(child_id)) {
+                if (auto status = worktree::list_status_lines(parent_worktree.original_cwd)) {
+                    child->workspace_watch_cwd = parent_worktree.original_cwd;
+                    child->workspace_watch_baseline = std::move(*status);
+                }
+            }
         }
 
         std::size_t baseline = 0;
@@ -382,6 +491,7 @@ ToolImpl create_spawn_subagent_tool(std::shared_ptr<SubagentToolDeps> deps) {
                                          ctx.abort_flag, timeout_seconds,
                                          baseline);
         ToolResult r = describe_wait_outcome(outcome, child_id);
+        append_workspace_watch_report(*deps->registry, child_id, r);
         r.summary = subagent_summary(prompt);
         return r;
     };
@@ -435,6 +545,7 @@ ToolImpl create_wait_subagent_tool(std::shared_ptr<SubagentToolDeps> deps) {
                                          ctx.abort_flag, timeout_seconds,
                                          /*baseline_message_count=*/0);
         ToolResult r = describe_wait_outcome(outcome, session_id);
+        append_workspace_watch_report(*deps->registry, session_id, r);
         // object 留空:等待某个已知子会话,标题由前端从后台任务列表解析。
         r.summary = subagent_summary("");
         return r;

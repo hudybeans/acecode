@@ -19,6 +19,8 @@
 #include "session/session_storage.hpp"
 #include "tool/spawn_subagent_tool.hpp"
 #include "tool/tool_executor.hpp"
+#include "utils/utf8_path.hpp"
+#include "worktree/worktree_manager.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -503,4 +505,219 @@ TEST(WaitSubagentTool, CollectsReplyFromFinishedSubagent) {
     ASSERT_TRUE(r.success) << r.output;
     EXPECT_NE(r.output.find("subagent-final-reply"), std::string::npos);
     fx.registry.destroy(child_id);
+}
+
+namespace {
+
+// 只会报错的 stub:模拟 provider 终止错误(断连 / 网关 5xx)。子会话的回合
+// 因此没有正常的最终答复。
+class FailingStreamProvider : public acecode::LlmProvider {
+public:
+    acecode::ChatResponse chat(
+        const std::vector<acecode::ChatMessage>&,
+        const std::vector<acecode::ToolDef>&) override {
+        acecode::ChatResponse resp;
+        resp.finish_reason = "stop";
+        return resp;
+    }
+
+    void chat_stream(const std::vector<acecode::ChatMessage>&,
+                     const std::vector<acecode::ToolDef>&,
+                     const acecode::StreamCallback& callback,
+                     std::atomic<bool>* = nullptr) override {
+        acecode::StreamEvent error;
+        error.type = acecode::StreamEventType::Error;
+        error.error = "connection reset by stub";
+        error.provider_error.kind = acecode::ProviderErrorKind::Network;
+        error.provider_error.display_message = "connection reset by stub";
+        callback(error);
+    }
+
+    std::string name() const override { return "failing-stub"; }
+    bool is_authenticated() override { return true; }
+    std::string model() const override { return "failing-stub"; }
+    void set_model(const std::string&) override {}
+};
+
+} // namespace
+
+// 场景: 父会话已进入 worktree(EnterWorktree / Web pill / LOOP 同一形态:
+// SessionManager 记着 WorktreeSessionInfo,AgentLoop cwd 已切到 worktree),
+// 此时 spawn 子代理。
+// 期望: 子会话共享同一个 worktree —— meta 里的 worktree 标 inherited、AgentLoop
+// cwd 是 worktree 路径、write_root 是 worktree 路径;而 entry->cwd 是父会话
+// 进 worktree 前的 workspace cwd,子会话与父会话落在同一个 project dir。
+// 回归表现(修复前): 子会话只拿到 worktree 路径当普通 cwd,系统提示说
+// "Session worktree: inactive",Yolo 下没有任何写边界,能把改动写进主 checkout;
+// 且 meta 落在 worktree 路径的 project dir 下,后台任务面板在它结束后找不到。
+TEST(SpawnSubagentTool, ChildSharesParentWorktreeWithWriteBoundary) {
+    SubagentFixture fx;
+    fx.provider = std::make_shared<EchoStreamProvider>();
+
+    acecode::SessionOptions parent_opts;
+    parent_opts.cwd = fx.cwd.string();
+    const std::string parent_id = fx.registry.create(parent_opts);
+    auto parent = fx.registry.acquire(parent_id);
+    ASSERT_NE(parent, nullptr);
+
+    const fs::path worktree_dir = fx.cwd / ".acecode" / "worktrees" / "feat";
+    fs::create_directories(worktree_dir);
+    acecode::WorktreeSessionInfo worktree;
+    worktree.original_cwd = fx.cwd.string();
+    worktree.worktree_path = worktree_dir.string();
+    worktree.worktree_name = "feat";
+    worktree.worktree_branch = "worktree-feat";
+    parent->sm->set_active_worktree(worktree);
+    parent->loop->set_cwd(worktree.worktree_path);
+    ASSERT_EQ(parent->loop->write_root(), worktree.worktree_path);
+
+    auto ctx = fx.ctx_for(parent_id);
+    ctx.cwd = worktree.worktree_path;
+    ctx.write_root = parent->loop->write_root();
+    auto r = fx.tools.execute("spawn_subagent",
+                              R"({"prompt":"fix module a","wait":false})", ctx);
+    ASSERT_TRUE(r.success) << r.output;
+    const std::string child_id = r.metadata["subagent_session_id"].get<std::string>();
+    auto child = fx.registry.acquire(child_id);
+    ASSERT_NE(child, nullptr);
+
+    EXPECT_EQ(child->cwd, fx.cwd.string()) << "子会话应与父会话同 workspace / project dir";
+    EXPECT_EQ(child->loop->cwd(), worktree.worktree_path);
+    EXPECT_EQ(child->loop->write_root(), worktree.worktree_path);
+    const auto inherited = child->sm->active_worktree();
+    EXPECT_TRUE(inherited.active());
+    EXPECT_TRUE(inherited.inherited);
+    EXPECT_EQ(inherited.worktree_path, worktree.worktree_path);
+    EXPECT_EQ(inherited.worktree_branch, "worktree-feat");
+    // fx.cwd 不是 git 仓库:读不到主 checkout 快照就不监视,而不是拿空基线乱报。
+    EXPECT_TRUE(child->workspace_watch_cwd.empty());
+
+    fx.registry.destroy(child_id);
+    fx.registry.destroy(parent_id);
+}
+
+// 场景: 父会话是 daemon LOOP 运行(loop_execution + <loop-execution> 系统上下文,
+// 无 worktree),spawn 子代理。
+// 期望: 子会话继承 LOOP 身份与执行策略 —— entry->loop_execution / loop_id /
+// loop_run_id 与父会话一致,AgentLoop 的策略 active 且 system_context 相同,
+// 写边界 = 子会话 cwd(LOOP 语义)。
+// 回归表现(修复前): 子会话不是 LOOP 会话,LOOP 主会话那道写边界与 shell 写
+// 守卫对它统统不生效,LOOP 的隔离只罩住主会话。
+TEST(SpawnSubagentTool, ChildOfLoopRunInheritsExecutionPolicy) {
+    SubagentFixture fx;
+    fx.provider = std::make_shared<EchoStreamProvider>();
+
+    acecode::SessionOptions parent_opts;
+    parent_opts.cwd = fx.cwd.string();
+    parent_opts.loop_execution = true;
+    parent_opts.loop_id = "loop-1";
+    parent_opts.loop_run_id = "run-1";
+    parent_opts.loop_system_context = "You are executing daemon-owned LOOP 'nightly'.";
+    const std::string parent_id = fx.registry.create(parent_opts);
+
+    auto r = fx.tools.execute("spawn_subagent",
+                              R"({"prompt":"stage one","wait":false})",
+                              fx.ctx_for(parent_id));
+    ASSERT_TRUE(r.success) << r.output;
+    const std::string child_id = r.metadata["subagent_session_id"].get<std::string>();
+    auto child = fx.registry.acquire(child_id);
+    ASSERT_NE(child, nullptr);
+
+    EXPECT_TRUE(child->loop_execution);
+    EXPECT_EQ(child->loop_id, "loop-1");
+    EXPECT_EQ(child->loop_run_id, "run-1");
+    EXPECT_TRUE(child->loop->loop_execution_policy().active);
+    EXPECT_EQ(child->loop->loop_execution_policy().system_context,
+              "You are executing daemon-owned LOOP 'nightly'.");
+    EXPECT_EQ(child->loop->write_root(), child->loop->cwd());
+
+    fx.registry.destroy(child_id);
+    fx.registry.destroy(parent_id);
+}
+
+// 场景: 子会话的回合因 provider 终止错误结束(断连 / 上下文超限),没有正常的
+// 最终答复。
+// 期望: spawn(wait=true) 的工具结果 success=false,文案说明 "failed before
+// finishing" 并带错误原因;父代理据此重派或上报,而不是把半截叙述当成果。
+// 回归表现(修复前): wait 报 "[subagent ... completed]" + 子会话临终前的一句
+// 过程叙述,父会话以为任务做完,直到检查产物才发现是空的。
+TEST(SpawnSubagentTool, WaitReportsChildTurnFailureInsteadOfCompleted) {
+    SubagentFixture fx;
+    fx.provider = std::make_shared<FailingStreamProvider>();
+
+    auto r = fx.tools.execute("spawn_subagent",
+                              R"({"prompt":"do the work","timeout_seconds":30})",
+                              fx.ctx_for(""));
+    EXPECT_FALSE(r.success);
+    EXPECT_NE(r.output.find("failed before finishing"), std::string::npos) << r.output;
+    EXPECT_NE(r.output.find("connection reset by stub"), std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("completed]"), std::string::npos) << r.output;
+    ASSERT_TRUE(r.metadata.contains("subagent_session_id"));
+    fx.registry.destroy(r.metadata["subagent_session_id"].get<std::string>());
+}
+
+// 场景: 父会话在 worktree 里,spawn(wait=false) 之后有人在主 checkout 里新建了
+// 文件(模拟子代理经 bash 脚本绕过工具层边界),再 wait_subagent。
+// 期望: 等待结果附 "WARNING: the main checkout ... changed" 与该文件路径,
+// metadata.workspace_touched 列出它;父代理当场知道有写入落到了 worktree 之外。
+// 再等一次不重复报告(基线前移)。
+TEST(SpawnSubagentTool, WaitReportsMainCheckoutChangesMadeWhileChildRan) {
+    if (!acecode::worktree::run_git({"--version"}, "").ok()) {
+        GTEST_SKIP() << "git not available on this machine";
+    }
+    SubagentFixture fx;
+    fx.provider = std::make_shared<EchoStreamProvider>();
+    const std::string repo = acecode::path_to_utf8(fx.cwd);
+    ASSERT_TRUE(acecode::worktree::run_git({"init", "-b", "main"}, repo).ok());
+
+    acecode::SessionOptions parent_opts;
+    parent_opts.cwd = repo;
+    const std::string parent_id = fx.registry.create(parent_opts);
+    auto parent = fx.registry.acquire(parent_id);
+    ASSERT_NE(parent, nullptr);
+    // 假 worktree 放在仓库外面:子会话的临时文件不能混进主 checkout 的 status。
+    const fs::path worktree_dir = fx.cwd.parent_path() / (fx.cwd.filename().string() + "_wt");
+    fs::create_directories(worktree_dir);
+    acecode::WorktreeSessionInfo worktree;
+    worktree.original_cwd = repo;
+    worktree.worktree_path = acecode::path_to_utf8(worktree_dir);
+    worktree.worktree_name = "feat";
+    worktree.worktree_branch = "worktree-feat";
+    parent->sm->set_active_worktree(worktree);
+    parent->loop->set_cwd(worktree.worktree_path);
+
+    auto ctx = fx.ctx_for(parent_id);
+    ctx.cwd = worktree.worktree_path;
+    ctx.write_root = worktree.worktree_path;
+    auto spawned = fx.tools.execute("spawn_subagent",
+                                    R"({"prompt":"go","wait":false})", ctx);
+    ASSERT_TRUE(spawned.success) << spawned.output;
+    const std::string child_id = spawned.metadata["subagent_session_id"].get<std::string>();
+    {
+        auto child = fx.registry.acquire(child_id);
+        ASSERT_NE(child, nullptr);
+        EXPECT_EQ(child->workspace_watch_cwd, repo);
+    }
+    {
+        std::ofstream out(fx.cwd / "escaped.txt", std::ios::binary);
+        out << "written outside the worktree\n";
+    }
+
+    const std::string wait_args =
+        std::string(R"({"session_id":")") + child_id + R"(","timeout_seconds":30})";
+    auto waited = fx.tools.execute("wait_subagent", wait_args, ctx);
+    EXPECT_NE(waited.output.find("WARNING: the main checkout"), std::string::npos)
+        << waited.output;
+    EXPECT_NE(waited.output.find("escaped.txt"), std::string::npos) << waited.output;
+    ASSERT_TRUE(waited.metadata.contains("workspace_touched"));
+    EXPECT_EQ(waited.metadata["workspace_touched"].size(), 1u);
+
+    auto again = fx.tools.execute("wait_subagent", wait_args, ctx);
+    EXPECT_EQ(again.output.find("WARNING: the main checkout"), std::string::npos)
+        << again.output;
+
+    fx.registry.destroy(child_id);
+    fx.registry.destroy(parent_id);
+    std::error_code ec;
+    fs::remove_all(worktree_dir, ec);
 }

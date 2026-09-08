@@ -35,6 +35,10 @@ struct WorktreeSessionInfo {
     std::string worktree_name;         // slug(用户名或随机生成)
     std::string worktree_branch;       // worktree-<slug>
     std::string original_head_commit;  // 创建基线 SHA;exit 时变更计数的比较基点
+    // spawn_subagent 从父会话继承而来:子会话共享父会话的 worktree,但不拥有
+    // 它 —— ExitWorktree 对继承者拒绝,避免子会话把父会话的工作目录切走或
+    // 删掉。随 meta 持久化(仅 true 时写出,老 meta 字节不变)。
+    bool inherited = false;
 
     bool active() const { return !worktree_path.empty(); }
 };

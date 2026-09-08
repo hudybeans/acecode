@@ -83,6 +83,9 @@ struct SystemPromptWorktreeState {
     std::string worktree_path;
     std::string worktree_branch;
     std::string original_cwd;
+    // spawn_subagent 子会话共享父会话的 worktree:提示改为"父会话拥有它,
+    // 别碰 Enter/ExitWorktree",且不给出返回 cwd(免得子代理想回主 checkout)。
+    bool inherited = false;
 };
 
 // Build the static system prompt with identity, stable environment info, and

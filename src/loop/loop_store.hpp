@@ -82,6 +82,11 @@ public:
                           const std::string& worktree_branch = {},
                           StoreError* error = nullptr);
 
+    // 记录运行结束时主 checkout 里新出现的改动路径(写边界事后检测结果)。
+    bool set_run_workspace_touched(const std::string& run_id,
+                                   const std::vector<std::string>& paths,
+                                   StoreError* error = nullptr);
+
     bool interrupt_owner_runs(const std::string& owner_id,
                               std::int64_t now_ms,
                               StoreError* error = nullptr);

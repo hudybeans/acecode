@@ -84,6 +84,12 @@ struct SessionEntry {
     bool loop_execution = false;
     std::string loop_id;
     std::string loop_run_id;
+    // spawn_subagent 的主 checkout 监视:父会话在 worktree 里时记下派生时刻
+    // 主 checkout 的 git status 行,子会话结束后比对,把绕过 worktree 的写入
+    // 附进 wait 结果(见 spawn_subagent_tool.cpp::append_workspace_watch_report)。
+    // 只在父会话的工具线程上读写。
+    std::string workspace_watch_cwd;
+    std::vector<std::string> workspace_watch_baseline;
     std::shared_ptr<SessionModelBinding> model_binding;
     std::shared_ptr<SkillRegistry>       skill_registry;
     // Inputs required to re-apply a changed global Skill policy without

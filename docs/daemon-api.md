@@ -3561,6 +3561,19 @@ but keeps AskUserQuestion interactive. LOOP Yolo may read outside the active wor
 root, but direct file writes and statically detectable shell writes outside that
 root are rejected by the execution boundary without opening a permission prompt.
 
+Sub-agents spawned from a LOOP session inherit the same execution boundary and
+`loop_execution` provenance. Sub-agents spawned from any worktree session share
+the parent's worktree (`worktree_session.inherited=true` in their metadata) and
+use it as their write root; `EnterWorktree` / `ExitWorktree` refuse inside them.
+Run history objects carry `workspace_touched`: paths that appeared as new or
+changed in the main checkout, outside the run's worktree, between run start and
+run end (detected with `git status --porcelain`). It is empty when no worktree
+was created, when git could not be queried, or when nothing outside the worktree
+changed. A non-empty list means some write bypassed the tool-level boundary (for
+example through a shell script); the run still completes and the UI shows a
+warning. `spawn_subagent` / `wait_subagent` tool results append the same
+detection for one sub-agent as `metadata.workspace_touched`.
+
 Error codes include `LOOP_UNAVAILABLE` (`501`), validation codes such as
 `INVALID_MODEL` / `INVALID_WORKSPACE` (`400`), `SCHEDULE_CONFLICT` (`409`), and
 SQLite subsystem failures (`503`).

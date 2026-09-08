@@ -1017,4 +1017,6 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '导出': 'Export',
   '归档': 'Archive',
   '重命名': 'Rename',
+  '主 checkout 在运行期间出现 {{p0}} 处 worktree 之外的改动':
+    'The main checkout gained {{p0}} change(s) outside the worktree while this run executed',
 });

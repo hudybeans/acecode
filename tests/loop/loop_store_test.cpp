@@ -258,3 +258,32 @@ TEST(LoopStore, NoWorkspaceLoopsMayShareTheSameSchedule) {
     ASSERT_TRUE(store.create_loop(first, 0, &error).has_value()) << error.message;
     ASSERT_TRUE(store.create_loop(second, 0, &error).has_value()) << error.message;
 }
+
+// 场景:run 结束后记录写边界事后检测的结果(主 checkout 里新出现的路径),再从
+// 运行历史读回;库是老 schema(v2,loop_runs 没有 workspace_touched 列)升上来的。
+// 期望:initialize 补列(v3 迁移),路径列表原样往返(换行分隔存储,读回按行
+// 拆开);未知 run 报 NOT_FOUND。
+TEST(LoopStore, WorkspaceTouchedRoundtripAfterMigration) {
+    const auto path = temp_database("touched");
+    ASSERT_TRUE(create_legacy_database(path));
+    LoopStore store(path);
+    StoreError error;
+    ASSERT_TRUE(store.initialize(&error)) << error.message;
+    auto loop = store.create_loop(once_loop("once", 10'000), 1'000, &error);
+    ASSERT_TRUE(loop.has_value()) << error.message;
+    auto claim = store.claim_due(10'000, "owner", &error);
+    ASSERT_EQ(claim.disposition, ClaimDisposition::Claimed) << error.message;
+    ASSERT_TRUE(claim.run.has_value());
+
+    ASSERT_TRUE(store.set_run_workspace_touched(
+        claim.run->id, {"electron/src/im/chat.js", "docs/notes.md"}, &error))
+        << error.message;
+    auto runs = store.list_runs(loop->id, 10, &error);
+    ASSERT_EQ(runs.size(), 1u) << error.message;
+    EXPECT_EQ(runs[0].workspace_touched,
+              (std::vector<std::string>{"electron/src/im/chat.js", "docs/notes.md"}));
+
+    error = {};
+    EXPECT_FALSE(store.set_run_workspace_touched("missing-run", {"a"}, &error));
+    EXPECT_EQ(error.code, "NOT_FOUND");
+}

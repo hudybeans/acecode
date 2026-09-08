@@ -719,3 +719,30 @@ TEST_F(SystemPromptTest, NullEnvironmentKeepsLegacyOutput) {
     EXPECT_EQ(out.find("# Shell Command Guidance"), std::string::npos);
 #endif
 }
+
+// 场景:spawn_subagent 子会话继承父会话的 worktree(inherited=true)。
+// 期望:Environment 说明 worktree 归父会话所有、不得 Enter/ExitWorktree、写入
+// 必须留在 worktree 内;不再给出 "return cwd" 与 "requires ExitWorktree" 两句
+// (它们会引导子代理离开父会话正在用的目录)。
+TEST_F(SystemPromptTest, InheritedWorktreeTellsSubagentToStayInside) {
+    acecode::ToolExecutor tools;
+    acecode::SystemPromptWorktreeState worktree;
+    worktree.active = true;
+    worktree.inherited = true;
+    worktree.worktree_path = (temp_home / "wt").string();
+    worktree.worktree_branch = "worktree-ses-parent";
+    worktree.original_cwd = temp_home.string();
+
+    std::string out = acecode::build_system_prompt(
+        tools, worktree.worktree_path,
+        /*skills=*/nullptr, /*memory=*/nullptr, /*memory_cfg=*/nullptr,
+        /*project_instructions_cfg=*/nullptr, /*effective_tool_policy=*/nullptr,
+        &worktree);
+
+    EXPECT_NE(out.find("- Session worktree: active on branch worktree-ses-parent"),
+              std::string::npos);
+    EXPECT_NE(out.find("shared with the parent session"), std::string::npos);
+    EXPECT_NE(out.find("Do not call `EnterWorktree` or `ExitWorktree`"), std::string::npos);
+    EXPECT_EQ(out.find("- Session worktree return cwd:"), std::string::npos);
+    EXPECT_EQ(out.find("requires `ExitWorktree`"), std::string::npos);
+}

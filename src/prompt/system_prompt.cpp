@@ -418,11 +418,18 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         if (!worktree->worktree_path.empty()) {
             oss << "- Session worktree path: " << worktree->worktree_path << "\n";
         }
-        if (!worktree->original_cwd.empty()) {
-            oss << "- Session worktree return cwd: " << worktree->original_cwd << "\n";
+        if (worktree->inherited) {
+            oss << "- This worktree is shared with the parent session that spawned this "
+                << "sub-agent, and the parent owns it. Do not call `EnterWorktree` or "
+                << "`ExitWorktree`, never remove or switch worktrees, and keep every "
+                << "write inside the session worktree path above.\n";
+        } else {
+            if (!worktree->original_cwd.empty()) {
+                oss << "- Session worktree return cwd: " << worktree->original_cwd << "\n";
+            }
+            oss << "- Returning this session to the main checkout requires `ExitWorktree`. "
+                << "A git merge onto master/main does not leave the worktree.\n";
         }
-        oss << "- Returning this session to the main checkout requires `ExitWorktree`. "
-            << "A git merge onto master/main does not leave the worktree.\n";
     } else if (enter_worktree_allowed || exit_worktree_allowed) {
         oss << "- Session worktree: inactive\n";
     }

@@ -333,6 +333,7 @@ bool SessionStorage::write_meta(const std::string& meta_path, const SessionMeta&
             {"worktree_branch", meta.worktree.worktree_branch},
             {"original_head_commit", meta.worktree.original_head_commit},
         };
+        if (meta.worktree.inherited) j["worktree_session"]["inherited"] = true;
     }
     if (meta.archived) {
         j["archived"] = true;
@@ -404,6 +405,7 @@ SessionMeta SessionStorage::read_meta(const std::string& meta_path) {
             meta.worktree.worktree_branch = wt.value("worktree_branch", std::string{});
             meta.worktree.original_head_commit =
                 wt.value("original_head_commit", std::string{});
+            meta.worktree.inherited = wt.value("inherited", false);
         }
         meta.archived        = j.value("archived",        false);
         meta.no_workspace    = j.value("no_workspace",    false);

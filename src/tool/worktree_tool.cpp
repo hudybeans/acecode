@@ -112,7 +112,13 @@ ToolResult execute_enter_worktree(const std::string& arguments_json,
     if (!ctx.switch_session_cwd) {
         return tool_error("EnterWorktree is not supported in this runtime");
     }
-    if (ctx.session_manager->active_worktree().active()) {
+    if (const auto current = ctx.session_manager->active_worktree(); current.active()) {
+        if (current.inherited) {
+            return tool_error(
+                "This session already shares the parent session's worktree at " +
+                current.worktree_path +
+                ". Sub-agents cannot create or switch worktrees; keep working there.");
+        }
         return tool_error("Already in a worktree session");
     }
     if (ctx.cwd.empty()) {
@@ -197,6 +203,17 @@ ToolResult execute_exit_worktree(const std::string& arguments_json,
             "No-op: there is no active EnterWorktree session to exit. This tool only "
             "operates on worktrees created by EnterWorktree in the current session — "
             "it will not touch worktrees created manually or in a previous session. "
+            "No filesystem changes were made.");
+    }
+    if (info.inherited) {
+        // 子会话只是共享父会话的 worktree,不拥有它:退出会把子会话切回主
+        // checkout(父会话期望结果落在 worktree 里),remove 更会删掉父会话
+        // 正在用的目录。
+        return tool_error(
+            "This worktree belongs to the parent session and is only shared with this "
+            "sub-agent. ExitWorktree is not available here; keep working inside " +
+            info.worktree_path +
+            " and let the parent session decide when to leave or remove the worktree. "
             "No filesystem changes were made.");
     }
     if (!ctx.switch_session_cwd) {
