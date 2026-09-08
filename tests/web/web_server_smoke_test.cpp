@@ -53,6 +53,7 @@
 #include "utils/text_file_buffer.hpp"
 #include "utils/utf8_path.hpp"
 #include "web/remote_web_proxy.hpp"
+#include "web/message_payload.hpp"
 #include "web/server.hpp"
 #include "worktree/worktree_manager.hpp"
 
@@ -3814,6 +3815,106 @@ TEST(WebServerHttp, ForkWorkspaceSessionResumesInSourceWorkspace) {
     EXPECT_TRUE(resumed->skill_registry->find("fork-skill").has_value());
     ASSERT_TRUE(resumed->tool_capability_policy.builtin_tools.has_value());
     EXPECT_TRUE(resumed->tool_capability_policy.builtin_tools->empty());
+}
+
+namespace {
+
+// 建一个 workspace + session,返回 session id。
+std::string create_workspace_session(WebServerFixture& fx, const std::string& cwd) {
+    const std::string hash = acecode::compute_cwd_hash(cwd);
+    auto post_ws = cpr::Post(cpr::Url{fx.url("/api/workspaces")},
+                             cpr::Header{{"Content-Type", "application/json"}},
+                             cpr::Body{json{{"cwd", cwd}}.dump()});
+    if (post_ws.status_code != 201) return {};
+
+    auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+                            cpr::Header{{"Content-Type", "application/json"}},
+                            cpr::Body{R"({})"});
+    if (create.status_code != 201) return {};
+    return json::parse(create.text)["session_id"].get<std::string>();
+}
+
+void append_message(acecode::SessionEntry* entry,
+                    const std::string& role,
+                    const std::string& content,
+                    const std::string& uuid) {
+    acecode::ChatMessage msg;
+    msg.role = role;
+    msg.content = content;
+    msg.uuid = uuid;
+    entry->loop->push_message(msg);
+    entry->sm->on_message(msg);
+}
+
+} // namespace
+
+// 场景: 在 user 提示词上分叉时,分叉点回退到该提示词之前,提示词本身不进
+// 新会话历史,而是随响应返回供前端回填输入框。
+TEST(WebServerHttp, ForkOnUserPromptRestoresPromptAndDropsItFromHistory) {
+    WebServerFixture fx;
+
+    const std::string cwd = (fx.tmp_dir / "fork-prompt-cwd").string();
+    std::filesystem::create_directories(cwd);
+    const std::string sid = create_workspace_session(fx, cwd);
+    ASSERT_FALSE(sid.empty());
+
+    auto* entry = fx.registry->lookup(sid);
+    ASSERT_NE(entry, nullptr);
+    append_message(entry, "user", "first prompt", "u1");
+    append_message(entry, "assistant", "summary", "a1");
+    append_message(entry, "user", "reword me", "u2");
+
+    auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+                          cpr::Header{{"Content-Type", "application/json"}},
+                          cpr::Body{json{{"at_message_id", "u2"}}.dump()});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    auto body = json::parse(fork.text);
+
+    EXPECT_EQ(body["restored_prompt"], "reword me");
+    EXPECT_EQ(body["fork_anchor_role"], "user");
+
+    auto* forked = fx.registry->lookup(body["session_id"].get<std::string>());
+    ASSERT_NE(forked, nullptr);
+    const auto msgs = forked->sm->load_active_messages();
+    ASSERT_EQ(msgs.size(), 2u);
+    EXPECT_EQ(msgs[0].content, "first prompt");
+    EXPECT_EQ(msgs[1].content, "summary");
+}
+
+// 场景: 在 assistant 消息上分叉保持原行为(含该条),且不返回待回填提示词。
+TEST(WebServerHttp, ForkOnAssistantMessageKeepsItWithoutRestoredPrompt) {
+    WebServerFixture fx;
+
+    const std::string cwd = (fx.tmp_dir / "fork-assistant-cwd").string();
+    std::filesystem::create_directories(cwd);
+    const std::string sid = create_workspace_session(fx, cwd);
+    ASSERT_FALSE(sid.empty());
+
+    auto* entry = fx.registry->lookup(sid);
+    ASSERT_NE(entry, nullptr);
+    append_message(entry, "user", "first prompt", "u1");
+    append_message(entry, "assistant", "summary", "a1");
+
+    // assistant 消息的 id 是 sha1(role+content+timestamp),不是传入的 uuid,
+    // 必须从存储读回后按真实 id 分叉。
+    const auto source_msgs = entry->sm->load_active_messages();
+    ASSERT_EQ(source_msgs.size(), 2u);
+    const std::string assistant_id = acecode::web::compute_message_id(source_msgs[1]);
+
+    auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+                          cpr::Header{{"Content-Type", "application/json"}},
+                          cpr::Body{json{{"at_message_id", assistant_id}}.dump()});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    auto body = json::parse(fork.text);
+
+    EXPECT_FALSE(body.contains("restored_prompt"));
+    EXPECT_EQ(body["fork_anchor_role"], "assistant");
+
+    auto* forked = fx.registry->lookup(body["session_id"].get<std::string>());
+    ASSERT_NE(forked, nullptr);
+    const auto msgs = forked->sm->load_active_messages();
+    ASSERT_EQ(msgs.size(), 2u);
+    EXPECT_EQ(msgs[1].content, "summary");
 }
 
 // 场景: registry 里留着一个已删除/不可访问的 workspace 时,列表仍可返回,

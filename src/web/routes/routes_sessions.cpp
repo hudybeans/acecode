@@ -4,6 +4,7 @@
 #include "../trajectory_legacy_projection.hpp"
 #include "../../session/compact_checkpoint.hpp"
 #include "../../session/global_session_catalog.hpp"
+#include "../../session/session_rewind.hpp"
 #include "../../session/session_trajectory.hpp"
 #include "../../utils/utf8_path.hpp"
 
@@ -2217,8 +2218,21 @@ void WebServer::Impl::register_sessions() {
                 return with_cors(req, std::move(r));
             }
 
-            // 含被点击的那条:retained = msgs[0..idx]
-            auto retained = retained_prefix_before_index(messages, *idx + 1);
+            // 点击 assistant 消息:沿用原行为,含被点击的那条。
+            // 点击 user 提示词:回退到它之前的状态,提示词本身不进历史,
+            // 由前端回填输入框待用户修改后重发。
+            const std::string target_role = messages[*idx].role;
+            std::string restored_prompt;
+            std::vector<ChatMessage> retained;
+            if (target_role == "user") {
+                restored_prompt = fork_restored_prompt_text(messages[*idx]);
+                const auto anchor = resolve_fork_anchor_index(messages, *idx);
+                retained = anchor.has_value()
+                    ? retained_prefix_before_index(messages, *anchor + 1)
+                    : std::vector<ChatMessage>{};
+            } else {
+                retained = retained_prefix_before_index(messages, *idx + 1);
+            }
 
             // 组 source meta + sibling 列表用于命名规则
             auto source_meta = entry->sm->load_session_meta(id);
@@ -2266,6 +2280,10 @@ void WebServer::Impl::register_sessions() {
             resp["title"]           = title;
             resp["forked_from"]     = id;
             resp["fork_message_id"] = at_message_id;
+            resp["fork_anchor_role"] = target_role;
+            if (!restored_prompt.empty()) {
+                resp["restored_prompt"] = restored_prompt;
+            }
             resp["workspace_hash"]   = entry->no_workspace ? std::string{} : entry->workspace_hash;
             resp["cwd"]              = entry->no_workspace ? std::string{} : entry->cwd;
             resp["working_cwd"]      = entry->cwd;
