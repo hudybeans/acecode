@@ -76,7 +76,7 @@ composer, preserve it across the session switch, and leave it unsent.
 
 #### Scenario: Fork completes on desktop or Web
 - **WHEN** a fork response contains `restored_prompt`
-- **THEN** the composer value is set to that text before the new session is activated
+- **THEN** the composer value is set to that text when the new session is activated
 - **AND** the composer value survives the session switch
 - **AND** no message is sent automatically
 
@@ -88,3 +88,38 @@ composer, preserve it across the session switch, and leave it unsent.
 #### Scenario: Fork returns no prompt
 - **WHEN** a fork response contains no `restored_prompt`
 - **THEN** the composer is left as it was
+
+#### Scenario: Source session has an unsaved draft
+- **WHEN** a user forks while the source composer has text awaiting autosave
+- **THEN** the source session saves its own draft unchanged
+- **AND** only the destination session receives the restored historical prompt
+
+### Requirement: Integrated build automation preserves supported generators and layouts
+Build commands SHALL support both Visual Studio and Ninja. Default desktop
+discovery SHALL retain existing build layouts on every supported platform.
+
+#### Scenario: Verify a Visual Studio build
+- **WHEN** package verification builds with a Visual Studio generator
+- **THEN** parallelism is supplied through CMake rather than Ninja flags
+
+#### Scenario: Discover a macOS preset build
+- **WHEN** desktop launch or listing runs without an explicit build directory
+- **THEN** an app under build/macos-arm64-release remains discoverable
+
+### Requirement: Portable packages match requested code, architecture, and output
+Portable packaging SHALL incrementally build current C++ sources on every run,
+use architecture-compatible dependencies and binaries, and honor the full output
+path supplied by the caller.
+
+#### Scenario: Backend changes with unchanged frontend
+- **WHEN** frontend hashes match but C++ sources have changed
+- **THEN** packaging still runs the incremental build before copying executables
+
+#### Scenario: Package for arm64
+- **WHEN** the caller selects arm64
+- **THEN** configuration selects arm64-osx and rejects an incompatible build cache
+- **AND** all packaged executables are verified for arm64
+
+#### Scenario: Archive outside the repository
+- **WHEN** the caller specifies an output path outside repo/dist
+- **THEN** the archive is written and verified at that complete path

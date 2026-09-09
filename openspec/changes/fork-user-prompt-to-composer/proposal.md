@@ -51,6 +51,11 @@ None.
 
 ## Impact
 
+Integration also repairs the reviewed build automation from PR 46 and the
+portable packaging script included in PR 47: generator-independent parallelism,
+cross-platform desktop discovery, current binaries, matching architecture, and
+correct archive destinations. No release version or publication is requested.
+
 - `src/session/session_rewind.cpp` / `session_rewind.hpp`: new anchor resolution
   helper.
 - `src/web/routes/fork_handler.cpp`: use the anchor and extend the response with

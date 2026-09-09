@@ -13,7 +13,7 @@
 
 ## 3. Client Composer Refill
 
-- [x] 3.1 In `forkAndSwitch` (`web/src/components/ChatView.jsx`), set `preserveComposerInputOnSessionChangeRef` and `setComposerValue` from `restored_prompt` before promoting the session.
+- [x] 3.1 Restore `restored_prompt` in the fork destination composer without sending it.
 - [x] 3.2 Adjust the toast so it tells the user the prompt was restored and can be edited.
 - [x] 3.3 Leave the composer untouched when the response has no `restored_prompt`.
 
@@ -24,3 +24,11 @@
 - [x] 4.3 Add a Web test for the composer refill branch (`web/src/lib/sessionFork.{js,test.js}`, registered in `runTests.js`).
 - [x] 4.4 Build and run the focused C++ tests, then the full suite and `scripts/code_quality_check.sh`.
 - [x] 4.5 Run `pnpm test` and `pnpm build` in `web/`.
+
+## 5. PR 46/47 Integration Repairs
+
+- [x] 5.1 Defer fork composer refill until the destination session activates; preserve the source session draft and add a lifecycle regression test.
+- [x] 5.2 Use generator-independent CMake parallelism in build/verification/release commands and restore default cross-platform desktop discovery, with regression tests.
+- [x] 5.3 Always incrementally build portable packages, isolate and verify architectures, honor the complete output path, and exercise the script with mocked macOS tools.
+- [x] 5.4 Synchronize affected skill copies and API documentation; run integrated frontend/script checks and validate OpenSpec.
+- [ ] 5.5 Commit and merge the repaired PR histories into remote master, preserving unrelated local work.

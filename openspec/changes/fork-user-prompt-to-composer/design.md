@@ -73,12 +73,13 @@ reloads the composer draft in an effect at `:1680`, which clears the value unles
    whether the message was a user prompt, and the client does not need the
    message list to be fully loaded.
 
-5. **Refill before switching, and set the preserve flag.**
+5. **Apply a destination-scoped pending draft after switching.**
 
-   In `forkAndSwitch`, set `preserveComposerInputOnSessionChangeRef.current =
-   true` and `setComposerValue(restored_prompt)` before promoting the new
-   session. Without the flag the session-switch effect reloads the draft and
-   wipes the value.
+   `forkAndSwitch` records the returned prompt with the destination draft key.
+   It leaves the source composer unchanged so its effect cleanup can save the
+   actual source draft. The destination draft effect consumes the matching
+   payload, bypasses loading the initially empty server draft, and enables normal
+   autosave. A payload for another session is discarded.
 
 6. **Only plain text is refilled.**
 
@@ -98,3 +99,14 @@ reloads the composer draft in an effect at `:1680`, which clears the value unles
 - **Anchor resolution depends on the meta predicates staying in sync** with
   `fork_session_to_new_id`. Reuse the existing helpers rather than duplicating
   the conditions so both evolve together.
+
+## PR integration repairs
+
+PR 46 is integrated alongside PR 47 at the user's request. Build commands use
+CMake `--parallel` so Visual Studio and Ninja receive appropriate native flags.
+Desktop discovery defaults to the complete build root; explicit directories
+still restrict discovery. macOS portable packaging uses separate architecture
+defaults, rejects incompatible existing caches, selects matching vcpkg triplets,
+always builds incrementally, checks all packaged executables with `lipo`, and
+passes a normalized full output path to `ditto`. Script tests mock macOS tools
+on other hosts; they do not replace native macOS compilation or launch checks.

@@ -13,12 +13,18 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-build_dir="$repo_root/build/macos-x64-release"
-arch="x86_64"
+build_dir=""
+arch="$(uname -m)"
 suffix="portable"
 output_path=""
 
 while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build-dir|--arch|--suffix|--output)
+            [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || {
+                echo "ERROR: $1 requires a value" >&2; exit 2;
+            } ;;
+    esac
     case "$1" in
         --build-dir) build_dir="${2:-}"; shift 2 ;;
         --arch) arch="${2:-}"; shift 2 ;;
@@ -30,6 +36,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$arch" in
+    x86_64|x64) arch=x86_64; triplet=x64-osx; build_arch=x64 ;;
+    arm64|aarch64) arch=arm64; triplet=arm64-osx; build_arch=arm64 ;;
+    *) echo "ERROR: unsupported architecture: $arch" >&2; exit 2 ;;
+esac
+[[ -n "$build_dir" ]] || build_dir="$repo_root/build/macos-$build_arch-release"
+build_dir="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_posix())' "$build_dir")"
+
+# An explicit build directory must not reuse libraries from another target.
+cache_file="$build_dir/CMakeCache.txt"
+if [[ -f "$cache_file" ]]; then
+    cached_arch="$(sed -n 's/^CMAKE_OSX_ARCHITECTURES:[^=]*=//p' "$cache_file")"
+    cached_triplet="$(sed -n 's/^VCPKG_TARGET_TRIPLET:[^=]*=//p' "$cache_file")"
+    if [[ ( -n "$cached_arch" && "$cached_arch" != "$arch" ) ||
+          ( -n "$cached_triplet" && "$cached_triplet" != "$triplet" ) ]]; then
+        echo "ERROR: build cache architecture/triplet does not match $arch/$triplet; use a separate --build-dir" >&2
+        exit 1
+    fi
+fi
+
 version="$(grep -m1 'project(acecode VERSION' "$repo_root/CMakeLists.txt" | sed -E 's/.* VERSION ([0-9.]+).*/\1/')"
 dist_html="$repo_root/web/dist/index.html"
 embed_cpp="$build_dir/generated/static_assets_data.cpp"
@@ -37,6 +63,9 @@ embed_marker="$build_dir/generated/embedded_web_dist.sha"
 package_name="acecode-macos-$arch"
 package_dir="$repo_root/dist/$package_name"
 [[ -z "$output_path" ]] && output_path="$repo_root/dist/acecode-${version}-macos-${arch}-${suffix}-portable.zip"
+output_path="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_posix())' "$output_path")"
+DITTO_BIN="${DITTO_BIN:-/usr/bin/ditto}"
+LIPO_BIN="${LIPO_BIN:-/usr/bin/lipo}"
 
 echo "== version : $version"
 echo "== branch  : $(git -C "$repo_root" rev-parse --abbrev-ref HEAD) @ $(git -C "$repo_root" rev-parse --short HEAD)"
@@ -45,10 +74,12 @@ echo "== build   : $build_dir"
 # Locate a working cmake. The wrapper at ~/.local/bin/cmake can be a broken
 # pip shim; the real binary lives under the cmake package's data/bin/. Prefer
 # any candidate that answers --version.
+requested_cmake="${CMAKE_BIN:-}"
 CMAKE_BIN=""
 for cand in \
-    "$(find "$HOME/.local/lib" -path '*/cmake/data/bin/cmake' -type f 2>/dev/null | head -1)" \
-    "$(command -v cmake 2>/dev/null)"; do
+    "$requested_cmake" \
+    "$(command -v cmake 2>/dev/null || true)" \
+    "$(find "$HOME/.local/lib" -path '*/cmake/data/bin/cmake' -type f 2>/dev/null | head -1 || true)"; do
     [[ -n "$cand" && -x "$cand" ]] || continue
     if "$cand" --version >/dev/null 2>&1; then CMAKE_BIN="$cand"; break; fi
 done
@@ -76,12 +107,25 @@ fi
 # can lie after a git checkout/reset rewrites the tree).
 # ---------------------------------------------------------------------------
 needs_reconfigure=false
-if [[ ! -f "$embed_cpp" ]]; then
+if [[ ! -f "$cache_file" || ! -f "$embed_cpp" || "${cached_arch:-}" != "$arch" || "${cached_triplet:-}" != "$triplet" ]]; then
     needs_reconfigure=true
 elif [[ "$dist_html" -nt "$embed_cpp" ]]; then
     needs_reconfigure=true
 fi
-current_hash="$(shasum -a 256 "$dist_html" | awk '{print $1}')"
+current_hash="$(python3 - "$repo_root/web/dist" <<'PY'
+import hashlib
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+for path in sorted(p for p in root.rglob('*') if p.is_file()):
+    digest.update(path.relative_to(root).as_posix().encode())
+    digest.update(b'\0')
+    digest.update(path.read_bytes())
+    digest.update(b'\0')
+print(digest.hexdigest())
+PY
+)"
 if [[ -f "$embed_marker" ]]; then
     embedded_hash="$(cat "$embed_marker" 2>/dev/null || true)"
     [[ "$embedded_hash" != "$current_hash" ]] && needs_reconfigure=true
@@ -93,18 +137,30 @@ if $needs_reconfigure; then
     echo "== web/dist changed since last embed — reconfiguring cmake (skipping vcpkg install) =="
     "$CMAKE_BIN" -S "$repo_root" -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
-        -DVCPKG_TARGET_TRIPLET=x64-osx \
+        -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT:-$HOME/vcpkg}/scripts/buildsystems/vcpkg.cmake" \
+        -DVCPKG_TARGET_TRIPLET="$triplet" \
         -DVCPKG_OVERLAY_PORTS="$repo_root/ports" \
         -DCMAKE_OSX_ARCHITECTURES="$arch" \
         -DBUILD_TESTING=OFF -DACECODE_BUILD_DESKTOP=ON \
         -DVCPKG_MANIFEST_FEATURES=tests -DVCPKG_MANIFEST_INSTALL=OFF
-    echo "== rebuilding acecode-desktop with fresh embedded assets =="
-    "$CMAKE_BIN" --build "$build_dir" --target acecode-desktop
-    echo "$current_hash" > "$embed_marker"
 else
     echo "== embedded assets already fresh (dist hash matches $embed_marker) =="
 fi
+
+# The frontend marker only controls reconfiguration. Backend changes must
+# always reach the package, even when all frontend inputs are unchanged.
+echo "== incrementally building current binaries =="
+"$CMAKE_BIN" --build "$build_dir" --target acecode-desktop
+echo "$current_hash" > "$embed_marker"
+
+for binary in "$build_dir/acecode" \
+    "$build_dir/ACECode.app/Contents/MacOS/ACECode" \
+    "$build_dir/ACECode.app/Contents/MacOS/acecode-daemon"; do
+    if [[ ! -x "$binary" ]] || ! "$LIPO_BIN" -verify_arch "$arch" "$binary"; then
+        echo "ERROR: missing executable or wrong architecture ($arch): $binary" >&2
+        exit 1
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Assemble portable layout
@@ -137,7 +193,7 @@ if [[ ! -f "$build_dir/acecode" ]]; then
     exit 1
 fi
 cp "$build_dir/acecode" "$package_dir/"
-cp README.md README_CN.md "$package_dir/"
+cp "$repo_root/README.md" "$repo_root/README_CN.md" "$package_dir/"
 
 "$CMAKE_BIN" --install "$build_dir" --prefix "$package_dir" --component models_dev_registry >/dev/null
 "$CMAKE_BIN" --install "$build_dir" --prefix "$package_dir" --component default_seed_bundle >/dev/null
@@ -159,9 +215,10 @@ if [[ -n "$legacy" ]]; then
 fi
 
 echo "== zipping with ditto =="
+mkdir -p "$(dirname "$output_path")"
 rm -f "$output_path"
-( cd "$repo_root/dist" && /usr/bin/ditto -c -k --keepParent --sequesterRsrc \
-    "$package_name" "$(basename "$output_path")" )
+( cd "$repo_root/dist" && "$DITTO_BIN" -c -k --keepParent --sequesterRsrc \
+    "$package_name" "$output_path" )
 
 # ---------------------------------------------------------------------------
 # GUARD 3: verify the freshly built binary actually contains embedded UI.
@@ -170,7 +227,7 @@ rm -f "$output_path"
 echo "== verifying archive =="
 verify_root="$(mktemp -d)"
 trap 'rm -rf -- "$verify_root"' EXIT
-/usr/bin/ditto -x -k "$output_path" "$verify_root"
+"$DITTO_BIN" -x -k "$output_path" "$verify_root"
 extracted="$verify_root/$package_name"
 
 [[ -x "$extracted/acecode" ]] || { echo "extracted acecode not executable" >&2; exit 1; }

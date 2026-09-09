@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -30,6 +31,32 @@ dev_desktop = load_dev_desktop_module()
 
 
 class DevDesktopTest(unittest.TestCase):
+    def test_default_cli_lists_all_platform_builds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / 'CMakeLists.txt').write_text('project(acecode)', encoding='utf-8')
+            (repo / 'src').mkdir()
+            (repo / 'web').mkdir()
+            app = repo / 'build' / 'macos-arm64-release' / 'ACECode.app'
+            app.mkdir(parents=True)
+            windows = repo / 'build' / 'Release' / 'acecode-desktop.exe'
+            windows.parent.mkdir()
+            windows.write_bytes(b'')
+            def invoke(*args):
+                result = subprocess.run(
+                    [sys.executable, '-B', str(SCRIPT_PATH), '--root', str(repo), '--list', *args],
+                    capture_output=True, text=True, encoding='utf-8',
+                    env={**os.environ, 'PYTHONIOENCODING': 'utf-8'},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+            output = invoke()
+            self.assertIn('ACECode.app', output)
+            self.assertIn('acecode-desktop.exe', output)
+            explicit = invoke('--build-dir', 'build/macos-arm64-release')
+            self.assertIn('ACECode.app', explicit)
+            self.assertNotIn('acecode-desktop.exe', explicit)
+
     def test_source_is_parseable_with_python_38_grammar(self) -> None:
         source = SCRIPT_PATH.read_text(encoding="utf-8")
         ast.parse(source, filename=str(SCRIPT_PATH), feature_version=(3, 8))

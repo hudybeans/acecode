@@ -30,8 +30,11 @@ bash scripts/macos_create_portable_zip.sh pre --arch arm64
 ```
 
 First positional arg is the output suffix (default `portable`). The build dir
-defaults to `build/macos-x64-release`; the script auto-detects a working cmake
-(see pitfalls) and a fresh `web/dist`.
+defaults to `build/macos-x64-release` or `build/macos-arm64-release`, matching
+`--arch` (default: host architecture). An explicitly supplied build cache must
+match the selected architecture and vcpkg triplet. The script finds a working
+cmake (see pitfalls) and checks for a fresh `web/dist`. `--output` accepts a full
+absolute or caller-relative path, including a directory outside the repository.
 
 ## The embed footgun this skill prevents
 
@@ -45,9 +48,12 @@ ships the old UI. The script enforces three guards:
    with "run pnpm build first". Catches the "edited UI, forgot to build" case.
 2. **Dist newer than embedded assets** (`web/dist/index.html` mtime > the
    generated cpp, OR a recorded dist-hash marker mismatch) → auto reconfigure
-   cmake (skipping vcpkg install) and rebuild `acecode-desktop`, then record the
-   new dist hash. Catches the "built UI, forgot to reconfigure" case.
-3. **Post-build binary check** → after zipping, grep the extracted binary for a
+   cmake (skipping vcpkg install). The hash covers every file in `web/dist`.
+   Every invocation incrementally builds `acecode-desktop` and its daemon, even
+   if only C++ sources changed, then records the new dist hash. Catches the "built UI, forgot to reconfigure" case.
+3. **Post-build binary check** → first use `lipo -verify_arch` to check the TUI,
+   desktop shell, and bundled daemon against the requested architecture. After
+   zipping, grep the extracted binary for a
    dist-only token (`provider-logos`); abort if the embedded asset map is empty.
 
 ## Pitfalls (verified on this machine)
@@ -63,8 +69,11 @@ ships the old UI. The script enforces three guards:
 - **Verifying UI presence**: `strings` drops non-ASCII, so grepping a binary for
   Chinese copy returns 0; minified JS also mangles symbol names. Use
   `grep -a "provider-logos"` on the compiled binary instead.
-- **arm64**: pass `--arch arm64`; the script threads `CMAKE_OSX_ARCHITECTURES`
-  and you must also use the `arm64-osx` vcpkg triplet/overlay if building native.
+- **arm64**: pass `--arch arm64`; the script selects `CMAKE_OSX_ARCHITECTURES=arm64`,
+  `arm64-osx`, and a separate default build directory. Dependencies for the
+  selected triplet must already be installed. `VCPKG_ROOT` overrides `~/vcpkg`.
+- **Tool selection**: `CMAKE_BIN`, `DITTO_BIN`, and `LIPO_BIN` can select explicit
+  tool paths; normal macOS defaults use cmake from PATH and system ditto/lipo.
 - **No GUI smoke test** under headless: `ACECode.app` cannot launch without a
   display, but `./acecode --version` validates the TUI binary + dylibs.
 

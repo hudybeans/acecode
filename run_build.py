@@ -108,7 +108,7 @@ cmd = [cmake, "--build", str(build_dir)]
 if target:
     cmd += ["--target", target]
 # Ninja controls process-level parallelism; MSVC /MP remains enabled by CMake.
-cmd += ["--", "-j", str(jobs)]
+cmd += ["--parallel", str(jobs)]
 
 print(f"Using {jobs} parallel build jobs ({jobs_source}; logical CPUs: {os.cpu_count() or 1})")
 print("Build directory:", build_dir)

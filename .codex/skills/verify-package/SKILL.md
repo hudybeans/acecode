@@ -23,10 +23,10 @@ system temp dir.
 
 ## Required Inputs
 
-None. The script detects the repo root from its own location, defaults the
-build directory to `<repo>/build`, and configures it if missing (MinSizeRel,
-`BUILD_TESTING=OFF`, `ACECODE_BUILD_DESKTOP=ON`, Ninja when available, vcpkg
-toolchain when `VCPKG_ROOT` is set).
+None. The script detects the repo root from its own location and defaults
+packaging verification to the isolated `<repo>/build/windows-x64-package`
+build directory. Configure and build tasks hold an exclusive lock for that
+directory, so a second task fails instead of corrupting CMake/Ninja state.
 
 Prerequisite: `web/dist` must exist. If it is missing the script fails with
 the exact rebuild command (`cd web && pnpm install --frozen-lockfile &&
@@ -56,8 +56,15 @@ python3 .../verify_package.py --skip-build
 python3 .../verify_package.py --target tui
 python3 .../verify_package.py --target desktop
 
-# Existing non-default build tree (e.g. build/windows-x64-release)
-python3 .../verify_package.py --build-dir build/windows-x64-release
+# Existing non-default build tree (for example, an explicitly prepared release tree)
+python3 .../verify_package.py --build-dir build/windows-x64-package
+
+# Limit build parallelism (defaults to detected logical CPUs)
+python3 .../verify_package.py --jobs 8
+
+# Print the planned configure/build/install commands without changing files
+python3 .../verify_package.py --dry-run
+python3 .../verify_package.py --dry-run --target tui --jobs 3
 
 # Where the staged package lands (default: <build-dir>/verify-package-staging)
 python3 .../verify_package.py --staging-dir /tmp/ace-verify
@@ -65,10 +72,12 @@ python3 .../verify_package.py --staging-dir /tmp/ace-verify
 
 ## What The Script Does
 
-1. Preflight: `web/dist/index.html` exists; cmake is on PATH; the build dir
-   is configured when `--skip-build` is used.
+1. Preflight: `web/dist/index.html` exists; cmake is on PATH; the isolated
+   package build dir is configured when `--skip-build` is used.
 2. Configure + incremental build of `acecode` (and `acecode-desktop` for the
-   desktop target). Skipped under `--skip-build`.
+   desktop target), using CMake `--parallel` with detected logical CPUs or
+   `--jobs`, compatible with Visual Studio and Ninja. A per-build-dir
+   lock prevents concurrent CMake/Ninja/package operations.
 3. Staging, mirroring the CI Package step: binaries (or the macOS
    `ACECode.app` bundle) + READMEs, then
    `cmake --install --component models_dev_registry` and

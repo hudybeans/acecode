@@ -17,6 +17,12 @@ if(Python3_Interpreter_FOUND)
         dev_desktop_script_unit
         PROPERTIES LABELS "unit"
     )
+    add_test(
+        NAME macos_portable_package_unit
+        COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/macos_portable_package_test.py
+    )
+    set_tests_properties(macos_portable_package_unit PROPERTIES LABELS "unit")
 endif()
 
 if(UNIX)

@@ -255,7 +255,7 @@ def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
         for target in targets:
             print("  " + " ".join([
                 cmake_command, "--build", str(build_dir), "--config", "MinSizeRel",
-                "--target", CMAKE_TARGETS[target], "--", "-j", str(jobs),
+                "--target", CMAKE_TARGETS[target], "--parallel", str(jobs),
             ]))
     print("Would stage package files and run structural/runtime checks.")
     if "tui" in targets or platform != "darwin":
@@ -290,7 +290,7 @@ def configure_and_build(report: Report, repo: Path, build_dir: Path, cmake: str,
         cmake_target = CMAKE_TARGETS[target]
         if not run_tool(report, f"cmake build {cmake_target}",
                         [cmake, "--build", str(build_dir), "--config", "MinSizeRel",
-                         "--target", cmake_target, "--", "-j", str(jobs)]):
+                         "--target", cmake_target, "--parallel", str(jobs)]):
             return False
     return True
 

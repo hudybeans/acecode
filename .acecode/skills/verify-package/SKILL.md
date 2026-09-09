@@ -75,7 +75,8 @@ python3 .../verify_package.py --staging-dir /tmp/ace-verify
 1. Preflight: `web/dist/index.html` exists; cmake is on PATH; the isolated
    package build dir is configured when `--skip-build` is used.
 2. Configure + incremental build of `acecode` (and `acecode-desktop` for the
-   desktop target), using detected logical CPUs or `--jobs`. A per-build-dir
+   desktop target), using CMake `--parallel` with detected logical CPUs or
+   `--jobs`, compatible with Visual Studio and Ninja. A per-build-dir
    lock prevents concurrent CMake/Ninja/package operations.
 3. Staging, mirroring the CI Package step: binaries (or the macOS
    `ACECode.app` bundle) + READMEs, then
