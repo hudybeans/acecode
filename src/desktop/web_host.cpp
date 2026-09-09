@@ -547,6 +547,55 @@ constexpr wchar_t kHostWindowPreviousProcProperty[] = L"ACECodeDesktopHostPrevio
 constexpr wchar_t kHostWindowStartupMonitorProperty[] = L"ACECodeDesktopStartupMonitor";
 constexpr int kFramelessDragHeightDip = 44;
 
+HICON load_host_window_icon(int width, int height) {
+    HINSTANCE instance = ::GetModuleHandleW(nullptr);
+    // acecode.rc.in uses numeric ID 1; older resources used the name IDI_ICON1.
+    if (HICON icon = static_cast<HICON>(::LoadImageW(
+            instance, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height,
+            LR_DEFAULTCOLOR))) {
+        return icon;
+    }
+    if (HICON icon = static_cast<HICON>(::LoadImageW(
+            instance, L"IDI_ICON1", IMAGE_ICON, width, height, LR_DEFAULTCOLOR))) {
+        return icon;
+    }
+    LOG_WARN("[desktop] failed to load window icon, last_error=" +
+             std::to_string(::GetLastError()));
+    return nullptr;
+}
+
+struct HostWindowIcons {
+    // Own distinct sizes: LR_SHARED can return a cached frame of the wrong size.
+    HICON large_icon = load_host_window_icon(
+        ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON));
+    HICON small_icon = load_host_window_icon(
+        ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON));
+
+    ~HostWindowIcons() {
+        if (large_icon) ::DestroyIcon(large_icon);
+        if (small_icon) ::DestroyIcon(small_icon);
+    }
+};
+
+const HostWindowIcons& host_window_icons() {
+    // Window classes and all host windows share these until process shutdown.
+    static const HostWindowIcons icons;
+    return icons;
+}
+
+void apply_host_window_icons(HWND hwnd) {
+    if (!hwnd) return;
+    const auto& icons = host_window_icons();
+    if (icons.large_icon) {
+        ::SendMessageW(hwnd, WM_SETICON, ICON_BIG,
+                       reinterpret_cast<LPARAM>(icons.large_icon));
+    }
+    if (icons.small_icon) {
+        ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
+                       reinterpret_cast<LPARAM>(icons.small_icon));
+    }
+}
+
 // WM_USER 区私有消息:绕过 close_request_handler 直接走 DestroyWindow。
 // 选 0x10 偏移留出 0..0xF 给未来扩展;远离 webview/Common Controls 常用的
 // WM_USER..WM_USER+0x100 区段。
@@ -1235,6 +1284,8 @@ bool register_host_window_class(HINSTANCE instance) {
     wc.lpszClassName = kHostWindowClassName;
     wc.lpfnWndProc = host_window_proc;
     wc.hCursor = ::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW
+    wc.hIcon = host_window_icons().large_icon;
+    wc.hIconSm = host_window_icons().small_icon;
     // 快速 resize 时新暴露区域由类背景刷打底;不设(NULL)= 不擦除 = 黑闪。
     // 默认取前端浅色 body 底色,主题切换后由 apply_class_background_brush 换刷。
     wc.hbrBackground = ::CreateSolidBrush(background_colorref(kDefaultWindowBackground));
@@ -1807,6 +1858,8 @@ struct WebHost::Impl {
             install_host_window_proc(owned_window);
         }
         if (w) {
+            // Also cover the WebView-owned fallback window, whose class has no icon.
+            apply_host_window_icons(hwnd());
             configure_browser_defaults(*w);
             // 三层打底(host 类刷 / widget 类刷 / WebView2 合成器)统一走默认色。
             // offscreen 路径的 host 类注册时已带刷,这里等价换新;降级路径
