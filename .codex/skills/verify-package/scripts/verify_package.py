@@ -22,6 +22,10 @@ import tempfile
 import time
 from pathlib import Path
 
+REPO_ROOT_FOR_TOOLS = Path(__file__).resolve().parents[4]
+if str(REPO_ROOT_FOR_TOOLS) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT_FOR_TOOLS))
+from scripts.build_lock import BuildDirectoryBusy, build_directory_lock
 MODELS_DEV_FILES = ("api.json", "MANIFEST.json", "LICENSE")
 README_FILES = ("README.md", "README_CN.md")
 BUILD_CONFIGS = ("MinSizeRel", "Release", "RelWithDebInfo", "Debug")
@@ -222,8 +226,49 @@ def preflight(report: Report, repo: Path, cmake: str | None, skip_build: bool,
     return ok
 
 
+def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
+                  targets: list[str], jobs: int, cmake: str | None,
+                  skip_build: bool) -> None:
+    """Describe package verification without creating files or running processes."""
+    cmake_command = cmake or "cmake"
+    print("DRY RUN: no commands will be executed and no files will be changed.")
+    print(f"Repository: {repo}")
+    print(f"Build directory: {build_dir}")
+    print(f"Staging directory: {staging}")
+    print(f"Lock: {build_dir / '.acecode-build.lock'} (not acquired)")
+    print(f"Platform: {platform}")
+    print(f"Jobs: {jobs}")
+    if skip_build:
+        print("Would reuse the existing build tree (--skip-build).")
+    else:
+        configure = [cmake_command, "-S", str(repo), "-B", str(build_dir),
+                     "-DCMAKE_BUILD_TYPE=MinSizeRel", "-DBUILD_TESTING=OFF",
+                     "-DACECODE_BUILD_DESKTOP=ON"]
+        if platform != "windows" and shutil.which("ninja"):
+            configure[4:4] = ["-G", "Ninja"]
+        vcpkg_root = os.environ.get("VCPKG_ROOT")
+        if vcpkg_root:
+            configure.append(
+                f"-DCMAKE_TOOLCHAIN_FILE={Path(vcpkg_root) / 'scripts' / 'buildsystems' / 'vcpkg.cmake'}")
+        print("Would run:")
+        print("  " + " ".join(configure))
+        for target in targets:
+            print("  " + " ".join([
+                cmake_command, "--build", str(build_dir), "--config", "MinSizeRel",
+                "--target", CMAKE_TARGETS[target], "--", "-j", str(jobs),
+            ]))
+    print("Would stage package files and run structural/runtime checks.")
+    if "tui" in targets or platform != "darwin":
+        for component in ("models_dev_registry", "default_seed_bundle"):
+            print("  " + " ".join([
+                cmake_command, "--install", str(build_dir), "--config", "MinSizeRel",
+                "--prefix", str(staging), "--component", component,
+            ]))
+    print("Desktop/TUI runtime probes would be skipped.")
+
+
 def configure_and_build(report: Report, repo: Path, build_dir: Path, cmake: str,
-                        targets: list[str], platform: str) -> bool:
+                        targets: list[str], platform: str, jobs: int) -> bool:
     if not (build_dir / "CMakeCache.txt").is_file():
         command = [cmake, "-S", str(repo), "-B", str(build_dir),
                    "-DCMAKE_BUILD_TYPE=MinSizeRel", "-DBUILD_TESTING=OFF",
@@ -245,7 +290,7 @@ def configure_and_build(report: Report, repo: Path, build_dir: Path, cmake: str,
         cmake_target = CMAKE_TARGETS[target]
         if not run_tool(report, f"cmake build {cmake_target}",
                         [cmake, "--build", str(build_dir), "--config", "MinSizeRel",
-                         "--target", cmake_target]):
+                         "--target", cmake_target, "--", "-j", str(jobs)]):
             return False
     return True
 
@@ -484,13 +529,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="which artifact set to verify (default: all)")
     parser.add_argument("--skip-build", action="store_true",
                         help="reuse the existing build tree; stage and verify only")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print planned commands without executing or changing files")
     parser.add_argument("--platform", choices=("auto", "darwin", "windows", "linux"),
                         default="auto",
                         help="override platform detection (mainly for tests)")
     parser.add_argument("--repo", type=Path, default=None,
                         help="ACECode repo root (default: detected from this script)")
     parser.add_argument("--build-dir", type=Path, default=None,
-                        help="CMake build directory (default: <repo>/build)")
+                        help="CMake build directory (default: build/windows-x64-package)")
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="parallel build jobs (default: detected logical CPUs)")
     parser.add_argument("--staging-dir", type=Path, default=None,
                         help="staging output directory "
                              "(default: <build-dir>/verify-package-staging)")
@@ -504,26 +553,40 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     report = Report()
     repo = (args.repo or find_repo_root(Path(__file__).resolve())).resolve()
-    build_dir = (args.build_dir or repo / "build").resolve()
+    build_dir = (args.build_dir or repo / "build" / "windows-x64-package").resolve()
     staging = (args.staging_dir or build_dir / STAGING_DIRNAME).resolve()
     platform = detect_platform(args.platform)
+    jobs = args.jobs if args.jobs is not None else os.cpu_count() or 1
+    if jobs < 1:
+        print("verify-package: --jobs must be a positive integer", file=sys.stderr)
+        return 2
     cmake = shutil.which("cmake")
     targets = ["tui", "desktop"] if args.target == "all" else [args.target]
     print(f"verify-package: repo={repo} build={build_dir} platform={platform} "
           f"target={args.target} skip-build={args.skip_build}")
 
+    if args.dry_run:
+        print_dry_run(repo, build_dir, staging, platform, targets, jobs, cmake,
+                      args.skip_build)
+        return 0
+
     if not preflight(report, repo, cmake, args.skip_build, build_dir):
         print(f"verify-package: FAIL ({report.failed} check(s) failed)")
         return 1
 
-    if not args.skip_build:
-        assert cmake is not None
-        if not configure_and_build(
-                report, repo, build_dir, cmake, targets, platform):
-            print(f"verify-package: FAIL ({report.failed} check(s) failed)")
-            return 1
-
-    if not stage(report, repo, build_dir, staging, platform, targets, cmake or "cmake"):
+    try:
+        with build_directory_lock(build_dir):
+            if not args.skip_build:
+                assert cmake is not None
+                if not configure_and_build(
+                        report, repo, build_dir, cmake, targets, platform, jobs):
+                    print(f"verify-package: FAIL ({report.failed} check(s) failed)")
+                    return 1
+            if not stage(report, repo, build_dir, staging, platform, targets, cmake or "cmake"):
+                print(f"verify-package: FAIL ({report.failed} check(s) failed)")
+                return 1
+    except BuildDirectoryBusy as error:
+        report.add("build directory safety", "fail", str(error))
         print(f"verify-package: FAIL ({report.failed} check(s) failed)")
         return 1
 

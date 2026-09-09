@@ -73,13 +73,17 @@ class VerifyPackageUnitTest(unittest.TestCase):
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 result = verify_package.configure_and_build(
                     verify_package.Report(), repo, build, "cmake",
-                    ["tui", "desktop"], "windows"
+                    ["tui", "desktop"], "windows", jobs=4
                 )
 
             self.assertTrue(result)
             self.assertNotIn("-G", commands[0])
-            self.assertEqual(commands[1][-1], "acecode")
-            self.assertEqual(commands[2][-1], "acecode-desktop")
+            self.assertEqual(
+                commands[1][commands[1].index("--target") + 1], "acecode")
+            self.assertEqual(
+                commands[2][commands[2].index("--target") + 1], "acecode-desktop")
+            for command in commands[1:]:
+                self.assertEqual(command[-2:], ["-j", "4"])
 
     def test_non_windows_prefers_ninja(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:
@@ -96,10 +100,12 @@ class VerifyPackageUnitTest(unittest.TestCase):
             with mock.patch.object(verify_package, "run_tool", side_effect=capture), \
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 verify_package.configure_and_build(
-                    verify_package.Report(), repo, build, "cmake", ["tui"], "linux"
+                    verify_package.Report(), repo, build, "cmake", ["tui"], "linux",
+                    jobs=4
                 )
 
             self.assertEqual(commands[0][4:6], ["-G", "Ninja"])
+            self.assertEqual(commands[1][-2:], ["-j", "4"])
 
     def test_staging_path_guard_rejects_protected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:
