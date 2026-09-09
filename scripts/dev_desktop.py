@@ -26,9 +26,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-# ─── 颜色输出（终端支持时） ───────────────────────────────────────────────
-
 def _supports_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
@@ -320,7 +317,7 @@ def main() -> None:
     parser.add_argument("--rebuild", action="store_true", help="强制重新构建 web 前端")
     parser.add_argument("--no-build", action="store_true", help="跳过 web 构建，直接启动 desktop")
     parser.add_argument("--list", action="store_true", help="列出可用的 desktop 构建产物并退出")
-    parser.add_argument("--build-dir", type=str, default=None, help="指定 desktop 构建目录（相对于项目根或绝对路径）")
+    parser.add_argument("--build-dir", type=str, default="build/windows-x64-dev", help="指定 desktop 构建目录（相对于项目根或绝对路径）")
     parser.add_argument("--root", type=str, default=None, help="指定项目根目录（自动检测失败时使用）")
 
     args = parser.parse_args()
@@ -338,7 +335,10 @@ def main() -> None:
     info(f"项目根目录: {project_root}")
 
     web_dir = project_root / "web"
-    build_dir = project_root / "build"
+    build_dir = Path(args.build_dir)
+    if not build_dir.is_absolute():
+        build_dir = project_root / build_dir
+    build_dir = build_dir.resolve()
     dev_web_dir = web_dir / "dist"
 
     # 2. --list 模式
