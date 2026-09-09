@@ -4,12 +4,15 @@
 #include "permissions.hpp"
 #include "session/session_registry.hpp"
 #include "tool/tool_executor.hpp"
+#include "utils/utf8_path.hpp"
 #include "utils/uuid.hpp"
+#include "worktree/worktree_manager.hpp"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 namespace acecode::loop {
@@ -205,7 +208,51 @@ TEST(LoopScheduler, DueRunCreatesVisibleSessionAndCapturesTerminalEvent) {
     EXPECT_EQ(client.created_options.cwd, root.string());
     EXPECT_TRUE(observed.worktree_path.empty());
     EXPECT_TRUE(observed.worktree_branch.empty());
+    EXPECT_TRUE(observed.workspace_touched.empty());
     EXPECT_EQ(registry.size(), 0u);
+}
+
+// 场景:LOOP 建了 worktree,launch 时对主 checkout 拍下 git status 基线;运行
+// 期间有写入绕过边界落到了主 checkout(这里直接在仓库里新建文件模拟)。
+// 期望:detect_workspace_touched 报出该文件;快照没变时为空;git 打不开的目录
+// (.git 指针文件损坏)当作"不可知"返回空,而不是把目录里的一切都算成改动。
+TEST(LoopScheduler, DetectWorkspaceTouchedReportsFilesAddedAfterBaseline) {
+    if (!worktree::run_git({"--version"}, "").ok()) {
+        GTEST_SKIP() << "git not available on this machine";
+    }
+    const auto root = std::filesystem::temp_directory_path() /
+        ("acecode-loop-touched-" + generate_uuid());
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    } cleanup{root};
+    const std::string repo = path_to_utf8(root);
+    ASSERT_TRUE(worktree::run_git({"init", "-b", "main"}, repo).ok());
+
+    auto baseline = worktree::list_status_lines(repo);
+    ASSERT_TRUE(baseline.has_value());
+    EXPECT_TRUE(detect_workspace_touched(repo, *baseline).empty());
+
+    {
+        std::ofstream out(root / "escaped.txt", std::ios::binary);
+        out << "bypassed the worktree\n";
+    }
+    EXPECT_EQ(detect_workspace_touched(repo, *baseline),
+              std::vector<std::string>{"escaped.txt"});
+
+    const auto broken = std::filesystem::temp_directory_path() /
+        ("acecode-loop-broken-" + generate_uuid());
+    std::filesystem::create_directories(broken);
+    Cleanup broken_cleanup{broken};
+    {
+        std::ofstream marker(broken / ".git", std::ios::binary);
+        marker << "not a gitfile\n";
+        std::ofstream out(broken / "file.txt", std::ios::binary);
+        out << "x\n";
+    }
+    EXPECT_FALSE(worktree::list_status_lines(path_to_utf8(broken)).has_value());
+    EXPECT_TRUE(detect_workspace_touched(path_to_utf8(broken), {}).empty());
 }
 
 } // namespace

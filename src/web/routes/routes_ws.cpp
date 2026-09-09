@@ -323,6 +323,10 @@ void WebServer::Impl::handle_ws_message(crow::websocket::connection& conn, const
             conn.send_text(R"({"type":"error","payload":{"reason":"missing session_id"}})");
             return;
         }
+        if (acecode::environment::data_dir_writes_blocked()) {
+            conn.send_text(R"({"type":"error","payload":{"reason":"data directory migration in progress"}})");
+            return;
+        }
         if (deps.session_client && !deps.session_client->send_input(sid, text)) {
             conn.send_text(R"({"type":"error","payload":{"reason":"unknown session"}})");
         }

@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../provider/llm_provider.hpp"
+#include "session_storage.hpp"
 
 namespace acecode {
 
@@ -185,6 +186,16 @@ struct SessionOptions {
     std::string loop_id;
     std::string loop_run_id;
     std::string loop_system_context;
+
+    // spawn_subagent 继承项。inherited_worktree 非空 = 子会话共享父会话的
+    // worktree(registry 标 inherited,子会话不拥有它,并把 AgentLoop 的 cwd
+    // 切进 worktree);此时 cwd 字段传父会话进 worktree 前的 workspace cwd,
+    // 让子会话与父会话落在同一个 project dir —— 「后台任务」面板按父会话
+    // cwd 扫盘,子会话建在 worktree 路径的 project dir 下会在结束后消失。
+    // write_root 非空 = 父会话的写边界根,子会话没有 worktree / LOOP 身份时
+    // 靠它兜底。
+    WorktreeSessionInfo inherited_worktree;
+    std::string write_root;
 };
 
 // ----- Current session model state -----

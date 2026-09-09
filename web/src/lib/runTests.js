@@ -1,11 +1,13 @@
 import './questionPicker.test.js';
 import './pendingQuestions.test.js';
 import './expertMenuPosition.test.js';
+import './anchoredMenuPosition.test.js';
 import './stickyUserContext.test.js';
 import './desktopContextMenu.test.js';
 import './sessionExplorerArchitecture.test.js';
 import './topBarQuickActions.test.js';
 import './desktopWindowBackground.test.js';
+import './topBarWindowDrag.test.js';
 import './mermaidRenderer.test.js';
 import './mermaidPreview.test.js';
 import './mermaidExport.test.js';
@@ -44,6 +46,7 @@ import './desktopFilesystemTransfer.test.js';
 import './desktopNativeFilesystemDrop.test.js';
 import './desktopNativeFilesystemDropArchitecture.test.js';
 import './richComposerModel.test.js';
+import './richComposerKeyboard.test.js';
 import './slateComposerArchitecture.test.js';
 import './chatFileDropFeedbackArchitecture.test.js';
 import './consoleDropPaths.test.js';
@@ -153,6 +156,7 @@ import './searchExperienceArchitecture.test.js';
 import './useGlobalShortcut.test.js';
 import './browserCompatibility.test.js';
 import './browserDefaults.test.js';
+import './fullscreenHeatWave.test.js';
 import './hooksSettings.test.js';
 import './skillsSettings.test.js';
 import './mcpServers.test.js';
@@ -235,12 +239,16 @@ import './projectCreation.test.js';
 import './workspacePicker.test.js';
 import './connectors.test.js';
 import './settingsNavigation.test.js';
+import './environmentSettings.test.js';
+import './settingsSearch.test.js';
+import './settingsWindowArchitecture.test.js';
 import './remoteWeb.test.js';
 import './remoteWebArchitecture.test.js';
 
-// These suites intentionally mutate the process-wide locale. Run them in
+// These suites mutate process-wide fetch/timers or locale. Run them in
 // series after the ordinary static-import suites so top-level await cannot
 // leak a temporary English locale into an unrelated presentation test.
+await import('./imageGenerationSettings.test.js');
 await import('../i18n/runtime.test.js');
 await import('./uiLocale.test.js');
 await import('./slashCommands.test.js');

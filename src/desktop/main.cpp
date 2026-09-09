@@ -1501,6 +1501,7 @@ int main(int argc, char** argv) {
         if (restart_requested.load()) {
             return nlohmann::json{{"ok", true}}.dump();
         }
+        LOG_INFO("[desktop] post-upgrade restart preflight started");
         const auto preflight = validate_desktop_restart_target(desktop_restart_target);
         if (!preflight.ok) {
             LOG_ERROR("[desktop] restart preflight failed: " + preflight.error);
@@ -1952,10 +1953,13 @@ int main(int argc, char** argv) {
     host.bind("aceDesktop_toggleMaximizeWindow", [&](const std::string& /*req*/) -> std::string {
         return nlohmann::json{{"ok", host.toggle_maximize_window()}}.dump();
     });
-    // 前端 TopBar 在 mount 时调一次拿初始最大化态;后续靠下方 set_window_state_change_handler
-    // 推送的 aceDesktop_onMaximizeStateChanged 回调实时更新图标(矩形 ↔ 双层方框)。
+    // 前端 TopBar 在 mount 时调一次拿初始窗口态;后续靠下方两个 handler 推送
+    // maximize/fullscreen 变化。macOS fullscreen 独立于 zoom/maximize。
     host.bind("aceDesktop_isWindowMaximized", [&](const std::string& /*req*/) -> std::string {
-        return nlohmann::json{{"maximized", host.is_window_maximized()}}.dump();
+        return nlohmann::json{
+            {"maximized", host.is_window_maximized()},
+            {"fullscreen", host.is_window_fullscreen()},
+        }.dump();
     });
     host.bind("aceDesktop_closeWindow", [&](const std::string& /*req*/) -> std::string {
         return nlohmann::json{{"ok", host.close_window()}}.dump();
@@ -2003,6 +2007,16 @@ int main(int argc, char** argv) {
             ");}}catch(e){}})();";
         host.eval(js);
     });
+    host.set_window_fullscreen_change_handler(
+        [&host, &agent_browser](bool fullscreen) {
+            agent_browser.refresh_layout();
+            const std::string js = std::string(
+                "(function(){try{if(window.aceDesktop_onFullscreenStateChanged){"
+                "window.aceDesktop_onFullscreenStateChanged(") +
+                (fullscreen ? "true" : "false") +
+                ");}}catch(e){}})();";
+            host.eval(js);
+        });
 
     host.set_window_visibility_handler([&agent_browser](bool visible) {
         agent_browser.set_parent_visible(visible);
@@ -2161,6 +2175,7 @@ int main(int argc, char** argv) {
         {"theme", desktop_cfg.web_ui.theme},
         {"color_theme", desktop_cfg.web_ui.color_theme},
         {"font_size", desktop_cfg.web_ui.font_size},
+        {"sidebar_session_time", desktop_cfg.web_ui.sidebar_session_time},
     }.dump();
     const std::string startup_bootstrap = startup_timeline.snapshot_json();
     host.init_script(acecode::desktop::locale_bootstrap_script(
@@ -2639,12 +2654,16 @@ int main(int argc, char** argv) {
     notification_shutdown_guard.dismiss();
     shutdown_tray_icon();
 
+    if (restart_requested.load()) LOG_INFO("[desktop] post-upgrade daemon shutdown started");
     auto failures = pool.shutdown_all();
     if (restart_requested.load()) {
+        LOG_INFO("[desktop] post-upgrade daemon shutdown finished; failures=" +
+                 std::to_string(failures.size()));
         // The replacement must not see the dying process's singleton guard and
         // focus it instead of starting. At this point the WebView loop, tray,
         // notifications, and managed daemons have all completed teardown.
         singleton.release();
+        LOG_INFO("[desktop] post-upgrade replacement launch started");
         std::string restart_error;
         if (!launch_desktop_replacement(desktop_restart_target, &restart_error)) {
             LOG_ERROR("[desktop] failed to launch replacement after upgrade: " + restart_error);

@@ -1,4 +1,4 @@
-// 全屏设置页:左栏导航 + 右栏内容(Codex 风格)。
+// 浮动设置窗口:mask + 贯通的左栏导航与右栏内容。
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
@@ -10,6 +10,9 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme.jsx';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { SettingsConfigSection } from './SettingsConfigSection.jsx';
+import { SettingsSearch } from './SettingsSearch.jsx';
+import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
 import {
@@ -34,6 +37,7 @@ import {
 } from '../lib/desktopCloseBehavior.js';
 import { Modal, Toggle } from './Modal.jsx';
 import { ModelSettingsSection } from './model-settings/ModelSettingsSection.jsx';
+import { ImageGenerationSettings } from './ImageGenerationSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
 import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
@@ -94,14 +98,7 @@ import {
   selectRemoteWebConnection,
   waitForRemoteWebMode,
 } from '../lib/remoteWeb.js';
-import {
-  WindowControls,
-  isInteractiveTarget,
-  nativePointerEvent,
-  useFramelessWindowState,
-} from './WindowControls.jsx';
 
-const DEFAULT_UPGRADE_SERVICE_URL = 'http://2017studio.imwork.net:82/aupdate/';
 const FONT_SIZE_OPTIONS = [
   { key: 'small', label: '小' },
   { key: 'medium', label: '中' },
@@ -143,6 +140,8 @@ export function SettingsPage({
   onThemeChange,
   onColorThemeChange,
   onFontSizeChange = () => {},
+  sidebarSessionTime = true,
+  onSidebarSessionTimeChange = () => {},
 }) {
   const {
     theme,
@@ -156,54 +155,94 @@ export function SettingsPage({
     () => settingsNavIndexForKey(initialNavKey),
   );
   const [show, setShow] = useState(false);
-  const { framelessDesktop, isMaximized } = useFramelessWindowState();
+  const [expanded, setExpanded] = useState(false);
+  const { i18n } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [composing, setComposing] = useState(false);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchNavigation, setSearchNavigation] = useState(0);
+  const contentRef = useRef(null);
+  const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
+  const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
+  const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
+  const closeTimerRef = useRef(null);
   const activeNavKey = SETTINGS_NAV_ITEMS[activeNav]?.key || 'general';
+
+  useEffect(() => {
+    if (composing) return undefined;
+    const timer = setTimeout(() => { setSearchTerm(searchQuery); setSearchIndex(0); }, 180);
+    return () => clearTimeout(timer);
+  }, [searchQuery, composing]);
+  useEffect(() => {
+    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section));
+  }, [selectedResult]);
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root || !selectedResult || selectedResult.section !== activeNavKey) return undefined;
+    let marked;
+    let scrolled = false;
+    const locate = () => {
+      const target = locateSetting(root, selectedResult);
+      if (!target || target === marked) return;
+      marked?.classList.remove('ace-settings-search-match');
+      marked = target;
+      target.classList.add('ace-settings-search-match');
+      if (!scrolled) {
+        const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
+        root.scrollTop += offset - 36;
+        scrolled = true;
+      }
+    };
+    locate();
+    const observer = new MutationObserver(locate);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => { observer.disconnect(); marked?.classList.remove('ace-settings-search-match'); };
+  }, [selectedResult, activeNavKey, searchNavigation]);
 
   useEffect(() => { requestAnimationFrame(() => setShow(true)); }, []);
   useEffect(() => {
     setActiveNav(settingsNavIndexForKey(initialNavKey));
   }, [initialNavKey]);
-  const close = () => { setShow(false); setTimeout(onClose, 240); };
+  useEffect(() => () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+  }, []);
+  const close = useCallback(() => {
+    if (closeTimerRef.current) return;
+    setShow(false);
+    closeTimerRef.current = setTimeout(onClose, 220);
+  }, [onClose]);
 
-  const onHeaderMouseDown = (event) => {
-    if (!framelessDesktop || event.button !== 0 || isInteractiveTarget(event.target)) return;
-    event.preventDefault();
-    if (event.detail >= 2 && typeof window.aceDesktop_toggleMaximizeWindow === 'function') {
-      window.aceDesktop_toggleMaximizeWindow();
-      return;
-    }
-    window.aceDesktop_startWindowDrag(nativePointerEvent(event));
+  const onMaskClick = (event) => {
+    if (event.target === event.currentTarget) close();
   };
 
   return (
     <div
       data-ace-native-overlay="blocking"
+      data-settings-mask="true"
+      onClick={onMaskClick}
       className={clsx(
-        'fixed inset-0 z-[300] bg-bg flex flex-col transition-opacity duration-250',
+        'ace-settings-mask fixed inset-0 z-[300] flex items-center justify-center transition-opacity duration-200',
         show ? 'opacity-100' : 'opacity-0',
       )}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-window-title"
+        data-settings-window="true"
+        data-expanded={expanded ? 'true' : 'false'}
         className={clsx(
-          'h-11 pl-4 pr-0 flex items-center bg-surface border-b border-border shrink-0',
-          framelessDesktop && 'ace-desktop-frameless-topbar',
+          'ace-settings-panel flex overflow-hidden',
+          show ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-2 scale-[0.985]',
         )}
-        onMouseDown={onHeaderMouseDown}
       >
-        <button
-          type="button"
-          onClick={close}
-          className="px-3 h-7 rounded-md text-fg-2 text-[13px] hover:bg-surface-hi transition flex items-center gap-1.5"
-        ><VsIcon name="back" size={13} />返回</button>
-        <span className="flex-1 text-center text-[15px] font-semibold">设置</span>
-        {/* 占位:让标题居中,与 TopBar 视觉对齐;frameless 模式下右侧由 WindowControls 占据 */}
-        <div className={clsx(framelessDesktop ? 'flex items-center pr-0' : 'w-16 pr-4')}>
-          {framelessDesktop && <WindowControls isMaximized={isMaximized} />}
-        </div>
-      </div>
-      <div className="flex-1 flex overflow-hidden">
-        <nav className="w-14 sm:w-[200px] bg-surface-alt border-r border-border py-2 overflow-y-auto shrink-0">
-          {SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
+        <span id="settings-window-title" className="sr-only">设置</span>
+        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+          <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
+            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
+          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
             const headingId = `settings-nav-group-${group.key}`;
             return (
               <div
@@ -214,8 +253,8 @@ export function SettingsPage({
                 <div
                   id={headingId}
                   className={clsx(
-                    'sr-only sm:not-sr-only sm:block sm:px-4 sm:pb-1 text-[11px] font-medium text-fg-mute opacity-75',
-                    groupIndex === 0 ? 'pt-1' : 'pt-4',
+                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
+                    groupIndex === 0 ? 'pt-0' : 'pt-2',
                   )}
                 >
                   {group.label}
@@ -229,16 +268,16 @@ export function SettingsPage({
                       type="button"
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
-                      onClick={() => setActiveNav(itemIndex)}
+                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
                       className={clsx(
-                        'w-full px-0 sm:px-4 py-2 text-[13px] transition border-l-[3px] flex items-center justify-center sm:justify-start gap-2 text-left',
+                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
                         active
-                          ? 'text-accent font-semibold bg-accent-bg border-accent'
-                          : 'text-fg hover:bg-surface-hi border-transparent',
+                          ? 'text-fg font-semibold'
+                          : 'text-fg-2',
                       )}
                     >
                       <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
-                      <span className="hidden sm:inline truncate">{item.label}</span>
+                      <span className="truncate">{item.label}</span>
                     </button>
                   );
                 })}
@@ -246,7 +285,29 @@ export function SettingsPage({
             );
           })}
         </nav>
-        <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-6 md:px-12 md:py-6">
+        <div className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col">
+          <div className="ace-settings-window-actions flex items-center gap-1 select-none">
+            <button
+              type="button"
+              title={expanded ? '还原' : '展开'}
+              aria-label={expanded ? '还原' : '展开'}
+              aria-pressed={expanded}
+              onClick={() => setExpanded((value) => !value)}
+              className="h-8 w-8 inline-flex items-center justify-center rounded-md text-fg-2 hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent transition"
+            >
+              <VsIcon name={expanded ? 'screenNormal' : 'screenFull'} size={15} />
+            </button>
+            <button
+              type="button"
+              title="关闭"
+              aria-label="关闭"
+              onClick={close}
+              className="h-8 w-8 inline-flex items-center justify-center rounded-md text-fg-2 hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent transition"
+            >
+              <VsIcon name="close" size={15} />
+            </button>
+          </div>
+        <div ref={contentRef} className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
           {activeNavKey === 'general' && (
             <SectionGeneral
               health={health}
@@ -264,9 +325,11 @@ export function SettingsPage({
               setColorTheme={setColorTheme}
               fontSize={fontSize}
               onFontSizeChange={onFontSizeChange}
+              sidebarSessionTime={sidebarSessionTime}
+              onSidebarSessionTimeChange={onSidebarSessionTimeChange}
             />
           )}
-          {activeNavKey === 'config' && <SectionConfig />}
+          {activeNavKey === 'config' && <SettingsConfigSection />}
           {activeNavKey === 'personalization' && <SectionPersonalization />}
           {activeNavKey === 'skills' && <SectionSkills />}
           {activeNavKey === 'mcp' && <SectionMCP />}
@@ -280,6 +343,7 @@ export function SettingsPage({
           {activeNavKey === 'usage' && <SectionUsage />}
           {activeNavKey === 'feedback' && <SectionFeedback />}
           {activeNavKey === 'about' && <SectionAbout health={health} />}
+        </div>
         </div>
       </div>
     </div>
@@ -1143,6 +1207,8 @@ function SectionAppearance({
   setColorTheme,
   fontSize,
   onFontSizeChange,
+  sidebarSessionTime,
+  onSidebarSessionTimeChange,
 }) {
   return (
     <>
@@ -1211,6 +1277,18 @@ function SectionAppearance({
           );
         })}
       </div>
+      <div className="h-px bg-border my-5" />
+      <div className="text-[14px] font-semibold mb-1">侧边栏</div>
+      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div>
+          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
+        </div>
+        <Toggle
+          on={sidebarSessionTime}
+          onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
+      </div>
     </>
   );
 }
@@ -1275,244 +1353,24 @@ function SectionAbout({ health }) {
   );
 }
 
-function SectionConfig() {
-  const [upgradeUrl, setUpgradeUrl] = useState(DEFAULT_UPGRADE_SERVICE_URL);
-  const [upgradeLoading, setUpgradeLoading] = useState(true);
-  const [upgradeSaving, setUpgradeSaving] = useState(false);
-  const [upgradeSaved, setUpgradeSaved] = useState(false);
-  const [upgradeError, setUpgradeError] = useState('');
-  const [depPython, setDepPython] = useState(true);
-  const [depNode, setDepNode] = useState(true);
-  const [depCsharp, setDepCsharp] = useState(false);
-  const [diagRunning, setDiagRunning] = useState(false);
-  const [resetRunning, setResetRunning] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setUpgradeLoading(true);
-    setUpgradeError('');
-    api.getUpgradeConfig()
-      .then((cfg) => {
-        if (!cancelled) setUpgradeUrl(cfg?.base_url || DEFAULT_UPGRADE_SERVICE_URL);
-      })
-      .catch((e) => {
-        if (!cancelled) setUpgradeError(e?.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setUpgradeLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const saveUpgradeUrl = async () => {
-    const baseUrl = upgradeUrl.trim();
-    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-      setUpgradeError('升级服务 URL 必须使用 http 或 https');
-      return;
-    }
-    setUpgradeSaving(true);
-    setUpgradeSaved(false);
-    setUpgradeError('');
-    try {
-      const saved = await api.setUpgradeConfig({ base_url: baseUrl });
-      setUpgradeUrl(saved?.base_url || baseUrl);
-      setUpgradeSaved(true);
-      toast({ kind: 'ok', text: '升级服务 URL 已保存' });
-      setTimeout(() => setUpgradeSaved(false), 1500);
-    } catch (e) {
-      const message = e?.message || String(e);
-      setUpgradeError(message);
-      toast({ kind: 'err', text: message });
-    } finally {
-      setUpgradeSaving(false);
-    }
-  };
-
-  const runDiag = () => {
-    setDiagRunning(true);
-    setTimeout(() => {
-      setDiagRunning(false);
-      toast({ kind: 'ok', text: '诊断完成(占位)' });
-    }, 1600);
-  };
-  const runReset = () => {
-    setResetRunning(true);
-    setTimeout(() => {
-      setResetRunning(false);
-      toast({ kind: 'ok', text: '重置完成(占位)' });
-    }, 2400);
-  };
-
-  const dependencies = [
-    { key: 'python', label: 'Python 工具', desc: 'uv / ruff / mypy 等',     checked: depPython, toggle: () => setDepPython((v) => !v) },
-    { key: 'node',   label: 'Node.js 工具', desc: 'pnpm / npm / tsx 等',     checked: depNode,   toggle: () => setDepNode((v) => !v) },
-    { key: 'csharp', label: 'C# 工具',     desc: 'dotnet SDK / Roslyn 等',  checked: depCsharp, toggle: () => setDepCsharp((v) => !v) },
-  ];
-
-  return (
-    <>
-      <h2 className="text-xl font-bold mb-5">配置</h2>
-
-      <div className="text-[14px] font-semibold mb-1">升级服务</div>
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-5">
-        <label htmlFor="upgrade-service-url" className="text-[13px] font-medium mb-2 block">
-          升级服务 URL
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="upgrade-service-url"
-            type="url"
-            value={upgradeUrl}
-            onChange={(e) => {
-              setUpgradeUrl(e.target.value);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-            }}
-            disabled={upgradeLoading || upgradeSaving}
-            spellCheck={false}
-            className={clsx(
-              'flex-1 min-w-0 h-8 px-2.5 rounded-md border bg-bg text-fg text-[12px] outline-none transition',
-              upgradeError ? 'border-danger' : 'border-border focus:border-accent',
-            )}
-            placeholder={DEFAULT_UPGRADE_SERVICE_URL}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setUpgradeUrl(DEFAULT_UPGRADE_SERVICE_URL);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-            }}
-            disabled={upgradeLoading || upgradeSaving}
-            className="shrink-0 px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi disabled:opacity-50 transition"
-          >
-            默认
-          </button>
-          <button
-            type="button"
-            onClick={saveUpgradeUrl}
-            disabled={upgradeLoading || upgradeSaving}
-            className={clsx(
-              'shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed',
-              upgradeSaved ? 'bg-ok text-white' : 'bg-accent text-white hover:opacity-90',
-            )}
-          >
-            {upgradeSaving ? (
-              <>
-                <span className="ace-spinner" style={{ width: 12, height: 12 }} />
-                保存中...
-              </>
-            ) : (
-              <>
-                <VsIcon
-                  name={upgradeSaved ? 'ok' : 'save'}
-                  size={13}
-                  mono={false}
-                  className="ace-icon-on-accent"
-                />
-                {upgradeSaved ? '已保存' : '保存'}
-              </>
-            )}
-          </button>
-        </div>
-        {upgradeError && <div className="mt-2 text-[12px] text-danger">{upgradeError}</div>}
-      </div>
-
-      <div className="text-[14px] font-semibold mb-1">工作空间依赖项</div>
-      <p className="text-[12px] text-fg-mute mb-3">管理 ACECode 安装并提供给 Agent 使用的开发工具</p>
-
-      {/* 依赖项 checkbox 组 */}
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-2">
-        <div className="text-[13px] font-medium mb-0.5">ACECode 依赖项</div>
-        <div className="text-[11px] text-fg-mute mb-2.5">选择捆绑安装的语言工具链</div>
-        <div className="space-y-0.5">
-          {dependencies.map((dep) => (
-            <button
-              key={dep.key}
-              type="button"
-              onClick={dep.toggle}
-              aria-checked={dep.checked}
-              role="checkbox"
-              className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded text-left hover:bg-surface-hi transition"
-            >
-              <span
-                className={clsx(
-                  'w-[18px] h-[18px] rounded flex items-center justify-center text-white text-[11px] font-bold leading-none transition shrink-0',
-                  dep.checked ? 'bg-accent border-2 border-accent' : 'border-2 border-border bg-transparent',
-                )}
-              >
-                {dep.checked && <span>✓</span>}
-              </span>
-              <span className="flex-1 min-w-0">
-                <span className="text-[13px] font-medium block">{dep.label}</span>
-                <span className="text-[11px] text-fg-mute block">{dep.desc}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="h-px bg-border my-5" />
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">诊断 ACECode 工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">检查当前捆绑包并记录诊断日志</div>
-        </div>
-        <button
-          type="button"
-          onClick={runDiag}
-          disabled={diagRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
-        >
-          {diagRunning ? (
-            <>
-              <span className="ace-spinner" style={{ width: 12, height: 12 }} />
-              诊断中…
-            </>
-          ) : '诊断'}
-        </button>
-      </div>
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">重置并重装工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">删除本地捆绑包,重新下载后再加载工具</div>
-        </div>
-        <button
-          type="button"
-          onClick={runReset}
-          disabled={resetRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 transition disabled:opacity-60"
-        >
-          {resetRunning ? (
-            <>
-              <span
-                className="inline-block w-3 h-3 rounded-full border-2 border-danger border-t-transparent"
-                style={{ animation: 'ace-spin 0.8s linear infinite' }}
-              />
-              重置中…
-            </>
-          ) : '重新安装'}
-        </button>
-      </div>
-    </>
-  );
-}
-
 // ─── 个性化 ────────────────────────────────────────────────────────────────
 function SectionPersonalization() {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const lastSavedTextRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api.getCustomInstructions()
       .then((cfg) => {
-        if (!cancelled) setText(typeof cfg?.text === 'string' ? cfg.text : '');
+        if (!cancelled) {
+          const loadedText = typeof cfg?.text === 'string' ? cfg.text : '';
+          lastSavedTextRef.current = loadedText;
+          setText(loadedText);
+        }
       })
       .catch((e) => {
         if (!cancelled) {
@@ -1525,18 +1383,22 @@ function SectionPersonalization() {
     return () => { cancelled = true; };
   }, []);
 
-  const save = async () => {
-    if (saving || loading) return;
+  const save = async (candidate = text) => {
+    if (saving || loading) return false;
+    if (candidate === lastSavedTextRef.current) return true;
     setSaving(true);
     setSaved(false);
     try {
-      const result = await api.setCustomInstructions({ text });
-      if (typeof result?.text === 'string') setText(result.text);
+      const result = await api.setCustomInstructions({ text: candidate });
+      const savedText = typeof result?.text === 'string' ? result.text : candidate;
+      lastSavedTextRef.current = savedText;
+      setText(savedText);
       setSaved(true);
-      toast({ kind: 'ok', text: '自定义指令已保存' });
       setTimeout(() => setSaved(false), 1500);
+      return true;
     } catch (e) {
       toast({ kind: 'err', text: '保存自定义指令失败:' + (e?.message || '') });
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1555,6 +1417,7 @@ function SectionPersonalization() {
       <textarea
         value={text}
         onChange={(e) => { setText(e.target.value); setSaved(false); }}
+        onBlur={() => { void save(); }}
         disabled={loading || saving}
         placeholder="例如:这个项目使用 React 18 + Vite,组件库选 Tailwind 风格,提交信息用中文..."
         rows={10}
@@ -1562,20 +1425,11 @@ function SectionPersonalization() {
         style={{ minHeight: 240 }}
       />
 
-      <div className="flex justify-end mt-3">
-        <button
-          type="button"
-          onClick={save}
-          disabled={loading || saving}
-          className={clsx(
-            'px-4 py-1.5 rounded-md text-[12px] font-medium transition',
-            saved ? 'bg-ok text-white' : 'bg-accent text-white hover:opacity-90',
-            (loading || saving) && 'opacity-60 cursor-not-allowed',
-          )}
-        >
-          {saving ? '保存中...' : saved ? '已保存' : '保存'}
-        </button>
-      </div>
+      {(saving || saved) && (
+        <div className="mt-2 text-right text-[12px] text-fg-mute" aria-live="polite">
+          {saving ? '保存中...' : '已保存'}
+        </div>
+      )}
     </>
   );
 }
@@ -1609,8 +1463,13 @@ function SkillCard({ skill, busyName, onToggle }) {
           : 'border-border bg-surface hover:border-accent/50 hover:bg-surface-hi',
       )}
     >
-      <div className="flex items-start gap-3">
-        <div
+      <label
+        className={clsx(
+          '-mx-3.5 -mt-3.5 flex items-start gap-3 px-3.5 pt-3.5 pb-3',
+          busyName === skill.name ? 'cursor-default' : 'cursor-pointer',
+        )}
+      >
+        <span
           className={clsx(
             'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition',
             skill.enabled
@@ -1619,22 +1478,22 @@ function SkillCard({ skill, busyName, onToggle }) {
           )}
         >
           <VsIcon name="lightbulb" size={18} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="break-words text-[13px] font-semibold leading-5 text-fg">{skill.name}</div>
-          <div className="mt-0.5 text-[10px] text-fg-mute">
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-[13px] font-semibold leading-5 text-fg">{skill.name}</span>
+          <span className="mt-0.5 block text-[10px] text-fg-mute">
             {skill.source === 'project' ? '工作区' : '全局'}
-          </div>
-        </div>
+          </span>
+        </span>
         <Toggle
           on={skill.enabled}
           disabled={busyName === skill.name}
           onChange={(value) => onToggle(skill.name, value)}
           ariaLabel={`切换技能 ${skill.name}`}
         />
-      </div>
+      </label>
       <p
-        className="mt-3 line-clamp-4 text-[11px] leading-[18px] text-fg-mute"
+        className="line-clamp-4 text-[11px] leading-[18px] text-fg-mute"
         title={skill.description || ''}
       >
         {skill.description || '—'}
@@ -1954,6 +1813,7 @@ function SectionMCP() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [togglingName, setTogglingName] = useState('');
+  const lastSavedTextRef = useRef('');
 
   // 从 JSON 编辑器文本派生开关列表:文本合法且是对象时才有内容,否则空数组。
   // 直接读文本(而非独立请求)保证开关与 JSON 编辑器永远同步。
@@ -1974,7 +1834,10 @@ function SectionMCP() {
     setError('');
     try {
       const cfg = await api.getMcp();
-      setText(JSON.stringify(cfg || {}, null, 2));
+      const loadedText = JSON.stringify(cfg || {}, null, 2);
+      lastSavedTextRef.current = loadedText;
+      setText(loadedText);
+      setSaved(false);
     } catch (e) {
       setError('加载 MCP 失败:' + (e?.message || ''));
       toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
@@ -1988,7 +1851,11 @@ function SectionMCP() {
     setLoading(true);
     api.getMcp()
       .then((cfg) => {
-        if (!cancelled) setText(JSON.stringify(cfg || {}, null, 2));
+        if (!cancelled) {
+          const loadedText = JSON.stringify(cfg || {}, null, 2);
+          lastSavedTextRef.current = loadedText;
+          setText(loadedText);
+        }
       })
       .catch((e) => {
         if (!cancelled) {
@@ -2022,28 +1889,42 @@ function SectionMCP() {
       setError('JSON 格式错误:' + e.message);
     }
   };
-  const save = async () => {
+  const save = async (candidate = text) => {
+    if (saving || loading) return false;
+    let parsed;
     try {
-      const parsed = JSON.parse(text);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        setError('JSON 必须是对象');
-        return;
-      }
-      setError('');
-      setSaving(true);
-      await api.putMcp(parsed);
-      setSaved(true);
-      toast({ kind: 'ok', text: 'MCP 配置已保存;重启 daemon 后生效' });
-      setTimeout(() => setSaved(false), 1500);
+      parsed = JSON.parse(candidate);
     } catch (e) {
-      const msg = e instanceof SyntaxError ? 'JSON 格式错误:' + e.message : '保存失败:' + (e?.message || '');
+      const msg = 'JSON 格式错误:' + e.message;
+      setError(msg);
+      return false;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setError('JSON 必须是对象');
+      return false;
+    }
+    if (candidate === lastSavedTextRef.current) return true;
+
+    setError('');
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.putMcp(parsed);
+      lastSavedTextRef.current = candidate;
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      return true;
+    } catch (e) {
+      const msg = '保存失败:' + (e?.message || '');
       setError(msg);
       toast({ kind: 'err', text: msg });
+      return false;
     } finally {
       setSaving(false);
     }
   };
   const reload = async () => {
+    if (!await save()) return;
     try {
       const result = await api.reloadMcp();
       toast({ kind: 'ok', text: 'Reload: ' + JSON.stringify(result) });
@@ -2057,6 +1938,7 @@ function SectionMCP() {
   // 提示需重启。
   const toggleServer = async (name, enabled) => {
     if (togglingName) return;
+    if (!await save()) return;
     let nextText = text;
     try {
       const parsed = JSON.parse(text);
@@ -2076,6 +1958,9 @@ function SectionMCP() {
       } else {
         toast({ kind: 'ok', text: `${name} 已${enabled ? '启用' : '关闭'}` });
       }
+      lastSavedTextRef.current = nextText;
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       setText(prevText);
       toast({ kind: 'err', text: '切换失败:' + (e?.message || '') });
@@ -2098,8 +1983,9 @@ function SectionMCP() {
       <textarea
         value={text}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={() => { void save(); }}
         spellCheck={false}
-        disabled={loading}
+        disabled={loading || saving}
         rows={18}
         className={clsx(
           'w-full px-4 py-3 text-[12px] rounded-md border bg-code-bg text-code-fg font-mono outline-none transition leading-relaxed resize-y',
@@ -2112,17 +1998,23 @@ function SectionMCP() {
         <div className="mt-2 text-[12px] text-danger">{error}</div>
       )}
 
-      <div className="flex justify-end gap-2 mt-3">
+      <div className="flex items-center justify-between gap-3 mt-3">
+        <div className="min-w-0 text-[12px] text-fg-mute" aria-live="polite">
+          {saving ? '保存中...' : (saved ? '已保存' : '')}
+        </div>
+        <div className="flex justify-end gap-2">
         <button
           type="button"
+          onMouseDown={(event) => event.preventDefault()}
           onClick={format}
-          disabled={loading}
+          disabled={loading || saving}
           className="px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi transition"
         >
           格式化
         </button>
         <button
           type="button"
+          onMouseDown={(event) => event.preventDefault()}
           onClick={load}
           disabled={loading || saving}
           className="px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi disabled:opacity-50 transition"
@@ -2131,23 +2023,14 @@ function SectionMCP() {
         </button>
         <button
           type="button"
+          onMouseDown={(event) => event.preventDefault()}
           onClick={reload}
           disabled={loading || saving}
           className="px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi disabled:opacity-50 transition"
         >
           Reload
         </button>
-        <button
-          type="button"
-          onClick={save}
-          disabled={loading || saving || !!error}
-          className={clsx(
-            'px-4 py-1.5 rounded-md text-[12px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed',
-            saved ? 'bg-ok text-white' : 'bg-accent text-white hover:opacity-90',
-          )}
-        >
-          {saving ? '保存中...' : (saved ? '✓ 已保存' : '保存')}
-        </button>
+        </div>
       </div>
 
       <div className="mt-8 pt-6 border-t border-border">
@@ -2197,11 +2080,13 @@ function SectionMCP() {
                     </div>
                   )}
                 </div>
-                <Toggle
-                  on={server.enabled}
-                  onChange={(next) => toggleServer(server.name, next)}
-                  disabled={!!togglingName || saving}
-                />
+                <div onMouseDown={(event) => event.preventDefault()}>
+                  <Toggle
+                    on={server.enabled}
+                    onChange={(next) => toggleServer(server.name, next)}
+                    disabled={!!togglingName || saving}
+                  />
+                </div>
               </div>
             ))}
           </div>
@@ -2363,7 +2248,7 @@ function SectionTools() {
 
       <div className="text-[14px] font-semibold mb-1">内置工具</div>
       <p className="text-[12px] text-fg-mute mb-3">
-        Agent 浏览器工具由 Windows Desktop 原生提供，模型需要浏览器时会自动打开并操作同一个可见页面。
+        配置 Agent 可以使用的内置工具。
       </p>
 
       <div className="flex items-center gap-3 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
@@ -2381,10 +2266,7 @@ function SectionTools() {
         </span>
       </div>
 
-      {/* 占位:更多工具即将加入 */}
-      <div className="px-3.5 py-3 rounded-md border border-dashed border-border text-[12px] text-fg-mute text-center mt-2">
-        更多内置工具即将加入
-      </div>
+      <ImageGenerationSettings />
     </>
   );
 }
@@ -2556,9 +2438,6 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-[13px] font-semibold text-fg truncate">{hook.eventName || 'Hook'}</div>
             <HookBadge hook={hook} />
-            {hook.managed && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-fg-mute">managed</span>
-            )}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-mute">
             <span>匹配: <span className="text-fg-2">{hook.matcher}</span></span>

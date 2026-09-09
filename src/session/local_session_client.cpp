@@ -1,4 +1,5 @@
 #include "local_session_client.hpp"
+#include "../environment/data_dir_migration.hpp"
 
 #include "ask_user_question_prompter.hpp"
 #include "session_storage.hpp"
@@ -53,6 +54,8 @@ bool LocalSessionClient::send_input(const std::string& session_id,
 }
 
 bool LocalSessionClient::send_input(const std::string& session_id, const UserInput& input) {
+    std::shared_lock<std::shared_mutex> migration_lock(environment::data_dir_write_mutex());
+    if (environment::data_dir_writes_blocked()) return false;
     auto entry = registry_.acquire(session_id);
     if (!entry || !entry->loop) {
         LOG_WARN("[client] send_input on unknown session " + session_id);

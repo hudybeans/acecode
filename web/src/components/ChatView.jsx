@@ -38,6 +38,7 @@ import { ActivityLine } from './ActivityLine.jsx';
 import { InputBar } from './InputBar.jsx';
 import InteractiveHomeLogo from './InteractiveHomeLogo.jsx';
 import { SelectionActionPopover } from './SelectionActionPopover.jsx';
+import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { ExpertPickerDialog } from './ExpertCatalog.jsx';
 import { QueueCardList } from './QueueCardList.jsx';
 import { SideQuestionCard } from './SideQuestionCard.jsx';
@@ -265,6 +266,7 @@ import {
   dismissChangeDockSignature,
   dismissedDockSignatureFor,
   dockDismissalKey,
+  hasCompletedTurnResult,
   isTodoDockSuppressed,
   todoDockSignature,
   validateDockDismissals,
@@ -693,6 +695,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   const [forkingMessageId, setForkingMessageId] = useState('');
   const forkActionGuardRef = useRef(createPendingActionGuard());
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const projectAnchorRef = useRef(null);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState([]);
   const [modelListLoaded, setModelListLoaded] = useState(false);
@@ -738,7 +741,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     {},
     validateDockDismissals,
   );
-  // 下一轮对话提交时整体收起玻璃 dock:变更走 dismissChangeDock(持久化
+  // 本轮结果完成或下一轮提交时整体收起玻璃 dock:变更走 dismissChangeDock(持久化
   // 签名),todo 记会话内存级快照抑制 {sessionKey, signature}。真正的收起
   // 动作经 ref 中转 —— submit 的 useCallback 定义在 changeSignature /
   // todoSignature 之前(TDZ 不能进 deps),渲染期写 ref 是纯缓存,与
@@ -2457,6 +2460,15 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     if (sid) setCreateProjectOpen(false);
   }, [sid]);
 
+  // ref 携带 homeWorkspaceExplicit 时,工作区归属是导航意图的一部分:
+  // 同步落到 homeWorkspaceHash,不等 /api/workspaces 返回。否则点击
+  // 「新建任务」后,聊天区的工作区显示、提交目标、命令工作区、输入历史
+  // 都要等整个列表请求回来才切到无工作区(实测 3-4 秒)。
+  useEffect(() => {
+    if (sid || !ref?.homeWorkspaceExplicit) return;
+    setHomeWorkspaceHash(ref?.workspaceHash || '');
+  }, [ref?.homeWorkspaceExplicit, ref?.workspaceHash, sid]);
+
   useEffect(() => {
     if (sid) return undefined;
     let cancelled = false;
@@ -2523,8 +2535,13 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   useEffect(() => {
     const cwd = sid
       ? (ref?.cwd || health?.cwd || '')
-      : (selectedHomeWorkspace?.cwd || ref?.cwd || health?.cwd || '');
-    if (!cwd) return;
+      : (selectedHomeWorkspace?.cwd || ref?.cwd || '');
+    if (!cwd) {
+      // 无工作空间的新任务没有 per-cwd 历史;显式清掉上一次工作区残留,
+      // 避免上下键翻出上一个项目的输入历史。
+      setHistory([]);
+      return;
+    }
     api.getHistory(cwd, 200)
       .then((r) => setHistory(Array.isArray(r) ? r : []))
       .catch(() => {});
@@ -3549,6 +3566,21 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     return busy || transcriptStatus === 'running' ? 'running' : 'idle';
   }, [sid, busy, transcriptStatus]);
   const sessionWorkspaceHash = ref?.workspaceHash || ref?.workspace_hash || '';
+  // 会话头部原本显示「运行中 / 空闲」,但运行状态在输入区与侧栏都已有更明确的
+  // 呈现,这个胸章改为标出会话归属的工作区。ChatView 只在首页视图拉 workspace
+  // 列表(/api/workspaces 要扫上万个目录,不能每次切会话都打),所以这里按
+  // ref → 已加载列表 → 会话 cwd 目录名 的顺序退让;WorkspaceRegistry 默认名就是
+  // cwd 的目录名,因此没改过名的工作区第三级兜底与侧栏显示一致。
+  const workspaceLabel = useMemo(() => {
+    const fromRef = String(ref?.workspaceName || ref?.workspace_name || '').trim();
+    if (fromRef) return fromRef;
+    if (isRealWorkspaceHash(sessionWorkspaceHash)) {
+      const hit = homeWorkspaces.find((w) => w.hash === sessionWorkspaceHash);
+      const name = String(hit?.name || '').trim();
+      if (name) return name;
+    }
+    return pathBaseName(ref?.cwd || health?.cwd || '') || '当前项目';
+  }, [health?.cwd, homeWorkspaces, ref?.cwd, ref?.workspaceName, ref?.workspace_name, sessionWorkspaceHash]);
   const sessionPath = ref?.sessionPath || ref?.session_path || '';
   const sessionPinned = !!(ref?.pinned || ref?.isPinned || ref?.is_pinned);
   const openSessionContextMenu = useCallback((event) => {
@@ -4080,7 +4112,11 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   const showChangeDetails = changeSummary.hasChanges
     && !!changeSignature
     && dismissedDockSignature !== changeSignature;
-  const showChangeDock = showChangeDetails || hasVisibleTodos;
+  const completedTurnResultVisible = useMemo(
+    () => hasCompletedTurnResult(renderedItems, assistantRunDirectives, { busy }),
+    [renderedItems, assistantRunDirectives, busy],
+  );
+  const showChangeDock = !completedTurnResultVisible && (showChangeDetails || hasVisibleTodos);
 
   useLayoutEffect(() => {
     if (!showChangeDock) {
@@ -4179,6 +4215,14 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     dismissChangeDock();
     if (sid) setTodoDockSuppression({ sessionKey: sid, signature: todoSignature });
   };
+
+  // 完成结果出现的同次渲染已隐藏整个 dock;再保存当前签名,避免下一轮
+  // 重新显示旧进度。完成后迟到的 diff / todo 快照也更新抑制签名。
+  useEffect(() => {
+    if (!completedTurnResultVisible) return;
+    dismissChangeDock();
+    if (sid) setTodoDockSuppression({ sessionKey: sid, signature: todoSignature });
+  }, [completedTurnResultVisible, dismissChangeDock, sid, todoSignature]);
 
   const questionForView = useMemo(() => {
     if (!questionRequest) return null;
@@ -4703,7 +4747,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     ];
     return (
       <div
-        className="ace-chat-file-drop-scope flex-1 min-w-0 flex flex-col bg-bg"
+        className="ace-chat-file-drop-scope flex-1 min-h-0 min-w-0 flex flex-col bg-surface"
         data-chat-file-drop-scope="true"
         data-session-content-loading-anchor="true"
         data-file-drop-active={chatFileDropActive ? 'true' : undefined}
@@ -4712,7 +4756,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
         onDragLeave={handleChatFileDragLeave}
         onDrop={handleChatFileDrop}
       >
-        <div className="ace-home-panel flex-1">
+        <div className="ace-home-panel ace-scrollbar flex-1">
           <div className="ace-home-content">
             <InteractiveHomeLogo enabled={homeLogoEffectEnabled} />
             <h1 className="ace-home-title">{homeProjectTitle}</h1>
@@ -4761,8 +4805,10 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
             <div className="flex items-center gap-2 mr-auto ml-0">
             <div className="relative">
               <button
+                ref={projectAnchorRef}
                 data-tour-target="home-workspace"
                 type="button"
+                aria-expanded={projectDropdownOpen}
                 className="ace-home-project-row group"
                 onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
                 title={selectedHomeWorkspace?.cwd || homeProjectName}
@@ -4777,14 +4823,12 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
               </button>
 
               {projectDropdownOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setProjectDropdownOpen(false)}
-                  />
-                  <div
-                    className="absolute top-full left-0 mt-1.5 w-[280px] max-h-[40vh] overflow-y-auto bg-surface border border-border ace-shadow rounded-xl z-50 py-1.5 ace-scrollbar"
-                    data-ace-native-overlay="overlap"
+                  <AnchoredMenu
+                    anchorRef={projectAnchorRef}
+                    onClose={() => setProjectDropdownOpen(false)}
+                    width={280}
+                    maxHeightRatio={0.4}
+                    className="ace-home-project-menu bg-surface border border-border ace-shadow rounded-xl z-50 py-1.5"
                   >
                     <div className="px-3 pb-1 mb-1 text-[11px] font-semibold text-fg-mute border-b border-border/50 uppercase tracking-wider">
                       工作区
@@ -4836,8 +4880,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
                     >
                       <div className="truncate leading-tight">{noHomeWorkspaceOption().name}</div>
                     </button>
-                  </div>
-                </>
+                  </AnchoredMenu>
               )}
             </div>
             <GitSessionPill
@@ -4929,7 +4972,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
         onDrop={handleChatFileDrop}
         style={chatColumnStyle}
       >
-      <div className="h-9 px-3 flex items-center justify-between bg-surface border-b border-border shrink-0 gap-2">
+      <div className="h-9 px-3 flex items-center justify-between bg-surface shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="flex min-w-0 items-center gap-1.5">
             {remoteControlBound && (
@@ -4944,13 +4987,11 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
             <span className="text-[13px] font-semibold text-fg truncate">{title}</span>
           </span>
           <span
-            className={clsx(
-              'px-2.5 py-0.5 rounded-full text-[10px] font-medium border whitespace-nowrap',
-              status === 'running' && 'bg-ok-bg text-ok border-ok-border',
-              status === 'idle'    && 'bg-surface-hi text-fg-mute border-transparent',
-            )}
+            className="px-2.5 py-0.5 rounded-full text-[10px] font-medium border whitespace-nowrap bg-surface-hi text-fg-mute border-transparent max-w-[180px] truncate"
+            title={workspaceLabel}
+            data-session-workspace-label="true"
           >
-            {status === 'running' ? '运行中' : '空闲'}
+            {workspaceLabel}
           </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -5046,7 +5087,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
         className={clsx('relative flex-1 min-h-0 flex', trajectoryOpen && 'hidden')}
         aria-hidden={trajectoryOpen ? 'true' : undefined}
       >
-        <div className="relative flex-1 min-w-0 h-full">
+        <div className="relative flex-1 min-w-0 h-full pr-1.5">
         <div
           ref={scrollRef}
           data-conversation-find-root="true"

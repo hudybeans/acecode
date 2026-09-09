@@ -369,3 +369,77 @@ TEST(PtyBackendSpawnTest, PosixPtyEchoRoundTripAndExit) {
 #endif
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// shell_paths(openspec: agent-default-terminal):各终端类型的显式程序路径。
+// detect_console_shells 现在同时给出 program / detected_path / configured_path /
+// fallback_programs,供 environment::resolve_terminal 做启动探测与回退。
+// ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+
+// 触发场景:用户给 powershell 指定了存在的显式路径。
+// 期望:program 用显式路径;detected_path 仍是探测到的 pwsh;同类备选依次是
+// pwsh 与 powershell.exe(显式路径拒绝启动时退到它们)。
+TEST(ConsoleShellCatalogTest, ConfiguredPowerShellPathWinsAndKeepsFallbacks) {
+    acecode::ShellPaths paths{{"powershell", "C:\\mytool\\pwsh.exe"}};
+    auto probe = mock_probe(
+        {"C:\\Program Files\\PowerShell\\7\\pwsh.exe", "C:\\mytool\\pwsh.exe"},
+        {{"ProgramFiles", "C:\\Program Files"}});
+    auto shells = acecode::detect_console_shells(paths, probe);
+    const auto* ps = find_shell(shells, "powershell");
+    ASSERT_NE(ps, nullptr);
+    EXPECT_EQ(ps->program, "C:\\mytool\\pwsh.exe");
+    EXPECT_EQ(ps->configured_path, "C:\\mytool\\pwsh.exe");
+    EXPECT_EQ(ps->detected_path, "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+    ASSERT_EQ(ps->fallback_programs.size(), 2u);
+    EXPECT_EQ(ps->fallback_programs[0], "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+    EXPECT_EQ(ps->fallback_programs[1], "powershell.exe");
+}
+
+// 触发场景:显式路径指向不存在的文件。
+// 期望:program 退回探测路径,但 configured_path 仍记录下来(解析器据此报
+// "configured path not found")。
+TEST(ConsoleShellCatalogTest, MissingConfiguredPathFallsBackToDetected) {
+    acecode::ShellPaths paths{{"cmd", "D:\\gone\\cmd.exe"}};
+    auto probe = mock_probe({}, {{"COMSPEC", "C:\\Windows\\System32\\cmd.exe"}});
+    auto shells = acecode::detect_console_shells(paths, probe);
+    const auto* c = find_shell(shells, "cmd");
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->program, "C:\\Windows\\System32\\cmd.exe");
+    EXPECT_EQ(c->configured_path, "D:\\gone\\cmd.exe");
+    EXPECT_TRUE(c->available);
+}
+
+// 触发场景:旧签名(只有 git bash 路径)仍被 routes 使用。
+// 期望:与 shell_paths{"git-bash": path} 等价。
+TEST(ConsoleShellCatalogTest, LegacyGitBashSignatureMapsToShellPaths) {
+    auto probe = mock_probe({"D:\\tools\\Git\\bin\\bash.exe"}, {});
+    auto legacy = acecode::detect_console_shells("D:\\tools\\Git\\bin\\bash.exe", probe);
+    auto modern = acecode::detect_console_shells(
+        acecode::ShellPaths{{"git-bash", "D:\\tools\\Git\\bin\\bash.exe"}}, probe);
+    const auto* a = find_shell(legacy, "git-bash");
+    const auto* b = find_shell(modern, "git-bash");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(a->program, b->program);
+    EXPECT_EQ(a->command, b->command);
+    EXPECT_EQ(b->program, "D:\\tools\\Git\\bin\\bash.exe");
+}
+
+#else  // POSIX
+
+// 触发场景:用户给 zsh 指定了 Homebrew 路径,系统 /bin/zsh 也存在。
+// 期望:program 用显式路径,detected_path 是系统路径。
+TEST(ConsoleShellCatalogTest, PosixConfiguredPathWins) {
+    acecode::ShellPaths paths{{"zsh", "/opt/homebrew/bin/zsh"}};
+    auto probe = mock_probe({"/bin/zsh", "/opt/homebrew/bin/zsh"}, {{"SHELL", "/bin/bash"}});
+    auto shells = acecode::detect_console_shells(paths, probe);
+    const auto* z = find_shell(shells, "zsh");
+    ASSERT_NE(z, nullptr);
+    EXPECT_EQ(z->program, "/opt/homebrew/bin/zsh");
+    EXPECT_EQ(z->detected_path, "/bin/zsh");
+    EXPECT_EQ(z->configured_path, "/opt/homebrew/bin/zsh");
+}
+
+#endif

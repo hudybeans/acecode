@@ -608,3 +608,141 @@ TEST_F(SystemPromptTest, VisionEnvironmentLineIsByteStableForSameCapability) {
     // 能力不同必须产出不同前缀,否则这一位等于没注入。
     EXPECT_NE(build(true), build(false));
 }
+
+// ---------------------------------------------------------------------------
+// # Environment 的 Shell / Toolchains 行与按终端家族切换的语法指引
+// (openspec: agent-default-terminal / agent-toolchain-directories)。
+// environment 为空时必须保持改动前输出,上面的老用例即回归哨兵。
+// ---------------------------------------------------------------------------
+
+namespace {
+std::string build_with_env(const fs::path& cwd, const acecode::SystemPromptEnvironment& env) {
+    acecode::ToolExecutor tools;
+    return acecode::build_system_prompt(tools, cwd.string(), nullptr, nullptr, nullptr,
+                                        nullptr, nullptr, nullptr, true, &env);
+}
+}  // namespace
+
+// 场景:解析出的终端是 PowerShell。
+// 期望:Shell 行写家族与程序路径;出现 PowerShell 指引段,不出现 cmd 指引段。
+TEST_F(SystemPromptTest, PowerShellTerminalSwitchesGuidance) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "powershell";
+    env.terminal_program = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+    std::string out = build_with_env(temp_home, env);
+    EXPECT_NE(out.find("- Shell: powershell (C:\\Program Files\\PowerShell\\7\\pwsh.exe)"),
+              std::string::npos);
+    EXPECT_NE(out.find("# Shell Command Guidance (PowerShell)"), std::string::npos);
+    EXPECT_NE(out.find("$env:ACECODE_TMPDIR"), std::string::npos);
+    EXPECT_NE(out.find("Remove-Item -Recurse -Force"), std::string::npos);
+    EXPECT_EQ(out.find("# Shell Command Guidance (Windows)"), std::string::npos);
+    EXPECT_EQ(out.find("rd /s /q"), std::string::npos)
+        << "cmd 专属的删除语法不该出现在 PowerShell 指引里";
+}
+
+// 场景:解析出的终端是 cmd(用户手动选回)。
+// 期望:原有的 Windows cmd 指引段完整保留(mkdir -p / rd /s /q / %VAR% 三个哨兵)。
+TEST_F(SystemPromptTest, CmdTerminalKeepsLegacyGuidance) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "cmd";
+    env.terminal_program = "C:\\Windows\\System32\\cmd.exe";
+    std::string out = build_with_env(temp_home, env);
+    EXPECT_NE(out.find("- Shell: cmd (C:\\Windows\\System32\\cmd.exe)"), std::string::npos);
+    EXPECT_NE(out.find("# Shell Command Guidance (Windows)"), std::string::npos);
+    EXPECT_NE(out.find("mkdir -p"), std::string::npos);
+    EXPECT_NE(out.find("rd /s /q"), std::string::npos);
+    EXPECT_NE(out.find("%VAR%"), std::string::npos);
+    EXPECT_EQ(out.find("(PowerShell)"), std::string::npos);
+}
+
+// 场景:Windows 上的 Git Bash。
+// 期望:出现 Git Bash 指引(路径形态提示 + $ACECODE_TMPDIR),没有 cmd / PowerShell 段。
+TEST_F(SystemPromptTest, GitBashTerminalGetsPathNote) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "bash";
+    env.terminal_program = "C:\\Program Files\\Git\\bin\\bash.exe";
+    std::string out = build_with_env(temp_home, env);
+    EXPECT_NE(out.find("# Shell Command Guidance (Git Bash on Windows)"), std::string::npos);
+    EXPECT_NE(out.find("/c/Users/"), std::string::npos);
+    EXPECT_EQ(out.find("# Shell Command Guidance (Windows)"), std::string::npos);
+    EXPECT_EQ(out.find("(PowerShell)"), std::string::npos);
+}
+
+// 场景:POSIX 家族。
+// 期望:只有 Shell 行,没有任何 Shell Command Guidance 段。
+TEST_F(SystemPromptTest, PosixTerminalHasNoGuidance) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "posix";
+    env.terminal_program = "/bin/zsh";
+    std::string out = build_with_env(temp_home, env);
+    EXPECT_NE(out.find("- Shell: posix (/bin/zsh)"), std::string::npos);
+    EXPECT_EQ(out.find("# Shell Command Guidance"), std::string::npos);
+}
+
+// 场景:配置了两个工具链目录 / 一个都没配。
+// 期望:有配置时 Environment 段出现单行 Toolchains 列出两者;没配置时整行不出现。
+TEST_F(SystemPromptTest, ToolchainsLinePresentOnlyWhenConfigured) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "posix";
+    env.terminal_program = "/bin/sh";
+    env.toolchains = {{"Python", "D:\\tools\\py"}, {"Node.js", "D:\\tools\\node"}};
+    std::string with = build_with_env(temp_home, env);
+    EXPECT_NE(with.find("- Toolchains: Python=D:\\tools\\py; Node.js=D:\\tools\\node\n"),
+              std::string::npos);
+
+    env.toolchains.clear();
+    std::string without = build_with_env(temp_home, env);
+    EXPECT_EQ(without.find("Toolchains:"), std::string::npos);
+}
+
+// 场景:同一环境连续构建两次。
+// 期望:逐字节相同 —— Shell / Toolchains 行只随配置变化,不能打穿 prompt cache 前缀。
+TEST_F(SystemPromptTest, EnvironmentLinesAreByteStable) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "powershell";
+    env.terminal_program = "pwsh";
+    env.toolchains = {{"Node.js", "/opt/node/bin"}};
+    EXPECT_EQ(build_with_env(temp_home, env), build_with_env(temp_home, env));
+}
+
+// 场景:environment 传 nullptr(旧调用方 / 未 bootstrap 的路径)。
+// 期望:与改动前一致 —— Windows 标 cmd.exe 且带 cmd 指引;POSIX 标 $SHELL 或 /bin/sh
+// 且无指引;两边都没有 Toolchains 行。
+TEST_F(SystemPromptTest, NullEnvironmentKeepsLegacyOutput) {
+    acecode::ToolExecutor tools;
+    std::string out = acecode::build_system_prompt(tools, temp_home.string());
+    EXPECT_EQ(out.find("Toolchains:"), std::string::npos);
+#ifdef _WIN32
+    EXPECT_NE(out.find("- Shell: cmd.exe\n"), std::string::npos);
+    EXPECT_NE(out.find("# Shell Command Guidance (Windows)"), std::string::npos);
+#else
+    EXPECT_EQ(out.find("# Shell Command Guidance"), std::string::npos);
+#endif
+}
+
+// 场景:spawn_subagent 子会话继承父会话的 worktree(inherited=true)。
+// 期望:Environment 说明 worktree 归父会话所有、不得 Enter/ExitWorktree、写入
+// 必须留在 worktree 内;不再给出 "return cwd" 与 "requires ExitWorktree" 两句
+// (它们会引导子代理离开父会话正在用的目录)。
+TEST_F(SystemPromptTest, InheritedWorktreeTellsSubagentToStayInside) {
+    acecode::ToolExecutor tools;
+    acecode::SystemPromptWorktreeState worktree;
+    worktree.active = true;
+    worktree.inherited = true;
+    worktree.worktree_path = (temp_home / "wt").string();
+    worktree.worktree_branch = "worktree-ses-parent";
+    worktree.original_cwd = temp_home.string();
+
+    std::string out = acecode::build_system_prompt(
+        tools, worktree.worktree_path,
+        /*skills=*/nullptr, /*memory=*/nullptr, /*memory_cfg=*/nullptr,
+        /*project_instructions_cfg=*/nullptr, /*effective_tool_policy=*/nullptr,
+        &worktree);
+
+    EXPECT_NE(out.find("- Session worktree: active on branch worktree-ses-parent"),
+              std::string::npos);
+    EXPECT_NE(out.find("shared with the parent session"), std::string::npos);
+    EXPECT_NE(out.find("Do not call `EnterWorktree` or `ExitWorktree`"), std::string::npos);
+    EXPECT_EQ(out.find("- Session worktree return cwd:"), std::string::npos);
+    EXPECT_EQ(out.find("requires `ExitWorktree`"), std::string::npos);
+}

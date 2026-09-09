@@ -14,7 +14,7 @@ namespace acecode::loop {
 
 namespace {
 
-constexpr int kSchemaVersion = 2;
+constexpr int kSchemaVersion = 3;
 
 void set_error(StoreError* error, const std::string& code, const std::string& message) {
     if (!error) return;
@@ -144,6 +144,17 @@ LoopRun run_from_row(sqlite3_stmt* stmt) {
     value.worktree_path = column_text(stmt, 9);
     value.worktree_branch = column_text(stmt, 10);
     value.owner_id = column_text(stmt, 11);
+    if (sqlite3_column_count(stmt) > 12) {
+        // 换行分隔;路径本身不含换行(git status 会把它转义)。
+        const std::string joined = column_text(stmt, 12);
+        std::size_t start = 0;
+        while (start < joined.size()) {
+            std::size_t end = joined.find('\n', start);
+            if (end == std::string::npos) end = joined.size();
+            if (end > start) value.workspace_touched.push_back(joined.substr(start, end - start));
+            start = end + 1;
+        }
+    }
     return value;
 }
 
@@ -286,6 +297,7 @@ bool LoopStore::initialize(StoreError* error) {
         "reason TEXT NOT NULL DEFAULT '',missed_count INTEGER NOT NULL DEFAULT 1,"
         "session_id TEXT NOT NULL DEFAULT '',worktree_path TEXT NOT NULL DEFAULT '',"
         "worktree_branch TEXT NOT NULL DEFAULT '',owner_id TEXT NOT NULL DEFAULT '',"
+        "workspace_touched TEXT NOT NULL DEFAULT '',"
         "UNIQUE(loop_id,scheduled_at_ms),"
         "FOREIGN KEY(loop_id) REFERENCES loops(id) ON DELETE CASCADE);"
         "CREATE INDEX IF NOT EXISTS loop_runs_loop_idx ON loop_runs(loop_id,scheduled_at_ms DESC);"
@@ -298,6 +310,18 @@ bool LoopStore::initialize(StoreError* error) {
     if (!has_use_worktree &&
         !exec_sql(db_,
                   "ALTER TABLE loops ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 1;",
+                  error)) {
+        return false;
+    }
+    // v3:loop_runs.workspace_touched(换行分隔的路径列表,写边界事后检测)。
+    bool has_workspace_touched = false;
+    if (!table_has_column(db_, "loop_runs", "workspace_touched", has_workspace_touched,
+                          error)) {
+        return false;
+    }
+    if (!has_workspace_touched &&
+        !exec_sql(db_,
+                  "ALTER TABLE loop_runs ADD COLUMN workspace_touched TEXT NOT NULL DEFAULT '';",
                   error)) {
         return false;
     }
@@ -508,7 +532,7 @@ std::vector<LoopRun> LoopStore::list_runs(const std::string& loop_id,
     limit = std::clamp(limit, 1, 500);
     Statement stmt(db_,
         "SELECT id,loop_id,scheduled_at_ms,started_at_ms,finished_at_ms,status,reason,"
-        "missed_count,session_id,worktree_path,worktree_branch,owner_id "
+        "missed_count,session_id,worktree_path,worktree_branch,owner_id,workspace_touched "
         "FROM loop_runs WHERE loop_id=? ORDER BY scheduled_at_ms DESC LIMIT ?;", error);
     if (!stmt || !bind_text(stmt.get(), 1, loop_id) ||
         sqlite3_bind_int(stmt.get(), 2, limit) != SQLITE_OK) return result;
@@ -644,6 +668,32 @@ bool LoopStore::update_run_state(const std::string& run_id,
         bind_text(stmt.get(), 11, run_id);
     if (!bound || sqlite3_step(stmt.get()) != SQLITE_DONE) {
         set_error(error, "SQLITE_ERROR", sqlite_message(db_, "update LOOP run failed"));
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        set_error(error, "NOT_FOUND", "LOOP run not found");
+        return false;
+    }
+    return true;
+}
+
+bool LoopStore::set_run_workspace_touched(const std::string& run_id,
+                                          const std::vector<std::string>& paths,
+                                          StoreError* error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!ensure_available(error)) return false;
+    std::string joined;
+    for (const auto& path : paths) {
+        if (path.empty()) continue;
+        if (!joined.empty()) joined.push_back('\n');
+        joined += path;
+    }
+    Statement stmt(db_, "UPDATE loop_runs SET workspace_touched=? WHERE id=?;", error);
+    if (!stmt) return false;
+    if (!bind_text(stmt.get(), 1, joined) || !bind_text(stmt.get(), 2, run_id) ||
+        sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        set_error(error, "SQLITE_ERROR",
+                  sqlite_message(db_, "update LOOP run workspace_touched failed"));
         return false;
     }
     if (sqlite3_changes(db_) == 0) {

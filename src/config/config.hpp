@@ -181,6 +181,9 @@ struct WebUiPreferencesConfig {
     std::string theme = "system";       // system | light | dark
     std::string color_theme = "blue";   // blue | orange
     std::string font_size = "medium";   // small | medium | large
+    // Sidebar session rows show a relative timestamp. Product default is on;
+    // turning it off leaves the time visible only in the row hover card.
+    bool sidebar_session_time = true;
 };
 
 struct ModelsDevConfig {
@@ -299,7 +302,7 @@ struct ImageGenerationConfig {
     // "inline" = 用本段自己的 base_url + api_key。
     std::string source = "inline";
     std::string saved_model_name;
-    std::string base_url;
+    std::string base_url = constants::ACEMODEL_API_BASE_URL;
     std::string api_key;
     // quality 档位 → 模型名。
     std::string model_standard = "acemodel-image";
@@ -405,16 +408,33 @@ struct UiConfig {
     std::string locale = "zh-CN";
 };
 
-// Web 控制台(ConsoleDock)配置。见 openspec/changes/add-console-dock。
+// 终端配置:控制台停靠区、Agent bash 工具与 system prompt 共用同一份解析结果
+// (见 openspec/changes/redesign-settings-config-section 的 agent-default-terminal)。
 struct ConsoleConfig {
-    // 终端 shell 覆盖(legacy)。空 = 平台默认(Windows: %COMSPEC% 即 cmd;POSIX: $SHELL)。
+    // 终端 shell 覆盖(legacy 原始命令行)。default_shell 为空时保留此选择。
     // 例:"pwsh" / "powershell" / "/usr/bin/fish"。
     std::string shell;
-    // + 旁下拉框选中的默认 shell id(powershell / git-bash / cmd / shell / ...)。
-    // 空 = 平台默认。见 detect_console_shells / default_console_shell_id。
+    // 选中的终端类型 id(Windows: powershell / git-bash / cmd;POSIX: shell / bash / zsh / fish)。
+    // 空 = 未选择,首次启动自动探测后落盘。见 environment::resolve_terminal。
     std::string default_shell;
-    // 用户指定的 Git Bash bash.exe 完整路径(自动探测不到时填,永久记住)。
-    std::string git_bash_path;
+    // 各终端类型显式指定的程序路径(type id → 绝对路径)。空 = 用探测到的路径。
+    // legacy 字段 console.git_bash_path 在加载时并入 "git-bash" 项,不再单独落盘。
+    std::map<std::string, std::string> shell_paths;
+
+    // 取某类型的显式路径;没有则返回空串。
+    std::string shell_path_for(const std::string& id) const {
+        auto it = shell_paths.find(id);
+        return it == shell_paths.end() ? std::string{} : it->second;
+    }
+};
+
+// Agent 工具链目录(Settings → 配置 → 工作空间依赖项)。每项是一个目录的绝对路径,
+// 启动时按 python → node → csharp 顺序前插到进程 PATH;空 = 使用系统 PATH。
+// 见 openspec/changes/redesign-settings-config-section 的 agent-toolchain-directories。
+struct ToolchainsConfig {
+    std::string python;
+    std::string node;
+    std::string csharp;
 };
 
 struct SessionTitleConfig {
@@ -484,7 +504,8 @@ struct AppConfig {
     TuiConfig tui;                               // 终端渲染策略(legacy fallback 等)
     DesktopConfig desktop;                       // desktop shell 配置(系统通知等)
     UiConfig ui;                                 // Desktop/WebUI locale preference
-    ConsoleConfig console;                       // Web 控制台(PTY shell 覆盖)
+    ConsoleConfig console;                       // 终端类型 / 程序路径(控制台 + bash 工具共用)
+    ToolchainsConfig toolchains;                 // Agent 工具链目录(进程 PATH 前缀)
     SessionTitleConfig session_title;            // hidden auto session title generation
 
     // --- model profiles (openspec/changes/model-profiles) ---

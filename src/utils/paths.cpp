@@ -1,13 +1,19 @@
 #include "paths.hpp"
 
+#include "atomic_file.hpp"
 #include "encoding.hpp"
 #include "logger.hpp"
 #include "utf8_path.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -132,7 +138,7 @@ RunMode get_run_mode() {
     return g_mode.load();
 }
 
-std::string resolve_data_dir(RunMode mode) {
+std::string resolve_default_data_dir(RunMode mode) {
     namespace fs = std::filesystem;
 
 #if defined(_WIN32)
@@ -168,6 +174,130 @@ std::string resolve_data_dir(RunMode mode) {
 #endif
 }
 
+// ── 数据目录重定向指针 ─────────────────────────────────────────────────────
+
+std::string data_dir_redirect_path(const std::string& default_dir) {
+    return path_to_utf8(path_from_utf8(default_dir) / kDataDirRedirectFileName);
+}
+
+std::optional<DataDirRedirect> read_data_dir_redirect(const std::string& default_dir) {
+    namespace fs = std::filesystem;
+    const fs::path file = path_from_utf8(data_dir_redirect_path(default_dir));
+    std::error_code ec;
+    if (!fs::is_regular_file(file, ec) || ec) return std::nullopt;
+    std::ifstream ifs(file, std::ios::binary);
+    if (!ifs.is_open()) return std::nullopt;
+    const std::string text((std::istreambuf_iterator<char>(ifs)),
+                           std::istreambuf_iterator<char>());
+    const nlohmann::json j = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object()) return std::nullopt;
+
+    DataDirRedirect r;
+    if (j.contains("data_dir") && j["data_dir"].is_string()) {
+        r.data_dir = j["data_dir"].get<std::string>();
+    }
+    if (r.data_dir.empty()) return std::nullopt;
+    if (j.contains("previous_data_dir") && j["previous_data_dir"].is_string()) {
+        r.previous_data_dir = j["previous_data_dir"].get<std::string>();
+    }
+    if (j.contains("migrated_at_ms") && j["migrated_at_ms"].is_number_integer()) {
+        r.migrated_at_ms = j["migrated_at_ms"].get<long long>();
+    }
+    if (j.contains("previous_size_bytes") && j["previous_size_bytes"].is_number_unsigned()) {
+        r.previous_size_bytes = j["previous_size_bytes"].get<unsigned long long>();
+    } else if (j.contains("previous_size_bytes") &&
+               j["previous_size_bytes"].is_number_integer()) {
+        const long long v = j["previous_size_bytes"].get<long long>();
+        r.previous_size_bytes = v > 0 ? static_cast<unsigned long long>(v) : 0ULL;
+    }
+    if (j.contains("cleanup_pending") && j["cleanup_pending"].is_boolean()) {
+        r.cleanup_pending = j["cleanup_pending"].get<bool>();
+    }
+    return r;
+}
+
+bool write_data_dir_redirect(const std::string& default_dir, const DataDirRedirect& redirect) {
+    if (redirect.data_dir.empty()) return false;
+    nlohmann::json j = nlohmann::json::object();
+    j["data_dir"] = redirect.data_dir;
+    if (!redirect.previous_data_dir.empty()) j["previous_data_dir"] = redirect.previous_data_dir;
+    if (redirect.migrated_at_ms != 0) j["migrated_at_ms"] = redirect.migrated_at_ms;
+    if (redirect.previous_size_bytes != 0) j["previous_size_bytes"] = redirect.previous_size_bytes;
+    j["cleanup_pending"] = redirect.cleanup_pending;
+    return atomic_write_file(data_dir_redirect_path(default_dir), j.dump(2) + "\n");
+}
+
+bool remove_data_dir_redirect(const std::string& default_dir) {
+    std::error_code ec;
+    std::filesystem::remove(path_from_utf8(data_dir_redirect_path(default_dir)), ec);
+    return !ec;
+}
+
+namespace {
+
+// resolve_data_dir 的进程级缓存:按 RunMode 各一格,记住当时的默认目录;默认
+// 目录变了(测试改 HOME)就重新解析,否则进程内只读一次指针文件。
+struct DataDirCacheEntry {
+    std::string default_dir;
+    std::string resolved;
+    bool warned = false;  // 指针无效的 LOG_WARN 只打一次
+};
+std::mutex g_data_dir_mu;
+std::optional<DataDirCacheEntry> g_data_dir_cache[2];
+
+// 指针目标可用 = 非空、绝对路径、且目录存在。相对路径一律拒绝:进程 cwd 因
+// workspace 而异,相对指针会让不同入口解析到不同地方。
+bool redirect_target_usable(const std::string& target) {
+    namespace fs = std::filesystem;
+    if (target.empty()) return false;
+    const fs::path p = path_from_utf8(target);
+    if (!p.is_absolute()) return false;
+    std::error_code ec;
+    return fs::is_directory(p, ec) && !ec;
+}
+
+}  // namespace
+
+std::string resolve_data_dir(RunMode mode) {
+    const std::string default_dir = resolve_default_data_dir(mode);
+    const int slot = (mode == RunMode::Service) ? 1 : 0;
+
+    std::lock_guard<std::mutex> lk(g_data_dir_mu);
+    auto& entry = g_data_dir_cache[slot];
+    if (entry && entry->default_dir == default_dir) return entry->resolved;
+
+    DataDirCacheEntry fresh;
+    fresh.default_dir = default_dir;
+    fresh.resolved = default_dir;
+    if (auto redirect = read_data_dir_redirect(default_dir)) {
+        if (redirect_target_usable(redirect->data_dir)) {
+            std::string normalized = path_to_utf8(
+                path_from_utf8(redirect->data_dir).lexically_normal());
+            // 去掉尾部分隔符("D:\data\" → "D:\data"),盘符根目录除外。
+            while (normalized.size() > 3 &&
+                   (normalized.back() == '\\' || normalized.back() == '/')) {
+                normalized.pop_back();
+            }
+            fresh.resolved = normalized;
+        } else {
+            const bool already_warned = entry && entry->warned;
+            if (!already_warned) {
+                LOG_WARN("[paths] data-dir redirect target unusable, using default: target=" +
+                         redirect->data_dir + " default=" + default_dir);
+            }
+            fresh.warned = true;
+        }
+    }
+    entry = fresh;
+    return entry->resolved;
+}
+
+void reset_data_dir_cache_for_test() {
+    std::lock_guard<std::mutex> lk(g_data_dir_mu);
+    g_data_dir_cache[0].reset();
+    g_data_dir_cache[1].reset();
+}
+
 void set_run_dir_override(const std::string& path) {
     std::lock_guard<std::mutex> lk(g_run_dir_mu);
     g_run_dir_override = path;
@@ -191,6 +321,7 @@ void reset_run_mode_for_test() {
         std::lock_guard<std::mutex> lk(g_run_dir_mu);
         g_run_dir_override.clear();
     }
+    reset_data_dir_cache_for_test();
 }
 
 } // namespace acecode

@@ -62,6 +62,7 @@ import {
 import {
   DEFAULT_UI_PREFS,
   effectiveFontSize,
+  effectiveSidebarSessionTime,
   effectiveSidePanelListCollapsed,
   UI_PREFS_STORAGE_KEY,
   validateUiPrefs,
@@ -75,6 +76,7 @@ import { SessionNavigationMask } from './components/SessionNavigationMask.jsx';
 import { SessionContentLoading } from './components/SessionContentLoading.jsx';
 import { TokenPrompt } from './components/TokenPrompt.jsx';
 import { SettingsPage } from './components/SettingsPage.jsx';
+import { WorkspaceCleanupNotice } from './components/WorkspaceCleanupNotice.jsx';
 import { DesktopContextMenu } from './components/DesktopContextMenu.jsx';
 import { Toaster, toast } from './components/Toast.jsx';
 import { SlashCommandsProvider } from './components/SlashCommandsContext.jsx';
@@ -262,6 +264,7 @@ export function App() {
   const initialUiPrefs = useMemo(() => ({
     ...DEFAULT_UI_PREFS,
     fontSize: initialAppearance.fontSize,
+    sidebarSessionTime: initialAppearance.sidebarSessionTime,
   }), [initialAppearance]);
   const [uiPrefs, setUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
@@ -290,10 +293,14 @@ export function App() {
   // grid4/grid9 入口暂时隐藏:主界面固定单会话,避免旧 localStorage 把用户卡在未完善视图。
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);
+  const sidebarSessionTime = effectiveSidebarSessionTime(uiPrefs);
   const applyAppearance = useCallback((next) => {
     setTheme(effectiveAppearanceTheme(next.theme));
     setColorTheme(next.colorTheme);
-    setUiPrefs({ fontSize: next.fontSize });
+    setUiPrefs({
+      fontSize: next.fontSize,
+      sidebarSessionTime: next.sidebarSessionTime,
+    });
   }, [setColorTheme, setTheme, setUiPrefs]);
   const appearanceControllerRef = useRef(null);
   if (!appearanceControllerRef.current) {
@@ -302,6 +309,7 @@ export function App() {
         theme: bootstrapAppearance?.theme || theme,
         colorTheme,
         fontSize,
+        sidebarSessionTime,
       },
       apply: applyAppearance,
       save: (payload) => api.setUiPreferences(payload),
@@ -1990,7 +1998,6 @@ export function App() {
         updateProgress={updateJobProgress(updateJob)}
         onStartUpdate={openUpdateDialog}
         onCheckUpdates={checkForUpdates}
-        appVersion={health?.version || ''}
       />
       <div
         ref={singleShellRef}
@@ -2011,12 +2018,13 @@ export function App() {
           onOpenHome={openHomeForWorkspace}
           onNewTask={() => openHomeForWorkspace()}
           onNewLoop={openLoopPage}
-          onSearchTasks={() => setSearchOpen(true)}
+          appVersion={health?.version || ''}
           workspaceActivationRequest={workspaceActivationRequest}
           onOpenSettingsSection={openSettingsSection}
           onOpenExpertComponents={openExpertComponents}
           pendingPermissionSessionIds={pendingPermissionSessionIdsForSidebar}
           pendingQuestionSessionIds={pendingQuestionSessionIdsForSidebar}
+          showSessionTime={sidebarSessionTime}
         />
         {view === 'single' && !sidebarCollapsed && (
           <div
@@ -2033,7 +2041,7 @@ export function App() {
         )}
         <div
           className={[
-            'flex-1 flex flex-col overflow-hidden transition-all duration-200',
+            'flex-1 flex flex-col overflow-hidden transition-all duration-200 bg-surface',
             'opacity-100 scale-100',
           ].join(' ')}
         >
@@ -2129,6 +2137,8 @@ export function App() {
               changeAppearance({ colorTheme: nextColorTheme })
             )}
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
+            sidebarSessionTime={sidebarSessionTime}
+            onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}
           />
         )}
         <SearchPalette
@@ -2146,6 +2156,7 @@ export function App() {
         scopeKey={activeId}
       />
       <DesktopContextMenu />
+      <WorkspaceCleanupNotice enabled={authState === 'ok' && !!health && !configRecoveryBlocking} />
       <ConfigRecoveryDialog
         open={configRecoveryDialogOpen}
         notice={configRecoveryNotice}

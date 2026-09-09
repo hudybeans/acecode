@@ -28,7 +28,20 @@ await run('appearance defaults preserve system preference, blue, and medium', ()
     theme: 'system',
     colorTheme: 'blue',
     fontSize: 'medium',
+    // 侧栏时间是产品默认开的显示项:空输入必须归一成 true,否则升级用户
+    // 一进来就发现时间列没了。
+    sidebarSessionTime: true,
   });
+  // 只有显式 false 才关;缺键、null、非布尔值都按开处理,免得旧 daemon 的
+  // 半截报文把这一列意外关掉。
+  assert.equal(
+    normalizeAppearancePreferences({ sidebar_session_time: false }, darkScope).sidebarSessionTime,
+    false,
+  );
+  assert.equal(
+    normalizeAppearancePreferences({ sidebar_session_time: null }, darkScope).sidebarSessionTime,
+    true,
+  );
 });
 
 await run('desktop bootstrap is normalized before first render', () => {
@@ -44,11 +57,13 @@ await run('desktop bootstrap is normalized before first render', () => {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
   assert.deepEqual(appearanceBootstrapPreferences(scope), {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
 });
 
@@ -71,6 +86,7 @@ await run('API serialization sends a complete compatibility snapshot', () => {
     theme: 'dark',
     color_theme: 'orange',
     font_size: 'small',
+    sidebar_session_time: true,
   });
 });
 
@@ -96,6 +112,7 @@ await run('canonical restore wins only before a local user mutation', async () =
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'small',
+    sidebarSessionTime: true,
   });
   assert.equal(applied.length, 3);
 });
@@ -116,6 +133,7 @@ await run('color and font changes preserve a canonical system theme preference',
     theme: 'system',
     colorTheme: 'orange',
     fontSize: 'large',
+    sidebarSessionTime: true,
   });
 });
 
@@ -130,8 +148,8 @@ await run('failed latest save rolls back to the last confirmed appearance', asyn
   });
   await controller.change({ theme: 'dark', colorTheme: 'orange' });
   assert.deepEqual(applied, [
-    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium' },
-    { theme: 'light', colorTheme: 'blue', fontSize: 'medium' },
+    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium', sidebarSessionTime: true },
+    { theme: 'light', colorTheme: 'blue', fontSize: 'medium', sidebarSessionTime: true },
   ]);
   assert.deepEqual(errors, ['disk full']);
 });
@@ -160,5 +178,6 @@ await run('rapid changes serialize saves and keep the newest snapshot', async ()
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'medium',
+    sidebarSessionTime: true,
   });
 });

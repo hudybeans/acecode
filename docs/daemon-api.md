@@ -340,6 +340,9 @@ when known.
 | GET | `/api/config/custom-instructions` | read custom instructions |
 | PUT | `/api/config/custom-instructions` | write custom instructions |
 | GET | `/api/config/connectors` | read connector settings |
+| GET | `/api/config/image-generation` | read sanitized image generation settings |
+| PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
+| POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | PUT | `/api/config/connectors` | write connector settings |
 | GET | `/api/config/default-permission-mode` | read default permission mode |
 | PUT | `/api/config/default-permission-mode` | write default permission mode |
@@ -347,6 +350,16 @@ when known.
 | PUT | `/api/config/remote-web` | enable or disable remote Web mode |
 | GET | `/api/config/upgrade` | read update service config |
 | PUT | `/api/config/upgrade` | write update service config |
+| GET / PUT | `/api/config/toolchains` | read or save Python, Node.js and C# directories |
+| POST | `/api/config/toolchains/detect` | detect installed toolchain directories again |
+| GET | `/api/console/config` | terminal configuration and launch-probe results |
+| POST | `/api/console/config/detect` | probe and save the default terminal again |
+| GET | `/api/config/data-dir` | current data directory, migration and backup status |
+| POST | `/api/config/data-dir/migrate` | copy data to an empty directory; restart required |
+| GET | `/api/config/data-dir/migration` | poll the background migration |
+| POST | `/api/config/data-dir/cleanup` | keep or delete the previous data directory |
+| POST | `/api/dialog/pick-folder` | select a folder without registering a project |
+| POST | `/api/dialog/pick-file` | select a terminal program |
 | GET | `/api/update/status` | check update availability |
 | POST | `/api/update/start` | start explicit WebUI update job |
 | GET | `/api/update/job` | read latest WebUI update job |
@@ -1723,12 +1736,19 @@ Git repository:
   "is_repo": true,
   "branch": "master",
   "default_branch": "master",
-  "branches": ["master", "dev"],
+  "default_base": "origin/master",
+  "branches": ["dev", "master"],
+  "remote_branches": ["origin/dev", "origin/master"],
   "dirty": false
 }
 ```
 
 - `branch` is `"HEAD"` when detached.
+- `default_base` is the verified `origin/<default_branch>` ref, or an empty
+  string when no such locally fetched remote-tracking ref exists.
+- `branches` contains local branch short names. `remote_branches` contains
+  locally available remote-tracking short names and omits symbolic aliases
+  such as `origin/HEAD`; collecting either list performs no network fetch.
 - `dirty` reflects tracked changes only (`status --porcelain -uno`);
   untracked files do not set it.
 - All git subprocesses are read-only, use `--no-optional-locks`, and honor
@@ -2614,6 +2634,58 @@ Body:
 The text is byte-limited by `kCustomInstructionsMaxBytes`. Existing sessions
 pick up changes on later turns through the daemon config pointer.
 
+### Image generation settings
+
+`GET /api/config/image-generation` returns `enabled`, `source` (`inline` or
+`saved_model`), `saved_model_name`, `base_url`, `api_key` (the stored inline key),
+`has_api_key` (whether an inline key is stored), `configured` (whether the selected
+connection resolves, regardless
+of the enabled flag), `models` (`standard`, `high`, `ultra`), `default_quality`,
+`timeout_ms`, and `connections` (reusable saved connections with `name` and
+`has_api_key`). Only OpenAI-compatible base-URL connections are reusable;
+chat-only full endpoint URLs are excluded. As with model settings, the inline
+key is returned after normal API authentication so the password field can be
+prefilled and revealed with its eye button. Reusable connections never include
+their credentials. Do not log or cache settings responses.
+
+The default image API URL comes from `constants::ACEMODEL_API_BASE_URL` in
+`src/utils/constants.hpp`, shared with the ACEModel model catalog. The frontend
+uses the returned URL. Saving the default leaves the URL out of the sparse
+config, so later default changes apply together; custom URLs remain explicit.
+
+`PUT /api/config/image-generation` accepts a partial update of the editable
+fields. Omit `api_key` to preserve it, provide a nonempty value to replace it,
+or send `"api_key":""` to clear it. URLs must use HTTPS, or loopback HTTP,
+without embedded credentials, query parameters or fragments. Timeout is clamped
+to 30,000–600,000 ms. Invalid input returns 400; persistence failure returns 500
+without altering live settings. The write reloads and merges the on-disk config
+before persisting, preserving unrelated changes. Success returns the same
+settings snapshot and refreshes the shared image tool immediately. Existing
+requests retain their configuration snapshot; subsequent calls use the saved
+configuration. Editing/deleting a reused model connection also refreshes the tool.
+
+The settings UI saves edited fields on blur, saves toggles/selects immediately,
+and flushes remaining changes when collapsing or leaving settings. Writes are
+serialized per connection, and responses preserve newer input. Reopening waits
+for pending writes before reading the saved configuration and refilling the key.
+There are no Save/Cancel buttons; failures retain the draft and offer retry.
+
+`POST /api/config/image-generation/test` accepts
+`{"confirm_cost":true,"config":{...partial settings...}}`. The cost flag is
+required. The supplied draft overlays the saved config without persisting it or
+enabling the tool. It generates exactly one image using the `standard` mapping,
+even if the default quality is higher or the tool is disabled. The UI labels this
+action **Generate test image** and explains that it consumes credits before it
+can be triggered. Loading or saving never invokes the image provider; the UI
+waits for pending automatic saves before starting a test.
+
+Success returns `image_data_url`, `width`, `height`, `quality:"standard"`, and
+`model` for a settings-only preview. These image bytes are not stored in session
+history or logs. A concurrent test returns 409 `IMAGE_TEST_BUSY`; incomplete
+configuration returns 400 `IMAGE_NOT_CONFIGURED`; upstream failures return 502
+`IMAGE_QUOTA_ERROR` or `IMAGE_TEST_FAILED` without echoing provider error bodies.
+All endpoints use normal API authentication/CORS and `Cache-Control: no-store`.
+
 ### `GET /api/config/connectors`
 
 Returns:
@@ -2726,6 +2798,24 @@ an up-to-date result. Linux keeps the user-facing `target` as `linux-x64` or
 Manifest checks and package transfers do not use a fixed total request timeout.
 Transport, HTTP, and file-write failures are still reported normally.
 
+Checks and upgrades append flushed JSON diagnostic records to the ACECode data
+directory's `logs/upgrade-YYYY-MM-DD-PID.log` (UTC date). Each attempt has an
+`operation_id`; GUI precheck, worker, and installer records share that id, and
+GUI records also include `job_id`. Records include phase, elapsed milliseconds,
+versions, paths, HTTP/transport status, download byte counts, checksum values,
+file backup/replacement and rollback results, and the terminal outcome. Download
+progress is sampled at most once every five seconds. URL credentials, queries,
+and fragments are redacted; configuration objects and response bodies are not
+logged. Logs survive cancellation, retries, and process restart. Desktop restart
+preflight, shutdown, and replacement launch remain in `logs/desktop-<date>.log`.
+User-triggered diagnostic feedback bundles include the most recent upgrade log
+as `logs/upgrade.log.tail.txt`, subject to the existing log-tail size limit.
+
+Check and job responses include `log_path` when a log was created, and
+`log_error` if diagnostics are unavailable or incomplete. Logging failures do
+not change the upgrade outcome. Failure text includes the underlying error and
+available log path so existing clients can display actionable diagnostics.
+
 ### `POST /api/update/start`
 
 Checks for an update and starts one daemon-managed background update job. The
@@ -2754,6 +2844,12 @@ Returns `409 NO_UPDATE` when the running version is already current. Returns
 package for this updater-capability target; the nested status object includes
 `status: "no_compatible_package"`, `latest_version`, the physical `target`, and
 an actionable `error`.
+
+Other precheck failures retain HTTP `409` and the existing `NO_UPDATE` code for
+compatibility, but `message` now contains the specific check failure and log
+location. The response includes top-level `log_path` and the detailed `status`
+object. Failure to create the worker thread returns `500 UPDATE_START_FAILED`
+with diagnostic `message` and failed `job`.
 
 Returns `409 UPDATE_IN_PROGRESS` when another job is pending or running. The
 response includes that job under `job`, so another WebUI tab can attach to it.
@@ -2924,23 +3020,99 @@ Returns detected shell choices and the configured default:
 ```json
 {
   "shells": [
-    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false}
+    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false,"path":"C:/Program Files/PowerShell/7/pwsh.exe","configured_path":"","probed":true,"usable":true,"probe_error":""}
   ],
   "default": "powershell"
 }
 ```
+
+The response also includes `resolved: {id,family,program,console_command,usable,fallback_reason}`.
+`available` describes file discovery; `usable` reflects an actual launch probe when
+`probed` is true. Unprobed choices are checked when selected. The default and new
+PTY sessions use the same resolved terminal as the Agent's command tool.
 
 ### `PUT /api/console/config`
 
 Body:
 
 ```json
-{"default_shell":"powershell","git_bash_path":"C:/Program Files/Git/bin/bash.exe"}
+{"default_shell":"powershell","shell_path":"C:/mytool/pwsh.exe"}
 ```
 
-Both fields are optional. `git_bash_path` is trimmed, dequoted, checked for WSL
-System32 bash, and validated if non-empty. Returns the same payload as
-`GET /api/pty/shells`.
+Both fields are optional. `shell_path` applies to the selected `default_shell`;
+an empty path restores automatic discovery. Non-empty paths must be absolute
+regular files and pass a launch probe. Unknown types, wrong JSON types, missing
+files, WSL bash for the Git Bash type, and failed probes return `400` without
+changing either the saved config or runtime. Persistence failures return `500`.
+The legacy `git_bash_path` field remains accepted. Returns the same payload as
+`GET /api/pty/shells`; running terminals retain their original process.
+
+### Settings environment endpoints
+
+These endpoints use the normal authenticated API access policy.
+
+- `GET /api/config/toolchains` returns `{toolchains:[{id,label,dir,exists,anchor,applied}]}`,
+  where `id` is `python`, `node` or `csharp`. `PUT` accepts a partial object of
+  those directory strings. Empty clears a directory; non-empty values must be
+  existing absolute directories. Validation errors return `400` with
+  `INVALID_FIELD`, `DIRECTORY_NOT_ABSOLUTE` or `DIRECTORY_NOT_FOUND` and leave
+  the complete previous configuration unchanged. Successful saves update the
+  process PATH for subsequently launched tools, hooks, MCP servers and terminals.
+- `POST /api/config/toolchains/detect` searches the original process PATH, skipping
+  Windows Store aliases. Found directories replace those fields; missing tools
+  preserve existing choices. It returns the same list plus `detected:{python,node,csharp}`.
+- `GET /api/console/config` returns `{default_shell,shell_paths,resolved,candidates}`.
+  Each candidate includes `id,label,family,available,needs_path,probed,usable,program,
+  detected_path,configured_path,probe_error`. `POST /api/console/config/detect`
+  reruns launch probes, persists a usable resolution and returns the same shape.
+  Candidates depend on the host platform. Windows tries PowerShell 7, Windows
+  PowerShell, Git Bash and cmd; POSIX uses the login shell and available alternatives.
+- `POST /api/dialog/pick-folder` and `POST /api/dialog/pick-file` return `{path}`,
+  or JSON `null` when cancelled. Native picker support must be enabled by the host;
+  otherwise the response is `501 {error:"PICKER_UNAVAILABLE",message}` and the UI
+  accepts a manually entered path.
+
+### Data directory migration
+
+`GET /api/config/data-dir` returns `effective_dir`, `default_dir`, `redirect_active`,
+`redirect_target`, `migrated_at_ms`, `cleanup_pending` and `migration` (null or the
+job below). Existing backups add `previous_dir` and `previous_size_bytes`. After
+restart, a pending backup larger than 100 MiB also adds
+`cleanup:{previous_dir,size_bytes}`.
+
+`POST /api/config/data-dir/migrate` accepts `{target:"<absolute path>"}` and returns
+`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`, `error`,
+`restart_required`, `started_at_ms` and `finished_at_ms`. Poll
+`GET /api/config/data-dir/migration`; states are `running`, `done` or `failed`.
+Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
+
+Target validation returns `400` with `TARGET_REQUIRED`, `TARGET_NOT_ABSOLUTE`,
+`TARGET_SAME_AS_CURRENT`, `TARGET_INSIDE_CURRENT`, `TARGET_CONTAINS_CURRENT`,
+`TARGET_NOT_A_DIRECTORY`, `TARGET_NOT_EMPTY` or `TARGET_NOT_WRITABLE`. Paths are
+compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY`, another
+live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals return
+`409 CONSOLES_ACTIVE`.
+
+The job pauses the scheduler and copies through a private staging directory,
+excluding top-level `run/`, `tmp/`, the redirect pointer and lock files. SQLite
+databases use online backups, including committed WAL transactions. Symlinks are
+preserved (internal targets follow the new root); inability to preserve them fails
+the copy. Source changes and a newly occupied target abort publication. Failure
+removes only private staging, preserves the source and existing target files,
+and re-enables writes. A pointer-write failure retains the copied target for recovery.
+
+Success atomically publishes the copied directory, writes `data-dir.redirect.json`
+in the platform default data directory, and sets `restart_required:true`. The
+current process continues reading the old root; new turns and authenticated
+mutations are rejected with `409 DATA_DIR_MIGRATION_ACTIVE` until restart.
+
+`POST /api/config/data-dir/cleanup` accepts `{action:"keep"}` or `{action:"delete"}`.
+Both acknowledge the cleanup prompt and return updated directory status. Delete
+requires a restart into the new root, verifies the recorded old directory is not
+the active root or its ancestor, and refuses a still-running old daemon. When the
+backup is the default directory, its redirect pointer is preserved. Failures
+return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
+`500 PERSIST_FAILED`; invalid actions return `400 INVALID_ACTION`.
 
 ### `POST /api/pty`
 
@@ -3388,6 +3560,19 @@ permission and AskUserQuestion prompts; `yolo` skips all tool permission prompts
 but keeps AskUserQuestion interactive. LOOP Yolo may read outside the active work
 root, but direct file writes and statically detectable shell writes outside that
 root are rejected by the execution boundary without opening a permission prompt.
+
+Sub-agents spawned from a LOOP session inherit the same execution boundary and
+`loop_execution` provenance. Sub-agents spawned from any worktree session share
+the parent's worktree (`worktree_session.inherited=true` in their metadata) and
+use it as their write root; `EnterWorktree` / `ExitWorktree` refuse inside them.
+Run history objects carry `workspace_touched`: paths that appeared as new or
+changed in the main checkout, outside the run's worktree, between run start and
+run end (detected with `git status --porcelain`). It is empty when no worktree
+was created, when git could not be queried, or when nothing outside the worktree
+changed. A non-empty list means some write bypassed the tool-level boundary (for
+example through a shell script); the run still completes and the UI shows a
+warning. `spawn_subagent` / `wait_subagent` tool results append the same
+detection for one sub-agent as `metadata.workspace_touched`.
 
 Error codes include `LOOP_UNAVAILABLE` (`501`), validation codes such as
 `INVALID_MODEL` / `INVALID_WORKSPACE` (`400`), `SCHEDULE_CONFLICT` (`409`), and

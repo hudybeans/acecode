@@ -72,3 +72,35 @@ TEST(WorktreeMetaRoundtrip, InactiveWorktreeIsOmittedFromJson) {
     std::error_code ec;
     fs::remove(meta_file, ec);
 }
+
+// 场景:子代理继承父会话 worktree 的 meta(inherited=true)写盘再读回;以及
+// 普通 worktree 会话(inherited=false)写盘。
+// 期望:inherited 完整往返 —— resume 后 ExitWorktree 仍然拒绝子代理;false 时
+// 字段整个省略,非继承会话与老 meta 的文件字节不变。
+TEST(WorktreeMetaRoundtrip, InheritedFlagRoundtripsAndIsOmittedWhenFalse) {
+    const fs::path inherited_file = temp_meta_path("inherited");
+    SessionMeta meta;
+    meta.id = "20260908-000002-abcd";
+    meta.cwd = "C:/repo";
+    meta.worktree.original_cwd = "C:/repo";
+    meta.worktree.worktree_path = "C:/repo/.acecode/worktrees/ses-parent";
+    meta.worktree.worktree_name = "ses-parent";
+    meta.worktree.worktree_branch = "worktree-ses-parent";
+    meta.worktree.inherited = true;
+    SessionStorage::write_meta(path_to_utf8(inherited_file), meta);
+    EXPECT_NE(read_all(inherited_file).find("\"inherited\""), std::string::npos);
+    auto loaded = SessionStorage::read_meta(path_to_utf8(inherited_file));
+    EXPECT_TRUE(loaded.worktree.active());
+    EXPECT_TRUE(loaded.worktree.inherited);
+
+    const fs::path owned_file = temp_meta_path("owned");
+    meta.id = "20260908-000003-abcd";
+    meta.worktree.inherited = false;
+    SessionStorage::write_meta(path_to_utf8(owned_file), meta);
+    EXPECT_EQ(read_all(owned_file).find("inherited"), std::string::npos);
+    EXPECT_FALSE(SessionStorage::read_meta(path_to_utf8(owned_file)).worktree.inherited);
+
+    std::error_code ec;
+    fs::remove(inherited_file, ec);
+    fs::remove(owned_file, ec);
+}

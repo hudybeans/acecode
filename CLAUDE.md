@@ -19,6 +19,32 @@ ACECode ships one main executable with terminal TUI and daemon subcommands, plus
 
 ## Build And Verification Notes
 
+Settings environment configuration is implemented in `src/environment/` and
+`src/web/routes/routes_environment.cpp`. `bootstrap.cpp` runs after config loading
+in TUI, daemon (including Windows service) and headless startup; headless does not
+persist automatic detection. Terminal launch probes feed one runtime snapshot for
+the Agent command tool, prompt guidance and new console terminals. Validate and
+save a complete console draft before publishing that snapshot.
+
+`toolchains.cpp` preserves the original process PATH and rebuilds its configured
+prefix on each save, so clearing a directory restores original system entries.
+First-launch detection is recorded in `state.json`; explicit re-detection uses the
+original PATH and skips Windows Store Python aliases.
+
+`paths.cpp` reads `data-dir.redirect.json` from the platform default root and caches
+the effective root until restart. Migration copies to private staging, snapshots
+SQLite with its backup API, validates the source/target again and then writes the
+pointer. It refuses busy sessions, open PTYs and other live daemons. The shared
+write gate remains closed after success until restart; failure reopens it and
+resumes the scheduler. Never delete a failed validation target or the live root.
+Backup deletion verifies the pointer and preserves it when cleaning the default root.
+
+The Settings shell uses open groups in `globals.css`; user-provided Claude-style
+references supersede the older boxed-card guidance for this surface.
+`settingsSearch.js` indexes bilingual labels and aliases; SettingsPage locates the
+rendered label and applies an accent-colored wavy underline without rewriting React
+text nodes. The new path row is mounted only after Change is activated.
+
 Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important local facts:
 
 - `acecode_testable` is the shared object library for headless logic and unit tests.
@@ -29,6 +55,13 @@ Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important 
 - Windows builds require libcurl 8.14 or newer for TLS behavior and use UTF-8 compile options.
 
 ## Agent Loop And Tools
+
+`image_generate` uses `config.image_generation` and supports generation and
+editing through the Images API. Settings > Tools > Image generation owns its
+configuration; it is not a chat-model entry. Saving settings refreshes the shared
+tool registry, including changes to a reused model connection. In-flight image
+requests retain their original snapshot. The settings test action explicitly
+generates one standard-quality image and must never run on load or save.
 
 [src/agent_loop.cpp](src/agent_loop.cpp) is the multi-turn state machine. A text-only assistant reply ends the loop. `task_complete` is an optional explicit terminator that renders a concise completion row. `AskUserQuestion` is not a terminator; its answer returns as a tool result. `config.agent_loop.max_iterations` is an optional hard cap; `0` or omitted means unlimited.
 
@@ -129,7 +162,9 @@ worktree 落在**主仓根**的 `.acecode/worktrees/<slug>`,分支 `worktree-<fl
 
 工具 `EnterWorktree` / `ExitWorktree`([src/tool/worktree_tool.cpp](src/tool/worktree_tool.cpp))经 `builtin_tool_registry` 双端注册;工具描述写死"仅用户明确提到 worktree 才可调用"。会话切换 = `AgentLoop::set_cwd`(经 `ToolContext::switch_session_cwd` 回调注入,重建 PathValidator;**会话存储位置不动** —— worktree 是同一项目的临时工作区)。状态 `WorktreeSessionInfo` 挂在 `SessionManager` 并持久化到 meta 的 `worktree_session` 字段(inactive 省略,老 meta 兼容);TUI/daemon resume 都会恢复进 worktree(目录已被外部删除则清状态)。system prompt 的 `# Environment` 会标出当前是否在会话 worktree 里;合回 master/main 或"回到主干"必须再调 `ExitWorktree`,git merge/checkout 不算退出,Desktop 图标也不会消失。`ExitWorktree remove` 的安全门 fail-closed:`count_worktree_changes` 数不清(git 失败/缺基线)或有未提交文件/新提交时拒绝,必须 `discard_changes:true`。
 
-CLI `--worktree [name]` / `-w`(TUI):启动即建 worktree,name 可为 PR 引用(`#123` / GitHub PR URL → fetch `pull/N/head`,slug=`pr-N`);此时 worktree 就是项目根(日志/workspace/会话存储都在里面),与工具中途进入的 throwaway 语义不同。TUI 退出时:无变更静默删除,有变更(或数不清)保留并提示,`--resume` 恢复进去。新建 worktree 的后处理:`core.hooksPath` 指回主仓(.husky 优先)、`config.worktree.symlink_directories` symlink、`.worktreeinclude`(gitignore 语法)声明的 gitignored 文件拷贝(`ls-files --directory` 折叠目录 + 按需展开,防大仓库全量遍历)。`config.worktree.sparse_paths` 走 sparse-checkout cone 模式。**未复刻**(有意偏离):tmux 集成(POSIX-only)、WorktreeCreate/Remove hook 替换 VCS、交互式退出对话框(现为"有变更即保留"的安全默认)、spawn_subagent 的 worktree 隔离。测试:[tests/worktree/](tests/worktree/)(core 纯逻辑 + 真实 git 集成 + 工具端到端)。
+CLI `--worktree [name]` / `-w`(TUI):启动即建 worktree,name 可为 PR 引用(`#123` / GitHub PR URL → fetch `pull/N/head`,slug=`pr-N`);此时 worktree 就是项目根(日志/workspace/会话存储都在里面),与工具中途进入的 throwaway 语义不同。TUI 退出时:无变更静默删除,有变更(或数不清)保留并提示,`--resume` 恢复进去。新建 worktree 的后处理:`core.hooksPath` 指回主仓(.husky 优先)、`config.worktree.symlink_directories` symlink、`.worktreeinclude`(gitignore 语法)声明的 gitignored 文件拷贝(`ls-files --directory` 折叠目录 + 按需展开,防大仓库全量遍历)。`config.worktree.sparse_paths` 走 sparse-checkout cone 模式。**未复刻**(有意偏离):tmux 集成(POSIX-only)、WorktreeCreate/Remove hook 替换 VCS、交互式退出对话框(现为"有变更即保留"的安全默认)。spawn_subagent 也不复刻 Claude Code 的 `isolation: worktree`(子代理各建 worktree),子会话**共享父会话的 worktree 并继承写边界**,见下段。测试:[tests/worktree/](tests/worktree/)(core 纯逻辑 + 真实 git 集成 + 工具端到端)。
+
+**写边界与子代理继承(fix-subagent-write-boundary)。** 起因是一次线上排障:同事的 LOOP 在 worktree 里派了 5 个子代理,IM 模块那个把改动写进了主 checkout。根因有三条,都是"隔离只罩住一个会话对象、不随会话树传递":(1) `spawn_subagent` 只把 `ctx.cwd`(worktree 路径)当普通 cwd 交给子会话,`loop_execution` / WorktreeSessionInfo 都不传,子会话的系统提示说自己 "Session worktree: inactive";(2) `is_cwd_validation_exempt` 让 Yolo 会话跳过全部路径校验,只有 LOOP 主会话被补回一道 `PathValidator(cwd_)` 边界,子会话继承了 Yolo 却不是 LOOP 会话,两头都不沾;(3) 项目指令加载器从 worktree 一路向上走到 HOME,把主 checkout 的 AGENTS.md 再加载一遍并带上绝对路径 Source 头,等于把主仓路径喂给模型。现在:`AgentLoop::write_root()`(会话 worktree > LOOP 策略 > 继承的 `inherited_write_root_`)非空即有写边界,Yolo 不再免除,只有 dangerous 整体放行;文件工具报 `Write boundary blocked`,bash 走 `agent_loop_shell_guard.hpp` 的可证明写目标守卫(Windows 上两侧先 weakly_canonical,junction 形态不同不误拦)。`spawn_subagent` 让子会话共享父会话的 worktree(`SessionOptions::inherited_worktree`,meta `worktree_session.inherited=true`,`entry->cwd` 取 `original_cwd` 与父会话同 project dir,AgentLoop cwd 切进 worktree)、继承 LOOP 策略与 `ToolContext::write_root`;`EnterWorktree` / `ExitWorktree` 对继承者拒绝;`wait_subagent` 用 `AgentLoop::last_turn_failed()` 把夭折的子会话报成 ChildFailed 而不是 completed;指令加载器在 linked worktree 根(`.git` 指针含 `/.git/worktrees/`)止步。事后兜底:spawn 在父会话处于 worktree 时记主 checkout 的 `git status --porcelain` 快照,wait 结束比对并把 worktree 之外新出现的路径附进结果(`metadata.workspace_touched`);LOOP 调度器对建了 worktree 的 run 做同样的事,结果进 `loop_runs.workspace_touched`(schema v3),Web 循环页显示警告。**守卫不是沙箱**:`cd 主仓 && node fix.js` 这类动态写入只能靠事后检测发现;进程级沙箱落地后 bash 守卫可退役,但文件工具那道边界要留 —— 它们在 daemon 进程内执行,沙箱管不到(Codex 的 apply_patch 绕过 `--add-dir` 就是同一个洞)。回归测试见 [docs/subagents.md](docs/subagents.md) 的测试地图。
 
 ## Skills, Memory, And Project Instructions
 
@@ -251,7 +286,22 @@ revision stale so a later send retries.
 
 ## Config Notes
 
-The config schema is intentionally sparse on write: defaults are omitted when possible. Notable sections are `saved_models`, `models_dev`, `skills`, `memory`, `project_instructions`, `agent_loop`, `daemon`, `web`, `network`, `web_search`, `tui`, `desktop`, and `mcp_servers`.
+The config schema is intentionally sparse on write: defaults are omitted when possible. Notable sections are `saved_models`, `models_dev`, `skills`, `memory`, `project_instructions`, `agent_loop`, `daemon`, `web`, `network`, `web_search`, `image_generation`, `tui`, `desktop`, and `mcp_servers`.
+
+Image generation settings use `/api/config/image-generation` (GET/PUT) and
+`/api/config/image-generation/test` (POST). Authenticated settings responses return
+the stored inline key for the password field and its show/hide button, matching
+model settings. Responses must not be logged or cached. Omission retains
+the stored inline key and an explicit empty string clears it. Reuse accepts only
+OpenAI-compatible base-URL model connections. The test route accepts an unsaved
+draft with `confirm_cost:true`, returns a settings-only image preview, and does
+not save or enable the tool. See `docs/daemon-api.md` for the full contract.
+The default API URL is `constants::ACEMODEL_API_BASE_URL` in
+`src/utils/constants.hpp`, also used by the ACEModel model catalog; change that
+single constant to update both defaults. Custom configured URLs stay explicit.
+The image settings UI saves on blur, selection changes and navigation, without
+Save/Cancel buttons. Its connection-scoped queue preserves newer edits while
+writes finish and refills the password from the authenticated settings response.
 
 `mcp_servers` without `transport` default to stdio. `sse` is the legacy two-endpoint protocol. `http` is Streamable HTTP, defaulting to `/mcp` when no endpoint is provided.
 

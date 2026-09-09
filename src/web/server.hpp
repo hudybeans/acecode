@@ -104,6 +104,9 @@ struct WebServerDeps {
     // 会话导出等显式写盘操作使用的原生“另存为”回调。参数是预填文件名,
     // 返回值是用户确认的完整文件路径;空 path + 空 error 表示取消。
     std::function<NativeSaveFilePickResult(const std::string&)> native_save_file_picker;
+    // POST /api/dialog/pick-file(设置页「浏览」终端程序):原生单文件选择对话框。
+    // 返回值同 save picker:有 path = 选中;空 path + 空 error = 取消。null = 501。
+    std::function<NativeSaveFilePickResult()> native_open_file_picker;
     // POST /api/open-in-explorer 的执行回调:输入 UTF-8 绝对文件/目录路径,成功返回
     // std::nullopt,失败返回错误信息。null = 端点 501(与 native_folder_picker
     // 同款门控,仅 desktop 壳启动的 daemon 填入;webapp 兼容模式的右键菜单依赖它)。
@@ -129,6 +132,8 @@ struct WebServerDeps {
     // and makes /api/loops report an explicit unsupported response.
     acecode::loop::LoopStore*  loop_store = nullptr;
     std::function<void()>      on_loops_changed;
+    std::function<void()>      before_data_dir_copy;
+    std::function<void()>      on_data_dir_copy_failure;
 };
 
 class WebServer {

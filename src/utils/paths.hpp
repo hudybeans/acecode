@@ -12,10 +12,40 @@
 // 进程半路改根目录把状态散到两套路径下。测试通过 override_run_mode_for_test()
 // 绕过 once 保护,fixture TearDown 应调 reset_run_mode_for_test() 清场。
 
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace acecode {
+
+// ── 数据目录重定向指针(openspec: data-directory-relocation)────────────────
+//
+// 用户在 Settings → 配置 里迁移数据目录后,默认目录里留下一个
+// `data-dir.redirect.json`,所有入口(TUI / daemon / headless / Desktop 壳)在
+// resolve_data_dir() 里读它决定真正的数据根。指针本身永远待在**平台默认目录**,
+// 因为那是进程在读到任何配置之前唯一知道的位置;删掉它即回滚到默认目录
+// (迁移是复制不是移动,旧数据仍在原地)。
+inline constexpr const char* kDataDirRedirectFileName = "data-dir.redirect.json";
+
+struct DataDirRedirect {
+    std::string data_dir;                    // 新数据根(绝对路径),必填
+    std::string previous_data_dir;           // 迁移前的数据根(可空)
+    long long migrated_at_ms = 0;            // 迁移完成时间(epoch ms,0 = 未知)
+    unsigned long long previous_size_bytes = 0;  // 迁移时复制的字节数
+    bool cleanup_pending = false;            // 是否还没问过用户要不要删旧目录
+};
+
+// 指针文件完整路径:<default_dir>/data-dir.redirect.json。
+std::string data_dir_redirect_path(const std::string& default_dir);
+
+// 读指针。文件不存在 / 非法 JSON / 缺 data_dir → nullopt。不校验目标目录是否存在。
+std::optional<DataDirRedirect> read_data_dir_redirect(const std::string& default_dir);
+
+// 原子写指针(tmp + rename)。成功返回 true。
+bool write_data_dir_redirect(const std::string& default_dir, const DataDirRedirect& redirect);
+
+// 删除指针(不存在也算成功)。
+bool remove_data_dir_redirect(const std::string& default_dir);
 
 // Expand ~ and ${ENV} style variables in a path string. Returns the expanded
 // form; missing env vars are left as-is (per hermes convention).
@@ -47,7 +77,17 @@ RunMode get_run_mode();
 //         | Service : /Library/Application Support/acecode
 // Linux   | User    : $HOME/.acecode/         (缺失退到 ./.acecode)
 //         | Service : /var/lib/acecode
+//
+// 这是**平台默认**目录,不看重定向指针。指针文件永远放在这里。
+std::string resolve_default_data_dir(RunMode mode);
+
+// 生效的数据根 = 默认目录 + 重定向指针:指针指向的绝对路径存在时用它,否则用
+// 默认目录并 LOG_WARN 一次。结果按 (mode, 默认目录) 缓存,进程内只读一次指针;
+// 默认目录随环境变量变化时会重新解析(测试改 HOME 之后仍正确)。
 std::string resolve_data_dir(RunMode mode);
+
+// 测试专用:清掉 resolve_data_dir 的缓存(写了指针之后重新解析)。
+void reset_data_dir_cache_for_test();
 
 // 进程级 run/ 目录覆盖。非空时 config::get_run_dir() 直接返回这个,而不再
 // 用 <data_dir>/run/ 默认。

@@ -113,6 +113,10 @@ struct ToolContext {
     // should prefer this over the daemon process cwd when their own arguments
     // omit a cwd/path.
     std::string cwd;
+    // 会话写边界根目录(AgentLoop::write_root 的快照);空 = 无边界。
+    // spawn_subagent 用它把父会话的边界透传给子会话。工具自身不据此拒写,
+    // 拒写统一在 AgentLoop 的路径校验里做。
+    std::string write_root;
 
     // Called zero or more times with non-empty cleaned chunks (ANSI stripped,
     // UTF-8 boundary safe, carriage-return overwrites resolved). Only bash_tool

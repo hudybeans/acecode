@@ -22,6 +22,9 @@ namespace acecode {
 // 都返回 false。永不抛异常。
 bool read_state_flag(const std::string& key);
 
+// Pause background state writes during data-directory migration; reads continue.
+void set_state_file_writes_paused(bool paused);
+
 // Checked variant for callers that must report persistence failure (for
 // example, an HTTP endpoint). The read-modify-write sequence is serialized
 // with all other state_file operations in this process.

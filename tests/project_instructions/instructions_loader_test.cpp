@@ -269,3 +269,39 @@ TEST_F(InstructionsLoaderTest, PreservesUtf8PathAndContentInternally) {
     ASSERT_EQ(merged.sources.size(), 1u);
     EXPECT_EQ(acecode::path_to_utf8(merged.sources[0].parent_path().filename()), u8"中文项目");
 }
+
+// 场景:cwd 是 linked worktree(<repo>/.acecode/worktrees/wt,.git 是指向
+// <repo>/.git/worktrees/wt 的指针文件),worktree 与主 checkout 各有一份 AGENTS.md。
+// 期望:只加载 worktree 里那份,不再向上把主 checkout 的再加载一遍 —— 那份内容
+// 重复,还带着主 checkout 绝对路径的 Source 头;worktree 会话和它派生的子代理
+// 就是拿着这条路径把改动写进主仓的。
+TEST_F(InstructionsLoaderTest, LinkedWorktreeRootStopsAscent) {
+    fs::path repo = temp_home / "repo";
+    fs::path wt = repo / ".acecode" / "worktrees" / "wt";
+    write_file(repo / "AGENTS.md", "# main checkout rules\n");
+    write_file(wt / "AGENTS.md", "# worktree rules\n");
+    write_file(wt / ".git",
+               "gitdir: " + (repo / ".git" / "worktrees" / "wt").string() + "\n");
+
+    acecode::ProjectInstructionsConfig cfg;
+    auto merged = acecode::load_project_instructions(wt.string(), cfg);
+    EXPECT_NE(merged.merged_body.find("worktree rules"), std::string::npos);
+    EXPECT_EQ(merged.merged_body.find("main checkout rules"), std::string::npos);
+    ASSERT_EQ(merged.sources.size(), 1u);
+}
+
+// 场景:cwd 是子模块(.git 指针指向 /.git/modules/...),外层仓库有 AGENTS.md。
+// 期望:子模块不是 worktree 边界,外层指令照旧加载(outer-first,两份都在)。
+TEST_F(InstructionsLoaderTest, SubmoduleMarkerKeepsAscending) {
+    fs::path repo = temp_home / "repo";
+    fs::path sub = repo / "libs" / "sub";
+    write_file(repo / "AGENTS.md", "# outer rules\n");
+    write_file(sub / "AGENTS.md", "# sub rules\n");
+    write_file(sub / ".git", "gitdir: ../../.git/modules/libs/sub\n");
+
+    acecode::ProjectInstructionsConfig cfg;
+    auto merged = acecode::load_project_instructions(sub.string(), cfg);
+    EXPECT_NE(merged.merged_body.find("outer rules"), std::string::npos);
+    EXPECT_NE(merged.merged_body.find("sub rules"), std::string::npos);
+    EXPECT_EQ(merged.sources.size(), 2u);
+}

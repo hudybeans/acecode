@@ -254,6 +254,14 @@ function RunList({ runs, onOpenSession }) {
             <span className={`text-[11px] min-w-[58px] ${runToneClass(present)}`}>{present.label}</span>
             <span className="text-[12px] text-fg-2">{formatDate(run.scheduled_at_ms)}</span>
             <span className="flex-1 truncate text-[11px] text-fg-mute">{present.reason}</span>
+            {present.workspaceTouchedSummary && (
+              <span
+                className="shrink-0 truncate max-w-[260px] text-[11px] text-warning"
+                title={present.workspaceTouched.join('\n')}
+              >
+                {present.workspaceTouchedSummary}
+              </span>
+            )}
             {run.session_id && <VsIcon name="arrowRight" size={13} />}
           </button>
         );

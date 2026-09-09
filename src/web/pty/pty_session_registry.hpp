@@ -96,7 +96,16 @@ public:
     void stop_all();
 
     PtyBackendKind backend() const { return backend_; }
-    std::string shell() const { return shell_; }
+    std::string shell() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return shell_;
+    }
+    // 设置页改了默认终端后更新新建 tab 的默认命令行(openspec: agent-default-terminal),
+    // 已开着的 tab 不受影响。
+    void set_default_shell(std::string command) {
+        std::lock_guard<std::mutex> lk(mu_);
+        shell_ = std::move(command);
+    }
 
 private:
     struct Session {

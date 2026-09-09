@@ -1,3 +1,4 @@
+#include "../environment/bootstrap.hpp"
 #include "headless_runner.hpp"
 
 #include "headless_capability_catalog.hpp"
@@ -319,6 +320,7 @@ int run_print_mode(const HeadlessCliOptions& opts) {
     }
 
     AppConfig cfg = load_config();
+    acecode::environment::bootstrap(cfg, {false, true});
     {
         auto errs = validate_config(cfg);
         if (!errs.empty()) {

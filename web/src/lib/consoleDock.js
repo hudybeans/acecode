@@ -150,6 +150,15 @@ export function clampDockHeight(height, viewportHeight) {
   return Math.min(Math.max(Math.round(h), CONSOLE_DOCK_MIN_HEIGHT), max);
 }
 
+// Fit the persisted preference without rewriting it on window resize. Below the
+// normal drag minimum, keep the toolbar and give priority to the chat controls.
+export function fitDockHeight(preferredHeight, availableHeight) {
+  const available = Number.isFinite(availableHeight)
+    ? Math.max(0, Math.floor(availableHeight)) : 900;
+  const max = Math.min(available, Math.max(36, available - 280));
+  return Math.min(clampDockHeight(preferredHeight, available), max);
+}
+
 // ---------------------------------------------------------------------------
 // WS URL:/ws/pty/<id>?cursor=N[&token=...]。
 // origin 形如 "http://127.0.0.1:28080" 或空(同源)。

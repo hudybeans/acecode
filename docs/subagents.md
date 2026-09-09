@@ -35,6 +35,24 @@
   PermissionManager 把关(权限模式继承父会话)。
 - 子会话继承父会话的 cwd 与权限模式。父会话不在 registry(TUI 主会话)时,权限模式经
   `SubagentToolDeps::fallback_permissions` 继承。
+- **继承父会话的隔离**(fix-subagent-write-boundary):父会话在 worktree 里时,子会话共享
+  同一个 worktree —— `SessionOptions::inherited_worktree` 进子会话 meta
+  (`worktree_session.inherited=true`,resume 照常恢复),AgentLoop cwd 切进 worktree,而
+  `entry->cwd` 取父会话进 worktree 前的 workspace cwd(与父会话同 project dir,后台任务
+  面板扫盘找得到已结束的子任务)。父会话是 LOOP 运行时,子会话继承 `loop_execution` /
+  loop_id / run_id / `<loop-execution>` 系统上下文。`ToolContext::write_root` 一并透传。子会话
+  的系统提示写明 worktree 归父会话所有;`EnterWorktree` / `ExitWorktree` 对继承者一律拒绝。
+- **写边界**:`AgentLoop::write_root()` 非空(会话 worktree > LOOP 策略 > 继承的根)时,Yolo
+  不再免除路径校验 —— 写工具指向边界之外报 `Write boundary blocked`,bash 里可证明的写
+  目标同样被拦(`agent_loop_shell_guard.hpp`);file_read 与只读工具仍可读任何位置;
+  dangerous 模式整体放行。曾经这条边界只挂在 LOOP 主会话上,子会话继承了 Yolo 却不继承
+  LOOP 身份,于是"起了 worktree 但子代理在主 checkout 里改东西"。
+- **主 checkout 监视**(事后兜底):父会话在 worktree 里时,spawn 记下主 checkout 的
+  `git status --porcelain` 快照(`SessionEntry::workspace_watch_*`),wait 结束后比对,
+  worktree 之外新出现的路径附在结果末尾(`WARNING: the main checkout ... changed`,
+  `metadata.workspace_touched`),兜住 `cd 主仓 && node fix.js` 这类工具层守卫抓不到的
+  写入。并发子会话共享主 checkout,只能说"运行期间出现",不能断言是谁写的;基线随之
+  前移,再次 wait 只报新增。
 - 成功 spawn 后调用 `SubagentToolDeps::on_spawn(child_id, prompt)`(TUI 用它登记任务并
   订阅子会话事件;daemon 留空)。
 - 工具结果 `metadata.subagent_session_id` 随 `tool_end` 事件透传到前端(Web 靠它即时发现新任务)。
@@ -52,6 +70,11 @@
   完成信号;持续无新消息 60 秒 → Timeout(不销毁子会话,可稍后 `wait_subagent` 收)。
 - 父会话 abort(Esc / 停止按钮)→ 传播 `loop->abort()` 给子会话,但**不销毁**——已产出
   的工作保留,可在面板 / `/tasks` 里查看。
+- **ChildFailed**:子会话回合以 provider 终止错误 / 上下文压缩失败 / 连续空回复耗尽 /
+  max_iterations / hook 拦截结束(`AgentLoop::last_turn_failed()`,原因取
+  `last_turn_error()`)→ `success=false`,文案 `[subagent X] failed before finishing: <error>`,
+  最后一段输出标为 partial work。曾经这里一律报 completed,父会话把子会话临终前的一句
+  "Now let me read..." 当成果,直到查产物才发现是空的。
 
 ## 3. 后端实现地图
 
@@ -171,7 +194,11 @@ TuiState overlay,工具线程 wait ask_cv 天然带回结果)。只需两点:入
 
 | 文件 | 覆盖 |
 |---|---|
-| `tests/tool/spawn_subagent_tool_test.cpp` | deps 缺失 / 空 prompt / fire-and-forget / 深度拒绝 / wait 全链路 / parent 持久化(ChildRecordsParentSessionId)/ resume 恢复身份(ResumeRestoresSubagentIdentityFromMeta)/ wait_subagent |
+| `tests/tool/spawn_subagent_tool_test.cpp` | deps 缺失 / 空 prompt / fire-and-forget / 深度拒绝 / wait 全链路 / parent 持久化(ChildRecordsParentSessionId)/ resume 恢复身份(ResumeRestoresSubagentIdentityFromMeta)/ wait_subagent / worktree 与写边界继承(ChildSharesParentWorktreeWithWriteBoundary)/ LOOP 策略继承 / ChildFailed / 主 checkout 监视(WaitReportsMainCheckoutChangesMadeWhileChildRan)|
+| `tests/agent_loop/agent_loop_tool_lifecycle_events_test.cpp` | Yolo worktree 会话写边界(文件工具 / 继承 write_root / shell 写守卫) |
+| `tests/worktree/worktree_tool_test.cpp` + `worktree_meta_roundtrip_test.cpp` | 继承 worktree 拒绝 Enter/Exit;meta `inherited` 往返与省略 |
+| `tests/loop/loop_scheduler_test.cpp` + `loop_store_test.cpp` | `detect_workspace_touched` 真实 git;`workspace_touched` 持久化与 v3 迁移 |
+| `tests/project_instructions/instructions_loader_test.cpp` | linked worktree 根止步(主 checkout 的 AGENTS.md 不再重复加载) |
 | `tests/session/session_storage_test.cpp` | meta parent_session_id 回环 + 空省略 |
 | `tests/web/web_server_smoke_test.cpp` | 列表隐藏 + ?parent= 反查;purge 护栏(主会话 400)+ 真删 + 普通 DELETE 不删盘 |
 | `tests/tui/subagent_host_test.cpp` | 快照发布/BusyChanged 移除;list 合并 + clear 只删已结束;abort 路由 |
@@ -189,6 +216,10 @@ TuiState overlay,工具线程 wait ask_cv 天然带回结果)。只需两点:入
 - **远程权限请求无取消回收**(TUI):子会话被 abort 后已入队/已展示的请求悬空,用户回应
   是 no-op(unknown request_id),无害但 overlay 需手动关。
 - **purge 不清理 attention 记录**(session_read_state):量小,残留无 UI 影响。
+- **写边界不是进程沙箱**:文件工具与 bash 里可证明的写目标被拦,`cd 主仓 && node fix.js`
+  这类动态写入只能靠主 checkout 监视事后发现;并发子代理共享主 checkout 时监视结果无法
+  归属到具体子会话。进程级沙箱落地后 bash 守卫可退役,文件工具那道边界要留(它们在
+  daemon 进程内执行,沙箱管不到)。
 - **TUI 右侧无已结束痕迹**(用户决策"只显示运行中");已结束任务经 `/tasks` 或 Web 面板查看。
 - Future:父会话工具行的子代理流式进度(tool_update 通道,跨端受益);
   `.acecode/agents/*.md` 自定义 agent 类型(专属 system prompt / 工具白名单);

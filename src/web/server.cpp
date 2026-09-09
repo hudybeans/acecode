@@ -56,6 +56,7 @@ void WebServer::Impl::register_routes() {
     register_pinned_sessions();
     register_sessions();
     register_models();
+    register_image_generation();
     register_experts();
     register_loops();
     register_ui_preferences();
@@ -69,6 +70,7 @@ void WebServer::Impl::register_routes() {
     register_hooks();
     register_feedback();
     register_pty();
+    register_environment();
     register_websocket();
     register_static();
 }

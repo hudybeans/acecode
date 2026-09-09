@@ -9,7 +9,7 @@ export function normalizeShells(resp) {
     .map((s) => ({
       id: s.id,
       label: typeof s.label === 'string' && s.label ? s.label : s.id,
-      available: s.available !== false,
+      available: s.available !== false && s.usable !== false,
       needsPath: s.needs_path === true,
     }));
   const defaultId = typeof resp?.default === 'string' ? resp.default : '';

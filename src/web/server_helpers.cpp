@@ -77,6 +77,7 @@ json ui_preferences_to_json(const WebUiPreferencesConfig& cfg) {
         {"theme", cfg.theme},
         {"color_theme", cfg.color_theme},
         {"font_size", cfg.font_size},
+        {"sidebar_session_time", cfg.sidebar_session_time},
     };
 }
 
@@ -106,6 +107,8 @@ json update_check_to_json(const acecode::upgrade::UpdateCheckResult& result) {
     if (result.package_size) out["package_size"] = *result.package_size;
     if (result.http_status != 0) out["http_status"] = result.http_status;
     if (!result.error.empty()) out["error"] = result.error;
+    if (!result.log_path.empty()) out["log_path"] = result.log_path;
+    if (!result.log_error.empty()) out["log_error"] = result.log_error;
     return out;
 }
 
@@ -470,7 +473,13 @@ std::optional<crow::response> WebServer::Impl::require_auth(const crow::request&
     if (qt) query_token = qt;
 
     auto result = auth_result_for_request(req, header_token, query_token);
-    if (result == AuthResult::Allowed) return std::nullopt;
+    if (result == AuthResult::Allowed) {
+        if (req.method != crow::HTTPMethod::GET && req.method != crow::HTTPMethod::Options &&
+            req.url != "/api/config/data-dir/cleanup") {
+            if (auto blocked = reject_if_migrating(req)) return blocked;
+        }
+        return std::nullopt;
+    }
 
     const char* reason = (result == AuthResult::NoToken)
                           ? "no token" : "bad token";
@@ -2257,6 +2266,7 @@ void WebServer::Impl::refresh_saved_models_from_disk() {
         if (publish_live_saved_models(
                 *deps.app_config, std::move(disk.saved_models))) {
             LOG_INFO("saved_models refreshed from disk after connector hook");
+            refresh_image_generation_tool_locked();
         }
     } catch (const std::exception& e) {
         LOG_WARN(std::string("saved_models refresh failed: ") + e.what());

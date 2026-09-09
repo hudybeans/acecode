@@ -16,6 +16,7 @@
 // 与 proxy_resolver 的平台拆分惯例一致)。
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,10 +91,22 @@ std::string resolve_console_shell(const std::string& configured);
 struct ConsoleShellOption {
     std::string id;        // 稳定 id:powershell / git-bash / cmd / shell / bash / zsh / fish
     std::string label;     // 展示名
-    std::string command;   // 启动命令行(available=false 时可空)
+    std::string command;   // 控制台启动命令行(含参数;available=false 时可空)
+    // 以下三项供 environment::resolve_terminal 做启动探测与回退:
+    std::string program;          // 实际要启动的程序(裸名或绝对路径,无引号无参数)
+    std::string detected_path;    // 自动探测到的程序路径(裸名表示走 PATH)
+    std::string configured_path;  // 用户显式指定的路径(可空;存在时 program 就是它)
+    // 同一类型内的备选程序,按顺序尝试(如 pwsh 拒绝启动时退到 powershell.exe)。
+    std::vector<std::string> fallback_programs;
     bool available = false;
     bool needs_path = false;
 };
+
+// 各终端类型的显式程序路径:type id → 绝对路径(= config.console.shell_paths)。
+using ShellPaths = std::map<std::string, std::string>;
+
+// 含空格的路径加双引号(Windows CreateProcessW / winpty 都按命令行解析)。
+std::string quote_shell_path_if_needed(const std::string& path);
 
 // 注入式探测点(默认实现走真实 FS / env / 注册表),便于单测 mock。
 struct ShellProbe {
@@ -104,13 +117,23 @@ struct ShellProbe {
 };
 ShellProbe default_shell_probe();
 
-// configured_git_bash_path = config.console.git_bash_path(用户指定的 bash.exe,可空)。
+// shell_paths = config.console.shell_paths(各类型的显式程序路径,可空)。显式路径
+// 存在时该类型的 program 就用它;否则用自动探测结果。
+std::vector<ConsoleShellOption> detect_console_shells(
+    const ShellPaths& shell_paths, const ShellProbe& probe);
+std::vector<ConsoleShellOption> detect_console_shells(
+    const ShellPaths& shell_paths);  // 用 default_shell_probe()
+// 兼容旧签名:只有 Git Bash 一条显式路径(= shell_paths["git-bash"])。
 std::vector<ConsoleShellOption> detect_console_shells(
     const std::string& configured_git_bash_path, const ShellProbe& probe);
 std::vector<ConsoleShellOption> detect_console_shells(
-    const std::string& configured_git_bash_path);  // 用 default_shell_probe()
+    const std::string& configured_git_bash_path);
 
-// 按 id 解析启动命令;不存在 / 不可用返回 nullopt。
+// 按 id 解析控制台启动命令;不存在 / 不可用返回 nullopt。
+std::optional<std::string> resolve_shell_command_by_id(
+    const std::string& id, const ShellPaths& shell_paths, const ShellProbe& probe);
+std::optional<std::string> resolve_shell_command_by_id(
+    const std::string& id, const ShellPaths& shell_paths);
 std::optional<std::string> resolve_shell_command_by_id(
     const std::string& id, const std::string& configured_git_bash_path,
     const ShellProbe& probe);
@@ -118,7 +141,14 @@ std::optional<std::string> resolve_shell_command_by_id(
     const std::string& id, const std::string& configured_git_bash_path);
 
 // 默认 shell id:configured_default_shell 非空且可用则用之,否则平台默认
-// (Windows="cmd",POSIX="shell")。
+// (Windows="cmd",POSIX="shell")。目录层面的判定,不做启动探测 ——
+// 真正带探测与回退的解析见 environment::resolve_terminal。
+std::string default_console_shell_id(
+    const std::string& configured_default_shell,
+    const ShellPaths& shell_paths, const ShellProbe& probe);
+std::string default_console_shell_id(
+    const std::string& configured_default_shell,
+    const ShellPaths& shell_paths);
 std::string default_console_shell_id(
     const std::string& configured_default_shell,
     const std::string& configured_git_bash_path, const ShellProbe& probe);

@@ -3,6 +3,7 @@
 #include "agent_loop_shell_guard.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
+#include "environment/prompt_environment.hpp"
 #include "gitinfo/git_context_collector.hpp"
 #include "utils/encoding.hpp"
 #include "utils/logger.hpp"
@@ -483,6 +484,33 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     git_snapshot_cache_.reset();
 }
 
+std::string AgentLoop::write_root() const {
+    // worktree 优先:进了 worktree(自己进的,或 spawn_subagent 从父会话继承
+    // 的)边界就是 worktree;其次 LOOP 执行策略(边界 = cwd);最后父会话
+    // 透传的 write_root。三者都空 = 无边界,Yolo 维持旧的全放行语义。
+    if (session_manager_) {
+        const WorktreeSessionInfo worktree = session_manager_->active_worktree();
+        if (worktree.active()) return worktree.worktree_path;
+    }
+    if (loop_execution_policy_.active) return cwd_;
+    return inherited_write_root_;
+}
+
+std::string AgentLoop::last_turn_error() const {
+    std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+    return last_turn_error_;
+}
+
+void AgentLoop::record_turn_outcome(const std::string& turn_timing_status) {
+    int outcome = kTurnOutcomeCompleted;
+    if (turn_timing_status == "error") {
+        outcome = kTurnOutcomeError;
+    } else if (turn_timing_status == "aborted") {
+        outcome = kTurnOutcomeAborted;
+    }
+    last_turn_outcome_.store(outcome, std::memory_order_release);
+}
+
 std::set<std::string> AgentLoop::dormant_skill_names() const {
     std::set<std::string> out;
     if (!skill_usage_store_ || skill_idle_days_ <= 0 || !skill_registry_) {
@@ -519,6 +547,12 @@ void AgentLoop::dispatch_message(const std::string& role,
                                   bool is_tool,
                                   nlohmann::json metadata,
                                   nlohmann::json content_parts) {
+    if (role == "error") {
+        // 回合级错误文案的唯一收集点:provider 终止错误 / 压缩失败 / 空回复
+        // 耗尽 / hook 拦截都经这里派发,wait_subagent 报 ChildFailed 时带上。
+        std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+        last_turn_error_ = content;
+    }
     if (callbacks_.on_message) {
         callbacks_.on_message(role, content, is_tool);
     }
@@ -824,6 +858,11 @@ void AgentLoop::worker_main() {
             worker_task_kind_ = WorkerTask::Kind::Control;
         }
     }
+}
+
+bool AgentLoop::has_pending_work() {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    return busy_.load() || worker_task_active_ || !task_queue_.empty() || !priority_task_queue_.empty();
 }
 
 void AgentLoop::submit(const std::string& user_message) {
@@ -1207,13 +1246,17 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         worktree_state.worktree_path = info.worktree_path;
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
+        worktree_state.inherited = info.inherited;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2242,13 +2285,17 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         worktree_state.worktree_path = info.worktree_path;
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
+        worktree_state.inherited = info.inherited;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -2949,6 +2996,7 @@ ToolContext AgentLoop::build_tool_context(
     std::mutex& doom_guard_mu) {
     ToolContext tool_ctx;
     tool_ctx.cwd = cwd_;
+    tool_ctx.write_root = write_root();
     tool_ctx.abort_flag = &abort_requested_;
     tool_ctx.session_manager = session_manager_;
     tool_ctx.skill_registry = skill_registry_;
@@ -3134,14 +3182,21 @@ bool AgentLoop::execute_tool_calls(
         } catch (...) {}
     };
 
+    // boundary_root = write_root():非空即"有写边界"(worktree / LOOP / 从父
+    // 会话继承)。有边界的 Yolo 会话只豁免只读工具,写工具必须过边界校验;
+    // 无边界的 Yolo 会话维持旧行为(全部豁免)。曾经只有 LOOP 主会话有这条
+    // 边界,spawn_subagent 派生的子会话继承 Yolo 却不继承 LOOP 身份,于是在
+    // worktree 里起的子代理可以随手把改动写进主 checkout。
     auto is_cwd_validation_exempt = [this](const std::string& tool_name,
-                                           const std::string& path) {
+                                           const std::string& path,
+                                           const std::string& boundary_root) {
+        const bool bounded = !boundary_root.empty();
         if (tool_name == "file_read" || tool_name == "create_workspace" ||
-            (loop_execution_policy_.active &&
+            (bounded &&
              permissions_.mode() == PermissionMode::Yolo &&
              tools_.is_read_only(tool_name))) return true;
         if (permissions_.mode() == PermissionMode::Yolo &&
-            !permissions_.is_dangerous() && !loop_execution_policy_.active) {
+            !permissions_.is_dangerous() && !bounded) {
             return true;
         }
         if (!session_manager_) return false;
@@ -3152,16 +3207,22 @@ bool AgentLoop::execute_tool_calls(
                                      const std::string& tool_name,
                                      const std::string& path) -> std::string {
         if (path.empty() || tool_name == "bash") return {};
-        if (loop_execution_policy_.active &&
+        const std::string boundary_root = write_root();
+        if (!boundary_root.empty() &&
             permissions_.mode() == PermissionMode::Yolo &&
+            !permissions_.is_dangerous() &&
             !tools_.is_read_only(tool_name) &&
             tool_name != "create_workspace") {
-            const std::string boundary_error = PathValidator(cwd_, false).validate(path);
+            const std::string boundary_error =
+                PathValidator(boundary_root, false).validate(path);
             if (!boundary_error.empty()) {
-                return "LOOP Yolo external write blocked: " + path;
+                return "Write boundary blocked: " + path +
+                       " is outside the session write root " + boundary_root +
+                       ". Reads may go anywhere, but every write must stay inside "
+                       "the worktree / execution root.";
             }
         }
-        return is_cwd_validation_exempt(tool_name, path)
+        return is_cwd_validation_exempt(tool_name, path, boundary_root)
             ? std::string{}
             : path_validator_.validate(path);
     };
@@ -3724,12 +3785,14 @@ bool AgentLoop::execute_tool_calls(
                 }
 
                 if (effective_tc.function_name == "bash" && command_looks_like_file_write(ctx_command)) {
-                    if (loop_execution_policy_.active &&
-                        permissions_.mode() == PermissionMode::Yolo) {
-                        const std::string loop_rejection =
-                            loop_shell_write_escape_reason(ctx_command, cwd_);
-                        if (!loop_rejection.empty()) {
-                            return ToolResult{"[Error] " + loop_rejection, false};
+                    const std::string boundary_root = write_root();
+                    if (!boundary_root.empty() &&
+                        permissions_.mode() == PermissionMode::Yolo &&
+                        !permissions_.is_dangerous()) {
+                        const std::string boundary_rejection =
+                            loop_shell_write_escape_reason(ctx_command, boundary_root);
+                        if (!boundary_rejection.empty()) {
+                            return ToolResult{"[Error] " + boundary_rejection, false};
                         }
                     }
                     const auto now = std::chrono::steady_clock::now();
@@ -4109,6 +4172,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     abort_requested_ = false;
     turn_interrupt_requested_ = false;
     busy_ = true;
+    last_turn_outcome_.store(kTurnOutcomeNone, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+        last_turn_error_.clear();
+    }
     terminate_session_after_turn_ = false;
     post_turn_actions_.clear();
     restore_goal_runtime();
@@ -4137,6 +4205,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                 {{"busy", false}, {"outcome", "error"}},
                 {{"outcome", "error"}});
             if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
+            record_turn_outcome("error");
             busy_ = false;
             events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
                 {"busy", false}, {"outcome", "error"}});
@@ -4668,6 +4737,12 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         LOG_WARN(stop_msg);
         turn_timing_status = "error";
         dispatch_message("system", stop_msg, false);
+        {
+            // 走的是 system 角色,dispatch_message 的 error 收集点抓不到;
+            // 子会话被 cap 截断时父会话同样要拿到原因。
+            std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+            last_turn_error_ = stop_msg;
+        }
     }
 
     const bool interrupted_for_new_turn =
@@ -4724,6 +4799,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                  " uncommitted input(s) while closing turn " +
                  turn_info.active_turn_id);
     }
+    record_turn_outcome(turn_timing_status);
     busy_ = false;
     events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
         {"busy", false},
@@ -4898,6 +4974,7 @@ void AgentLoop::run_shell(std::string command) {
 
         ToolContext tool_ctx;
         tool_ctx.cwd = cwd_;
+        tool_ctx.write_root = write_root();
         tool_ctx.abort_flag = &abort_requested_;
         tool_ctx.session_manager = session_manager_;
         tool_ctx.scratch_dir = build_session_scratch_dir(cwd_, session_manager_);

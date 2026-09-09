@@ -97,18 +97,23 @@ export function sessionHoverFocusIsVisible(target, { pointerInitiated = false } 
   }
 }
 
+// 每个会话行都有 hover 卡片,包括置顶行、无工作区会话和非 git 工作区。
+// 卡片按可用信息裁剪:有工作目录才出目录行,是 git 仓库才出分支行,时间行恒有。
+// 无工作区的聊天因此只剩「工作区 / 无工作区」和时间两行,而不是整张卡片消失。
 export function sessionHoverDetails(session, gitInfo = null) {
   if (!session || typeof session !== 'object') return null;
-  if (session.noWorkspace || session.no_workspace) return null;
 
-  const cwd = typeof session.cwd === 'string' ? session.cwd : '';
-  if (!cwd.trim()) return null;
-
-  const isGitRepository = gitInfo?.is_repo === true;
+  const noWorkspace = Boolean(session.noWorkspace || session.no_workspace);
+  const rawCwd = typeof session.cwd === 'string' ? session.cwd : '';
+  const cwd = noWorkspace ? '' : rawCwd.trim();
+  const hasWorkspace = cwd.length > 0;
+  const isGitRepository = hasWorkspace && gitInfo?.is_repo === true;
   return {
     cwd,
+    hasWorkspace,
     branch: isGitRepository ? String(gitInfo.branch || 'HEAD') : '',
     isGitRepository,
+    updatedAt: session.updated_at || session.created_at || null,
   };
 }
 

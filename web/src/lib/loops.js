@@ -198,9 +198,18 @@ export function loopRunPresentation(run = {}) {
     model_unavailable: '所选模型已不可用，循环已停用',
     workspace_unavailable: '工作空间不可用',
   };
+  // 写边界事后检测:run 结束时主 checkout 里新出现的、落在 worktree 之外的改动。
+  // 非空说明有写入绕过了边界(bash 脚本 / 动态目标),UI 要显式警告而不是当成功。
+  const workspaceTouched = Array.isArray(run.workspace_touched)
+    ? run.workspace_touched.filter((item) => typeof item === 'string' && item)
+    : [];
   return {
     label: labels[run.status] || run.status || '未知',
     reason: reasons[run.reason] || run.reason || '',
     tone: run.status === 'completed' ? 'ok' : run.status === 'failed' ? 'error' : run.status === 'missed' ? 'warn' : 'active',
+    workspaceTouched,
+    workspaceTouchedSummary: workspaceTouched.length
+      ? `主 checkout 在运行期间出现 ${workspaceTouched.length} 处 worktree 之外的改动`
+      : '',
   };
 }

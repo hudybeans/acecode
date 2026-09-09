@@ -1,32 +1,101 @@
-é€‚ç”¨äºŽ .NET Framework MSBuild ç‰ˆæœ¬ 17.9.8+b34f75857
+ÊÊÓÃÓÚ .NET Framework MSBuild °æ±¾ 17.9.8+b34f75857
 
   Checking File Globs
-  mcp.vcxproj -> C:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
-  winpty-agent.vcxproj -> C:\Users\shao\acecode\build\Release\winpty-agent.exe
-  winpty_static.vcxproj -> C:\Users\shao\acecode\build\Release\winpty_static.lib
-  files_handler.cpp
-  acecode_testable.vcxproj -> C:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(acecode_native_bridge_support.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(acecode_native_bridge_support.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
-  acecode_native_bridge_support.vcxproj -> C:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(acecode_desktop_support.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(acecode_desktop_support.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\acecode_desktop_support.vcxproj]
-  acecode_desktop_support.vcxproj -> C:\Users\shao\acecode\build\Release\acecode_desktop_support.lib
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(concurrent_session_writer.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(concurrent_session_writer.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\tests\concurrent_session_writer.vcxproj]
-    æ­£åœ¨åˆ›å»ºåº“ C:/Users/shao/acecode/build/tests/Release/concurrent_session_writer.lib å’Œå¯¹è±¡ C:/Users/shao/acecode/build/tests/Release/concurrent_session_writer.exp
-  concurrent_session_writer.vcxproj -> C:\Users\shao\acecode\build\tests\Release\concurrent_session_writer.exe
-  fake_lsp_server.vcxproj -> C:\Users\shao\acecode\build\tests\Release\fake_lsp_server.exe
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(headless_jsonl_process_driver.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(headless_jsonl_process_driver.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\tests\headless_jsonl_process_driver.vcxproj]
-  headless_jsonl_process_driver.vcxproj -> C:\Users\shao\acecode\build\tests\Release\headless_jsonl_process_driver.exe
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(mcp_stdio_test_server.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(mcp_stdio_test_server.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\tests\mcp_stdio_test_server.vcxproj]
-  mcp_stdio_test_server.vcxproj -> C:\Users\shao\acecode\build\tests\Release\mcp_stdio_test_server.exe
-    æ­£åœ¨åˆ›å»ºåº“ C:/Users/shao/acecode/build/tests/Release/state_file_claim_worker.lib å’Œå¯¹è±¡ C:/Users/shao/acecode/build/tests/Release/state_file_claim_worker.exp
-  state_file_claim_worker.vcxproj -> C:\Users\shao\acecode\build\tests\Release\state_file_claim_worker.exe
-d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ä¸­é—´ç›®å½•(acecode_unit_tests.dir\Release\)åŒ…å«ä»Žå¦ä¸€ä¸ªé¡¹ç›®(acecode_unit_tests.vcxproj)å…±äº«çš„æ–‡ä»¶ã€‚   è¿™ä¼šå¯¼è‡´é”™è¯¯çš„æ¸…é™¤å’Œé‡æ–°ç”Ÿæˆè¡Œä¸ºã€‚ [C:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
-  files_handler_test.cpp
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  prompt_environment.cpp
+  shell_command_line.cpp
+  terminal_resolver.cpp
+  terminal_runtime.cpp
+  toolchains.cpp
+  acecode_testable.vcxproj -> N:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(acecode_native_bridge_support.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(acecode_native_bridge_support.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(headless_jsonl_process_driver.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(headless_jsonl_process_driver.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\headless_jsonl_process_driver.vcxproj]
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(mcp_stdio_test_server.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(mcp_stdio_test_server.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\mcp_stdio_test_server.vcxproj]
+  fake_lsp_server.vcxproj -> N:\Users\shao\acecode\build\tests\Release\fake_lsp_server.exe
+  headless_jsonl_process_driver.vcxproj -> N:\Users\shao\acecode\build\tests\Release\headless_jsonl_process_driver.exe
+  acecode_native_bridge_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
+  mcp_stdio_test_server.vcxproj -> N:\Users\shao\acecode\build\tests\Release\mcp_stdio_test_server.exe
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(state_file_claim_worker.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(state_file_claim_worker.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\state_file_claim_worker.vcxproj]
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(concurrent_session_writer.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(concurrent_session_writer.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\concurrent_session_writer.vcxproj]
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(remote_web_proxy_test_child.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(remote_web_proxy_test_child.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\remote_web_proxy_test_child.vcxproj]
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(acecode_desktop_support.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(acecode_desktop_support.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\acecode_desktop_support.vcxproj]
+  acecode_desktop_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_desktop_support.lib
+    ÕýÔÚ´´½¨¿â N:/Users/shao/acecode/build/tests/Release/state_file_claim_worker.lib ºÍ¶ÔÏó N:/Users/shao/acecode/build/tests/Release/state_file_claim_worker.exp
+    ÕýÔÚ´´½¨¿â N:/Users/shao/acecode/build/tests/Release/remote_web_proxy_test_child.lib ºÍ¶ÔÏó N:/Users/shao/acecode/build/tests/Release/remote_web_proxy_test_child.exp
+    ÕýÔÚ´´½¨¿â N:/Users/shao/acecode/build/tests/Release/concurrent_session_writer.lib ºÍ¶ÔÏó N:/Users/shao/acecode/build/tests/Release/concurrent_session_writer.exp
+  remote_web_proxy_test_child.vcxproj -> N:\Users\shao\acecode\build\tests\Release\remote_web_proxy_test_child.exe
+  state_file_claim_worker.vcxproj -> N:\Users\shao\acecode\build\tests\Release\state_file_claim_worker.exe
+  concurrent_session_writer.vcxproj -> N:\Users\shao\acecode\build\tests\Release\concurrent_session_writer.exe
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: ÖÐ¼äÄ¿Â¼(acecode_unit_tests.dir\Release\)°üº¬´ÓÁíÒ»¸öÏîÄ¿(acecode_unit_tests.vcxproj)¹²ÏíµÄÎÄ¼þ¡£   Õâ»áµ¼ÖÂ´íÎóµÄÇå³ýºÍÖØÐÂÉú³ÉÐÐÎª¡£ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+  config_environment_test.cpp
+  shell_command_line_test.cpp
+  terminal_resolver_test.cpp
+  toolchains_test.cpp
+  expert_registry_test.cpp
+  web_worktree_intent_test.cpp
+  loop_scheduler_test.cpp
+  expert_context_prompt_test.cpp
+  git_status_prompt_test.cpp
+  skills_index_prompt_test.cpp
+  system_prompt_test.cpp
+  session_channel_binder_test.cpp
+  session_registry_test.cpp
+  spawn_subagent_tool_test.cpp
+  thread_tools_test.cpp
+  subagent_host_test.cpp
+  pty_backend_test.cpp
+  pty_session_registry_test.cpp
   selection_context_annotation_test.cpp
   web_server_smoke_test.cpp
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(385,46): warning C4129: ¡°m¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(385,46): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(387,10): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(387,10): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(387,52): warning C4129: ¡°m¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(387,52): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(388,27): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(392,5): warning C4129: ¡°m¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(392,5): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(393,5): warning C4129: ¡°m¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(393,5): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(394,5): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(394,5): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(396,5): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(396,5): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(404,39): warning C4129: ¡°g¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(404,39): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(405,46): warning C4129: ¡°W¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(405,46): warning C4129: ¡°S¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(405,46): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(409,5): warning C4129: ¡°W¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(409,5): warning C4129: ¡°S¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(409,5): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(410,5): warning C4129: ¡°g¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(410,5): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(417,30): warning C4129: ¡°G¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(418,50): warning C4129: ¡°G¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(420,42): warning C4129: ¡°G¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\web\pty\pty_backend_test.cpp(427,5): warning C4129: ¡°G¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(631,28): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(631,28): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(634,1): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(634,1): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(647,28): warning C4129: ¡°W¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(647,28): warning C4129: ¡°S¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(647,28): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(649,5): warning C4129: ¡°W¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(649,5): warning C4129: ¡°S¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(649,5): warning C4129: ¡°c¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(662,28): warning C4129: ¡°P¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(662,28): warning C4129: ¡°G¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(687,34): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
+N:\Users\shao\acecode\tests\prompt\system_prompt_test.cpp(690,1): warning C4129: ¡°p¡±: ²»¿ÉÊ¶±ðµÄ×Ö·û×ªÒåÐòÁÐ [N:\Users\shao\acecode\build\tests\acecode_unit_tests.vcxproj]
   Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
   - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
   - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
   Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
-    æ­£åœ¨åˆ›å»ºåº“ C:/Users/shao/acecode/build/tests/Release/acecode_unit_tests.lib å’Œå¯¹è±¡ C:/Users/shao/acecode/build/tests/Release/acecode_unit_tests.exp
-  acecode_unit_tests.vcxproj -> C:\Users\shao\acecode\build\tests\Release\acecode_unit_tests.exe
+    ÕýÔÚ´´½¨¿â N:/Users/shao/acecode/build/tests/Release/acecode_unit_tests.lib ºÍ¶ÔÏó N:/Users/shao/acecode/build/tests/Release/acecode_unit_tests.exp
+  acecode_unit_tests.vcxproj -> N:\Users\shao\acecode\build\tests\Release\acecode_unit_tests.exe
+exit=0

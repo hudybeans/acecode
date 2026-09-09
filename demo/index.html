@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>点击 · 彩边与水波 | ACECode Demo</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: #f2eff6; background: #171619; --muted: #aaa5b0; --border: #413c47; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button, select { border-radius: 0; }
+    button { cursor: pointer; }
+    button:disabled, input:disabled, select:disabled { opacity: .4; cursor: default; }
+    :focus-visible { outline: 2px solid #d2c7ff; outline-offset: 4px; }
+    [hidden] { display: none !important; }
+    .topbar { max-width: 1380px; margin: auto; padding: 25px 40px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { font-size: 17px; font-weight: 650; letter-spacing: -.5px; }
+    .topbar a { color: var(--muted); font-size: 12px; text-underline-offset: 4px; }
+    main { max-width: 1200px; min-height: calc(100svh - 88px); margin: auto; padding: 14px 48px 40px; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: clamp(44px, 7vw, 104px); align-items: center; }
+    .preview-area { min-width: 0; display: grid; place-items: center; gap: 18px; }
+    .screen { position: relative; width: min(370px, 100%, calc((100svh - 156px) * .462)); aspect-ratio: 6 / 13; overflow: hidden; border-radius: 44px; background: #393848; box-shadow: 0 0 0 1px #55505b, 0 24px 72px rgb(0 0 0 / 38%); isolation: isolate; container-type: inline-size; }
+    .scene { position: absolute; inset: 0; }
+    #wallpaper { position: absolute; inset: -8%; width: 116%; height: 116%; display: block; }
+    #shader { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; opacity: 0; }
+    .screen.rendered #shader { opacity: 1; }
+    #heat { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; mix-blend-mode: screen; }
+    .screen.heating #heat { opacity: 1; }
+    .clock-block { position: absolute; top: 12.3%; width: 100%; text-align: center; color: #fff5ed; }
+    .date { font-size: 3.7cqw; margin: 0; }
+    .clock { font-family: "Segoe UI", sans-serif; font-size: 31cqw; line-height: 1.2; font-weight: 200; letter-spacing: -1.8cqw; padding-right: 1.8cqw; margin: 0; }
+    .statusbar { position: absolute; top: 3.4%; left: 8%; right: 8%; display: flex; justify-content: space-between; font-size: 3.4cqw; font-weight: 600; color: #fff5ed; }
+    .signal { letter-spacing: 2px; font-size: 2.6cqw; }
+    .island { position: absolute; top: 2.1%; left: 35%; width: 30%; height: 4.4%; border-radius: 100px; background: #050506; pointer-events: none; }
+    .home-indicator { position: absolute; left: 35%; bottom: 1.3%; width: 30%; height: 4px; border-radius: 4px; background: rgb(255 255 255 / 85%); pointer-events: none; }
+    .live-copy { position: absolute; left: 10%; right: 10%; top: 54%; color: #fff4ed; text-shadow: 0 1px 20px rgb(29 35 52 / 28%); overflow-wrap: anywhere; }
+    .live-copy h2 { margin: 0 0 18px; font-size: 8.2cqw; font-weight: 500; line-height: 1.5; letter-spacing: -.2cqw; }
+    .live-copy p { margin: 0; font-size: 3.8cqw; line-height: 1.9; color: #ecedf0; }
+    .live-copy:focus { outline: 1px dashed rgb(255 255 255 / 55%); outline-offset: 10px; }
+    .preview-caption { color: #99939f; font-size: 12px; margin: 0; text-align: center; line-height: 1.7; }
+    .panel { min-width: 0; }
+    h1 { font-weight: 550; font-size: 29px; letter-spacing: -1px; line-height: 1.3; margin: 0 0 12px; }
+    .intro { color: var(--muted); font-size: 14px; line-height: 1.85; margin: 0 0 24px; }
+    .view-switch { display: flex; gap: 4px; padding-bottom: 22px; }
+    .view-switch button { background: transparent; color: var(--muted); padding: 7px 15px; min-height: 38px; border: 1px solid transparent; }
+    .view-switch button[aria-pressed="true"] { color: #fff; border-color: #696171; background: #2b272f; }
+    .controls { display: grid; gap: 19px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .row label { font-size: 13px; color: #c8c1d0; }
+    select { background: #242127; color: #f0edf4; border: 1px solid var(--border); padding: 9px 11px; min-height: 40px; width: 160px; }
+    .slider { display: grid; gap: 7px; }
+    input[type="range"] { width: 100%; margin: 0; height: 26px; accent-color: #d5c9ed; cursor: pointer; }
+    output { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 3px; }
+    .actions .full-test { grid-column: 1 / -1; }
+    .actions button, .image-button { min-height: 42px; border: 1px solid #4d4654; color: #eeeaf4; background: #29242f; padding: 10px 12px; font-size: 13px; }
+    .actions .primary { background: #efebf5; color: #242129; border-color: #efebf5; }
+    .actions button:hover, .image-button:hover { border-color: #cec0e6; }
+    .actions .primary:hover { background: #fff; }
+    .animation-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    #pause { min-height: 34px; background: none; color: #dbd6e3; border: 0; padding: 6px 0; font-size: 12px; }
+    #status { font-size: 12px; color: var(--muted); margin: 0; }
+    .image-button { width: 100%; background: transparent; }
+    .hint { font-size: 12px; line-height: 1.8; color: #a59daa; margin: 16px 0 0; }
+    #error { color: #f1b8a9; font-size: 13px; line-height: 1.7; margin: 16px 0 0; }
+    body[data-view="page"] main { max-width: 1500px; grid-template-columns: minmax(0, 1fr) 310px; gap: 40px; }
+    body[data-view="page"] .screen { width: 100%; aspect-ratio: 4 / 3; border-radius: 16px; }
+    body[data-view="page"] .island, body[data-view="page"] .home-indicator, body[data-view="page"] .statusbar { display: none; }
+    body[data-view="page"] .clock-block { top: 7%; }
+    body[data-view="page"] .date { font-size: 2cqw; }
+    body[data-view="page"] .clock { font-size: 15cqw; line-height: 1.25; letter-spacing: -.8cqw; }
+    body[data-view="page"] .live-copy { top: 48%; }
+    body[data-view="page"] .live-copy h2 { font-size: 5cqw; margin-bottom: 10px; }
+    body[data-view="page"] .live-copy p { font-size: 2cqw; }
+    @media (max-width: 760px) {
+      .topbar { padding: 20px 24px; }
+      main, body[data-view="page"] main { grid-template-columns: minmax(0, 1fr); padding: 10px 24px 36px; gap: 32px; }
+      .screen { width: min(340px, 100%); }
+      .panel { width: min(100%, 400px); margin: auto; }
+      .preview-caption { font-size: 11px; }
+      h1 { font-size: 26px; }
+      body[data-view="page"] .screen { aspect-ratio: 4 / 5; }
+      body[data-view="page"] .live-copy h2 { font-size: 7cqw; }
+      body[data-view="page"] .live-copy p, body[data-view="page"] .date { font-size: 3.7cqw; }
+      body[data-view="page"] .clock { font-size: 26cqw; }
+    }
+  </style>
+</head>
+<body data-view="phone">
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute;pointer-events:none">
+    <defs>
+      <filter id="scene-warp" filterUnits="userSpaceOnUse" x="0" y="0" width="400" height="867" color-interpolation-filters="sRGB">
+        <feImage id="warp-image" x="0" y="0" width="400" height="867" preserveAspectRatio="none" result="encoded-map"/>
+        <feComponentTransfer in="encoded-map" result="map">
+          <feFuncR type="linear" slope="1" intercept="-0.00196078431372549"/>
+          <feFuncG type="linear" slope="1" intercept="-0.00196078431372549"/>
+        </feComponentTransfer>
+        <feDisplacementMap id="displacement-map" in="SourceGraphic" in2="map" scale="0" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </defs>
+  </svg>
+  <header class="topbar"><span class="brand">ACECode / Demo</span><a href="https://www.youtube.com/shorts/FQeOmHFXpXY" target="_blank" rel="noopener noreferrer">查看参考视频</a></header>
+  <main>
+    <div class="preview-area">
+      <div class="screen" id="screen">
+        <div class="scene" id="scene">
+          <canvas id="wallpaper" aria-hidden="true"></canvas>
+          <div class="statusbar"><span>9:41</span><span class="signal">LTE 58%</span></div>
+          <div class="clock-block"><p class="date">星期三，6月25日</p><p class="clock">9:41</p></div>
+          <div class="live-copy" id="live-copy" contenteditable="true" role="textbox" aria-label="可编辑的示例文字" aria-multiline="true" spellcheck="false"><h2>让想法<br>自由流动。</h2><p>热浪经过时，文字轻轻弯曲。<br>点击这段文字，写下你的灵感。</p></div>
+        </div>
+        <canvas id="shader" aria-hidden="true"></canvas>
+        <div class="island" aria-hidden="true"></div><div class="home-indicator" aria-hidden="true"></div>
+      </div>
+      <p class="preview-caption">点击屏幕任意位置，让彩色热浪流过。文字仍可选择、编辑。</p>
+    </div>
+    <section class="panel" aria-labelledby="title">
+      <h1 id="title">轻触，泛起涟漪。</h1>
+      <p class="intro">一股彩色热浪从触点扩散。文字与背景轻微起伏，光浪经过后恢复平静，边缘继续律动。</p>
+      <div class="view-switch" role="group" aria-label="预览尺寸"><button type="button" data-view="phone" aria-pressed="true">手机比例</button><button type="button" data-view="page" aria-pressed="false">网页比例</button></div>
+      <div class="controls">
+        <div class="row"><label for="background">背景</label><select id="background"><option value="landscape">暮色山丘</option><option value="grid">线条网格</option><option id="custom-option" value="custom" hidden>我的图片</option></select></div>
+        <div class="slider"><div class="row"><label for="distortion">波纹强度</label><output id="distortion-value" for="distortion">1.00x</output></div><input id="distortion" type="range" min="0" max="1.4" step="0.05" value="1"></div>
+        <div class="slider"><div class="row"><label for="ripple-thickness">波纹厚度</label><output id="thickness-value" for="ripple-thickness">1.00x</output></div><input id="ripple-thickness" type="range" min="0.5" max="2.5" step="0.05" value="1"></div>
+        <div class="slider"><div class="row"><label for="splash-strength">彩虹溅起强度</label><output id="splash-value" for="splash-strength">1.00x</output></div><input id="splash-strength" type="range" min="0" max="2.5" step="0.05" value="1"></div>
+        <div class="slider"><div class="row"><label for="ripple-speed">扩散速度</label><output id="speed-value" for="ripple-speed">1.00x</output></div><input id="ripple-speed" type="range" min="0.6" max="1.8" step="0.05" value="1"></div>
+        <div class="actions"><button class="primary" id="replay" type="button">中心波纹</button><button id="power" type="button" disabled>关闭效果</button><button class="full-test" id="test-animation" type="button">测试完整动画</button></div>
+        <div class="animation-row"><p id="status" role="status">等待点击</p><button id="pause" type="button" disabled>暂停动画</button></div>
+        <button class="image-button" id="choose-image" type="button">换成我的图片</button><input id="image-file" type="file" accept="image/png,image/jpeg,image/webp,image/avif,image/gif" hidden>
+      </div>
+      <p class="hint">「测试完整动画」依次播放：彩边渐入、底部热浪、渐出关闭。连续点击可叠加热浪。图片只在本机读取。</p>
+      <p id="error" role="alert" hidden></p>
+      <noscript><p>请启用 JavaScript 以运行演示。</p></noscript>
+    </section>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const $ = id => document.getElementById(id);
+      const screen = $('screen'), scene = $('scene'), canvas = $('shader');
+      const wallpaper = $('wallpaper'), ctx = wallpaper.getContext('2d');
+      const mapCanvas = document.createElement('canvas');
+      mapCanvas.id = 'heat'; mapCanvas.setAttribute('aria-hidden', 'true');
+      screen.insertBefore(mapCanvas, canvas);
+      const background = $('background'), distortion = $('distortion'), speed = $('ripple-speed');
+      const thickness = $('ripple-thickness'), splash = $('splash-strength');
+      const pause = $('pause'), power = $('power'), status = $('status'), error = $('error');
+      const testAnimation = $('test-animation');
+      const filter = $('scene-warp'), mapImage = $('warp-image'), displacementMap = $('displacement-map');
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+      const MAX_RIPPLES = 4, MAP_RANGE = .12, HEAT_DURATION = .85;
+      const rippleData = new Float32Array(MAX_RIPPLES * 4);
+      let renderers = [], ripples = [], frame = 0, lastTime = null, time = 0;
+      let enabled = false, paused = false, fatalError = false;
+      let amount = 0, transition = null, testRun = null;
+      let sourceDirty = true, customImage = null, imageRequest = 0;
+      let previousMapKey = '', previousSize = '', nextRenderAt = 0;
+      const smooth = (a, b, value) => { const t = Math.max(0, Math.min(1, (value - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+      const vertexSource = `#version 300 es
+        void main() {
+          vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+          gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+        }
+      `;
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        uniform vec2 u_resolution;
+        uniform vec2 u_aspect;
+        uniform float u_radius;
+        uniform float u_time;
+        uniform float u_amount;
+        uniform float u_distortion;
+        uniform float u_thickness;
+        uniform float u_splash;
+        uniform vec4 u_ripples[4];
+        uniform int u_ripple_count;
+        uniform int u_pass;
+        out vec4 outColor;
+
+        float noise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          vec4 k = vec4(dot(i, vec2(127.1, 311.7)), dot(i + vec2(1, 0), vec2(127.1, 311.7)),
+            dot(i + vec2(0, 1), vec2(127.1, 311.7)), dot(i + vec2(1, 1), vec2(127.1, 311.7)));
+          vec4 h = fract(sin(k) * 43758.5453);
+          return mix(mix(h.x, h.y, f.x), mix(h.z, h.w, f.x), f.y);
+        }
+        vec3 spectrum(float phase) {
+          float x = fract(phase) * 6.0;
+          vec3 a, b;
+          if (x < 1.0) { a = vec3(1.0, 0.08, 0.52); b = vec3(0.77, 0.14, 1.0); }
+          else if (x < 2.0) { a = vec3(0.77, 0.14, 1.0); b = vec3(0.10, 0.30, 1.0); }
+          else if (x < 3.0) { a = vec3(0.10, 0.30, 1.0); b = vec3(0.12, 0.86, 1.0); }
+          else if (x < 4.0) { a = vec3(0.12, 0.86, 1.0); b = vec3(1.0, 0.79, 0.47); }
+          else if (x < 5.0) { a = vec3(1.0, 0.79, 0.47); b = vec3(1.0, 0.28, 0.25); }
+          else { a = vec3(1.0, 0.28, 0.25); b = vec3(1.0, 0.08, 0.52); }
+          return mix(a, b, smoothstep(0.0, 1.0, fract(x)));
+        }
+
+        float gaussian(float x) { return exp(-x * x); }
+        vec4 heatWave(vec2 uv, vec4 ripple) {
+          float phase = clamp(ripple.z * ripple.w / ${HEAT_DURATION.toFixed(2)}, 0.0, 1.0);
+          if (phase <= 0.0 || phase >= 1.0) return vec4(0.0);
+          vec2 delta = (uv - ripple.xy) * u_aspect;
+          float distance = length(delta);
+          float reach = length(max(ripple.xy, 1.0 - ripple.xy) * u_aspect);
+          float band = 0.34 * u_thickness;
+          float travel = 1.0 - pow(1.0 - phase, 1.2);
+          float radius = mix(-0.55 * band, reach + 2.0 * band, travel);
+          float front = (distance - radius) / band;
+          float fade = smoothstep(0.0, 0.065, ripple.z * ripple.w)
+            * (1.0 - smoothstep(0.60, 1.0, phase));
+          // 一次宽缓的压缩与回弹；连续的方向场避免触点附近撕裂。
+          vec2 direction = delta / sqrt(dot(delta, delta) + band * band * 0.09);
+          vec2 bend = direction * (-front * gaussian(front)) * 0.024 * fade;
+          float light = (0.66 * gaussian(front) + 0.28 * gaussian((front + 0.75) / 1.6)) * fade;
+          return vec4(bend, light, front);
+        }
+
+        void main() {
+          vec2 uv = gl_FragCoord.xy / u_resolution;
+          vec2 displacement = vec2(0.0);
+          vec3 radiance = vec3(0.0);
+          for (int i = 0; i < 4; i++) {
+            if (i >= u_ripple_count) break;
+            vec4 wave = heatWave(uv, u_ripples[i]);
+            displacement += wave.xy;
+            if (u_pass == 2) {
+              vec3 color = spectrum(0.06 - wave.w * 0.13 + uv.y * 0.035);
+              radiance += color * wave.z;
+            }
+          }
+          if (u_pass == 1) {
+            // 128 对应中性位移；小范围编码提高轻微形变的精度。
+            vec2 offset = displacement * vec2(1.0, -1.0) * u_distortion;
+            outColor = vec4(clamp(vec2(128.0 / 255.0) + offset / ${MAP_RANGE.toFixed(2)}, 0.0, 1.0), 0.0, 1.0);
+            return;
+          }
+          if (u_pass == 2) {
+            // 黑色在 screen 混合下透明；彩光提亮底图，保留文字的亮度。
+            outColor = vec4(clamp(radiance * u_splash * 1.10, 0.0, 0.94) * u_amount, 1.0);
+            return;
+          }
+          vec2 p = (uv - 0.5) * u_aspect;
+          vec2 halfSize = u_aspect * 0.5;
+          vec2 q = abs(p) - halfSize + u_radius;
+          float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_radius;
+          float d = max(-sd, 0.0);
+          vec2 corner = max(q, 0.0);
+          vec2 normal = length(corner) > 0.0001 ? normalize(corner) * sign(p)
+            : (q.x > q.y ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y)));
+          vec2 boundary = uv + normal * d / u_aspect;
+          float impact = 0.0;
+          if (d < 0.42) {
+            for (int i = 0; i < 4; i++) {
+              if (i >= u_ripple_count) break;
+              // 各处边缘按同一热浪的抵达时间响应。
+              impact += heatWave(boundary, u_ripples[i]).z * 0.65;
+            }
+          }
+          impact = min(impact * u_splash, 1.5) * (1.0 - smoothstep(0.20, 0.42, d));
+          float perimeter = atan(p.y / halfSize.y, p.x / halfSize.x) / 6.2831853 + 0.5;
+          float wander = noise(p * 3.1 + vec2(u_time * 0.29, -u_time * 0.23));
+          float breathing = smoothstep(0.05, 0.95,
+            0.5 + 0.5 * sin(perimeter * 18.85 - u_time * 2.35 + wander * 3.0));
+          float accent = pow(0.5 + 0.5 * sin(perimeter * 6.2831853 + u_time * 1.8), 3.0);
+          float lift = impact * (0.075 + 0.070 * noise(boundary * u_aspect * 8.0 + u_time * 0.7));
+          d = max(d - dot(displacement, normal) * u_splash, 0.0);
+          float width = 0.004 + 0.026 * breathing + 0.010 * accent + 0.004 * wander + lift * 0.36;
+          vec3 edgeColor = spectrum(perimeter + u_time * 0.065 + wander * 0.18
+            + 0.035 * sin(perimeter * 12.5663706 + u_time * 1.4) - d * impact * 1.5);
+          edgeColor *= 0.72 + 0.28 * breathing;
+          float core = 1.0 - smoothstep(width * 0.20, width * 1.20, d);
+          float glow = exp(-d / (width * 3.8 + 0.004 + lift * 0.45));
+          float hairline = gaussian((d - 0.0025) / 0.004);
+          float splash = gaussian((d - lift * 0.80) / (0.012 + impact * 0.024)) * impact * 0.32;
+          float alpha = clamp(core * 0.84 + glow * 0.36 + hairline * 0.14 + splash, 0.0, 0.97) * u_amount;
+          outColor = vec4(edgeColor * alpha, alpha);
+        }
+      `;
+
+      function drawWallpaper() {
+        const w = wallpaper.width, h = wallpaper.height, unit = Math.min(w, h);
+        ctx.clearRect(0, 0, w, h);
+        if (background.value === 'custom' && customImage) {
+          const ratio = Math.max(w / customImage.width, h / customImage.height);
+          ctx.drawImage(customImage, (w - customImage.width * ratio) / 2, (h - customImage.height * ratio) / 2, customImage.width * ratio, customImage.height * ratio);
+        } else if (background.value === 'grid') {
+          ctx.fillStyle = '#233546'; ctx.fillRect(0, 0, w, h);
+          const step = unit / 14;
+          ctx.lineWidth = Math.max(1, unit / 440);
+          for (let axis = 0; axis < 2; axis++) {
+            for (let n = 0; n <= (axis ? h : w) / step; n++) {
+              ctx.strokeStyle = n % 3 ? '#607f8e' : '#a9b9be'; ctx.beginPath();
+              if (axis) { ctx.moveTo(0, n * step); ctx.lineTo(w, n * step); }
+              else { ctx.moveTo(n * step, 0); ctx.lineTo(n * step, h); }
+              ctx.stroke();
+            }
+          }
+          ctx.strokeStyle = '#f3d0a2'; ctx.lineWidth = unit / 180;
+          ctx.beginPath(); ctx.arc(w / 2, h * .54, unit * .24, 0, Math.PI * 2); ctx.stroke();
+        } else {
+          const sky = ctx.createLinearGradient(0, 0, w * .3, h);
+          sky.addColorStop(0, '#464668'); sky.addColorStop(.36, '#be7673'); sky.addColorStop(.66, '#e8ab7e'); sky.addColorStop(1, '#779ba8');
+          ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
+          const sun = ctx.createRadialGradient(w * .76, h * .36, unit * .05, w * .76, h * .36, unit * .43);
+          sun.addColorStop(0, 'rgba(255,217,177,.60)'); sun.addColorStop(1, 'rgba(255,198,153,0)');
+          ctx.fillStyle = sun; ctx.fillRect(0, 0, w, h);
+          ctx.fillStyle = '#f9c899'; ctx.beginPath(); ctx.arc(w * .76, h * .36, unit * .105, 0, Math.PI * 2); ctx.fill();
+          const colors = [['#ba756b', '#744956'], ['#7f7d97', '#4e5e7e'], ['#73949e', '#294559'], ['#456c7c', '#1b3042']];
+          for (let i = 0; i < colors.length; i++) {
+            const y = h * (.48 + i * .135), hill = ctx.createLinearGradient(0, y - h * .08, w * .8, h);
+            hill.addColorStop(0, colors[i][0]); hill.addColorStop(1, colors[i][1]); ctx.fillStyle = hill;
+            ctx.beginPath(); ctx.moveTo(-w * .1, y + h * .06);
+            ctx.bezierCurveTo(w * .22, y - h * (i % 2 ? .22 : .05), w * .44, y + h * .15, w * .72, y - h * .025);
+            ctx.quadraticCurveTo(w * .9, y - h * .12, w * 1.1, y - h * .055);
+            ctx.lineTo(w * 1.1, h); ctx.lineTo(-w * .1, h); ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = 'rgba(231,219,206,.13)'; ctx.lineWidth = Math.max(1, unit / 650);
+            for (let line = 1; line <= 5; line++) {
+              const offset = line * unit * .036;
+              ctx.beginPath(); ctx.moveTo(-w * .1, y + h * .06 + offset);
+              ctx.bezierCurveTo(w * .22, y - h * (i % 2 ? .22 : .05) + offset, w * .44, y + h * .15 + offset, w * .72, y - h * .025 + offset); ctx.stroke();
+            }
+          }
+        }
+      }
+
+
+      function resize() {
+        const w = screen.clientWidth, h = screen.clientHeight, short = Math.max(1, Math.min(w, h));
+        const radius = document.body.dataset.view === 'phone' ? w * .12 : 16;
+        screen.style.borderRadius = `${radius}px`;
+        const ratio = Math.min(devicePixelRatio || 1, 1.6, Math.sqrt(2000000 / Math.max(w * h, 1)));
+        const mapRatio = Math.min(144 / short, 384 / Math.max(w, h));
+        const sizeKey = `${w}:${h}:${ratio}:${radius}`;
+        if (sizeKey !== previousSize) {
+          previousSize = sizeKey; previousMapKey = ''; sourceDirty = true;
+          wallpaper.width = Math.max(1, Math.round(w * ratio));
+          wallpaper.height = Math.max(1, Math.round(h * ratio));
+          if (enabled) {
+            canvas.width = wallpaper.width; canvas.height = wallpaper.height;
+            mapCanvas.width = Math.max(1, Math.round(w * mapRatio));
+            mapCanvas.height = Math.max(1, Math.round(h * mapRatio));
+          }
+          for (const item of [filter, mapImage]) { item.setAttribute('width', w); item.setAttribute('height', h); }
+        }
+        if (sourceDirty) { drawWallpaper(); sourceDirty = false; }
+        return { w, h, short, radius: radius / short };
+      }
+      function clearWarp() {
+        scene.style.filter = 'none';
+        if (mapImage.hasAttribute('href')) mapImage.removeAttribute('href');
+        previousMapKey = '';
+      }
+      function updateUI() {
+        pause.textContent = paused ? '继续动画' : '暂停动画';
+        power.disabled = !enabled;
+        testAnimation.disabled = Boolean(testRun);
+        testAnimation.textContent = testRun ? '测试中…' : '测试完整动画';
+        pause.disabled = !enabled || fatalError || (reducedMotion.matches && !ripples.length && !transition && !testRun);
+        const phase = !enabled ? '等待点击' : fatalError ? '当前显示原始画面'
+          : transition?.to === 0 ? (testRun?.stage === 'reset' ? '准备开始' : '效果渐出中')
+          : transition ? '效果渐入中' : testRun?.stage === 'waiting' ? '等待底部热浪'
+          : ripples.length ? '热浪扩散中' : '仅保留彩边';
+        const text = (testRun && !fatalError ? '完整测试 · ' : '') + phase
+          + (enabled && paused && !fatalError ? ' / 已暂停' : '');
+        if (status.textContent !== text) status.textContent = text;
+      }
+      function stopFrame() {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0; lastTime = null; nextRenderAt = 0;
+      }
+      function requestFrame() {
+        if (!enabled || fatalError) { resize(); updateUI(); return; }
+        if (!frame && !document.hidden) frame = requestAnimationFrame(render);
+      }
+      function showError(message, fatal = false) {
+        error.textContent = message; error.hidden = false;
+        if (fatal) {
+          fatalError = true; screen.classList.remove('rendered', 'heating'); clearWarp(); stopFrame(); updateUI();
+        }
+      }
+      function rippleDuration(ripple) { return HEAT_DURATION / ripple.speed; }
+      function fadeTo(target) {
+        if (transition?.to === target) return;
+        transition = amount === target ? null : {
+          from: amount, to: target, startedAt: time,
+          duration: (reducedMotion.matches ? .18 : .65) * Math.abs(target - amount)
+        };
+      }
+      function addRipple(x, y) {
+        const ripple = { x, y, startedAt: time, speed: Number(speed.value) };
+        if (ripples.length === MAX_RIPPLES) ripples.shift();
+        ripples.push(ripple);
+        return ripple;
+      }
+      function advanceAnimation() {
+        if (transition) {
+          const { from, to, startedAt, duration } = transition;
+          amount = from + (to - from) * smooth(0, duration, time - startedAt);
+          if (time - startedAt >= duration) { amount = to; transition = null; }
+        }
+        // 测试的等待、热浪与开关过渡共用时钟；暂停或隐藏时不会有定时器抢跑。
+        if (testRun?.stage === 'reset' && !transition) {
+          ripples = []; clearWarp(); testRun.stage = 'opening'; fadeTo(1);
+        }
+        if (testRun?.stage === 'opening' && !transition) {
+          testRun = { stage: 'waiting', until: time + .25 };
+        }
+        if (testRun?.stage === 'waiting' && time >= testRun.until) {
+          const ripple = addRipple(.5, .03);
+          testRun = { stage: 'wave', until: time + rippleDuration(ripple) + .45 };
+        }
+        if (testRun?.stage === 'wave' && time >= testRun.until) {
+          testRun.stage = 'closing'; fadeTo(0);
+        }
+      }
+      function render(now) {
+        frame = 0;
+        if (document.hidden || !enabled || fatalError) return;
+        if (!paused && now < nextRenderAt) { requestFrame(); return; }
+        const dt = lastTime === null ? 0 : Math.min((now - lastTime) / 1000, .1);
+        lastTime = now;
+        if (!paused) time += dt;
+        if (!paused) advanceAnimation();
+        if (!transition && amount === 0) { finishClose(); return; }
+        const size = resize();
+        ripples = ripples.filter(ripple => time - ripple.startedAt < rippleDuration(ripple));
+        const hasWave = ripples.length > 0;
+        nextRenderAt = now + 1000 / (hasWave || transition ? 60 : 30) - .5;
+        rippleData.fill(0);
+        ripples.forEach((ripple, i) => {
+          rippleData.set([ripple.x, ripple.y, time - ripple.startedAt, ripple.speed], i * 4);
+        });
+        if (renderers.length === 2) {
+          const strength = Number(distortion.value) * (reducedMotion.matches ? .4 : 1);
+          if (hasWave && strength > 0) {
+            const key = `${time}:${strength}:${thickness.value}:${previousSize}:${rippleData.join(',')}`;
+            if (key !== previousMapKey) {
+              renderers[1].draw(size, 1, strength);
+              mapImage.setAttribute('href', mapCanvas.toDataURL('image/png'));
+              previousMapKey = key;
+            }
+            displacementMap.setAttribute('scale', size.short * MAP_RANGE * amount);
+            scene.style.filter = 'url(#scene-warp)';
+          } else {
+            // 无波纹时不绘制、回读或编码位移图，也不让 DOM 继续经过滤镜。
+            clearWarp();
+          }
+          const showHeat = hasWave && Number(splash.value) > 0;
+          if (showHeat) renderers[1].draw(size, amount, strength, 2);
+          screen.classList.toggle('heating', showHeat);
+          renderers[0].draw(size, amount, strength);
+          screen.classList.add('rendered');
+        }
+        updateUI();
+        if (!paused && (hasWave || transition || testRun || !reducedMotion.matches)) requestFrame();
+        else lastTime = null;
+      }
+      function makeRenderer(target, pass) {
+        const gl = target.getContext('webgl2', { alpha: pass === 0, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: pass === 1 });
+        if (!gl || gl.isContextLost()) throw new Error('WebGL2 unavailable');
+        const shaders = []; let program = null;
+        try {
+          for (const [type, code] of [[gl.VERTEX_SHADER, vertexSource], [gl.FRAGMENT_SHADER, fragmentSource]]) {
+            const shader = gl.createShader(type);
+            if (!shader) throw new Error('Unable to create shader');
+            shaders.push(shader); gl.shaderSource(shader, code); gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) || 'Shader compilation failed');
+          }
+          program = gl.createProgram(); if (!program) throw new Error('Unable to create program');
+          for (const shader of shaders) gl.attachShader(program, shader);
+          gl.linkProgram(program);
+          if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'Program link failed');
+          const uniforms = {};
+          for (const name of ['resolution', 'aspect', 'radius', 'time', 'amount', 'distortion', 'thickness', 'splash', 'ripple_count', 'pass']) uniforms[name] = gl.getUniformLocation(program, `u_${name}`);
+          uniforms.ripples = gl.getUniformLocation(program, 'u_ripples[0]');
+          return { gl, dispose() { if (!gl.isContextLost() && gl.isProgram(program)) gl.deleteProgram(program); }, draw(size, intensity, strength, renderPass = pass) {
+            gl.viewport(0, 0, target.width, target.height); gl.useProgram(program);
+            gl.uniform2f(uniforms.resolution, target.width, target.height);
+            gl.uniform2f(uniforms.aspect, size.w / size.short, size.h / size.short);
+            gl.uniform1f(uniforms.radius, size.radius); gl.uniform1f(uniforms.time, reducedMotion.matches ? 0 : time);
+            gl.uniform1f(uniforms.amount, intensity); gl.uniform1f(uniforms.distortion, strength);
+            gl.uniform1f(uniforms.thickness, Number(thickness.value));
+            gl.uniform1f(uniforms.splash, Number(splash.value) * (reducedMotion.matches ? .4 : 1));
+            gl.uniform4fv(uniforms.ripples, rippleData); gl.uniform1i(uniforms.ripple_count, ripples.length);
+            gl.uniform1i(uniforms.pass, renderPass); gl.drawArrays(gl.TRIANGLES, 0, 3);
+          } };
+        } catch (cause) { if (program) gl.deleteProgram(program); throw cause; }
+        finally { for (const shader of shaders) { if (program && gl.isProgram(program)) gl.detachShader(program, shader); gl.deleteShader(shader); } }
+      }
+      function disposeRenderers() {
+        for (const renderer of renderers) renderer.dispose();
+        renderers = [];
+      }
+      function initialize() {
+        disposeRenderers();
+        try {
+          renderers.push(makeRenderer(canvas, 0)); renderers.push(makeRenderer(mapCanvas, 1));
+          fatalError = false; error.hidden = true; previousSize = ''; previousMapKey = '';
+          return true;
+        } catch (cause) {
+          disposeRenderers();
+          console.error('Siri shader demo:', cause);
+          showError('当前环境无法运行 WebGL2，已显示原始画面。请启用硬件加速，或更换浏览器。', true);
+          return false;
+        }
+      }
+      function openEffect() {
+        if (!enabled) {
+          enabled = true; time = amount = 0; paused = false;
+          if (!initialize()) return false;
+        } else if (fatalError) return false;
+        if (paused) { paused = false; stopFrame(); }
+        fadeTo(1);
+        return true;
+      }
+      function launchRipple(x, y) {
+        testRun = null;
+        if (!openEffect()) { updateUI(); return; }
+        addRipple(x, y);
+        nextRenderAt = 0;
+        updateUI(); requestFrame();
+      }
+      function finishClose() {
+        enabled = false; paused = false; ripples = []; time = amount = 0;
+        transition = testRun = null;
+        stopFrame(); clearWarp(); screen.classList.remove('rendered', 'heating');
+        disposeRenderers();
+        canvas.width = canvas.height = mapCanvas.width = mapCanvas.height = 1;
+        previousSize = '';
+        updateUI();
+      }
+      function closeEffect() {
+        testRun = null;
+        if (!enabled || fatalError) { finishClose(); return; }
+        paused = false; stopFrame(); fadeTo(0);
+        updateUI(); requestFrame();
+      }
+      function startTest() {
+        if (testRun) return;
+        if (enabled && fatalError) finishClose();
+        if (enabled && amount > 0) {
+          testRun = { stage: 'reset' }; fadeTo(0);
+        } else {
+          ripples = [];
+          if (!openEffect()) return;
+          testRun = { stage: 'opening' };
+        }
+        paused = false; stopFrame();
+        updateUI(); requestFrame();
+      }
+      screen.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || event.button !== 0) return;
+        const rect = screen.getBoundingClientRect();
+        launchRipple(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+          Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height)));
+      });
+      $('replay').addEventListener('click', () => launchRipple(.5, .5));
+      testAnimation.addEventListener('click', startTest);
+      power.addEventListener('click', closeEffect);
+      pause.addEventListener('click', () => { paused = !paused; stopFrame(); requestFrame(); });
+      distortion.addEventListener('input', () => { $('distortion-value').value = `${Number(distortion.value).toFixed(2)}x`; requestFrame(); });
+      thickness.addEventListener('input', () => { $('thickness-value').value = `${Number(thickness.value).toFixed(2)}x`; requestFrame(); });
+      splash.addEventListener('input', () => { $('splash-value').value = `${Number(splash.value).toFixed(2)}x`; requestFrame(); });
+      speed.addEventListener('input', () => { $('speed-value').value = `${Number(speed.value).toFixed(2)}x`; });
+      background.addEventListener('change', () => { imageRequest++; sourceDirty = true; requestFrame(); });
+      for (const button of document.querySelectorAll('button[data-view]')) {
+        button.addEventListener('click', () => {
+          document.body.dataset.view = button.dataset.view;
+          for (const item of document.querySelectorAll('button[data-view]')) item.setAttribute('aria-pressed', String(item === button));
+          sourceDirty = true; requestFrame();
+        });
+      }
+      $('choose-image').addEventListener('click', () => $('image-file').click());
+      $('image-file').addEventListener('change', async event => {
+        const file = event.target.files[0]; event.target.value = ''; if (!file) return;
+        const request = ++imageRequest;
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'image/gif'].includes(file.type)) { showError('请选择 PNG、JPEG、WebP、AVIF 或 GIF 图片。'); return; }
+        if (file.size > 25 * 1024 * 1024) { showError('图片超过 25 MB，请选择一张较小的图片。'); return; }
+        const url = URL.createObjectURL(file);
+        try {
+          const image = new Image(); image.src = url; await image.decode(); if (request !== imageRequest) return;
+          const ratio = Math.min(1, 2048 / Math.max(image.naturalWidth, image.naturalHeight));
+          const bounded = document.createElement('canvas'); bounded.width = Math.max(1, Math.round(image.naturalWidth * ratio)); bounded.height = Math.max(1, Math.round(image.naturalHeight * ratio));
+          bounded.getContext('2d').drawImage(image, 0, 0, bounded.width, bounded.height);
+          customImage = bounded; $('custom-option').hidden = false; background.value = 'custom'; sourceDirty = true;
+          if (!fatalError) error.hidden = true; requestFrame();
+        } catch { if (request === imageRequest) showError('这张图片无法读取，请换一张图片重试。'); }
+        finally { URL.revokeObjectURL(url); }
+      });
+      reducedMotion.addEventListener('change', () => { stopFrame(); requestFrame(); });
+      document.addEventListener('visibilitychange', () => { stopFrame(); if (!document.hidden) requestFrame(); });
+      window.addEventListener('pagehide', stopFrame); window.addEventListener('pageshow', requestFrame);
+      new ResizeObserver(requestFrame).observe(screen);
+      for (const target of [canvas, mapCanvas]) {
+        target.addEventListener('webglcontextlost', event => {
+          event.preventDefault();
+          if (enabled) showError('图形上下文暂时丢失，正在显示原始画面；恢复后会自动继续。', true);
+        });
+        target.addEventListener('webglcontextrestored', () => {
+          if (!enabled || renderers.some(renderer => renderer.gl.isContextLost())) return;
+          stopFrame();
+          if (initialize()) requestFrame();
+        });
+      }
+      // 初始状态只绘制静态背景；首次点击才创建图形上下文并请求动画帧。
+      resize(); updateUI();
+    })();
+  </script>
+</body>
+</html>

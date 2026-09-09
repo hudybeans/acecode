@@ -427,6 +427,7 @@ nlohmann::json run_to_json(const LoopRun& value) {
         {"session_id", value.session_id},
         {"worktree_path", value.worktree_path},
         {"worktree_branch", value.worktree_branch},
+        {"workspace_touched", value.workspace_touched},
     };
 }
 

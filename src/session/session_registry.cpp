@@ -945,6 +945,13 @@ SessionRegistry::make_entry_locked(const std::string& id,
         // 子会话身份写进 meta(lazy:首条消息落盘时随初始 meta 一起写)。
         entry->sm->set_parent_session_id(entry->parent_session_id);
     }
+    if (opts.inherited_worktree.active()) {
+        // 子会话共享父会话的 worktree:身份进 meta(系统提示 / UI / resume 都
+        // 以它为准),标 inherited 让 ExitWorktree 拒绝、AgentLoop 据此算写边界。
+        WorktreeSessionInfo inherited = opts.inherited_worktree;
+        inherited.inherited = true;
+        entry->sm->set_active_worktree(inherited);
+    }
     if (!entry->expert_id.empty()) {
         entry->sm->set_expert_binding(entry->expert_id,
                                       entry->expert_member_id);
@@ -1038,6 +1045,14 @@ SessionRegistry::make_entry_locked(const std::string& id,
         policy.active = true;
         policy.system_context = opts.loop_system_context;
         entry->loop->set_loop_execution_policy(std::move(policy));
+    }
+    if (!opts.write_root.empty()) {
+        entry->loop->set_inherited_write_root(opts.write_root);
+    }
+    if (opts.inherited_worktree.active()) {
+        // 与 enter_worktree_for_web / resume 同语义:AgentLoop 的工作目录切进
+        // worktree,entry->cwd(workspace 归属 / 会话存储位置)不动。
+        entry->loop->set_cwd(opts.inherited_worktree.worktree_path);
     }
     entry->loop->set_session_manager(entry->sm.get());
     entry->loop->set_hook_manager(deps_.hook_manager);
@@ -2105,6 +2120,15 @@ bool SessionRegistry::any_busy_in_cwd(const std::string& cwd) const {
         if (entry->loop->is_busy() && same_workspace_cwd(entry->cwd, cwd)) {
             return true;
         }
+    }
+    return false;
+}
+
+bool SessionRegistry::any_busy() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& [id, entry] : entries_) {
+        if (!entry || !entry->loop) continue;
+        if (entry->loop->has_pending_work()) return true;
     }
     return false;
 }

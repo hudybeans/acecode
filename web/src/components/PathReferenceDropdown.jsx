@@ -246,7 +246,7 @@ export function PathReferenceDropdown({
                   <button
                     type="button"
                     className="min-w-0 flex-1 h-full flex items-center gap-2 text-left"
-                    onMouseDown={(event) => { event.preventDefault(); onReference?.(item); }}
+                    onClick={() => onReference?.(item)}
                     title={isDirectory ? t('pathReference.referenceFolder') : t('pathReference.referenceFile')}
                   >
                     {isDirectory ? <VsIcon name="folder" size={14} /> : <FileTypeIcon path={item.path} size={14} />}
@@ -257,7 +257,7 @@ export function PathReferenceDropdown({
                       type="button"
                       className="shrink-0 h-6 px-2 rounded text-[11px] text-fg-mute hover:bg-bg hover:text-fg"
                       aria-label={t('pathReference.enterFolderLabel', { path: item.path })}
-                      onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); onEnterDirectory?.(item); }}
+                      onClick={(event) => { event.stopPropagation(); onEnterDirectory?.(item); }}
                     >
                       {t('pathReference.enter')}
                     </button>
@@ -302,7 +302,7 @@ export function PathReferenceDropdown({
                   <button
                     type="button"
                     className="min-w-0 flex-1 h-full flex items-center gap-2 text-left"
-                    onMouseDown={(event) => { event.preventDefault(); onReferenceSession?.(item); }}
+                    onClick={() => onReferenceSession?.(item)}
                     title={item.title}
                   >
                     <VsIcon name="newSession" size={14} />

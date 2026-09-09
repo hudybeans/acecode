@@ -538,10 +538,9 @@ run('explicit overlay notifications submit native layout before the next frame',
 
 run('every current floating-surface owner participates in the native overlay contract', () => {
   const floatingSurfaceOwners = [
+    'AnchoredMenu.jsx',
     'ChangeReview.jsx',
-    'ChatView.jsx',
     'ComposerSessionControls.jsx',
-    'ConsoleDock.jsx',
     'ConversationTurnScrubber.jsx',
     'DesktopContextMenu.jsx',
     'GitChangesPanel.jsx',
@@ -573,6 +572,9 @@ run('every current floating-surface owner participates in the native overlay con
       /data-ace-native-overlay="(?:overlap|blocking)"/,
       file,
     );
+  }
+  for (const file of ['ChatView.jsx', 'ConsoleDock.jsx']) {
+    assert.match(source(`web/src/components/${file}`), /<AnchoredMenu/, file);
   }
 });
 
