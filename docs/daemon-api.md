@@ -1461,8 +1461,12 @@ shape as `GET`.
 
 ### `POST /api/sessions/:id/fork`
 
-Copies the source session prefix through `at_message_id` into a new session and
-resumes it into the current daemon. It does not start a new turn.
+Copies a source session prefix into a new session and resumes it into the current
+daemon. For a user message, the prefix ends before `at_message_id`; its plain text
+is returned in `restored_prompt` for editing in the new session. For an assistant
+message, the prefix includes the selected message and no prompt is returned.
+It does not start a new turn. `fork_anchor_role` identifies the selected message's
+role. Empty prompt text omits `restored_prompt`; attachments are not restored.
 
 Body:
 
@@ -1478,6 +1482,8 @@ Response:
   "title": "Fork title",
   "forked_from": "source-sid",
   "fork_message_id": "msg-123",
+  "fork_anchor_role": "user",
+  "restored_prompt": "Original prompt to edit",
   "workspace_hash": "abc123",
   "cwd": "C:/repo",
   "no_workspace": false

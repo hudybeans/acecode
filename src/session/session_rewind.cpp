@@ -1,5 +1,7 @@
 #include "session_rewind.hpp"
 
+#include "turn_net_diff.hpp"
+#include "turn_timing.hpp"
 #include "../utils/uuid.hpp"
 
 #include <algorithm>
@@ -49,6 +51,24 @@ std::string collapse_ws(std::string s) {
     return out;
 }
 
+// Records that carry no conversation content. These are the same predicates
+// SessionManager::fork_session_to_new_id filters out when writing the forked
+// JSONL, so letting one become the last line of a fork would surface raw
+// diagnostics as chat.
+bool is_non_conversational_record(const ChatMessage& msg) {
+    if (msg.is_meta) return true;
+    if (is_file_checkpoint_message(msg)) return true;
+    if (is_turn_timing_message(msg)) return true;
+    if (is_turn_net_diff_message(msg)) return true;
+    return false;
+}
+
+bool declares_tool_calls(const ChatMessage& msg) {
+    return msg.role == "assistant" &&
+           msg.tool_calls.is_array() &&
+           !msg.tool_calls.empty();
+}
+
 } // namespace
 
 void ensure_user_message_identity(ChatMessage& msg) {
@@ -90,6 +110,46 @@ std::vector<ChatMessage> retained_prefix_before_index(
     size_t target_index) {
     const size_t end = std::min(target_index, messages.size());
     return std::vector<ChatMessage>(messages.begin(), messages.begin() + static_cast<std::ptrdiff_t>(end));
+}
+
+std::optional<size_t> resolve_fork_anchor_index(
+    const std::vector<ChatMessage>& messages,
+    size_t target_index) {
+    if (target_index >= messages.size()) return std::nullopt;
+
+    for (size_t i = target_index; i-- > 0;) {
+        const auto& msg = messages[i];
+        if (is_non_conversational_record(msg)) continue;
+        // A tool result always follows its call, so an assistant message that
+        // declares calls has no results inside the retained prefix. Keep
+        // scanning so the fork never ends on an unanswered call.
+        if (declares_tool_calls(msg)) continue;
+        return i;
+    }
+    return std::nullopt;
+}
+
+std::string fork_restored_prompt_text(const ChatMessage& msg) {
+    if (!msg.content.empty()) return msg.content;
+    // Multimodal input can leave `content` empty and carry the text only in
+    // `content_parts`. Join text parts with newlines; skip attachments.
+    if (!msg.content_parts.is_array()) return {};
+    std::string text;
+    for (const auto& part : msg.content_parts) {
+        if (!part.is_object()) continue;
+        const auto type_it = part.find("type");
+        if (type_it == part.end() || !type_it->is_string() ||
+            type_it->get_ref<const std::string&>() != "text") {
+            continue;
+        }
+        const auto text_it = part.find("text");
+        if (text_it == part.end() || !text_it->is_string()) continue;
+        const std::string& part_text = text_it->get_ref<const std::string&>();
+        if (part_text.empty()) continue;
+        if (!text.empty()) text.push_back('\n');
+        text += part_text;
+    }
+    return text;
 }
 
 std::string rewind_prefill_text(const ChatMessage& msg) {

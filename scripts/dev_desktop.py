@@ -26,9 +26,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-# ─── 颜色输出（终端支持时） ───────────────────────────────────────────────
-
 def _supports_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
@@ -338,7 +335,10 @@ def main() -> None:
     info(f"项目根目录: {project_root}")
 
     web_dir = project_root / "web"
-    build_dir = project_root / "build"
+    build_dir = Path(args.build_dir) if args.build_dir else project_root / "build"
+    if not build_dir.is_absolute():
+        build_dir = project_root / build_dir
+    build_dir = build_dir.resolve()
     dev_web_dir = web_dir / "dist"
 
     # 2. --list 模式

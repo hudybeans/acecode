@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -57,6 +58,27 @@ class FakeProcess:
 
 
 class VerifyPackageUnitTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('cmake'), 'CMake required for generator integration')
+    def test_parallel_build_with_host_default_generator(self) -> None:
+        # A language-free project exercises real MSBuild on Windows without
+        # needing ACECode's vcpkg dependencies; Unix hosts use their default.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / 'source'
+            repo.mkdir()
+            build = Path(directory) / 'build'
+            (repo / 'CMakeLists.txt').write_text(
+                'cmake_minimum_required(VERSION 3.20)\n'
+                'project(ParallelBuild NONE)\n'
+                'add_custom_target(acecode COMMAND ${CMAKE_COMMAND} -E touch '
+                '${CMAKE_BINARY_DIR}/built.txt)\n', encoding='utf-8')
+            configured = subprocess.run(
+                ['cmake', '-S', str(repo), '-B', str(build)], capture_output=True, text=True)
+            self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            self.assertTrue(verify_package.configure_and_build(
+                verify_package.Report(), repo, build, 'cmake', ['tui'],
+                'windows' if sys.platform == 'win32' else 'linux', jobs=2))
+            self.assertTrue((build / 'built.txt').is_file())
+
     def test_windows_does_not_force_ninja_and_maps_cmake_targets(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:
             root = Path(root_text)
@@ -73,13 +95,17 @@ class VerifyPackageUnitTest(unittest.TestCase):
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 result = verify_package.configure_and_build(
                     verify_package.Report(), repo, build, "cmake",
-                    ["tui", "desktop"], "windows"
+                    ["tui", "desktop"], "windows", jobs=4
                 )
 
             self.assertTrue(result)
             self.assertNotIn("-G", commands[0])
-            self.assertEqual(commands[1][-1], "acecode")
-            self.assertEqual(commands[2][-1], "acecode-desktop")
+            self.assertEqual(
+                commands[1][commands[1].index("--target") + 1], "acecode")
+            self.assertEqual(
+                commands[2][commands[2].index("--target") + 1], "acecode-desktop")
+            for command in commands[1:]:
+                self.assertEqual(command[-2:], ["--parallel", "4"])
 
     def test_non_windows_prefers_ninja(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:
@@ -96,10 +122,12 @@ class VerifyPackageUnitTest(unittest.TestCase):
             with mock.patch.object(verify_package, "run_tool", side_effect=capture), \
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 verify_package.configure_and_build(
-                    verify_package.Report(), repo, build, "cmake", ["tui"], "linux"
+                    verify_package.Report(), repo, build, "cmake", ["tui"], "linux",
+                    jobs=4
                 )
 
             self.assertEqual(commands[0][4:6], ["-G", "Ninja"])
+            self.assertEqual(commands[1][-2:], ["--parallel", "4"])
 
     def test_staging_path_guard_rejects_protected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:

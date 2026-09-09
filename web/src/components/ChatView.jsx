@@ -67,6 +67,7 @@ import {
   latestTurnSuccessfulChangedFiles,
   summarizeChangeGroups,
 } from '../lib/sessionChanges.js';
+import { forkRestoredPrompt } from '../lib/sessionFork.js';
 import { stableBySignature } from '../lib/changeReviewStability.js';
 import {
   acceptedQueuedInputEvent,
@@ -806,6 +807,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const composerDirtyRef = useRef(false);
   const preserveComposerExtrasOnSessionChangeRef = useRef(false);
   const preserveComposerInputOnSessionChangeRef = useRef(false);
+  const pendingForkComposerRef = useRef(null);
   const attachmentReservationsRef = useRef(null);
   if (!attachmentReservationsRef.current) {
     attachmentReservationsRef.current = createComposerAttachmentReservations();
@@ -1691,6 +1693,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     const editVersionAtLoad = draftEditVersionRef.current;
     const preserveComposerInput = preserveComposerInputOnSessionChangeRef.current;
     preserveComposerInputOnSessionChangeRef.current = false;
+    const forkDraft = pendingForkComposerRef.current;
+    pendingForkComposerRef.current = null;
     setDraftReadyKey('');
     if (!preserveComposerInput) setComposerSubmitting(false);
 
@@ -1705,6 +1709,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text);
         onInitialDraftConsumed?.();
       }
+      return () => { cancelled = true; };
+    }
+
+    if (forkDraft?.key === targetKey) {
+      composerDirtyRef.current = true;
+      draftEditVersionRef.current += 1;
+      setComposerValue(forkDraft.text);
+      draftLastSavedRef.current = { key: targetKey, text: '' };
+      setDraftReadyKey(targetKey);
       return () => { cancelled = true; };
     }
 
@@ -3439,6 +3452,17 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         created_at: r.created_at || now,
         updated_at: r.updated_at || now,
       };
+      // 分叉点命中 user 提示词时,后端已把该提示词从历史中剔除并返回原文。
+      // 这里回填输入框待用户修改后重发,不自动发送。
+      // 先保留源会话输入,让旧会话 cleanup 保存自己的草稿;目标会话加载时再回填。
+      const restoredPrompt = forkRestoredPrompt(r);
+      if (restoredPrompt) {
+        pendingForkComposerRef.current = {
+          key: `${workspaceHash}:${r.session_id}`,
+          text: restoredPrompt,
+        };
+      }
+
       onSessionPromoted?.({
         ...newSessionRefFrom(ref, r.session_id),
         title: r.title,
@@ -3454,7 +3478,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         noWorkspace,
         session: forkedSession,
       });
-      toast({ kind: 'ok', text: '已分叉到 ' + (r.title || r.session_id) });
+      toast({
+        kind: 'ok',
+        text: restoredPrompt
+          ? '已创建分支会话'
+          : '已分叉到 ' + (r.title || r.session_id),
+      });
     } catch (e) {
       toast({ kind: 'err', text: '分叉失败:' + (e?.message || '') });
     } finally {

@@ -53,6 +53,18 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -Repo .
 ```
 
+To validate release arguments, the selected build directory, and the dynamically
+calculated parallelism without building, packaging, touching Git, or contacting
+the update server, add `-DryRun` (optionally with `-BuildJobs 3`). For quick
+validation, `-DryRun -NoPublish` is accepted because no publish occurs:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .acecode\skills\acecode-release\scripts\publish_acecode_release.ps1 `
+  -QuickValidation -Version 0.9.13-pre.1 -Repo . `
+  -DryRun -NoPublish -BuildJobs 3
+```
+
 With stable `0.8.6` and no existing `0.8.7-pre.N` record, this publishes `0.8.7-pre.1`. A later stable release should normally use the same numeric core, `0.8.7`.
 
 ## Seed Upgrade Compatibility (Required)
