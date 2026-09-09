@@ -3447,7 +3447,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
       toast({
         kind: 'ok',
         text: restoredPrompt
-          ? '已分叉,提示词已回填输入框,可修改后重发'
+          ? '已创建分支会话'
           : '已分叉到 ' + (r.title || r.session_id),
       });
     } catch (e) {

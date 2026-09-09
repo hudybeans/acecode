@@ -925,6 +925,5 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '导出': 'Export',
   '归档': 'Archive',
   '重命名': 'Rename',
-  '已分叉,提示词已回填输入框,可修改后重发':
-    'Forked, prompt restored to the input box; edit it and resend',
+  '已创建分支会话': 'Forked session created',
 });
