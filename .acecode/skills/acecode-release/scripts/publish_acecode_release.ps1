@@ -23,7 +23,10 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipTests,
     [switch]$NoPublish,
-    [switch]$AllowDirtyBuild
+    [switch]$AllowDirtyBuild,
+    [string]$BuildDir = 'build/windows-x64-release',
+    [int]$BuildJobs = 0,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -442,7 +445,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Repo 'CMakeLists.txt'))) {
     throw "Not an ACECode repo root: $Repo"
 }
 
-$manifestPath = Join-Path $UpdateDir 'aceupdate.json'
+$manifestPath = [System.IO.Path]::Combine($UpdateDir, 'aceupdate.json')
 if ($QuickValidation) {
     if ([string]::IsNullOrWhiteSpace($Version)) {
         $Version = Get-NextQuickValidationVersion -RepoRoot $Repo -ManifestPath $manifestPath
@@ -453,7 +456,7 @@ if ($QuickValidation) {
     if ($Push) {
         throw 'Quick validation never pushes Git commits or tags. Remove -Push.'
     }
-    if ($NoPublish) {
+    if ($NoPublish -and -not $DryRun) {
         throw 'Quick validation must publish its Windows package. Remove -NoPublish.'
     }
     if ($Target -ne 'windows-x64') {
@@ -497,6 +500,51 @@ if ($QuickValidation) {
 }
 Write-Host "Repo:      $Repo"
 Write-Host "UpdateDir: $UpdateDir"
+
+if ($DryRun) {
+    $dryRunBuildRoot = $BuildDir
+    if (-not [System.IO.Path]::IsPathRooted($dryRunBuildRoot)) {
+        $dryRunBuildRoot = Join-Path $Repo $dryRunBuildRoot
+    }
+    $dryRunBuildRoot = [System.IO.Path]::GetFullPath($dryRunBuildRoot)
+    $dryRunJobs = if ($BuildJobs -gt 0) { $BuildJobs } else { [Environment]::ProcessorCount }
+    if ($dryRunJobs -lt 1) {
+        throw 'BuildJobs must be a positive integer.'
+    }
+    $dryRunTargetList = if ($QuickValidation) {
+        @('acecode', 'acecode-desktop')
+    } else {
+        @('acecode', 'acecode-desktop', 'acecode_unit_tests')
+    }
+    $dryRunBuildCommand = "cmake --build `"$dryRunBuildRoot`" --config $Configuration --target $($dryRunTargetList -join ' ') -- -j $dryRunJobs"
+    Write-Host 'DRY RUN: no files, builds, Git state, package, or update server will be changed.'
+    Write-Host "BuildDir:  $dryRunBuildRoot"
+    Write-Host "BuildJobs: $dryRunJobs"
+    Write-Host "Lock:      $(Join-Path $dryRunBuildRoot '.acecode-build.lock') (not acquired)"
+    Write-Host "Version:   $Version"
+    if (-not $SkipBuild) {
+        Write-Host "Would build:"
+        Write-Host "  $dryRunBuildCommand"
+    } else {
+        Write-Host 'Would build: skipped because -SkipBuild was supplied.'
+    }
+    if (-not $QuickValidation -and -not $SkipTests) {
+        Write-Host "Would test:"
+        Write-Host "  $dryRunBuildRoot\tests\$Configuration\acecode_unit_tests.exe --gtest_filter=Upgrade*:*ConfigUpgrade*"
+    }
+    if (-not $NoPublish) {
+        $dryRunPackage = Join-Path $dryRunBuildRoot "package\acecode-$Version-$Target"
+        Write-Host "Would package:"
+        Write-Host "  stage binaries/resources under $dryRunPackage"
+        Write-Host "  create package archive under $UpdateDir (no archive or manifest will be written)"
+        if ($RemoteBaseUrl) {
+            Write-Host "  verify package URL: $RemoteBaseUrl"
+        }
+    } else {
+        Write-Host 'Would package: skipped because -NoPublish was supplied.'
+    }
+    exit 0
+}
 
 $dirtyBeforeVersionOverride = @()
 $versionSnapshots = $null
@@ -546,21 +594,37 @@ try {
         }
     }
 
+    $buildRoot = $BuildDir
+    if (-not [System.IO.Path]::IsPathRooted($buildRoot)) {
+        $buildRoot = Join-Path $Repo $buildRoot
+    }
+    $buildRoot = [System.IO.Path]::GetFullPath($buildRoot)
+    $jobs = if ($BuildJobs -gt 0) { $BuildJobs } else { [Environment]::ProcessorCount }
+    if ($jobs -lt 1) {
+        throw 'BuildJobs must be a positive integer.'
+    }
+
+    $lockPath = Join-Path $buildRoot '.acecode-build.lock'
+    New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
+    $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     if (-not $SkipBuild) {
         if ($QuickValidation) {
-            Invoke-Native cmake --build (Join-Path $Repo 'build') --config $Configuration --target acecode acecode-desktop
+            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop -- -j $jobs
         } else {
-            Invoke-Native cmake --build (Join-Path $Repo 'build') --config $Configuration --target acecode acecode-desktop acecode_unit_tests
+            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop acecode_unit_tests -- -j $jobs
         }
+    } else {
+        Write-Host 'Skipping build because -SkipBuild was supplied.'
     }
 
     if (-not $QuickValidation -and -not $SkipTests) {
-        $testExe = Join-Path $Repo "build\tests\$Configuration\acecode_unit_tests.exe"
+        $testExe = Join-Path $buildRoot "tests\$Configuration\acecode_unit_tests.exe"
         Invoke-Native $testExe '--gtest_filter=Upgrade*:*ConfigUpgrade*'
     }
 
-    $exe = Join-Path $Repo "build\$Configuration\acecode.exe"
-    $desktopExe = Join-Path $Repo "build\$Configuration\acecode-desktop.exe"
+    $exe = Join-Path $buildRoot "$Configuration\acecode.exe"
+    $desktopExe = Join-Path $buildRoot "$Configuration\acecode-desktop.exe"
     $versionOutput = (& $exe --version).Trim()
     if ($versionOutput -ne "acecode v$Version") {
         throw "Built executable reports '$versionOutput', expected 'acecode v$Version'."
@@ -607,7 +671,7 @@ try {
 
     if (-not $NoPublish) {
         $pkgName = "acecode-$Version-$Target"
-        $packageRoot = Join-Path $Repo 'build\package'
+        $packageRoot = Join-Path $buildRoot 'package'
         $stage = Join-Path $packageRoot $pkgName
         $zipPath = Join-Path $UpdateDir "$pkgName.zip"
 
@@ -646,6 +710,9 @@ try {
 
     $head = (& git -C $Repo rev-parse --short HEAD).Trim()
 } finally {
+    if ($null -ne $lockStream) {
+        $lockStream.Dispose()
+    }
     if ($QuickValidation -and $null -ne $versionSnapshots) {
         Restore-FileSnapshots -Snapshots $versionSnapshots
     }
