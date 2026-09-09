@@ -1,11 +1,14 @@
 #include "tui_ask_channel.hpp"
 
+#include "../tool/ask_user_question_types.hpp"
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tui_state.hpp"
+#include "ask_question_session.hpp"
 #include "../utils/logger.hpp"
 
 #include <ftxui/component/screen_interactive.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <vector>
@@ -32,6 +35,7 @@ std::vector<AskQuestion> questions_from_payload(const nlohmann::json& payload) {
                 AskOption o;
                 o.label = option.value("label", std::string{});
                 o.description = option.value("description", std::string{});
+                o.recommended = ask_option_label_has_recommended_suffix(o.label);
                 q.options.push_back(std::move(o));
             }
         }
@@ -43,18 +47,20 @@ std::vector<AskQuestion> questions_from_payload(const nlohmann::json& payload) {
 nlohmann::json make_response(bool cancelled,
                              bool timed_out,
                              const std::vector<std::string>& question_order,
-                             const std::map<std::string, std::string>& answers) {
+                             const std::vector<AskQuestionAnswer>& answers) {
     nlohmann::json out;
     out["cancelled"] = cancelled;
     out["timed_out"] = timed_out;
     nlohmann::json arr = nlohmann::json::array();
-    for (const auto& question : question_order) {
-        auto it = answers.find(question);
-        if (it == answers.end()) continue;
+    for (std::size_t index = 0;
+         index < question_order.size() && index < answers.size(); ++index) {
+        const auto& answer = answers[index];
         arr.push_back(nlohmann::json{
-            {"question_id", question},
-            {"selected", nlohmann::json::array({it->second})},
-            {"custom_text", ""},
+            {"question_id", question_order[index]},
+            {"selected", answer.selected},
+            {"custom_text", answer.custom_text},
+            {"not_answered", answer.not_answered},
+            {"auto_selected", answer.auto_selected},
         });
     }
     out["answers"] = std::move(arr);
@@ -82,17 +88,31 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
         return make_response(/*cancelled=*/true, false, question_order, {});
     }
 
+    AskQuestionConfig session_config;
+    std::shared_ptr<AskQuestionSession> session;
+    auto queue_ticket = std::make_shared<TuiState::AskQueueTicket>();
     {
         std::unique_lock<std::mutex> lk(state.mu);
-        // 子代理并发后 overlay 可能被占用(主会话确认 / 另一个子会话的提问)。
-        // 占用前排队等空闲;100ms 轮询保证 abort 可打断。
+        state.ask_queue.push_back(queue_ticket);
+        // 请求按入队顺序获得 overlay。队首之外即使先抢到锁也必须等待，
+        // 从而保证并发子任务的 AskUserQuestion 严格 FIFO。
         while (!(abort_flag && abort_flag->load()) &&
-               (state.ask_pending || state.confirm_pending)) {
+               (state.ask_queue.empty() || state.ask_queue.front() != queue_ticket ||
+                state.ask_pending || state.ask_session || state.confirm_pending)) {
             state.overlay_cv.wait_for(lk, std::chrono::milliseconds(100));
         }
         if (abort_flag && abort_flag->load()) {
+            const auto it = std::find(state.ask_queue.begin(), state.ask_queue.end(),
+                                      queue_ticket);
+            if (it != state.ask_queue.end()) state.ask_queue.erase(it);
+            state.overlay_cv.notify_all();
             return make_response(/*cancelled=*/true, false, question_order, {});
         }
+        state.ask_queue.pop_front();
+        session_config = state.ask_config;
+        session = std::make_shared<AskQuestionSession>(
+            questions, session_config, origin_label, timeout_seconds);
+        state.ask_session = session;
         state.ask_origin_label = origin_label;
         state.ask_pending = true;
         state.ask_payload_json = questions_payload.dump();
@@ -127,34 +147,65 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
     }
     screen.PostEvent(ftxui::Event::Custom);
 
-    std::map<std::string, std::string> answers;
     bool ok = false;
     bool aborted = false;
     bool timed_out = false;
-    const bool has_deadline = timeout_seconds > 0;
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    std::vector<AskQuestionAnswer> structured_answers;
     {
         std::unique_lock<std::mutex> lk(state.mu);
-        if (has_deadline) {
-            // 500ms 粒度轮询 deadline(与 prompter 的 abort 轮询同风格)。
-            while (state.ask_pending && !(abort_flag && abort_flag->load())) {
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    timed_out = true;
-                    break;
-                }
-                state.ask_cv.wait_for(lk, std::chrono::milliseconds(500));
+        while (state.ask_pending && !session->finished() &&
+               !(abort_flag && abort_flag->load())) {
+            state.ask_cv.wait_for(lk, std::chrono::milliseconds(100));
+            if (session->finished() || (abort_flag && abort_flag->load())) {
+                break;
             }
-        } else {
-            state.ask_cv.wait(lk, [&state, abort_flag] {
-                return !state.ask_pending || (abort_flag && abort_flag->load());
-            });
+            // The production TUI animation loop ticks the session, but the
+            // channel must also enforce its deadline when no screen event loop
+            // is running (for example during tests or a temporarily blocked
+            // renderer). Keeping the clock at the session boundary preserves
+            // the same timeout and feedback semantics in both paths.
+            const auto session_effects = session->tick(
+                AskQuestionSession::Clock::now());
+            if (!session_effects.empty()) {
+                screen.PostEvent(ftxui::Event::Custom);
+            }
         }
+
         aborted = abort_flag && abort_flag->load();
-        ok = state.ask_result_ok;
-        answers = state.ask_result_answers;
-        // overlay 已关闭 —— 清理残留的临时 navigation 状态,防止下次打开时脏数据。
+        if (aborted && !session->finished()) {
+            auto effects = session->dispatch(
+                {AskQuestionEventKind::GlobalCancel});
+            (void)effects;
+        }
+        const auto completion = session->completion();
+        if (completion.has_value()) {
+            ok = !completion->cancelled;
+            timed_out = completion->timed_out;
+            structured_answers = completion->answers;
+        } else {
+            // 保留旧渲染适配器的完成信号兼容性：升级期间某些测试/外层
+            // 适配器仍通过 ask_result_answers + ask_pending=false 唤醒 channel。
+            // 新会话路径优先使用结构化 completion；只有会话尚未完成时才读取
+            // 这个一次性兼容快照，避免丢失已经提交的答案。
+            ok = state.ask_result_ok;
+            if (!state.ask_result_answers.empty()) {
+                structured_answers.reserve(question_order.size());
+                for (const auto& question_id : question_order) {
+                    AskQuestionAnswer answer;
+                    const auto it = state.ask_result_answers.find(question_id);
+                    if (it == state.ask_result_answers.end() || it->second.empty() ||
+                        it->second == "Not answered") {
+                        answer.not_answered = true;
+                    } else {
+                        answer.selected.push_back(it->second);
+                    }
+                    structured_answers.push_back(std::move(answer));
+                }
+            }
+        }
+
         state.ask_pending = false;
+        state.ask_session.reset();
         state.ask_questions.clear();
         state.ask_question_order.clear();
         state.ask_multi_selected.clear();
@@ -176,22 +227,20 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
         state.ask_scroll_to_focus_requested = false;
         state.ask_origin_label.clear();
         state.ask_timeout_hint_seconds = 0;
-        // overlay 释放:唤醒排队占用者(主会话确认 / 其它子会话提问)。
         state.overlay_cv.notify_all();
     }
     screen.PostEvent(ftxui::Event::Custom);
 
-    // 到点前一瞬用户已提交时 ok=true —— 按正常回答处理,用户真实意志优先。
     if (timed_out && !aborted && !ok) {
         return make_response(/*cancelled=*/false, /*timed_out=*/true,
-                             question_order, {});
+                             question_order, structured_answers);
     }
     if (aborted || !ok) {
         LOG_INFO("[AskUserQuestion] declined (aborted=" +
                  std::string(aborted ? "true" : "false") + ")");
         return make_response(/*cancelled=*/true, false, question_order, {});
     }
-    return make_response(false, false, question_order, answers);
+    return make_response(false, timed_out, question_order, structured_answers);
 }
 
 } // namespace acecode::tui

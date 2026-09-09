@@ -8,6 +8,7 @@
 #include "tui/model_picker.hpp"
 #include "tui/mode_picker.hpp"
 #include "tui/pending_attachment_selection.hpp"
+#include "tui/ask_question_session.hpp"
 #include "utils/drag_scroll.hpp"
 #include "tool/tool_executor.hpp"
 #include "tool/ask_user_question_tool.hpp"
@@ -176,6 +177,8 @@ struct TuiState {
     // confirm / ask overlay 释放时 notify_all:排队占用者(主会话工具确认、
     // 子会话 ask 工具、远程 confirm 泵)以此感知「overlay 空闲」。
     std::condition_variable overlay_cv;
+    struct AskQueueTicket {};
+    std::deque<std::shared_ptr<AskQueueTicket>> ask_queue;
 
     // Input history for up/down navigation
     std::vector<std::string> input_history;
@@ -229,6 +232,8 @@ struct TuiState {
     //   ask_custom_answer_selected / ask_custom_answers — Other 已提交答案
     //   ask_other_input_active — true 时输入框为 "Other" 自定义文本模式
     bool ask_pending = false;
+    std::shared_ptr<tui::AskQuestionSession> ask_session;
+    tui::AskQuestionConfig ask_config;
     std::string ask_payload_json;
     std::vector<AskQuestion> ask_questions;
     std::vector<std::string> ask_question_order;
@@ -265,9 +270,28 @@ struct TuiState {
     int ask_mouse_press_x = -1;
     int ask_mouse_press_y = -1;
     int ask_mouse_press_option = -1;
+    int ask_mouse_press_target_kind = 0;
+    int ask_mouse_press_target_question = -1;
     bool ask_mouse_press_submit_page = false;
     int ask_mouse_press_question = -1;
     std::vector<int> ask_row_option_indices;
+    std::vector<int> ask_row_target_kinds;
+    std::vector<int> ask_row_target_questions;
+    std::vector<std::size_t> ask_row_text_byte_begins;
+    std::vector<std::size_t> ask_row_text_byte_ends;
+    int ask_layout_number_width = 0;
+    int ask_scrollbar_thumb_y = 0;
+    int ask_scrollbar_thumb_height = 0;
+    int ask_scrollbar_grab_offset = 0;
+    bool ask_mouse_dragging_text = false;
+    bool ask_terminal_too_narrow = false;
+    // 鼠标单击/双击判定只保存适配层状态；同一逻辑命中区域 500ms 内
+    // 的第二次点击才提交预设项，自定义项双击仍只保持编辑态。
+    std::chrono::steady_clock::time_point ask_last_click_at{};
+    int ask_last_click_option = -1;
+    int ask_last_click_target_kind = 0;
+    bool ask_last_click_submit_page = false;
+    int ask_last_click_question = -1;
 
     // Resume session picker state
     struct ResumeItem {

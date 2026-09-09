@@ -1,33 +1,19 @@
 #pragma once
 
+#include "ask_user_question_types.hpp"
 #include "tool_executor.hpp"
 
-#include <ftxui/component/screen_interactive.hpp>
 #include <nlohmann/json.hpp>
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace acecode {
 
 struct TuiState;
-
-// 单个选项:label 是模型给出的显示文本,description 是可选的解释文本。
-// preview 字段上游 claudecodehaha 支持,但 ACECode 的 TUI 当前不渲染 preview,
-// 仅作为 schema 兼容层允许传入(parse 时忽略内容)。
-struct AskOption {
-    std::string label;
-    std::string description;
-};
-
-struct AskQuestion {
-    std::string question;     // 问题文本 (必须以 `?` 结尾 —— 但 schema 不强制,交给模型)
-    std::string header;       // 12 字符以内的 chip 标签
-    std::vector<AskOption> options;  // 2–4 个显式选项;"Other..." 由 TUI 自动追加
-    bool multi_select = false;
-};
 
 // 解析 + 校验 `AskUserQuestion` 工具的 JSON 参数。成功时返回解析出来的
 // question 列表,失败时返回 std::nullopt 并把错误消息写入 `err`
@@ -48,7 +34,8 @@ std::string format_ask_answers(
 // payload to render compact confirmation cards.
 nlohmann::json build_ask_user_question_result_metadata(
     const std::vector<std::string>& question_order,
-    const std::map<std::string, std::string>& answers);
+    const std::map<std::string, std::string>& answers,
+    const std::set<std::string>* auto_selected_questions = nullptr);
 
 // Build a compact UI-only Q/A transcript from ask_user_question_result
 // metadata. Returns empty for missing or malformed metadata.
@@ -70,15 +57,17 @@ ToolResult make_headless_ask_result();
 // ResolvedQuestionPolicy::origin("explicit")。
 ToolResult make_policy_denied_ask_result(const char* origin);
 
-// question_policy=timeout 到期的自动采纳 ToolResult:每个 question 取第一
-// 个选项(工具 description 约定推荐项排第一)作为答案,output 前缀注明
-// 用户 N 秒未回答、答案是自动采纳而非用户真实意志;metadata 同时携带
-// ask_user_question_result(正常答案结构)与 ask_user_question_auto=
-// {mode:"timeout", seconds}。TUI 与 daemon 两路共用。
+// question_policy=timeout 到期的自动采纳 ToolResult:默认每个 question 取第一
+// 个选项(工具 description 约定推荐项排第一)作为答案；如果 TUI 已经提供
+// 结构化收卷答案，则优先采用该答案。output 前缀注明用户 N 秒未回答、答案
+// 是自动采纳而非用户真实意志;metadata 同时携带
+// ask_user_question_result 与 ask_user_question_auto={mode:"timeout", seconds}。
 ToolResult make_timeout_adopted_ask_result(
     const std::vector<AskQuestion>& questions,
     const std::vector<std::string>& question_order,
-    int timeout_seconds);
+    int timeout_seconds,
+    const std::map<std::string, std::string>* adopted_answers = nullptr,
+    const std::set<std::string>* adopted_auto_selected_questions = nullptr);
 
 // AskUserQuestion 的唯一工厂 —— TUI 与 daemon 共用。execute() 不碰
 // TuiState/ScreenInteractive,完全靠 `ToolContext::ask_user_questions` 通道:

@@ -14,6 +14,7 @@
 
 #include "config/config.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -46,6 +47,19 @@ int apply_tui_section(const nlohmann::json& j_with_tui, TuiConfig& out) {
         tj["page_keys_single_line"].is_boolean()) {
         out.page_keys_single_line = tj["page_keys_single_line"].get<bool>();
     }
+    auto apply_question_integer = [&](const char* key, int minimum,
+                                      int maximum, int& target) {
+        if (!tj.contains(key)) return;
+        if (!tj[key].is_number_integer()) {
+            ++warnings;
+            return;
+        }
+        target = std::clamp(tj[key].get<int>(), minimum, maximum);
+    };
+    apply_question_integer("question_min_visible_rows", 2, 12,
+                           out.question_min_visible_rows);
+    apply_question_integer("question_selection_feedback_ms", 0, 1000,
+                           out.question_selection_feedback_ms);
     return warnings;
 }
 
@@ -56,6 +70,8 @@ TEST(ConfigTuiDefaults, StructDefault) {
     TuiConfig t;
     EXPECT_EQ(t.alt_screen_mode, "auto");
     EXPECT_TRUE(t.page_keys_single_line);
+    EXPECT_EQ(t.question_min_visible_rows, 4);
+    EXPECT_EQ(t.question_selection_feedback_ms, 200);
 }
 
 // 场景:AppConfig 中默认包含 tui 字段且默认单行滚动
@@ -101,6 +117,36 @@ TEST(ConfigTuiLoader, ExplicitPageKeysFalseIsRead) {
     EXPECT_FALSE(t.page_keys_single_line);
 }
 
+TEST(ConfigTuiLoader, QuestionOptionsClampToSupportedRanges) {
+    TuiConfig t;
+    nlohmann::json j = {{"tui", {
+        {"question_min_visible_rows", 99},
+        {"question_selection_feedback_ms", -10},
+    }}};
+    EXPECT_EQ(apply_tui_section(j, t), 0);
+    EXPECT_EQ(t.question_min_visible_rows, 12);
+    EXPECT_EQ(t.question_selection_feedback_ms, 0);
+
+    nlohmann::json valid = {{"tui", {
+        {"question_min_visible_rows", 6},
+        {"question_selection_feedback_ms", 400},
+    }}};
+    EXPECT_EQ(apply_tui_section(valid, t), 0);
+    EXPECT_EQ(t.question_min_visible_rows, 6);
+    EXPECT_EQ(t.question_selection_feedback_ms, 400);
+}
+
+// 场景:非法字符串值 → 规范化到 "auto",触发一条 warn
+TEST(ConfigTuiLoader, InvalidQuestionOptionTypesWarnAndKeepDefaults) {
+    TuiConfig t;
+    nlohmann::json j = {{"tui", {
+        {"question_min_visible_rows", "4"},
+        {"question_selection_feedback_ms", nullptr},
+    }}};
+    EXPECT_EQ(apply_tui_section(j, t), 2);
+    EXPECT_EQ(t.question_min_visible_rows, 4);
+    EXPECT_EQ(t.question_selection_feedback_ms, 200);
+}
 // 场景:非法字符串值 → 规范化到 "auto",触发一条 warn
 TEST(ConfigTuiLoader, InvalidStringFallsBackToAuto) {
     TuiConfig t;

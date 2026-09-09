@@ -20,6 +20,7 @@
 #include <chrono>
 #include <future>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,7 +40,7 @@ constexpr const char* kInteractiveQuestionArgs = R"({
         "question": "Pick one?",
         "header": "choice",
         "options": [
-            {"label": "A", "description": "recommended"},
+            {"label": "A [Recommended]", "description": "recommended"},
             {"label": "B", "description": "alternative"}
         ]
     }]
@@ -238,6 +239,8 @@ TEST(AskUserQuestionFormatTest, StructuredResultMetadataKeepsOrderedPairs) {
     EXPECT_EQ(result["items"][0]["answer"], "直接修改并补测试");
     EXPECT_EQ(result["items"][1]["question"], "Q2?");
     EXPECT_EQ(result["items"][1]["answer"], "onBeforeUnmount");
+    EXPECT_FALSE(result["items"][0]["auto_selected"]);
+    EXPECT_FALSE(result["items"][1]["auto_selected"]);
 }
 
 // 场景:TUI 等文本界面可以从同一份 UI metadata 生成紧凑 Q/A 留档,
@@ -258,6 +261,26 @@ TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsDisplayText) {
               "---\n"
               "Q  Q2?\n"
               "A  onBeforeUnmount");
+}
+
+TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsAutoSelectedDisplayText) {
+    std::vector<std::string> order{"Q1?", "Q2?"};
+    std::map<std::string, std::string> ans{
+        {"Q1?", "Recommended"},
+        {"Q2?", "Not answered"}
+    };
+    std::set<std::string> auto_selected{"Q1?"};
+
+    const auto meta = build_ask_user_question_result_metadata(
+        order, ans, &auto_selected);
+
+    EXPECT_EQ(format_ask_user_question_result_display(meta),
+              "已确认 2 项\n"
+              "Q  Q1?\n"
+              "A  [Auto-selected] Recommended\n"
+              "---\n"
+              "Q  Q2?\n"
+              "A  Not answered");
 }
 
 // 场景:缺失或畸形 metadata 不应污染 UI,调用方据此回退旧输出。
@@ -313,17 +336,89 @@ TEST(AskUserQuestionGoalTest, AsyncToolPromptsThenAdoptsRecommendedAfterThirtySe
     ctx.goal_unattended_active = [] { return true; };
 
     const std::string args = R"({"questions":[{"question":"Pick one?",
-        "header":"choice","options":[{"label":"A","description":"a"},
+        "header":"choice","options":[{"label":"A [Recommended]","description":"a"},
         {"label":"B","description":"b"}]}]})";
     auto r = tool.execute(args, ctx);
     EXPECT_TRUE(r.success) << r.output;
     EXPECT_TRUE(prompter_called);
     EXPECT_NE(r.output.find("30 seconds"), std::string::npos);
-    EXPECT_NE(r.output.find("\"Pick one?\"=\"A\""), std::string::npos);
+    EXPECT_NE(r.output.find("\"Pick one?\"=\"A [Recommended]\""), std::string::npos);
     ASSERT_TRUE(r.metadata.contains("ask_user_question_auto"));
     EXPECT_EQ(r.metadata["ask_user_question_auto"].value("mode", ""), "timeout");
     EXPECT_EQ(r.metadata["ask_user_question_auto"].value("seconds", 0), 30);
 }
+
+TEST(AskUserQuestionGoalTest, TimeoutPreservesStructuredAnswerMarkers) {
+    auto tool = acecode::create_ask_user_question_tool_async();
+    acecode::ToolContext ctx;
+    ctx.ask_user_questions = [&](const nlohmann::json&) {
+        return nlohmann::json{
+            {"cancelled", false},
+            {"timed_out", true},
+            {"answers", nlohmann::json::array({
+                nlohmann::json{
+                    {"question_id", "Answered?"},
+                    {"selected", nlohmann::json::array({"A [Recommended]"})},
+                    {"custom_text", ""},
+                    {"not_answered", false},
+                    {"auto_selected", true},
+                },
+                nlohmann::json{
+                    {"question_id", "Skipped?"},
+                    {"selected", nlohmann::json::array()},
+                    {"custom_text", ""},
+                    {"not_answered", true},
+                    {"auto_selected", false},
+                },
+            })},
+        };
+    };
+
+    const std::string args = R"({"questions":[
+        {"question":"Answered?","header":"one",
+         "options":[{"label":"A [Recommended]","description":"a"},
+                     {"label":"B","description":"b"}]},
+        {"question":"Skipped?","header":"two",
+         "options":[{"label":"C","description":"c"},
+                     {"label":"D","description":"d"}]}
+    ]})";
+    const auto result = tool.execute(args, ctx);
+    ASSERT_TRUE(result.success) << result.output;
+    ASSERT_TRUE(result.metadata.contains("ask_user_question_result"));
+    const auto& items = result.metadata["ask_user_question_result"]["items"];
+    ASSERT_EQ(items.size(), 2u);
+    EXPECT_TRUE(items[0]["auto_selected"]);
+    EXPECT_EQ(items[1]["answer"], "Not answered");
+}
+
+
+TEST(AskUserQuestionGoalTest, TimeoutAdoptsStructuredAnswersBeforeFallback) {
+    auto tool = acecode::create_ask_user_question_tool_async();
+    acecode::ToolContext ctx;
+    ctx.ask_user_questions = [&](const nlohmann::json&) {
+        return nlohmann::json{
+            {"cancelled", false},
+            {"timed_out", true},
+            {"answers", nlohmann::json::array({
+                nlohmann::json{
+                    {"question_id", "Pick one?"},
+                    {"selected", nlohmann::json::array({"B"})},
+                    {"custom_text", ""},
+                },
+            })},
+        };
+    };
+    ctx.goal_unattended_active = [] { return true; };
+
+    const std::string args = R"({"questions":[{"question":"Pick one?",
+        "header":"choice","options":[{"label":"A [Recommended]","description":"a"},
+        {"label":"B","description":"b"}]}]})";
+    const auto result = tool.execute(args, ctx);
+    EXPECT_TRUE(result.success);
+    EXPECT_NE(result.output.find("\"Pick one?\"=\"B\""), std::string::npos);
+    EXPECT_EQ(result.output.find("\"Pick one?\"=\"A\""), std::string::npos);
+}
+
 
 // 场景:非 goal 模式(探针缺省 / 返回 false)行为不变 —— 仍走 prompter。
 // 这里 prompter 返回 cancelled=true,期望拿到既有的拒绝结果。
@@ -338,14 +433,31 @@ TEST(AskUserQuestionUnattendedTest, AsyncToolStillPromptsWithoutActiveGoal) {
     ctx.goal_unattended_active = [] { return false; };
 
     const std::string args = R"({"questions":[{"question":"Pick one?",
-        "header":"choice","options":[{"label":"A","description":"a"},
+        "header":"choice","options":[{"label":"A [Recommended]","description":"a"},
         {"label":"B","description":"b"}]}]})";
     auto r = tool.execute(args, ctx);
     EXPECT_TRUE(prompter_called);
     EXPECT_FALSE(r.success);
 }
 
-// ── TUI 传输层 ──────────────────────────────────────
+TEST(AskUserQuestionTimeoutTest, NoRecommendedOptionRemainsNotAnswered) {
+    const auto question = [] {
+        AskQuestion q;
+        q.question = "Choose?";
+        q.header = "choice";
+        q.options = {{"A", "first"}, {"B", "second"}};
+        return q;
+    }();
+    const auto result = acecode::make_timeout_adopted_ask_result(
+        {question}, {"Choose?"}, 10, nullptr);
+    EXPECT_TRUE(result.success);
+    EXPECT_NE(result.output.find("Not answered"), std::string::npos);
+    EXPECT_EQ(result.metadata["ask_user_question_result"]["items"][0]["answer"],
+              "Not answered");
+    EXPECT_TRUE(result.metadata["ask_user_question_result"]["items"][0]["auto_selected"] == false);
+}
+
+
 //
 // 工具逻辑与 TUI 传输已拆开:两端共用 create_ask_user_question_tool_async(),
 // TUI 只提供 ask_via_tui_overlay 这个 `json(json)` 通道(由 AgentLoop 注入到

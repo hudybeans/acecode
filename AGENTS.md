@@ -51,6 +51,18 @@ Use `testing::TempDir()` or `std::filesystem::temp_directory_path()` for file I/
 
 If CMake test discovery/build integration is unavailable in the editor, still keep changes compatible with the documented `cmake --build` and `ctest` commands. For web-only changes, at minimum run `pnpm test` and `pnpm build` from [web/](web).
 
+## 研发实施中的通用注意事项
+
+- 重构或迁移功能时，先明确新旧路径的责任边界，再逐步切换调用入口；如果新旧状态、事件处理或兼容分支同时生效，同一个输入可能被重复处理，问题通常只在特定交互顺序下暴露。
+- 事件驱动程序需要明确每类事件的唯一所有者。键盘、鼠标、定时器、重绘和后台回调应经过统一适配层进入业务状态机，不能只迁移最常见的事件而遗漏边缘输入路径。
+- 业务状态、传输格式和展示文本应分层维护。不要用格式化后的字符串推断状态；空字符串、缺失字段和显式的空值可能代表不同语义，跨线程或跨进程传输时应保留必要的结构化信息。
+- 不要把布局、分页或超时等动态行为写成固定常量。可视区域、终端尺寸、配置值和运行时状态变化后，固定步长或固定边界容易产生越界、跳过内容或无法操作的问题。
+- 将时间、外部 IO、线程调度和平台资源封装在边界上，核心逻辑尽量使用可注入的时钟、输入和依赖。这样既能避免测试永久等待，也能稳定覆盖超时、取消和竞态场景。
+- Windows 增量构建前确认没有残留进程占用输出文件，并加载正确的编译器开发环境；链接错误有时来自文件锁或环境变量缺失，而不是源代码错误。
+- 多步骤任务应采用“小范围修改 → 定向编译/测试 → 再扩大范围”的节奏。遇到失败先判断是代码错误、环境问题、并发进程、缓存还是测试基线问题，不要在未定位原因前反复重试。
+- 修改前后都要检查工作区范围。不要使用会清理或覆盖无关用户文件的命令；提交时精确选择相关文件，并通过 `git diff --check`、差异审查和测试结果确认改动没有夹带无关内容。
+- 非平凡行为变更应同步更新设计文档、任务清单和测试；不要等全部代码完成后才补记录，否则容易遗漏已验证的约束和未完成事项。
+
 ## Commit & Pull Request Guidelines
 
 Recent history uses short imperative commits, sometimes with `feat:` prefixes, for example `feat: Implement AskUserQuestion tool` or `Add unit tests for session serialization`. Keep commits focused and mention tests when relevant.

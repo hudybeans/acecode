@@ -256,7 +256,11 @@ set(ACECODE_TESTABLE_TUI_SOURCES
     ${CMAKE_SOURCE_DIR}/src/markdown/mermaid_renderer.cpp
     ${CMAKE_SOURCE_DIR}/src/markdown/link_safety.cpp
     ${CMAKE_SOURCE_DIR}/src/markdown/syntax_highlight.cpp
-    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_overlay.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_controller.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_editor.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_layout.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_text.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/chat_file_link.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/text_truncation.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/paste_handler.cpp

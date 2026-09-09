@@ -1332,6 +1332,30 @@ static AppConfig load_config_from_path_once(
                             cfg.tui.theme = "auto";
                         }
                     }
+                    auto read_tui_integer = [&](const char* key, int minimum,
+                                                int maximum, int& target) {
+                        if (!tj.contains(key)) return;
+                        const auto& value = tj[key];
+                        if (!value.is_number_integer()) {
+                            LOG_WARN(std::string("[config] tui.") + key +
+                                     " must be an integer; ignoring");
+                            return;
+                        }
+                        const int configured = value.get<int>();
+                        const int normalized = std::clamp(configured, minimum, maximum);
+                        if (configured != normalized) {
+                            LOG_WARN(std::string("[config] tui.") + key + "=" +
+                                     std::to_string(configured) + " is outside [" +
+                                     std::to_string(minimum) + ", " +
+                                     std::to_string(maximum) + "]; clamping to " +
+                                     std::to_string(normalized));
+                        }
+                        target = normalized;
+                    };
+                    read_tui_integer("question_min_visible_rows", 2, 12,
+                                     cfg.tui.question_min_visible_rows);
+                    read_tui_integer("question_selection_feedback_ms", 0, 1000,
+                                     cfg.tui.question_selection_feedback_ms);
                 }
             }
 
@@ -2201,6 +2225,14 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             tj["page_keys_single_line"] = cfg.tui.page_keys_single_line;
         if (cfg.tui.theme != tui_d.theme)
             tj["theme"] = cfg.tui.theme;
+        if (cfg.tui.question_min_visible_rows != tui_d.question_min_visible_rows) {
+            tj["question_min_visible_rows"] = cfg.tui.question_min_visible_rows;
+        }
+        if (cfg.tui.question_selection_feedback_ms !=
+            tui_d.question_selection_feedback_ms) {
+            tj["question_selection_feedback_ms"] =
+                cfg.tui.question_selection_feedback_ms;
+        }
         if (!tj.empty()) j["tui"] = tj;
 
         DesktopConfig desk_d;

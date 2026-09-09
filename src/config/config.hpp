@@ -262,6 +262,10 @@ struct TuiConfig {
     bool page_keys_single_line = true;
     // TUI 调色板: "auto"(启动时探测终端背景色) / "dark" / "light"。
     std::string theme = "auto";
+    // AskUserQuestion 内容区期望保留的最小可见行数;load_config clamp [2,12]。
+    int question_min_visible_rows = 4;
+    // 预设项提交后保留选中视觉反馈的时长(ms);load_config clamp [0,1000]。
+    int question_selection_feedback_ms = 200;
 };
 
 // Network / HTTP client tuning. Drives the system-proxy integration —

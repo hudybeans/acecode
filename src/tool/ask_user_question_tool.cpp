@@ -1,5 +1,7 @@
 #include "ask_user_question_tool.hpp"
 
+#include "ask_user_question_types.hpp"
+
 #include "../headless/headless_mode.hpp"
 #include "../session/session_manager.hpp"
 #include "../utils/logger.hpp"
@@ -11,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cctype>
 #include <set>
 #include <string>
 
@@ -43,6 +46,17 @@ constexpr int kMinQuestions = 1;
 constexpr int kMaxQuestions = 4;
 constexpr int kMinOptions = 2;
 constexpr int kMaxOptions = 4;
+
+bool label_has_recommended_suffix(const std::string& label) {
+    return ask_option_label_has_recommended_suffix(label);
+}
+
+std::string timeout_fallback_answer(const AskQuestion& question) {
+    for (const auto& option : question.options) {
+        if (option.recommended) return option.label;
+    }
+    return "Not answered";
+}
 
 // 工具 description —— 对齐 claudecodehaha `ASK_USER_QUESTION_TOOL_PROMPT`
 // 原文,删除 ACECode 没有对应概念的 `Plan mode note:` 段。
@@ -152,6 +166,7 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
             AskOption opt;
             opt.label = o.value("label", std::string{});
             opt.description = o.value("description", std::string{});
+            opt.recommended = label_has_recommended_suffix(opt.label);
             if (opt.label.empty()) {
                 err = "[Error] questions[" + std::to_string(qi) + "].options[" +
                       std::to_string(oi) + "].label must be non-empty.";
@@ -198,14 +213,18 @@ std::string format_ask_answers(
 
 nlohmann::json build_ask_user_question_result_metadata(
     const std::vector<std::string>& question_order,
-    const std::map<std::string, std::string>& answers) {
+    const std::map<std::string, std::string>& answers,
+    const std::set<std::string>* auto_selected_questions) {
     nlohmann::json items = nlohmann::json::array();
     for (const auto& q : question_order) {
         auto it = answers.find(q);
         const std::string& a = (it == answers.end()) ? std::string{} : it->second;
+        const bool auto_selected = auto_selected_questions != nullptr &&
+            auto_selected_questions->count(q) != 0;
         items.push_back({
             {"question", q},
             {"answer", a},
+            {"auto_selected", auto_selected},
         });
     }
     return nlohmann::json{
@@ -226,7 +245,9 @@ std::string format_ask_user_question_result_display(
     if (items_it == result_it->end() || !items_it->is_array()) return {};
 
     std::vector<std::pair<std::string, std::string>> items;
+    std::vector<bool> auto_selected;
     items.reserve(items_it->size());
+    auto_selected.reserve(items_it->size());
     for (const auto& item : *items_it) {
         if (!item.is_object()) continue;
         auto q_it = item.find("question");
@@ -237,6 +258,7 @@ std::string format_ask_user_question_result_display(
         }
         items.emplace_back(q_it->get<std::string>(),
                            a_it->get<std::string>());
+        auto_selected.push_back(item.value("auto_selected", false));
     }
 
     if (items.empty()) return {};
@@ -247,7 +269,11 @@ std::string format_ask_user_question_result_display(
         out << "\n";
         if (i > 0) out << "---\n";
         out << "Q  " << items[i].first << "\n";
-        out << "A  " << items[i].second;
+        out << "A  ";
+        if (i < auto_selected.size() && auto_selected[i]) {
+            out << "[Auto-selected] ";
+        }
+        out << items[i].second;
     }
     return out.str();
 }
@@ -292,21 +318,40 @@ ToolResult make_policy_denied_ask_result(const char* origin) {
 ToolResult make_timeout_adopted_ask_result(
     const std::vector<AskQuestion>& questions,
     const std::vector<std::string>& question_order,
-    int timeout_seconds) {
+    int timeout_seconds,
+    const std::map<std::string, std::string>* adopted_answers,
+    const std::set<std::string>* adopted_auto_selected_questions) {
     std::map<std::string, std::string> answers;
+    if (adopted_answers) {
+        answers = *adopted_answers;
+    }
+    std::set<std::string> auto_selected_questions;
+    if (adopted_auto_selected_questions) {
+        auto_selected_questions = *adopted_auto_selected_questions;
+    }
     for (const auto& q : questions) {
-        if (!q.options.empty()) answers[q.question] = q.options.front().label;
+        // The presence of a key means the prompt channel returned an explicit
+        // answer state. An empty value is intentional for an activated but
+        // empty custom row (Not answered), so it must not trigger timeout
+        // fallback. Only a missing question may adopt Recommended.
+        const auto it = answers.find(q.question);
+        if (it != answers.end()) continue;
+        const std::string fallback = timeout_fallback_answer(q);
+        answers[q.question] = fallback;
+        if (fallback != "Not answered") {
+            auto_selected_questions.insert(q.question);
+        }
     }
     ToolResult r;
     r.success = true;
     r.output =
         "[Question policy: timeout] The user did not answer within " +
         std::to_string(timeout_seconds) +
-        " seconds. The first (recommended) option of each question was "
-        "adopted automatically — this is NOT an explicit user choice, so be "
-        "ready to adjust if the user corrects it later. " +
+        " seconds. Existing answers were preserved; unanswered questions use "
+        "their first Recommended option when available, otherwise Not answered. " +
         format_ask_answers(question_order, answers);
-    r.metadata = build_ask_user_question_result_metadata(question_order, answers);
+    r.metadata = build_ask_user_question_result_metadata(
+        question_order, answers, &auto_selected_questions);
     r.metadata["ask_user_question_auto"] = {
         {"mode", "timeout"},
         {"seconds", timeout_seconds},
@@ -444,7 +489,8 @@ nlohmann::json questions_to_payload(const std::vector<AskQuestion>& qs) {
 // 把 ctx.ask_user_questions 回来的 JSON 转成 std::map<question, answer_text>,
 // 按 ", " 拼合 multiSelect。供 format_ask_answers 使用。
 std::map<std::string, std::string>
-parse_async_response(const nlohmann::json& resp_json) {
+parse_async_response(const nlohmann::json& resp_json,
+                     std::set<std::string>* auto_selected_questions = nullptr) {
     std::map<std::string, std::string> answers;
     if (!resp_json.is_object()) return answers;
     if (!resp_json.contains("answers") || !resp_json["answers"].is_array()) return answers;
@@ -453,8 +499,9 @@ parse_async_response(const nlohmann::json& resp_json) {
         std::string qid = a.value("question_id", std::string{});
         if (qid.empty()) continue;
 
-        // selected 与 custom_text 都可能存在 —— 拼合
         std::vector<std::string> parts;
+        const bool not_answered = a.value("not_answered", false);
+        const bool auto_selected = a.value("auto_selected", false);
         if (a.contains("selected") && a["selected"].is_array()) {
             for (const auto& s : a["selected"]) {
                 if (s.is_string()) parts.push_back(s.get<std::string>());
@@ -469,6 +516,10 @@ parse_async_response(const nlohmann::json& resp_json) {
         for (std::size_t i = 0; i < parts.size(); ++i) {
             if (i) joined += ", ";
             joined += parts[i];
+        }
+        if (not_answered && joined.empty()) joined = "Not answered";
+        if (auto_selected && auto_selected_questions) {
+            auto_selected_questions->insert(qid);
         }
         answers[qid] = joined;
     }
@@ -525,12 +576,18 @@ ToolImpl create_ask_user_question_tool_async() {
         nlohmann::json resp = ctx.ask_user_questions(payload);
 
         // timeout 策略到期:prompter 已发 question_closed(reason=timeout)
-        // 收掉前端 modal,这里合成自动采纳结果。
+        // 收掉前端 modal,这里合成自动采纳结果。TUI 会话已经按逐题规则
+        // 收卷，优先采用它的结构化答案；只有没有答案通道时才回退到
+        // 每题第一个选项。
         if (resp.value("timed_out", false)) {
             LOG_INFO("[AskUserQuestion] timeout policy adopted first options after " +
                      std::to_string(policy.timeout_seconds) + "s");
-            return make_timeout_adopted_ask_result(*parsed, question_order,
-                                                   policy.timeout_seconds);
+            std::set<std::string> adopted_auto_selected_questions;
+            const auto adopted_answers = parse_async_response(
+                resp, &adopted_auto_selected_questions);
+            return make_timeout_adopted_ask_result(
+                *parsed, question_order, policy.timeout_seconds,
+                &adopted_answers, &adopted_auto_selected_questions);
         }
 
         bool cancelled = resp.value("cancelled", false);
