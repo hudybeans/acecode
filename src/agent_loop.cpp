@@ -37,6 +37,8 @@
 #include "hooks/hook_payload.hpp"
 #include "headless/headless_mode.hpp"
 #include "pa/pa_context_budget.hpp"
+#include "pa/pa_overflow_rescue.hpp"
+#include "pa/pa_quirks.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <set>
@@ -1423,6 +1425,10 @@ bool AgentLoop::run_mechanical_compact_fallback(
     // 强制至少丢掉一组:摘要已经失败了,原地不动地"成功"只会让调用方以为
     // 腾出了空间,下一轮继续撞同一堵墙。
     options.force_prune_one_group = true;
+    // 只剩当前回合时整组丢不掉,但本回合里堆着的旧工具输出还能清 —— 单回合
+    // 读了一堆大文件正是摘要请求本身也会被拒的那种场景。
+    options.clear_tool_outputs = true;
+    options.keep_recent_tool_outputs = 1;
 
     auto repair = apply_thread_repair(session_manager_, messages_, options);
     LOG_WARN("[compact-fallback] mechanical prune after summarization failure; "
@@ -1430,6 +1436,8 @@ bool AgentLoop::run_mechanical_compact_fallback(
              " pre_tokens=" + std::to_string(repair.pre_tokens) +
              " post_tokens=" + std::to_string(repair.post_tokens) +
              " pruned_groups=" + std::to_string(repair.pruned_groups) +
+             " cleared_tool_outputs=" +
+             std::to_string(repair.cleared_tool_outputs) +
              " target_tokens=" + std::to_string(options.target_tokens) +
              " reason=" + repair.reason);
     if (!repair.repaired()) {
@@ -1447,7 +1455,8 @@ bool AgentLoop::run_mechanical_compact_fallback(
     emit_transcript_system_message(
         "[智能压缩] 摘要压缩失败(" + log_truncate(summarization_error, 160) +
         "),已改为丢弃最旧的 " + std::to_string(repair.pruned_groups) +
-        " 组历史腾出空间,会话继续。",
+        " 组历史、清除 " + std::to_string(repair.cleared_tool_outputs) +
+        " 条旧工具输出腾出空间,会话继续。",
         make_compact_notice_metadata(compact_notice_id, "warning"));
     return true;
 }
@@ -2871,6 +2880,8 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
     bool& emergency_request_profile) {
     if (!result.provider_error_seen) {
         note_pa_context_accepted(messages_with_system);
+        // 服务端收下了这次请求:PA 兜底的这一轮到此结束,后面再被拒是新一轮。
+        pa_rescue_state_ = pa::RescueState{};
         return HandleErrorResult::Proceed;
     }
 
@@ -2898,7 +2909,18 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
              " context_overflow=" +
              (context_overflow ? "true" : "false"));
 
-    if (context_overflow && !model_output_seen) {
+    bool pa_rescue_exhausted = false;
+    if (context_overflow && !model_output_seen &&
+        pa::is_context_overflow(result.provider_error_info)) {
+        // PA 特征报文走专用兜底(src/pa/pa_overflow_rescue):不设修复次数
+        // 上限,缩到底还被拒就等。下面的通用三级恢复链只服务其它 provider。
+        const HandleErrorResult rescue = run_pa_overflow_rescue(
+            result.provider_error_info, request_tokens,
+            emergency_request_profile);
+        if (rescue == HandleErrorResult::Continue) return rescue;
+        if (abort_requested_) return HandleErrorResult::Break;
+        pa_rescue_exhausted = true;
+    } else if (context_overflow && !model_output_seen) {
         // 先记账再恢复:这一轮已经撞墙了救不回来,但下一轮可以不撞。
         note_pa_context_rejection(request_tokens);
         if (recovery_stage == ContextRecoveryStage::Normal) {
@@ -2969,14 +2991,21 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
     metadata["provider_error"] = provider_error_to_json(result.provider_error_info);
     if (context_overflow) {
         metadata["thread_repair_exhausted"] =
+            pa_rescue_exhausted ||
             recovery_stage == ContextRecoveryStage::EmergencyProfile;
         metadata["partial_model_output"] = model_output_seen;
     }
+    if (pa_rescue_exhausted) metadata["pa_rescue_exhausted"] = true;
     turn_timing_status = "error";
     std::string display_message = result.provider_error_info.display_message;
-    if (context_overflow &&
-        recovery_stage == ContextRecoveryStage::EmergencyProfile &&
-        !model_output_seen) {
+    if (pa_rescue_exhausted) {
+        display_message +=
+            " 服务端在 " + std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
+            " 次等待重试后仍拒收已缩到最小的请求，本回合放弃；稍后重新发送即可"
+            "继续。";
+    } else if (context_overflow &&
+               recovery_stage == ContextRecoveryStage::EmergencyProfile &&
+               !model_output_seen) {
         display_message +=
             " Automatic thread repair and the emergency request profile were "
             "both exhausted; the fixed context or current input may exceed the "
@@ -2988,6 +3017,185 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
              log_truncate(result.provider_error_info.display_message, 500));
     stop_active_goal_after_turn_error(result.provider_error_info);
     return HandleErrorResult::Break;
+}
+
+bool AgentLoop::wait_for_pa_rescue_delay(int wait_ms) {
+    const int scaled = pa::scaled_rescue_wait_ms(wait_ms);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(scaled);
+    while (!abort_requested_.load()) {
+        if (std::chrono::steady_clock::now() >= deadline) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+void AgentLoop::emit_pa_rescue_wait_progress(const ProviderErrorInfo& error,
+                                             const pa::RescuePlan& plan,
+                                             int attempt,
+                                             int max_attempts,
+                                             bool waiting) {
+    // 复用 provider 层重试的展示通道:TUI 走 on_model_retry 的等待短语,Web 走
+    // model_retry 进度事件的倒计时。文案换成兜底自己的,别让用户以为是断网。
+    ProviderErrorInfo info = error;
+    info.retry_attempt = attempt;
+    info.retry_max_attempts = max_attempts;
+    info.retry_delay_ms = waiting ? pa::scaled_rescue_wait_ms(plan.wait_ms) : 0;
+    if (waiting) {
+        if (callbacks_.on_model_retry) callbacks_.on_model_retry(info);
+    } else if (callbacks_.on_model_retry_resume) {
+        callbacks_.on_model_retry_resume();
+    }
+
+    const std::int64_t now_ms = now_epoch_ms();
+    nlohmann::json payload{
+        {"phase", waiting ? "model_retry" : "model_waiting"},
+        {"label", waiting ? plan.label : std::string("正在重新发送请求")},
+        {"detail",
+         waiting ? std::string("服务端报「请求上下文过大」，按 PA 兜底策略等待后重发")
+                 : std::string{}},
+        {"started_at_ms", now_ms},
+        {"retry_attempt", attempt},
+        {"retry_delay_ms", info.retry_delay_ms},
+        {"retry_at_ms", now_ms + info.retry_delay_ms},
+        {"retry_max_attempts", max_attempts},
+    };
+    EventDispatcher::EmitOptions opts;
+    opts.buffered = true;
+    opts.coalesce_key = "agent_progress";
+    events_.emit(SessionEventKind::AgentProgress, std::move(payload), opts);
+}
+
+AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
+    const ProviderErrorInfo& error,
+    int request_tokens,
+    bool& emergency_request_profile) {
+    pa::RescueState& state = pa_rescue_state_;
+    if (!state.active) state = pa::RescueState{};
+    const int history_tokens = estimate_message_tokens(
+        recovered_provider_messages(messages_, "pa-rescue-estimate"));
+
+    // 一次调用可能连走几步:收缩腾不出空间时不重发,立刻换下一招。
+    for (;;) {
+        pa::RescueInputs inputs;
+        inputs.request_tokens = request_tokens;
+        inputs.history_tokens = history_tokens;
+        inputs.emergency_profile = emergency_request_profile;
+        const pa::RescuePlan plan = pa::next_rescue_step(state, inputs);
+        pa::advance_rescue_state(state, plan);
+        LOG_WARN("[pa-rescue] action=" + std::string(pa::to_string(plan.action)) +
+                 " request_estimated_tokens=" + std::to_string(request_tokens) +
+                 " history_estimated_tokens=" + std::to_string(history_tokens) +
+                 " same_request_retries=" +
+                 std::to_string(state.same_request_retries) +
+                 " shrink_rounds=" + std::to_string(state.shrink_rounds) +
+                 " wait_retries=" + std::to_string(state.wait_retries) +
+                 " emergency_profile=" +
+                 (emergency_request_profile ? "true" : "false") +
+                 " target_history_tokens=" +
+                 std::to_string(plan.target_history_tokens) +
+                 " wait_ms=" + std::to_string(plan.wait_ms) +
+                 " label=" + plan.label);
+        if (plan.record_rejection) note_pa_context_rejection(request_tokens);
+
+        switch (plan.action) {
+            case pa::RescueAction::RetrySameRequest:
+            case pa::RescueAction::WaitAndRetry: {
+                const bool waiting_for_recovery =
+                    plan.action == pa::RescueAction::WaitAndRetry;
+                const int attempt = waiting_for_recovery
+                    ? state.wait_retries : state.same_request_retries;
+                const int max_attempts = waiting_for_recovery
+                    ? pa::PA_RESCUE_MAX_WAIT_RETRIES
+                    : pa::PA_RESCUE_SAME_REQUEST_RETRIES;
+                if (!waiting_for_recovery && state.same_request_retries == 1) {
+                    emit_transcript_system_message(
+                        "[智能压缩] 服务端报「请求上下文过大」，先原样重发确认"
+                        "是否为瞬时故障；确认拒收后才会收缩历史。");
+                } else if (waiting_for_recovery && state.wait_retries == 1) {
+                    emit_transcript_system_message(
+                        "[智能压缩] 请求已缩到最小仍被服务端拒收；将按 5 秒起、"
+                        "最长 60 秒的间隔反复重试（最多 " +
+                        std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
+                        " 次），可随时停止。");
+                }
+                emit_pa_rescue_wait_progress(
+                    error, plan, attempt, max_attempts, true);
+                if (!wait_for_pa_rescue_delay(plan.wait_ms)) {
+                    dispatch_message("system", abort_notice_text(), false,
+                                     abort_notice_metadata());
+                    return HandleErrorResult::Break;
+                }
+                emit_pa_rescue_wait_progress(
+                    error, plan, attempt, max_attempts, false);
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::ShrinkHistory: {
+                ThreadRepairOptions options;
+                options.trigger = "repair-pa-overflow";
+                options.target_tokens = plan.target_history_tokens;
+                options.force_prune_one_group = true;
+                options.clear_tool_outputs = true;
+                options.keep_recent_tool_outputs = 1;
+                auto repair = apply_thread_repair(
+                    session_manager_, messages_, options);
+                LOG_WARN("[pa-rescue] shrink status=" +
+                         std::string(to_string(repair.status)) +
+                         " pre_tokens=" + std::to_string(repair.pre_tokens) +
+                         " post_tokens=" + std::to_string(repair.post_tokens) +
+                         " pruned_groups=" +
+                         std::to_string(repair.pruned_groups) +
+                         " cleared_tool_outputs=" +
+                         std::to_string(repair.cleared_tool_outputs) +
+                         " reason=" + repair.reason);
+                if (!repair.repaired()) {
+                    // 一点空间都没腾出来:这一轮不再提议收缩,立刻换下一招。
+                    state.shrink_exhausted = true;
+                    continue;
+                }
+                compact_generation_.fetch_add(1, std::memory_order_relaxed);
+                last_api_total_tokens_.store(0, std::memory_order_relaxed);
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                events_.emit(SessionEventKind::AgentProgress, nlohmann::json{
+                    {"phase", "context_repair"},
+                    {"label", plan.label},
+                    {"detail", repair.reason},
+                });
+                emit_transcript_system_message(
+                    "[智能压缩] 服务端拒收请求（第 " +
+                    std::to_string(state.shrink_rounds) +
+                    " 次收缩）：已丢弃最旧的 " +
+                    std::to_string(repair.pruned_groups) + " 组历史、清除 " +
+                    std::to_string(repair.cleared_tool_outputs) +
+                    " 条旧工具输出后重试。");
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::EmergencyProfile: {
+                emergency_request_profile = true;
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                events_.emit(SessionEventKind::AgentProgress, nlohmann::json{
+                    {"phase", "context_repair"},
+                    {"label", plan.label},
+                    {"detail", "去掉工具定义与注入上下文，仅保留核心工具"},
+                });
+                emit_transcript_system_message("[智能压缩] " + plan.label + "。");
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::GiveUp:
+                LOG_WARN("[pa-rescue] giving up: " + plan.label);
+                return HandleErrorResult::Break;
+        }
+    }
 }
 
 ToolContext AgentLoop::build_tool_context(
@@ -4248,6 +4456,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     ContextRecoveryStage context_recovery_stage =
         ContextRecoveryStage::Normal;
     bool emergency_request_profile = false;
+    pa_rescue_state_ = pa::RescueState{};
+    skip_auto_compact_once_ = false;
 
     const int max_iter = loop_cfg_.max_iterations;
     const bool has_max_iterations = max_iter > 0;
@@ -4472,7 +4682,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // The top of every sampling iteration covers both pre-turn and
         // post-tool follow-up compaction. A failed compact aborts this sampling
         // path without silently deleting unsummarized history.
-        if (total_iterations > 1 &&
+        // PA 兜底刚做完一步的那次重发不压缩(见 skip_auto_compact_once_);
+        // 这个标记只管紧接着的一次采样,重发成功后的下一次采样照常压缩。
+        const bool skip_auto_compact_after_rescue = skip_auto_compact_once_;
+        skip_auto_compact_once_ = false;
+        if (total_iterations > 1 && !skip_auto_compact_after_rescue &&
             context_recovery_stage == ContextRecoveryStage::Normal &&
             active_estimate_exceeds_auto_threshold()) {
             if (!maybe_run_auto_compact()) {

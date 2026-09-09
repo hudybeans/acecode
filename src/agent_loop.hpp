@@ -12,6 +12,7 @@
 #include "config/config.hpp"
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
+#include "pa/pa_overflow_rescue.hpp"
 
 #include <vector>
 #include <string>
@@ -612,6 +613,22 @@ private:
         std::string& turn_timing_status,
         ContextRecoveryStage& recovery_stage,
         bool& emergency_request_profile);
+    // PA 兜底(src/pa/pa_overflow_rescue):服务端以 PA 特征报文拒收整个请求
+    // 时,原样重发 → 逐档收缩 → 紧急档 → 等待重发,不因这条报文终止回合。
+    // 返回 Continue 表示按新状态重发同一回合;Break 表示等待次数耗尽或用户
+    // 中止(调用方按 abort_requested_ 区分)。
+    HandleErrorResult run_pa_overflow_rescue(
+        const ProviderErrorInfo& error,
+        int request_tokens,
+        bool& emergency_request_profile);
+    // 兜底等待,每 50ms 看一次中止标记。false = 用户中止。
+    bool wait_for_pa_rescue_delay(int wait_ms);
+    // 兜底等待期间给 TUI / Web 的进度(与 provider 层重试同款展示)。
+    void emit_pa_rescue_wait_progress(const ProviderErrorInfo& error,
+                                      const pa::RescuePlan& plan,
+                                      int attempt,
+                                      int max_attempts,
+                                      bool waiting);
 
     // Phase 5: Execute tool calls (parallel read + serial write).
     // Returns true if task_complete terminator fired.
@@ -696,6 +713,12 @@ private:
     // Latest server-reported total active-context usage. For providers that do
     // not return total_tokens, prompt_tokens is used as the fallback.
     std::atomic<int> last_api_total_tokens_{0};
+    // PA 兜底的 episode 进度(见 run_pa_overflow_rescue)。服务端收下请求即
+    // 清零;回合开始也清零。只在回合线程上读写。
+    pa::RescueState pa_rescue_state_;
+    // 兜底刚做完一步之后的那次重发跳过自动压缩:压缩本身又是一次可能被拒的
+    // 模型请求,先把已经缩好的请求发出去;下一次采样再照常压缩。
+    bool skip_auto_compact_once_ = false;
     std::atomic<int> compact_generation_{0};
     bool compact_window_initialized_ = false;
     std::uint64_t compact_window_number_ = 0;

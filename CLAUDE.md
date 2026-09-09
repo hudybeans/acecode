@@ -261,7 +261,7 @@ revision stale so a later send retries.
 失效」的兼容代码。通用路径只留一个兜底调用点,判定逻辑全在这里,便于上游修好
 之后整块删掉。**不硬编码服务地址、模型名、业务名词,只按报文特征判定。**
 
-当前两条,都围绕同一个症状(内网模型的最大上下文声明值不准,会提前报 400):
+当前三条,前两条围绕同一个症状(内网模型的最大上下文声明值不准,会提前报 400),第三条是它们的兜底:
 
 1. **上下文超限错误认不出**(`pa_quirks`)。实测报文
    `{"object":"error","message":"请求上下文过大","type":"BadRequestError","code":400}`
@@ -277,6 +277,14 @@ revision stale so a later send retries.
    `ceil(bytes/4)` 估算在中文上系统性偏低约 25% 的偏差)。撞过墙才生效,进程级
    不落盘。观测点是 `note_pa_context_rejection` / `note_pa_context_accepted`,
    两个都收在 `handle_provider_error` 里。
+3. **随机拒收绝不终止回合**(`pa_overflow_rescue`)。服务端实际能收的规模随
+   负载浮动,同一规模的请求时过时不过。PA 特征的整体拒收不走通用三级恢复链,
+   改走 `AgentLoop::run_pa_overflow_rescue`:原样重发 2 次 → 每次被拒缩到
+   上一次的 85%(先丢老回合,再清本回合旧工具输出 / 大参数,
+   `ThreadRepairOptions::clear_tool_outputs`)无上限 → 紧急档 → 5s 起封顶
+   60s 的退避等待最多 12 次,只有等待耗尽才报错。兜底后的那次重发跳过自动
+   压缩(`skip_auto_compact_once_`);请求被收下即清零 episode,同回合再被拒
+   重新开始。学习器只记每个 episode 最初确认拒收的规模,紧急档请求永远不记。
 
 **改这块前必读 README 里那三条坑**:观测「要么可信要么整条丢弃」没有中间态
 (第一版拿可信下限当收敛下界用,一次 2726 token 的拒绝把 128000 的窗口砍到
