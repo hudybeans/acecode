@@ -3,10 +3,12 @@
 // 视觉对齐设计稿方向 C:顶部 44px TopBar + 270px Sidebar + 主区(单会话/4宫格/9宫格)
 // 会话控制内嵌在聊天输入框。所有面板/弹框作为 overlay 渲染在主区之上。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, ApiError, createApi } from './lib/api.js';
 import { useTheme } from './theme.jsx';
+import { useThemeDownloads } from './lib/useThemeDownloads.js';
+import { ThemeDownloadFailureDialog } from './components/ThemeDownloadFailureDialog.jsx';
 import { setToken } from './lib/auth.js';
 import { connection } from './lib/connection.js';
 import { loadUiLocale } from './lib/uiLocale.js';
@@ -50,7 +52,6 @@ import { usePreference } from './lib/usePreference.js';
 import {
   appearanceBootstrapPreferences,
   createAppearancePersistenceController,
-  effectiveAppearanceTheme,
   initialAppearancePreferences,
 } from './lib/appearancePreferences.js';
 import {
@@ -64,11 +65,14 @@ import {
   effectiveFontSize,
   effectiveSidebarSessionTime,
   effectiveSidePanelListCollapsed,
+  rightPanelHidden,
+  toggleRightPanel,
   UI_PREFS_STORAGE_KEY,
   validateUiPrefs,
 } from './lib/uiPrefs.js';
 import { useGlobalShortcut } from './lib/useGlobalShortcut.js';
 import { TopBar } from './components/TopBar.jsx';
+import { FeedbackForm } from './components/FeedbackForm.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { ChatView } from './components/ChatView.jsx';
 import { SearchPalette } from './components/SearchPalette.jsx';
@@ -208,6 +212,8 @@ export function App() {
     colorTheme,
     set: setTheme,
     setColorTheme,
+    prepareTheme,
+    themeMode,
   } = useTheme();
   const initialAppearance = useMemo(() => initialAppearancePreferences(), []);
   const bootstrapAppearance = useMemo(() => appearanceBootstrapPreferences(), []);
@@ -229,6 +235,7 @@ export function App() {
   const [commandWorkspaceHash, setCommandWorkspaceHash] = useState('');
   const [consoleCwd, setConsoleCwd] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [settingsNavKey, setSettingsNavKey] = useState('general');
   const [desktopCloseDialogOpen, setDesktopCloseDialogOpen] = useState(false);
   const [rememberDesktopCloseChoice, setRememberDesktopCloseChoice] = useState(false);
@@ -268,6 +275,10 @@ export function App() {
   }), [initialAppearance]);
   const [uiPrefs, setUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
+  // 首屏默认收起右侧面板,在绘制前覆盖旧版保存的展开状态;后续手动切换照常生效。
+  useLayoutEffect(() => {
+    setUiPrefs((prev) => prev.sidePanelCollapsed ? prev : { ...prev, sidePanelCollapsed: true });
+  }, [setUiPrefs]);
   const [consoleDock, setConsoleDock] = usePreference(
     CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock);
   const [recentExpertIds, setRecentExpertIds] = usePreference(
@@ -295,7 +306,7 @@ export function App() {
   const fontSize = effectiveFontSize(uiPrefs);
   const sidebarSessionTime = effectiveSidebarSessionTime(uiPrefs);
   const applyAppearance = useCallback((next) => {
-    setTheme(effectiveAppearanceTheme(next.theme));
+    setTheme(next.theme);
     setColorTheme(next.colorTheme);
     setUiPrefs({
       fontSize: next.fontSize,
@@ -306,7 +317,7 @@ export function App() {
   if (!appearanceControllerRef.current) {
     appearanceControllerRef.current = createAppearancePersistenceController({
       initial: {
-        theme: bootstrapAppearance?.theme || theme,
+        theme: bootstrapAppearance?.theme || themeMode,
         colorTheme,
         fontSize,
         sidebarSessionTime,
@@ -324,12 +335,11 @@ export function App() {
   const changeAppearance = useCallback((patch) => (
     appearanceControllerRef.current.change(patch)
   ), []);
-  const toggleAppearanceTheme = useCallback(() => {
-    const current = appearanceControllerRef.current.current();
-    return appearanceControllerRef.current.change({
-      theme: effectiveAppearanceTheme(current.theme) === 'dark' ? 'light' : 'dark',
-    });
-  }, []);
+  const themeDownloads = useThemeDownloads({
+    enabled: authState === 'ok' && showSettings,
+    prepare: prepareTheme,
+    apply: (id) => changeAppearance({ colorTheme: id }),
+  });
   // sidePanelCollapsed 是列表 + 详情的总开关;listCollapsed 只隐藏最右导航列表。
   const sidePanelCollapsed = uiPrefs.sidePanelCollapsed;
   const sidePanelListCollapsed = effectiveSidePanelListCollapsed(uiPrefs);
@@ -386,7 +396,7 @@ export function App() {
   const configRecoveryBlocking = (
     authState === 'ok' && !configRecoveryNoticeChecked
   ) || recoveryNoticeBlocksStartup(configRecoveryNotice, configRecoveryDialogOpen);
-  const guidedTourBlocked = showSettings || searchOpen || updateDialogOpen
+  const guidedTourBlocked = showSettings || showFeedback || searchOpen || updateDialogOpen
     || desktopCloseDialogOpen
     || configRecoveryBlocking
     || questionReqs.length > 0;
@@ -741,6 +751,11 @@ export function App() {
       if (secondFrame) window.cancelAnimationFrame(secondFrame);
     };
   }, [authState]);
+
+  useEffect(() => {
+    if (authState !== 'ok') return;
+    void prepareTheme(colorTheme).catch(() => {});
+  }, [authState, colorTheme, prepareTheme]);
 
   useEffect(() => {
     if (authState !== 'ok') return;
@@ -1257,8 +1272,8 @@ export function App() {
   }, [probe]);
 
   const toggleSidePanel = useCallback(() => {
-    setUiPrefs((prev) => ({ ...prev, sidePanelCollapsed: !prev.sidePanelCollapsed }));
-  }, [setUiPrefs]);
+    setUiPrefs((prev) => toggleRightPanel(prev, previewPanelVisible));
+  }, [previewPanelVisible, setUiPrefs]);
 
   const toggleSidePanelList = useCallback(() => {
     setUiPrefs((prev) => ({
@@ -1721,8 +1736,7 @@ export function App() {
   }, [createDesktopTraySession]);
 
   const setSidebarWidth = useCallback((nextWidth, shellWidth = 0) => {
-    const sidePanelVisible = !!(activeRef?.sessionId || activeRef?.id)
-      && !sidePanelNavigationCollapsed;
+    const sidePanelVisible = !sidePanelNavigationCollapsed;
     setSingleLayout((prev) => {
       const sidebar = normalizeSidebarWidth(nextWidth, {
         shellWidth,
@@ -1734,8 +1748,6 @@ export function App() {
       return sidebar === prev.sidebar ? prev : { ...prev, sidebar };
     });
   }, [
-    activeRef?.id,
-    activeRef?.sessionId,
     previewPanelVisible,
     setSingleLayout,
     sidePanelNavigationCollapsed,
@@ -1754,8 +1766,7 @@ export function App() {
   }, [previewPanelVisible, setSingleLayout, sidePanelMaximized]);
 
   const setPreviewPanelWidth = useCallback((nextWidth, contentWidth = 0) => {
-    const sidePanelVisible = !!(activeRef?.sessionId || activeRef?.id)
-      && !sidePanelNavigationCollapsed;
+    const sidePanelVisible = !sidePanelNavigationCollapsed;
     setSingleLayout((prev) => {
       const previewPanel = normalizePreviewPanelWidth(nextWidth, {
         contentWidth,
@@ -1769,8 +1780,6 @@ export function App() {
       return { ...prev, previewPanel, previewPanelUserSized: true };
     });
   }, [
-    activeRef?.id,
-    activeRef?.sessionId,
     setSingleLayout,
     sidePanelNavigationCollapsed,
   ]);
@@ -1928,6 +1937,7 @@ export function App() {
       })()
     : null;
   const nativeSurfacesVisible = !showSettings
+    && !showFeedback
     && !searchOpen
     && !updateDialogOpen
     && !desktopCloseDialogOpen
@@ -1945,7 +1955,7 @@ export function App() {
   const autoFocusChatOnDesktopWindowFocus = shouldAutoFocusDesktopComposer({
     desktopMode: desktopModeRef.current,
     chatVisible: view === 'single' && !activeRef?.loop && !activeRef?.expertComponents,
-    blockingSurfaceOpen: showSettings || searchOpen || updateDialogOpen
+    blockingSurfaceOpen: showSettings || showFeedback || searchOpen || updateDialogOpen
       || desktopCloseDialogOpen || configRecoveryBlocking
       || !!visibleQuestionReq || guidedTourPreparing || guidedTourRun,
   });
@@ -1953,7 +1963,7 @@ export function App() {
     view,
     activeSessionId: activeId,
     loop: !!activeRef?.loop,
-    showSettings,
+    showSettings: showSettings || showFeedback,
     searchOpen,
     updateDialogOpen: updateDialogOpen || desktopCloseDialogOpen || configRecoveryBlocking,
     permissionOpen: false,
@@ -1966,22 +1976,17 @@ export function App() {
     <SlashCommandsProvider workspaceHash={commandWorkspaceHash}>
     <div
       className={[
-        'h-full w-full flex flex-col text-fg font-sans bg-bg',
+        'ace-app-shell h-full w-full flex flex-col text-fg font-sans bg-bg',
       ].join(' ')}
+      data-home-wallpaper={view === 'single' && !activeId && !activeRef?.loop && !activeRef?.expertComponents && !showSettings && !showFeedback ? 'true' : undefined}
+      style={{ '--ace-home-sidebar-width': sidebarCollapsed ? '0px' : `${singleLayout.sidebar || 0}px` }}
     >
       <TopBar
-        onSettings={() => openSettingsSection('general')}
-        onNewSession={() => openHomeForWorkspace()}
-        onOpenLoop={openLoopPage}
         onOpenSearch={() => setSearchOpen(true)}
-        onAbout={showAboutAceCode}
-        onExit={exitAceCode}
-        onThemeToggle={toggleAppearanceTheme}
         onToggleConsole={toggleConsoleDock}
         consoleAvailable={consoleAvailable}
         consoleOpen={consoleDock.open}
-        rightPanelAvailable={!!(activeRef?.sessionId || activeRef?.id) && !activeRef?.loop}
-        rightPanelCollapsed={sidePanelCollapsed}
+        rightPanelCollapsed={rightPanelHidden(uiPrefs, previewPanelVisible)}
         onToggleRightPanel={toggleSidePanel}
         sidebarCollapsed={sidebarCollapsed}
         sidebarWidth={singleLayout.sidebar}
@@ -1991,13 +1996,11 @@ export function App() {
         canGoBack={navHistory.back.length > 0}
         canGoForward={navHistory.forward.length > 0}
         updateStatus={updateStatus}
-        updateChecking={updateChecking}
         updateStarting={updateStarting}
         updateRunning={updateJobIsActive(updateJob)}
         updateReady={updateJob?.state === 'succeeded' && !!updateJob?.restart_required}
         updateProgress={updateJobProgress(updateJob)}
         onStartUpdate={openUpdateDialog}
-        onCheckUpdates={checkForUpdates}
       />
       <div
         ref={singleShellRef}
@@ -2021,7 +2024,13 @@ export function App() {
           appVersion={health?.version || ''}
           workspaceActivationRequest={workspaceActivationRequest}
           onOpenSettingsSection={openSettingsSection}
+          onOpenFeedback={() => setShowFeedback(true)}
           onOpenExpertComponents={openExpertComponents}
+          onOpenSearch={() => setSearchOpen(true)}
+          onAbout={showAboutAceCode}
+          onCheckUpdates={checkForUpdates}
+          onExit={exitAceCode}
+          updateChecking={updateChecking}
           pendingPermissionSessionIds={pendingPermissionSessionIdsForSidebar}
           pendingQuestionSessionIds={pendingQuestionSessionIdsForSidebar}
           showSessionTime={sidebarSessionTime}
@@ -2041,24 +2050,12 @@ export function App() {
         )}
         <div
           className={[
-            'flex-1 flex flex-col overflow-hidden transition-all duration-200 bg-surface',
+            'ace-main-content flex-1 flex flex-col overflow-hidden transition-all duration-200 bg-surface',
             'opacity-100 scale-100',
           ].join(' ')}
         >
           <div className="relative flex-1 flex overflow-hidden min-h-0">
-            {view === 'single' && activeRef?.loop && (
-              <LoopPage onOpenSession={openLoopRun} />
-            )}
-            {view === 'single' && activeRef?.expertComponents && (
-              <ExpertComponentsPage
-                workspaceHash={activeRef?.workspaceHash || ''}
-                recentExpertIds={recentExpertIds}
-                onRememberExpert={rememberRecentExpert}
-                onDispatchToNewTask={dispatchExpertToNewTask}
-                onStartConversationalCreation={startConversationalExpertCreation}
-              />
-            )}
-            {view === 'single' && !activeRef?.loop && !activeRef?.expertComponents && (
+            {view === 'single' && (
               <ChatView
                 sessionRef={activeRef}
                 homeLogoEffectEnabled={homeLogoEffectEnabled}
@@ -2101,7 +2098,19 @@ export function App() {
                 onRememberExpert={rememberRecentExpert}
                 onInitialDraftConsumed={consumeInitialDraftText}
                 nativeSurfacesVisible={nativeSurfacesVisible}
-              />
+              >
+                {activeRef?.loop ? (
+                  <LoopPage onOpenSession={openLoopRun} />
+                ) : activeRef?.expertComponents ? (
+                  <ExpertComponentsPage
+                    workspaceHash={activeRef?.workspaceHash || ''}
+                    recentExpertIds={recentExpertIds}
+                    onRememberExpert={rememberRecentExpert}
+                    onDispatchToNewTask={dispatchExpertToNewTask}
+                    onStartConversationalCreation={startConversationalExpertCreation}
+                  />
+                ) : null}
+              </ChatView>
             )}
             <SessionContentLoading
               phase={sidebarSessionLoadState?.phase || ''}
@@ -2120,6 +2129,7 @@ export function App() {
             />
           )}
         </div>
+        {showFeedback && <FeedbackForm onClose={() => setShowFeedback(false)} />}
         {showSettings && (
           <SettingsPage
             onClose={() => setShowSettings(false)}
@@ -2134,13 +2144,15 @@ export function App() {
             fontSize={fontSize}
             onThemeChange={(nextTheme) => changeAppearance({ theme: nextTheme })}
             onColorThemeChange={(nextColorTheme) => (
-              changeAppearance({ colorTheme: nextColorTheme })
+              themeDownloads.controller.select(nextColorTheme)
             )}
+            themeDownloads={themeDownloads}
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
             sidebarSessionTime={sidebarSessionTime}
             onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}
           />
         )}
+        <ThemeDownloadFailureDialog failure={themeDownloads.failure} onClose={() => themeDownloads.controller.dismissFailure()} />
         <SearchPalette
           open={searchOpen}
           onClose={() => setSearchOpen(false)}

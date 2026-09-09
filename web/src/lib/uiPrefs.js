@@ -4,8 +4,8 @@ export const FONT_SIZE_VALUES = ['small', 'medium', 'large'];
 
 export const DEFAULT_UI_PREFS = {
   view: 'single',
-  // 整个右侧工作区(列表 + 详情)的总折叠开关。
-  sidePanelCollapsed: false,
+  // 整个右侧工作区(列表 + 详情)的总折叠开关。首屏默认收起。
+  sidePanelCollapsed: true,
   // 最右侧导航列表的独立折叠开关。缺省为 false,兼容旧版 v1 偏好。
   sidePanelListCollapsed: false,
   sidebarCollapsed: false,
@@ -41,6 +41,17 @@ export function effectiveShowAceCodeAvatar(uiPrefs) {
 
 export function effectiveSidePanelListCollapsed(uiPrefs) {
   return uiPrefs?.sidePanelListCollapsed === true;
+}
+
+export function rightPanelHidden(uiPrefs, previewPanelVisible = false) {
+  return uiPrefs?.sidePanelCollapsed === true
+    || (effectiveSidePanelListCollapsed(uiPrefs) && !previewPanelVisible);
+}
+
+export function toggleRightPanel(uiPrefs, previewPanelVisible = false) {
+  return rightPanelHidden(uiPrefs, previewPanelVisible)
+    ? { ...uiPrefs, sidePanelCollapsed: false, sidePanelListCollapsed: false }
+    : { ...uiPrefs, sidePanelCollapsed: true };
 }
 
 export function effectiveFontSize(uiPrefs) {

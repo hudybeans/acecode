@@ -196,6 +196,7 @@ import {
   openSessionChangesTab,
   previewFileLocation,
   previewScopeKey,
+  previewTabContext,
   previewTabsWithUnsavedDrafts,
   refreshPreviewTab,
   reorderPreviewTab,
@@ -516,7 +517,7 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
+export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
@@ -851,10 +852,17 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   // workspace 归属字段),真实目录走 workingCwd —— 没有它的时候整条预览链路
   // 从头就是死的:cwd 为空 → openFilePreview 直接 return,用户点自己刚生成的
   // 文件毫无反应。no-workspace 会话的文件同样在磁盘上,同样应该能预览。
-  const sessionIsNoWorkspace = !!(ref?.noWorkspace || ref?.no_workspace);
+  const homePanelWorkspace = !sid && !children
+    ? homeWorkspaceOptionForHash(homeWorkspaces, homeWorkspaceHash)
+    : null;
+  const sessionIsNoWorkspace = homePanelWorkspace
+    ? !!homePanelWorkspace.noWorkspace
+    : !!(ref?.noWorkspace || ref?.no_workspace);
   const sidePanelCwd = sessionWorkingCwd({
     worktree: sessionWorktree,
-    cwd: ref?.workingCwd || ref?.working_cwd || ref?.cwd || '',
+    cwd: homePanelWorkspace
+      ? homePanelWorkspace.cwd || ''
+      : ref?.workingCwd || ref?.working_cwd || ref?.cwd || '',
     // health.cwd 是 daemon 进程自己的工作目录,只有当会话确实属于这个 daemon 服务的
     // workspace 时才是合理兜底。no-workspace 会话与它毫无关系,回退过去会让预览跑到一个
     // 无关目录里找文件并报「文件不存在」—— 一个看起来煞有介事的错误路径,比干脆打不开
@@ -3259,7 +3267,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   }, [sid]);
 
   const startSidePanelResize = useCallback((event) => {
-    if (!showSidePanel || !sid || !onSidePanelResize) return;
+    if (!showSidePanel || !onSidePanelResize) return;
     if (event.button != null && event.button !== 0) return;
     if (sidePanelResizeActiveRef.current) return;
     sidePanelResizeActiveRef.current = true;
@@ -3288,7 +3296,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     window.addEventListener('pointercancel', onStop, { once: true });
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onStop, { once: true });
-  }, [onSidePanelResize, showSidePanel, sid, sidePanelWidth]);
+  }, [onSidePanelResize, showSidePanel, sidePanelWidth]);
 
   const onSidePanelHandleKeyDown = useCallback((event) => {
     if (!onSidePanelResize) return;
@@ -3302,7 +3310,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   }, [onSidePanelResize, sidePanelWidth]);
 
   const startPreviewPanelResize = useCallback((event) => {
-    if (!sid || !onPreviewPanelResize) return;
+    if (!onPreviewPanelResize) return;
     if (event.button != null && event.button !== 0) return;
     if (previewPanelResizeActiveRef.current) return;
     previewPanelResizeActiveRef.current = true;
@@ -3331,7 +3339,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     window.addEventListener('pointercancel', onStop, { once: true });
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onStop, { once: true });
-  }, [onPreviewPanelResize, sid]);
+  }, [onPreviewPanelResize]);
 
   const onPreviewPanelHandleKeyDown = useCallback((event) => {
     if (!onPreviewPanelResize) return;
@@ -4181,10 +4189,10 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   }, [onRevealSidePanelList, showSidePanel, sid, sidePanelCollapsed, sidePanelListCollapsed]);
 
   const locateInFileTree = useCallback((path) => {
-    if (!showSidePanel || !sid || !path) return;
+    if (!showSidePanel || !path) return;
     if (sidePanelCollapsed || sidePanelListCollapsed) onRevealSidePanelList?.();
     setFileLocateRequest((prev) => ({ path, token: (prev.token || 0) + 1 }));
-  }, [onRevealSidePanelList, showSidePanel, sid, sidePanelCollapsed, sidePanelListCollapsed]);
+  }, [onRevealSidePanelList, showSidePanel, sidePanelCollapsed, sidePanelListCollapsed]);
 
   const dismissChangeDock = useCallback(() => {
     if (!changeDockDismissalKey || !changeSignature) return;
@@ -4248,7 +4256,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [onQuestionResolve]);
 
-  const sidePanelMounted = showSidePanel && !!sid;
+  const sidePanelMounted = showSidePanel;
   const sidePanelNavigationCollapsed = sidePanelCollapsed || sidePanelListCollapsed;
   const previewScope = useMemo(
     () => {
@@ -4262,7 +4270,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     [ref?.workspaceHash, sessionWorktree?.path, sid, sidePanelCwd, sidePanelFilesEnabled],
   );
   const previewContext = useMemo(
-    () => ({ scopeKey: previewScope, sessionId: sid }),
+    () => previewTabContext({ scopeKey: previewScope, sessionId: sid }),
     [previewScope, sid],
   );
   const previewTabs = useMemo(
@@ -4344,18 +4352,17 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   // 文件树等其它入口不带 line,走原「只打开」语义。
   const openFilePreview = useCallback((path, line = null) => {
     const location = previewFileLocation({ cwd: sidePanelCwd, path });
-    if (!sid || !previewScope || !location.cwd || !location.path) return;
+    if (!previewScope || !location.cwd || !location.path) return;
     // 侧栏折叠时开预览 tab 也不会显示(previewPanelVisible 依赖非折叠),先展开。
     if (sidePanelCollapsed) onToggleSidePanel?.();
     setPreviewPanelHidden(false);
     setPreviewTabState((prev) => openFileTab(prev, {
-      scopeKey: previewScope,
-      sessionId: sid,
+      ...previewContext,
       cwd: location.cwd,
       path: location.path,
       line,
     }));
-  }, [previewScope, sid, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
+  }, [previewContext, previewScope, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
 
   // transcript 里本地文件链接的兜底入口。assistant 气泡在 Message.jsx 里自带
   // 拦截,但同一片区域还有别的 markdown 渲染位置没有各自的拦截器
@@ -4519,24 +4526,23 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
   // gitBase 只有从 SidePanel 导航列表点击时才带;详情栏内点文件不带,由
   // openGitChangesTab 保留页签原 base。
   const openGitChangePreview = useCallback((filePath, gitBase, gitFileCount) => {
-    if (!sid || !filePath) return;
+    if (!previewContext.sessionId || !filePath) return;
     if (sidePanelCollapsed) onToggleSidePanel?.();
     setPreviewPanelHidden(false);
     setPreviewTabState((prev) => openGitChangesTab(prev, {
-      scopeKey: previewScope,
-      sessionId: sid,
+      ...previewContext,
       cwd: sidePanelCwd,
       base: gitBase,
       expandedFile: filePath,
       fileCount: gitFileCount,
     }));
-  }, [onToggleSidePanel, previewScope, sid, sidePanelCollapsed, sidePanelCwd]);
+  }, [onToggleSidePanel, previewContext, sidePanelCollapsed, sidePanelCwd]);
 
   // SidePanel 切基线时,若「变更」页签已打开则同步其 base(详情栏跟着换比较对象)。
   const updateGitChangeBase = useCallback((gitBase) => {
-    if (!sid) return;
-    setPreviewTabState((prev) => updateGitChangesTab(prev, { sessionId: sid, base: gitBase || '' }));
-  }, [sid]);
+    if (!previewContext.sessionId) return;
+    setPreviewTabState((prev) => updateGitChangesTab(prev, { ...previewContext, base: gitBase || '' }));
+  }, [previewContext]);
 
   const activatePreview = useCallback((tabKey) => {
     const tab = previewTabs.find((candidate) => candidate.key === tabKey);
@@ -4544,19 +4550,17 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
       void selectAgentBrowserPage(tab.pageId);
     }
     setPreviewTabState((prev) => activatePreviewTab(prev, {
-      scopeKey: previewScope,
-      sessionId: sid,
+      ...previewContext,
       tabKey,
     }));
-  }, [previewScope, previewTabs, sid]);
+  }, [previewContext, previewTabs]);
 
   const refreshPreview = useCallback((tabKey) => {
     setPreviewTabState((prev) => refreshPreviewTab(prev, {
-      scopeKey: previewScope,
-      sessionId: sid,
+      ...previewContext,
       tabKey,
     }));
-  }, [previewScope, sid]);
+  }, [previewContext]);
 
   const updateFilePreviewDraft = useCallback((tabKey, patch) => {
     setPreviewTabState((prev) => updateFileTabDraft(prev, {
@@ -4600,7 +4604,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
       }
     });
     setPreviewTabState((prev) => {
-      const options = { scopeKey: previewScope, sessionId: sid, tabKey };
+      const options = { ...previewContext, tabKey };
       if (kind === 'one') return closePreviewTab(prev, options);
       if (kind === 'others') return closeOtherPreviewTabs(prev, options);
       if (kind === 'right') return closePreviewTabsToRight(prev, options);
@@ -4612,10 +4616,9 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
     }
   }, [
     onToggleSidePanelMaximized,
-    previewScope,
+    previewContext,
     previewTabs.length,
     previewTabsForCloseAction,
-    sid,
     sidePanelMaximized,
   ]);
 
@@ -4707,16 +4710,16 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
 
   const reorderPreview = useCallback((sourceKey, targetKey, placement) => {
     setPreviewTabState((prev) => reorderPreviewTab(prev, {
-      scopeKey: previewScope,
-      sessionId: sid,
+      ...previewContext,
       sourceKey,
       targetKey,
       placement,
     }));
-  }, [previewScope, sid]);
+  }, [previewContext]);
 
-  // 空态:没选会话
-  if (!sid) {
+  // Home and auxiliary pages share the same workspace navigation and previews.
+  let homeContent = null;
+  if (!sid && !children) {
     const homeProjectName = selectedHomeWorkspace?.name || '当前项目';
     const homeProjectTitle = selectedHomeWorkspace?.noWorkspace
       ? '我们该做什么？'
@@ -4730,9 +4733,9 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
       { icon: 'run', title: '运行命令', desc: 'bash / npm / git 等 Agent 会逐步确认' },
       { icon: 'lightbulb', title: '使用 Skills', desc: '预定义工作流，从侧边栏开启' },
     ];
-    return (
+    homeContent = (
       <div
-        className="ace-chat-file-drop-scope flex-1 min-h-0 min-w-0 flex flex-col bg-surface"
+        className="ace-home-drop-scope ace-chat-file-drop-scope flex-1 min-h-0 min-w-0 flex flex-col bg-surface"
         data-chat-file-drop-scope="true"
         data-session-content-loading-anchor="true"
         data-file-drop-active={chatFileDropActive ? 'true' : undefined}
@@ -4898,18 +4901,6 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
             onCreated={handleProjectCreated}
           />
         )}
-        {expertPickerOpen && (
-          <ExpertPickerDialog
-            workspaceHash={commandWorkspaceHash}
-            recentIds={recentExpertIds}
-            onClose={() => {
-              setExpertPickerOpen(false);
-              restoreChatInputFocusSoon(true);
-            }}
-            onDispatch={selectComposerExpert}
-            onOpeningPrompt={selectExpertOpeningPrompt}
-          />
-        )}
         <ChatFileDropOverlay active={chatFileDropActive} />
       </div>
     );
@@ -4943,6 +4934,12 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
 
   return (
     <div ref={layoutRef} className="flex-1 flex min-w-0 ace-chat-layout">
+      {children || homeContent ? (
+        <div className={clsx('flex-1 flex flex-col min-w-0 min-h-0', previewPanelMaximized && 'hidden')}
+          style={chatColumnStyle}>
+          {children || homeContent}
+        </div>
+      ) : (
       <div
         className={clsx(
           'ace-chat-file-drop-scope flex-1 flex flex-col min-w-0 relative',
@@ -5362,6 +5359,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
       />
       <ChatFileDropOverlay active={chatFileDropActive} />
       </div>
+      )}
       {previewPanelVisible && !previewPanelMaximized && (
         <div
           role="separator"
@@ -5406,7 +5404,7 @@ export function ChatView({ sessionRef, sessionId, homeLogoEffectEnabled = true, 
             onOpenFile={sidePanelCwd && hasNativePreviewFilePicker()
               ? openPreviewFilePicker
               : null}
-            onOpenBrowser={hasNativeAgentBrowser() ? openBrowserPreview : null}
+            onOpenBrowser={sid && hasNativeAgentBrowser() ? openBrowserPreview : null}
             onOpenSideChat={openSideQuestionComposer}
             onHide={hidePreviewPanel}
             agentBrowserActive={agentBrowserActivity.active ? agentBrowserActivePageId : ''}

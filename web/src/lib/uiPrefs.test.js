@@ -5,6 +5,8 @@ import {
   effectiveFontSize,
   effectiveSidePanelListCollapsed,
   effectiveShowAceCodeAvatar,
+  rightPanelHidden,
+  toggleRightPanel,
   FONT_SIZE_VALUES,
   validateUiPrefs,
 } from './uiPrefs.js';
@@ -42,6 +44,26 @@ run('validateUiPrefs accepts old objects without showAceCodeAvatar', () => {
     sidebarCollapsed: true,
     sidePanelMaximized: false,
   }), true);
+});
+
+run('right panel restores a separately hidden list without losing layout preferences', () => {
+  const before = { ...DEFAULT_UI_PREFS, sidePanelCollapsed: false, sidePanelListCollapsed: true, sidePanelMaximized: true };
+  assert.equal(rightPanelHidden(before, false), true);
+  const after = toggleRightPanel(before, false);
+  assert.equal(after.sidePanelCollapsed, false);
+  assert.equal(after.sidePanelListCollapsed, false);
+  assert.equal(after.sidePanelMaximized, true);
+  assert.equal(before.sidePanelListCollapsed, true);
+});
+
+run('right panel closes visible details and restores navigation on reopening', () => {
+  const before = { ...DEFAULT_UI_PREFS, sidePanelCollapsed: false, sidePanelListCollapsed: true };
+  assert.equal(rightPanelHidden(before, true), false);
+  const closed = toggleRightPanel(before, true);
+  assert.equal(closed.sidePanelCollapsed, true);
+  assert.equal(closed.sidePanelListCollapsed, true);
+  assert.equal(rightPanelHidden(closed, true), true);
+  assert.deepEqual(toggleRightPanel(closed, false), { ...DEFAULT_UI_PREFS, sidePanelCollapsed: false });
 });
 
 run('validateUiPrefs accepts legacy objects without sidePanelListCollapsed', () => {

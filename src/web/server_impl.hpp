@@ -42,6 +42,7 @@
 #include "../tool/tool_executor.hpp"
 #include "../upgrade/apply.hpp"
 #include "../upgrade/check.hpp"
+#include "../themes/theme_store.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/base64.hpp"
 #include "../utils/cwd_hash.hpp"
@@ -304,6 +305,7 @@ struct WebServer::Impl {
 
     std::shared_ptr<UpdateJobRuntime> update_job_runtime =
         std::make_shared<UpdateJobRuntime>();
+    std::unique_ptr<acecode::themes::ThemeStore> theme_store;
 
     // 数据目录迁移任务(openspec: data-directory-relocation):同一 daemon 内只允许
     // 一个;跑的期间消息发送路由返回 409(reject_if_migrating)。
@@ -533,6 +535,7 @@ struct WebServer::Impl {
     void register_experts();
     void register_loops();
     void register_ui_preferences();
+    void register_themes();
     void register_history();
     void register_files();
     void register_git();

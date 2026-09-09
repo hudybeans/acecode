@@ -60,6 +60,7 @@ void WebServer::Impl::register_routes() {
     register_experts();
     register_loops();
     register_ui_preferences();
+    register_themes();
     register_history();
     register_files();
     register_git();

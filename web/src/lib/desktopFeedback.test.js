@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   NO_FEEDBACK_SESSION_KEY,
+  DESKTOP_FEEDBACK_MAX_CHARACTERS,
+  desktopFeedbackTextLength,
   buildCurrentSessionDesktopFeedbackPayload,
   buildDesktopFeedbackPayload,
   feedbackSessionKey,
@@ -17,6 +19,18 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('desktop feedback counts Unicode characters including whitespace without truncating input', () => {
+  assert.equal(DESKTOP_FEEDBACK_MAX_CHARACTERS, 10000);
+  assert.equal(desktopFeedbackTextLength(''), 0);
+  assert.equal(desktopFeedbackTextLength('问题 A\n\u{1f600}'), 6);
+  for (const character of ['a', '中', '\u{1f600}']) {
+    const text = character.repeat(10000);
+    assert.equal(desktopFeedbackTextLength(text), 10000);
+    assert.equal(desktopFeedbackTextLength(text + character), 10001);
+    assert.equal(buildDesktopFeedbackPayload({ feedbackText: text }).feedback_text, text);
+  }
+});
 
 run('desktop feedback normalizes sessions and removes duplicate options', () => {
   const sessions = normalizeDesktopFeedbackSessions({

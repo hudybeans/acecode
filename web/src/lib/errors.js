@@ -24,6 +24,7 @@ const TABLE = {
   PERSIST_FAILED:    '配置写盘失败',
   BAD_JSON:          '请求格式错误',
   BAD_REQUEST:       '请求参数错误',
+  FEEDBACK_TOO_LONG: '反馈内容不能超过 10000 字',
   DEVICE_CODE_FAILED: '无法获取 GitHub 验证码',
   COPILOT_AUTH_REQUIRED: '请先登录 Copilot',
   COPILOT_TOKEN_EXCHANGE_FAILED: 'Copilot 授权校验失败',

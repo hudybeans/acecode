@@ -335,6 +335,12 @@ when known.
 | POST | `/api/ui/onboarding/desktop/dismiss` | dismiss the current Desktop guided-tour version |
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
+| GET | `/api/themes` | downloadable theme catalogue and local installation status |
+| GET | `/api/themes/job` | current theme download progress |
+| POST | `/api/themes/job/cancel` | cancel the current theme download |
+| GET | `/api/themes/<id>` | verified locally installed theme definition |
+| POST | `/api/themes/<id>/install` | download a theme after size/hash confirmation |
+| GET | `/api/themes/<id>/images/<kind>` | theme thumbnail or installed background |
 | GET | `/api/config/ui-locale` | read Desktop/WebUI locale preference |
 | PUT | `/api/config/ui-locale` | write Desktop/WebUI locale preference |
 | GET | `/api/config/custom-instructions` | read custom instructions |
@@ -2479,8 +2485,8 @@ Returns:
 }
 ```
 
-`theme` accepts `system`, `light`, or `dark`; `color_theme` accepts `blue` or
-`orange`; and `font_size` accepts `small`, `medium`, or `large`. These values
+`theme` accepts `system`, `light`, or `dark`; `color_theme` accepts `blue`,
+`orange`, or `eva-01`; and `font_size` accepts `small`, `medium`, or `large`. These values
 are stored in `~/.acecode/config.json`, so Desktop restores them even when its
 managed daemon uses a different loopback port. The avatar preference is kept
 for compatibility and is always normalized to `false`.
@@ -2499,6 +2505,67 @@ validated before mutation; omitted fields keep their current values. Legacy
 persists the configuration and echoes the complete normalized response shown
 above; a write failure returns `500` with `error:"PERSIST_FAILED"` and restores
 the in-memory values.
+
+Selecting `eva-01` requires verified local resources. Otherwise the request
+returns `409` with `error:"THEME_NOT_INSTALLED"` without changing any preference.
+EVA uses its package's fixed light palette. The stored `theme` preference is
+preserved for switching back to an ordinary theme; OS color-scheme changes
+cannot override EVA. Its background image is used only on the new-task home.
+
+### Downloadable themes
+
+All theme endpoints require the normal daemon authentication. Theme files live
+in `themes/` beside the daemon configuration, independently of application
+updates. The application bundles only the small card thumbnail and three
+preview swatches; it does not bundle or automatically download the full EVA
+theme. See [theme packaging](themes.md) for the independent publish layout.
+
+`GET /api/themes?refresh=1` refreshes `upgrade.base_url + "themes/catalog.json"`.
+Each catalogue operation resolves the current update server, including changes
+made through `PUT /api/config/upgrade`, without a daemon restart. Cached metadata
+is scoped to its source server. Already started downloads retain the resource
+URL and integrity metadata captured when they were confirmed.
+Without `refresh`, the daemon uses the cached catalogue when available. The
+response contains `schema_version:1`, `themes`, `offline`, and `job`. Each entry
+has `id`, `version`, three `swatches`, `installed`, `installed_version` (empty
+when no valid installation exists), `update_available` (a newer semantic
+version is available), and `package`/`thumbnail`
+descriptors containing a relative `path`, exact `bytes`, and lowercase `sha256`.
+The API also includes `package.url` and `thumbnail.url`, resolved against the
+configured update server. Error responses and failed jobs include
+`error_path` with the actual catalogue/archive URL or failing local path.
+An unavailable server falls back to its own cached catalogue with `offline:true`;
+without a cache for that server it returns `503/THEME_CATALOG_UNAVAILABLE`.
+
+`POST /api/themes/eva-01/install` requires the exact metadata displayed by the
+confirmation dialog:
+
+```json
+{"confirm_download":true,"version":"1.0.0","bytes":2220741,"sha256":"<catalogue SHA-256>"}
+```
+
+Missing or mismatched consent returns `409/THEME_CONFIRMATION_REQUIRED` and
+starts no download. The accepted response and `GET /api/themes/job` contain
+`id`, `version`, `state`, `bytes_downloaded`, and `bytes_total`. States are
+`idle`, `downloading`, `installing`, `completed`, `cancelled`, or `failed`;
+failure adds an `error` code. Only one installation runs per daemon; a second
+request returns `409/THEME_DOWNLOAD_BUSY`. `POST /api/themes/job/cancel`
+requests cancellation, which is observed through job polling. The frontend
+shows this progress and any retry action inside the theme card, even after
+closing and reopening Settings. A later theme selection revokes automatic
+application of an earlier download.
+
+The daemon verifies archive bytes, SHA-256, allowed ZIP entries, the fixed
+palette schema, and both images before publishing an installed version. An
+interrupted download does not alter the active preference; a damaged local
+installation can be repaired by confirming and downloading it again.
+`GET /api/themes/eva-01` returns the validated installed `theme.json` without
+network access, or `404/THEME_NOT_INSTALLED`. `GET
+/api/themes/eva-01/images/thumbnail` remains available for clients needing a
+server preview; Appearance uses its bundled thumbnail without calling it.
+`.../images/background` is available only after installation.
+Both image responses are PNGs. Applying an installed theme requires no
+redownload, including after an offline restart.
 
 ### `GET /api/config/ui-locale`
 
@@ -3003,7 +3070,11 @@ Success:
 source, including the ones that were unavailable. The same array is mirrored
 into the archive's `feedback.json` under `logs`.
 
-Errors include `SESSION_NOT_FOUND`, `PACKAGE_FAILED`, and `UPLOAD_FAILED`.
+`feedback_text` accepts at most 10,000 Unicode code points, including spaces and
+line breaks. Oversized text returns HTTP 400 with `FEEDBACK_TOO_LONG` before any
+logs are collected, package is created, or upload is attempted.
+
+Other errors include `SESSION_NOT_FOUND`, `PACKAGE_FAILED`, and `UPLOAD_FAILED`.
 
 ---
 

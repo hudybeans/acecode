@@ -124,6 +124,19 @@ export function SettingsConfigSection() {
   const selected = terminal?.default_shell || terminal?.resolved?.id || '';
   const resolved = terminal?.resolved;
   const fallback = !!resolved?.usable && (resolved.id !== selected || !!resolved.fallback_reason);
+  const browseTerminal = async () => {
+    setError('');
+    setSaved(false);
+    const initialFilePath = resolved?.usable && resolved.id === selected
+      ? resolved.program : '';
+    try {
+      const path = await pickEnvironmentPath('file', api, { initialFilePath });
+      if (path) await saveTerminal({ default_shell: selected, shell_path: path });
+    } catch (err) {
+      setError(environmentError(err));
+      document.getElementById('terminal-program-path')?.focus();
+    }
+  };
   const migrating = job?.state === 'running';
   const restartRequired = job?.state === 'done' && job.restart_required;
   const disabled = !!busy || migrating || restartRequired;
@@ -173,8 +186,7 @@ export function SettingsConfigSection() {
           detail="留空从 PATH 查找" value={terminalPath(terminal, selected)} disabled={disabled || !selected}
           status={{ label: !resolved?.usable ? '不可用' : fallback ? '已回退' : '已找到', tone: resolved?.usable ? 'ok' : 'danger' }}
           onSave={(path) => saveTerminal({ default_shell: selected, shell_path: path })}
-          onBrowse={async () => { try { const path = await pickEnvironmentPath('file', api); if (path) await saveTerminal({ default_shell: selected, shell_path: path }); }
-            catch (err) { setError(environmentError(err)); document.getElementById('terminal-program-path')?.focus(); } }} />
+          onBrowse={browseTerminal} />
         {fallback && <p className="break-words text-warn">{resolved.program} · {resolved.fallback_reason}</p>}
       </section>
       <section className="ace-settings-group">

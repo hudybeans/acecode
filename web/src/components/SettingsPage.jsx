@@ -8,9 +8,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme.jsx';
+import { ThemeCards } from './ThemeCards.jsx';
+import { EVA_THEME_ID } from '../lib/themePackages.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
+import { FeedbackForm } from './FeedbackForm.jsx';
 import { SettingsSearch } from './SettingsSearch.jsx';
 import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
@@ -54,13 +57,6 @@ import {
   toggleAllArchivedSessionSelection,
 } from '../lib/archivedSessions.js';
 import { formatUsageTokens, normalizeUsageStats, usageDataNote } from '../lib/usageStats.js';
-import {
-  NO_FEEDBACK_SESSION_KEY,
-  buildDesktopFeedbackPayload,
-  feedbackSessionKey,
-  normalizeDesktopFeedbackSessions,
-  selectedFeedbackSessionFromKey,
-} from '../lib/desktopFeedback.js';
 import {
   hookActionState,
   hookEmptyState,
@@ -139,6 +135,7 @@ export function SettingsPage({
   fontSize = 'medium',
   onThemeChange,
   onColorThemeChange,
+  themeDownloads,
   onFontSizeChange = () => {},
   sidebarSessionTime = true,
   onSidebarSessionTimeChange = () => {},
@@ -323,6 +320,7 @@ export function SettingsPage({
               setTheme={setTheme}
               colorTheme={colorTheme}
               setColorTheme={setColorTheme}
+              themeDownloads={themeDownloads}
               fontSize={fontSize}
               onFontSizeChange={onFontSizeChange}
               sidebarSessionTime={sidebarSessionTime}
@@ -341,7 +339,7 @@ export function SettingsPage({
           {activeNavKey === 'hooks' && <SectionHooks />}
           {activeNavKey === 'archived' && <SectionArchived />}
           {activeNavKey === 'usage' && <SectionUsage />}
-          {activeNavKey === 'feedback' && <SectionFeedback />}
+          {activeNavKey === 'feedback' && <FeedbackForm />}
           {activeNavKey === 'about' && <SectionAbout health={health} />}
         </div>
         </div>
@@ -1205,6 +1203,7 @@ function SectionAppearance({
   setTheme,
   colorTheme,
   setColorTheme,
+  themeDownloads,
   fontSize,
   onFontSizeChange,
   sidebarSessionTime,
@@ -1216,32 +1215,9 @@ function SectionAppearance({
 
       <div className="text-[14px] font-semibold mb-1">主题</div>
       <p className="text-[12px] text-fg-mute mb-3">选择界面的主色风格</p>
-      <div className="grid grid-cols-2 gap-3 max-w-md">
-        {COLOR_THEME_OPTIONS.map((opt) => {
-          const active = colorTheme === opt.key;
-          return (
-            <button
-              key={opt.key}
-              type="button"
-              aria-pressed={active}
-              onClick={() => setColorTheme(opt.key)}
-              className={clsx(
-                'relative p-3 rounded-lg border text-left transition',
-                active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
-              )}
-            >
-              <div className={clsx('flex gap-1 mb-2', `ace-theme-preview-${opt.key}`)}>
-                <span className="ace-theme-preview-bg w-6 h-6 rounded border border-border" />
-                <span className="ace-theme-preview-surface w-6 h-6 rounded border border-border" />
-                <span className="ace-theme-preview-accent w-6 h-6 rounded border border-border" />
-              </div>
-              <div className="text-[13px] font-semibold">{opt.label}</div>
-              {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
-            </button>
-          );
-        })}
-      </div>
+      <ThemeCards options={COLOR_THEME_OPTIONS} selected={colorTheme} onSelect={setColorTheme} downloads={themeDownloads} />
 
+      {colorTheme !== EVA_THEME_ID && <>
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
@@ -1253,6 +1229,7 @@ function SectionAppearance({
           onChange={(enabled) => setTheme(enabled ? 'dark' : 'light')}
         />
       </div>
+      </>}
 
       <div className="h-px bg-border my-5" />
       <div className="text-[14px] font-semibold mb-1">字体大小</div>
@@ -3134,190 +3111,6 @@ function SectionUsage() {
           </div>
         </>
       )}
-    </>
-  );
-}
-
-// ─── 问题反馈 ──────────────────────────────────────────────────────────────
-
-function feedbackSessionOptionLabel(item) {
-  const title = sessionDisplayTitle(item, item?.title || item?.summary || item?.id || '');
-  const when = relativeTime(item?.updated_at || item?.created_at);
-  const workspace = item?.workspaceName || item?.cwd || item?.workspace_hash || '';
-  return [title, when, workspace].filter(Boolean).join(' · ');
-}
-
-function SectionFeedback() {
-  const [feedbackText, setFeedbackText] = useState('');
-  const [sessionsRaw, setSessionsRaw] = useState(null);
-  const [selectedKey, setSelectedKey] = useState(NO_FEEDBACK_SESSION_KEY);
-  const [loadingSessions, setLoadingSessions] = useState(true);
-  const [sessionsError, setSessionsError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [status, setStatus] = useState(null);
-
-  const sessions = useMemo(
-    () => normalizeDesktopFeedbackSessions(sessionsRaw || {}),
-    [sessionsRaw],
-  );
-  const selectedSession = useMemo(
-    () => selectedFeedbackSessionFromKey(sessions, selectedKey),
-    [sessions, selectedKey],
-  );
-
-  const loadSessions = useCallback(() => {
-    let cancelled = false;
-    setLoadingSessions(true);
-    setSessionsError('');
-    api.listDesktopFeedbackSessions(20)
-      .then((data) => {
-        if (!cancelled) setSessionsRaw(data || {});
-      })
-      .catch((e) => {
-        if (!cancelled) setSessionsError(e?.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingSessions(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => loadSessions(), [loadSessions]);
-
-  const submit = async () => {
-    if (submitting) return;
-    setSubmitting(true);
-    setStatus(null);
-    try {
-      const payload = buildDesktopFeedbackPayload({
-        feedbackText,
-        selectedSession,
-      });
-      const result = await api.submitDesktopFeedback(payload);
-      const filename = result?.package_filename || 'feedback package';
-      setStatus({
-        kind: 'ok',
-        text: `反馈已上传:${filename}`,
-      });
-      toast({ kind: 'ok', text: '问题反馈已上传' });
-      setFeedbackText('');
-      setSelectedKey(NO_FEEDBACK_SESSION_KEY);
-    } catch (e) {
-      const body = e?.body && typeof e.body === 'object' ? e.body : {};
-      const message = lookupErrorMessage(e?.code, body.message || e?.message || String(e));
-      setStatus({
-        kind: 'err',
-        text: `上传失败:${message}`,
-        packagePath: body.package_path || '',
-      });
-      toast({ kind: 'err', text: '问题反馈上传失败' });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <>
-      <h2 className="text-xl font-bold mb-5">问题反馈</h2>
-
-      <div className="rounded-md bg-surface border border-border overflow-hidden">
-        <div className="px-4 py-3.5 border-b border-border">
-          <div className="text-[14px] font-semibold mb-1">提交反馈</div>
-          <p className="text-[12px] text-fg-mute">
-            默认附带最近的 desktop 与 daemon 日志。关联某个具体的会话记录将更有助于我们帮您排查问题。
-          </p>
-        </div>
-
-        <div className="px-4 py-4 space-y-4">
-          <label className="block">
-            <span className="block text-[12px] font-medium text-fg-2 mb-1.5">反馈内容</span>
-            <textarea
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-              rows={5}
-              placeholder="描述你遇到的问题"
-              className="w-full resize-y min-h-[112px] rounded-md bg-bg border border-border px-3 py-2 text-[13px] text-fg outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-            />
-          </label>
-
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[12px] font-medium text-fg-2">最近会话记录</span>
-              <button
-                type="button"
-                onClick={loadSessions}
-                disabled={loadingSessions || submitting}
-                className="h-6 px-2 rounded-md text-[11px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border disabled:opacity-60 transition flex items-center gap-1"
-              >
-                {loadingSessions ? <span className="ace-spinner" /> : <RefreshIcon size={12} />}
-                刷新
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <select
-                value={selectedKey}
-                onChange={(e) => setSelectedKey(e.target.value)}
-                disabled={loadingSessions || submitting}
-                className="min-w-0 flex-1 h-8 rounded-md bg-bg border border-border px-2 text-[13px] text-fg outline-none focus:border-accent"
-              >
-                <option value={NO_FEEDBACK_SESSION_KEY}>不附带会话</option>
-                {sessions.map((item) => (
-                  <option key={feedbackSessionKey(item)} value={feedbackSessionKey(item)}>
-                    {feedbackSessionOptionLabel(item)}
-                  </option>
-                ))}
-              </select>
-              {selectedKey !== NO_FEEDBACK_SESSION_KEY && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedKey(NO_FEEDBACK_SESSION_KEY)}
-                  disabled={submitting}
-                  className="shrink-0 h-8 px-2.5 rounded-md text-[12px] border border-border bg-surface hover:bg-surface-hi disabled:opacity-60 transition"
-                >
-                  清除
-                </button>
-              )}
-            </div>
-            {sessionsError ? (
-              <div className="mt-2 text-[12px] text-danger">加载会话失败:{sessionsError}</div>
-            ) : (
-              <div className="mt-2 text-[12px] text-fg-mute">
-                {selectedSession
-                  ? `将附带:${feedbackSessionOptionLabel(selectedSession)}`
-                  : '不会附带会话数据库或会话记录。'}
-              </div>
-            )}
-          </div>
-
-          {status && (
-            <div
-              className={clsx(
-                'rounded-md border px-3 py-2 text-[12px]',
-                status.kind === 'ok'
-                  ? 'border-ok-border bg-ok-bg text-ok'
-                  : 'border-danger bg-surface text-danger',
-              )}
-            >
-              <div>{status.text}</div>
-              {status.packagePath && (
-                <div className="mt-1 text-[11px] break-all">{status.packagePath}</div>
-              )}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              onClick={submit}
-              disabled={submitting}
-              className="h-8 px-3 rounded-md text-[13px] font-medium bg-accent text-white hover:opacity-95 disabled:opacity-60 transition flex items-center gap-1.5"
-            >
-              {submitting ? <span className="ace-spinner" /> : <VsIcon name="send" size={13} />}
-              提交反馈
-            </button>
-          </div>
-        </div>
-      </div>
     </>
   );
 }

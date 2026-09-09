@@ -52,9 +52,16 @@ export function environmentError(error) {
   return messages[code] || error?.body?.message || error?.message || '操作失败';
 }
 
-export async function pickEnvironmentPath(kind, client, win = globalThis.window) {
+export async function pickEnvironmentPath(kind, client, {
+  initialFilePath = '',
+  win = globalThis.window,
+} = {}) {
   if (kind === 'file' && hasNativePreviewFilePicker(win)) {
-    const result = await pickNativePreviewFile('', win);
+    const filePath = typeof initialFilePath === 'string'
+      ? initialFilePath.trim().replace(/\\/g, '/') : '';
+    const directory = /^(?:[A-Za-z]:\/|\/)/.test(filePath)
+      ? filePath.slice(0, filePath.lastIndexOf('/') + 1) : '';
+    const result = await pickNativePreviewFile(directory, win);
     return result.cancelled ? null : result.path;
   }
   const result = await (kind === 'file' ? client.pickSettingsFile() : client.pickSettingsFolder());

@@ -15,6 +15,7 @@ import {
   previewAbsolutePath,
   previewFileLocation,
   previewScopeKey,
+  previewTabContext,
   previewTabHasUnsavedDraft,
   previewTabsWithUnsavedDrafts,
   refreshPreviewTab,
@@ -40,6 +41,27 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('workspace previews open and close without a real session', () => {
+  const context = previewTabContext({ scopeKey: 'workspace-a' });
+  let state = openFileTab({}, { ...context, cwd: '/project', path: 'README.md' });
+  state = openGitChangesTab(state, { ...context, cwd: '/project', expandedFile: 'README.md' });
+  assert.equal(visiblePreviewTabs(state, context).length, 2);
+  assert.equal(activePreviewTab(state, context).type, 'git-changes');
+  const changed = updateGitChangesTab(state, { ...context, base: 'HEAD~1' });
+  assert.equal(activePreviewTab(changed, context).base, 'HEAD~1');
+  assert.equal(visiblePreviewTabs(state, previewTabContext({ scopeKey: 'workspace-b' })).length, 0);
+  assert.equal(visiblePreviewTabs(closeVisiblePreviewTabs(changed, context), context).length, 0);
+});
+
+run('preview ownership keeps real sessions unchanged and workspace files available after creation', () => {
+  const home = previewTabContext({ scopeKey: 'workspace-a' });
+  const session = previewTabContext({ scopeKey: 'workspace-a', sessionId: 'real-session' });
+  assert.deepEqual(session, { scopeKey: 'workspace-a', sessionId: 'real-session' });
+  const state = openFileTab({}, { ...home, cwd: '/project', path: 'README.md' });
+  assert.equal(visiblePreviewTabs(state, session)[0].path, 'README.md');
+  assert.deepEqual(previewTabContext(), { scopeKey: '', sessionId: '' });
+});
 
 run('openFileTab scopes files by workspace and reuses duplicate paths', () => {
   let state = {};

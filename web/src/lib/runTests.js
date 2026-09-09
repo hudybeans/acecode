@@ -6,6 +6,7 @@ import './stickyUserContext.test.js';
 import './desktopContextMenu.test.js';
 import './sessionExplorerArchitecture.test.js';
 import './topBarQuickActions.test.js';
+import './themePackages.test.js';
 import './desktopWindowBackground.test.js';
 import './topBarWindowDrag.test.js';
 import './mermaidRenderer.test.js';

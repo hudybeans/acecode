@@ -19,6 +19,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { SidebarQuickMenu } from './SidebarQuickMenu.jsx';
 import { api } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -1800,6 +1801,12 @@ export function Sidebar({
   workspaceActivationRequest = null,
   onOpenSettingsSection,
   onOpenExpertComponents,
+  onOpenFeedback,
+  onOpenSearch,
+  onAbout,
+  onCheckUpdates,
+  onExit,
+  updateChecking = false,
   pendingPermissionSessionIds = new Set(),
   pendingQuestionSessionIds = new Set(),
   showSessionTime = true,
@@ -3458,7 +3465,7 @@ export function Sidebar({
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
         <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 px-[18px] py-3 select-none">
-          <img src="/acecode-logo.png" alt="" width="20" height="20" className="block shrink-0" draggable="false" />
+          <img src="/acecode-logo.png" alt="" width="20" height="20" className="ace-brand-logo block shrink-0" draggable="false" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
             <span className="truncate text-[11px] font-medium leading-none text-fg-mute opacity-75 tabular-nums">
@@ -3649,18 +3656,22 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-footer shrink-0 px-1.5 py-2 flex items-center gap-1">
-          <button
-            data-tour-target="sidebar-settings"
-            type="button"
-            onClick={() => {
-              cancelSessionSelection();
-              onOpenSettingsSection?.('general');
-            }}
-            className="flex-1 min-w-0 flex items-center gap-[7px] px-3 py-1.5 rounded-md text-[12px] text-fg-mute hover:text-fg hover:bg-surface-hi transition text-left"
-          >
-            <span className="w-6 h-6 flex items-center justify-center shrink-0"><VsIcon name="settings" size={20} /></span>
-            <span>设置</span>
-          </button>
+          {!collapsed && (
+            <SidebarQuickMenu
+              data-tour-target="sidebar-settings"
+              sidebarWidth={width}
+              updateChecking={updateChecking}
+              onBeforeOpen={cancelSessionSelection}
+              onNewSession={onNewTask}
+              onOpenLoop={onNewLoop}
+              onOpenSearch={onOpenSearch}
+              onSettings={() => onOpenSettingsSection?.('general')}
+              onAppearance={() => onOpenSettingsSection?.('appearance')}
+              onAbout={onAbout}
+              onCheckUpdates={onCheckUpdates}
+              onExit={onExit}
+            />
+          )}
           <button
             data-tour-target="sidebar-feedback"
             type="button"
@@ -3668,9 +3679,9 @@ export function Sidebar({
             aria-label="问题反馈"
             onClick={() => {
               cancelSessionSelection();
-              onOpenSettingsSection?.('feedback');
+              onOpenFeedback?.();
             }}
-            className="w-8 h-8 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+            className="ml-auto w-8 h-8 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition"
           >
             <VsIcon name="bug" size={18} />
           </button>

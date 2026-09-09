@@ -564,7 +564,6 @@ run('every current floating-surface owner participates in the native overlay con
     'SlashDropdown.jsx',
     'Toast.jsx',
     'TokenBudgetRing.jsx',
-    'TopBar.jsx',
   ];
   for (const file of floatingSurfaceOwners) {
     assert.match(
@@ -573,7 +572,7 @@ run('every current floating-surface owner participates in the native overlay con
       file,
     );
   }
-  for (const file of ['ChatView.jsx', 'ConsoleDock.jsx']) {
+  for (const file of ['ChatView.jsx', 'ConsoleDock.jsx', 'SidebarQuickMenu.jsx']) {
     assert.match(source(`web/src/components/${file}`), /<AnchoredMenu/, file);
   }
 });

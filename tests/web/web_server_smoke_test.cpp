@@ -7518,6 +7518,101 @@ TEST(WebServerHttp, DesktopFeedbackRecentSessionsReturnsNewestFirst) {
     EXPECT_EQ(body["sessions"][0]["id"], newer_id);
 }
 
+TEST(WebServerHttp, DesktopFeedbackEnforcesUnicodeCharacterLimitBeforePackaging) {
+    std::atomic<int> upload_count{0};
+    LocalUpdateServer upload_server([&](httplib::Server& s) {
+        s.Post("/", [&](const httplib::Request&, httplib::Response& res) {
+            ++upload_count;
+            res.set_content(R"({"success":true})", "application/json");
+        });
+    });
+    WebServerFixture fx;
+    fx.cfg.upgrade.base_url = upload_server.base_url();
+    for (const std::string character : {std::string("a"), std::string(u8"\u4e2d"),
+                                        std::string("\xF0\x9F\x98\x80")}) {
+        std::string text;
+        for (int i = 0; i < 10000; ++i) text += character;
+        const int before = upload_count.load();
+        const auto accepted = cpr::Post(
+            cpr::Url{fx.url("/api/feedback/desktop")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"feedback_text", text}}.dump()});
+        ASSERT_EQ(accepted.status_code, 200) << accepted.text;
+        EXPECT_EQ(upload_count.load(), before + 1);
+        EXPECT_TRUE(std::filesystem::is_empty(fx.feedback_dir));
+
+        const auto rejected = cpr::Post(
+            cpr::Url{fx.url("/api/feedback/desktop")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"feedback_text", text + character}}.dump()});
+        ASSERT_EQ(rejected.status_code, 400) << rejected.text;
+        EXPECT_EQ(json::parse(rejected.text)["error"], "FEEDBACK_TOO_LONG");
+        EXPECT_EQ(upload_count.load(), before + 1);
+        EXPECT_TRUE(std::filesystem::is_empty(fx.feedback_dir));
+    }
+}
+
+TEST(WebServerHttp, UiPreferencesCannotSelectMissingThemeResources) {
+    WebServerFixture fx;
+    const auto missing = cpr::Get(cpr::Url{fx.url("/api/themes/eva-01")});
+    EXPECT_EQ(missing.status_code, 404);
+    const auto image = cpr::Get(cpr::Url{fx.url("/api/themes/eva-01/images/background")});
+    EXPECT_EQ(image.status_code, 404);
+    const auto job = cpr::Get(cpr::Url{fx.url("/api/themes/job")});
+    ASSERT_EQ(job.status_code, 200) << job.text;
+    EXPECT_EQ(json::parse(job.text)["state"], "idle");
+    const auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"theme", "dark"}, {"color_theme", "eva-01"}}.dump()});
+    EXPECT_EQ(put.status_code, 409) << put.text;
+    EXPECT_EQ(json::parse(put.text)["error"], "THEME_NOT_INSTALLED");
+    EXPECT_EQ(fx.cfg.web_ui.theme, "system");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+}
+
+TEST(WebServerHttp, ThemeCatalogUsesChangedUpgradeServerWithoutRestart) {
+    LocalUpdateServer unavailable([](httplib::Server& s) {
+        s.Get("/themes/catalog.json", [](const httplib::Request&, httplib::Response& res) {
+            res.status = 503;
+        });
+    });
+    std::atomic<int> catalog_requests{0};
+    const json catalog = {{"schema_version", 1}, {"themes", json::array({{
+        {"id", "eva-01"}, {"version", "1.0.0"}, {"swatches", {"#ABCDEF", "#FFFFFF", "#ABCDEF"}},
+        {"package", {{"path", "eva-01/1.0.0/theme.zip"}, {"bytes", 64u}, {"sha256", std::string(64, 'a')}}},
+        {"thumbnail", {{"path", "eva-01/1.0.0/thumbnail.png"}, {"bytes", 32u}, {"sha256", std::string(64, 'b')}}}
+    }})}};
+    LocalUpdateServer available([&](httplib::Server& s) {
+        s.Get("/themes/catalog.json", [&](const httplib::Request&, httplib::Response& res) {
+            ++catalog_requests;
+            res.set_content(catalog.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx;
+    const auto change_server = [&](const std::string& base) {
+        return cpr::Put(cpr::Url{fx.url("/api/config/upgrade")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"base_url", base}}.dump()});
+    };
+    ASSERT_EQ(change_server(unavailable.base_url()).status_code, 200);
+    const auto failed = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    ASSERT_EQ(failed.status_code, 503) << failed.text;
+    EXPECT_EQ(json::parse(failed.text)["error_path"], unavailable.base_url() + "themes/catalog.json");
+
+    ASSERT_EQ(change_server(available.base_url()).status_code, 200);
+    const auto loaded = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    ASSERT_EQ(loaded.status_code, 200) << loaded.text;
+    EXPECT_EQ(json::parse(loaded.text)["themes"][0]["package"]["url"],
+              available.base_url() + "themes/eva-01/1.0.0/theme.zip");
+    EXPECT_EQ(catalog_requests.load(), 1);
+
+    ASSERT_EQ(change_server(unavailable.base_url()).status_code, 200);
+    const auto changed_again = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    EXPECT_EQ(changed_again.status_code, 503) << changed_again.text;
+    EXPECT_EQ(json::parse(changed_again.text)["error_path"], unavailable.base_url() + "themes/catalog.json");
+    EXPECT_EQ(json::parse(cpr::Get(cpr::Url{fx.url("/api/themes/job")}).text)["state"], "idle");
+}
+
 TEST(WebServerHttp, DesktopFeedbackUploadsLogOnlyWithoutSession) {
     std::filesystem::path received_zip;
     LocalUpdateServer upload_server([&](httplib::Server& s) {

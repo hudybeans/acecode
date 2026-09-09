@@ -220,10 +220,24 @@ TEST(ConfigWebUiPreferencesValidation, AcceptsOnlyCanonicalValues) {
 
     EXPECT_TRUE(is_valid_web_ui_color_theme("blue"));
     EXPECT_TRUE(is_valid_web_ui_color_theme("orange"));
+    EXPECT_TRUE(is_valid_web_ui_color_theme("eva-01"));
     EXPECT_FALSE(is_valid_web_ui_color_theme("green"));
 
     EXPECT_TRUE(is_valid_web_ui_font_size("small"));
     EXPECT_TRUE(is_valid_web_ui_font_size("medium"));
     EXPECT_TRUE(is_valid_web_ui_font_size("large"));
     EXPECT_FALSE(is_valid_web_ui_font_size("huge"));
+}
+
+TEST(ConfigWebUiPreferencesSave, DownloadedThemePreservesOrdinaryDarkPreference) {
+    const auto path = temp_config_path("eva-theme");
+    AppConfig cfg;
+    cfg.web_ui.theme = "dark";
+    cfg.web_ui.color_theme = "eva-01";
+    save_config(cfg, path.string());
+    const auto loaded = load_config_from_path(path.string());
+    EXPECT_EQ(loaded.web_ui.theme, "dark");
+    EXPECT_EQ(loaded.web_ui.color_theme, "eva-01");
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }

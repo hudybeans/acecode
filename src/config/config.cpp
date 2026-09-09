@@ -206,7 +206,7 @@ bool is_valid_web_ui_theme(const std::string& theme) {
 }
 
 bool is_valid_web_ui_color_theme(const std::string& color_theme) {
-    return color_theme == "blue" || color_theme == "orange";
+    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01";
 }
 
 bool is_valid_web_ui_font_size(const std::string& font_size) {
@@ -498,7 +498,7 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("web_ui.theme must be one of: system, light, dark");
     }
     if (!is_valid_web_ui_color_theme(cfg.web_ui.color_theme)) {
-        errors.push_back("web_ui.color_theme must be one of: blue, orange");
+        errors.push_back("web_ui.color_theme must be one of: blue, orange, eva-01");
     }
     if (!is_valid_web_ui_font_size(cfg.web_ui.font_size)) {
         errors.push_back("web_ui.font_size must be one of: small, medium, large");

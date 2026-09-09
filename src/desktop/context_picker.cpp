@@ -307,7 +307,8 @@ SingleFilePickOutcome pick_single_file(void* parent_hwnd,
                            FOS_PATHMUSTEXIST);
     }
     dialog->SetTitle(kSingleFilePickerTitle);
-    if (!set_initial_folder(dialog, default_folder, true)) {
+    if (!default_folder.empty()
+        && !set_initial_folder(dialog, default_folder, true)) {
         outcome.error = "failed to open native file picker in current workspace";
         dialog->Release();
         return outcome;

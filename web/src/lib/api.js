@@ -267,6 +267,7 @@ async function request(method, path, body, base, options = {}) {
         ? { signal: controller.signal }
         : (externalSignal ? { signal: externalSignal } : {})),
     });
+    if (resp.ok && options.responseType === 'blob') return await resp.blob();
     const ctype = resp.headers.get('Content-Type') || '';
     let parsed = null;
     if (resp.status !== 204 && ctype.includes('application/json')) {
@@ -533,6 +534,12 @@ export function createApi(base = null) {
     pollGrokAuth:     (deviceCode)   => request('POST',   '/api/grok/auth/device/poll', { device_code: deviceCode }, base),
     logoutGrok:       ()             => request('DELETE', '/api/grok/auth', undefined, base),
     getUiPreferences: ()             => request('GET',    '/api/config/ui-preferences', undefined, base),
+    getThemes: (refresh = false) => request('GET', `/api/themes${refresh ? '?refresh=1' : ''}`, undefined, base),
+    getTheme: (id) => request('GET', `/api/themes/${encodeURIComponent(id)}`, undefined, base),
+    getThemeJob: () => request('GET', '/api/themes/job', undefined, base),
+    installTheme: (id, consent) => request('POST', `/api/themes/${encodeURIComponent(id)}/install`, consent, base),
+    cancelThemeInstall: () => request('POST', '/api/themes/job/cancel', {}, base),
+    readThemeImage: (id, kind, version = '') => request('GET', `/api/themes/${encodeURIComponent(id)}/images/${encodeURIComponent(kind)}${version ? `?version=${encodeURIComponent(version)}` : ''}`, undefined, base, { responseType: 'blob' }),
     setUiPreferences: (prefs)        => request('PUT',    '/api/config/ui-preferences', prefs, base),
     getUiLocale: ()                  => request('GET',    '/api/config/ui-locale', undefined, base),
     setUiLocale: (locale)            => request('PUT',    '/api/config/ui-locale', { locale }, base),

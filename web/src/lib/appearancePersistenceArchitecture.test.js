@@ -41,17 +41,15 @@ run('App restores daemon appearance and owns durable mutations', () => {
   assert.match(app, /save: \(payload\) => api\.setUiPreferences\(payload\)/);
   assert.match(app, /api\.getUiPreferences\(\)\.then\(\(preferences\) => \{/);
   assert.match(app, /appearanceControllerRef\.current\.restore\(preferences\)/);
-  assert.match(app, /onThemeToggle=\{toggleAppearanceTheme\}/);
   assert.match(app, /onThemeChange=\{\(nextTheme\) => changeAppearance\(\{ theme: nextTheme \}\)\}/);
   assert.match(app, /onColorThemeChange=\{\(nextColorTheme\) => \(/);
   assert.match(app, /onFontSizeChange=\{\(nextFontSize\) => changeAppearance\(\{ fontSize: nextFontSize \}\)\}/);
 });
 
-run('TopBar and Settings retain cache fallbacks but accept durable handlers', () => {
+run('Settings retains durable theme controls after the top-bar shortcut is removed', () => {
   const topBar = sourceFromSrc('components/TopBar.jsx');
   const settings = sourceFromSrc('components/SettingsPage.jsx');
-  assert.match(topBar, /const toggleTheme = onThemeToggle \|\| toggle;/);
-  assert.match(topBar, /onClick=\{toggleTheme\}/);
+  assert.doesNotMatch(topBar, /useTheme|onThemeToggle|toggleTheme/);
   assert.match(settings, /const setTheme = onThemeChange \|\| setThemeCache;/);
   assert.match(settings, /const setColorTheme = onColorThemeChange \|\| setColorThemeCache;/);
 });

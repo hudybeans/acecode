@@ -8,6 +8,7 @@
 #include "../../utils/state_file.hpp"
 #include "../../upgrade/diagnostics.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <thread>
 
@@ -505,6 +506,15 @@ void WebServer::Impl::register_feedback() {
             if (!feedback_text || !session_id || !workspace_hash) {
                 return json_err(req, 400, "BAD_REQUEST",
                                 "expected string feedback_text, session_id, and workspace_hash fields");
+            }
+            // JSON parsing validates UTF-8, so each non-continuation byte starts
+            // one Unicode code point, matching the feedback form's counter.
+            const auto feedback_characters = std::count_if(
+                feedback_text->begin(), feedback_text->end(),
+                [](unsigned char ch) { return (ch & 0xc0) != 0x80; });
+            if (feedback_characters > 10000) {
+                return json_err(req, 400, "FEEDBACK_TOO_LONG",
+                                "feedback_text must not exceed 10000 Unicode characters");
             }
 
             UpgradeConfig upgrade_cfg;
@@ -2237,7 +2247,11 @@ void WebServer::Impl::register_ui_preferences() {
                     !is_valid_web_ui_color_theme(
                         body["color_theme"].get<std::string>())) {
                     return json_err(400, "BAD_REQUEST",
-                                    "color_theme must be blue or orange");
+                                    "color_theme must be blue, orange, or eva-01");
+                }
+                if (themes::is_downloadable_theme(body["color_theme"].get<std::string>()) &&
+                    (!theme_store || !theme_store->installed(body["color_theme"].get<std::string>()))) {
+                    return json_err(409, "THEME_NOT_INSTALLED", "Download the theme before applying it");
                 }
             }
             if (body.contains("font_size")) {
