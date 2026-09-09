@@ -31,4 +31,22 @@
 - [x] 5.2 Use generator-independent CMake parallelism in build/verification/release commands and restore default cross-platform desktop discovery, with regression tests.
 - [x] 5.3 Always incrementally build portable packages, isolate and verify architectures, honor the complete output path, and exercise the script with mocked macOS tools.
 - [x] 5.4 Synchronize affected skill copies and API documentation; run integrated frontend/script checks and validate OpenSpec.
-- [ ] 5.5 Commit and merge the repaired PR histories into remote master, preserving unrelated local work.
+- [x] 5.5 Commit and merge the repaired PR histories into remote master, preserving unrelated local work.
+
+## Integration Validation (2026-09-09)
+
+- PR 46 and PR 47 were merged with their original histories; repair commit
+  `2b68a672` was pushed to remote master from the isolated integration worktree.
+- `pnpm test` and `pnpm build`: passed, including source/destination draft
+  lifecycle coverage and the generated bundle regex compatibility check.
+- Python script tests: 17 passed (7 package verifier, 6 desktop launcher,
+  4 portable packaging). The verifier test built with real Windows MSBuild;
+  portable packaging used deterministic mocked macOS tools, not a native Mac.
+- Release, verifier, and build launcher dry-runs: passed with CMake `--parallel`.
+- Shell syntax, `git diff --check`, code quality script, and strict OpenSpec
+  validation: completed. The quality script reports repository-wide advisory
+  findings and is not a warning-free lint gate.
+- C++ fork tests passed in PR 47 CI run 34322571460. Full C++ compilation was
+  not repeated locally; the two pre-existing Linux terminal/toolchain test
+  failures were also present in master run 34356121713.
+- The original working directory's unrelated uncommitted changes were preserved.
