@@ -67,6 +67,7 @@ import {
   latestTurnSuccessfulChangedFiles,
   summarizeChangeGroups,
 } from '../lib/sessionChanges.js';
+import { forkRestoredPrompt } from '../lib/sessionFork.js';
 import { stableBySignature } from '../lib/changeReviewStability.js';
 import {
   acceptedQueuedInputEvent,
@@ -3444,6 +3445,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         created_at: r.created_at || now,
         updated_at: r.updated_at || now,
       };
+      // 分叉点命中 user 提示词时,后端已把该提示词从历史中剔除并返回原文。
+      // 这里回填输入框待用户修改后重发,不自动发送。
+      // 切会话会重载 composer 草稿,必须先置 preserve 标记,否则回填会被清掉。
+      const restoredPrompt = forkRestoredPrompt(r);
+      if (restoredPrompt) {
+        preserveComposerInputOnSessionChangeRef.current = true;
+        setComposerValue(restoredPrompt);
+      }
+
       onSessionPromoted?.({
         ...newSessionRefFrom(ref, r.session_id),
         title: r.title,
@@ -3459,7 +3469,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         noWorkspace,
         session: forkedSession,
       });
-      toast({ kind: 'ok', text: '已分叉到 ' + (r.title || r.session_id) });
+      toast({
+        kind: 'ok',
+        text: restoredPrompt
+          ? '已创建分支会话'
+          : '已分叉到 ' + (r.title || r.session_id),
+      });
     } catch (e) {
       toast({ kind: 'err', text: '分叉失败:' + (e?.message || '') });
     } finally {
