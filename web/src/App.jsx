@@ -76,6 +76,7 @@ import { FeedbackForm } from './components/FeedbackForm.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { ChatView } from './components/ChatView.jsx';
 import { SearchPalette } from './components/SearchPalette.jsx';
+import { PathPickerHost } from './components/PathPickerHost.jsx';
 import { SessionNavigationMask } from './components/SessionNavigationMask.jsx';
 import { SessionContentLoading } from './components/SessionContentLoading.jsx';
 import { TokenPrompt } from './components/TokenPrompt.jsx';
@@ -2153,6 +2154,7 @@ export function App() {
           />
         )}
         <ThemeDownloadFailureDialog failure={themeDownloads.failure} onClose={() => themeDownloads.controller.dismissFailure()} />
+        <PathPickerHost />
         <SearchPalette
           open={searchOpen}
           onClose={() => setSearchOpen(false)}

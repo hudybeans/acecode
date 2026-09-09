@@ -216,6 +216,8 @@ set(ACECODE_DESKTOP_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/pick_active.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/single_instance_posix.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/single_instance_win.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/taskbar_badge.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/taskbar_badge_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/tray_icon_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/url_builder.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/webview2_runtime_probe.cpp
@@ -356,7 +358,7 @@ if(WIN32)
     # bcrypt: desktop/daemon_supervisor.cpp generates daemon auth tokens.
     # ws2_32: readiness probes; shell/user/gdi: Edge/tray/window helpers.
     target_link_libraries(acecode_desktop_support PUBLIC
-        bcrypt ws2_32 ole32 shell32 user32 gdi32 comctl32
+        bcrypt ws2_32 ole32 shell32 user32 gdi32 gdiplus comctl32
     )
 endif()
 

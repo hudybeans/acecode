@@ -10,9 +10,28 @@ const calls = [];
 const client = { pickSettingsFile: async () => { calls.push('rest'); return { path: '/rest' }; }, pickSettingsFolder: async () => null };
 assert.equal(await pickEnvironmentPath('file', client, { win: { aceDesktop_pickPreviewFile: async () => { calls.push('native'); return { ok: true, path: '/native' }; } } }), '/native');
 assert.deepEqual(calls, ['native']);
-assert.equal(await pickEnvironmentPath('file', client, { win: {} }), '/rest');
-assert.equal(await pickEnvironmentPath('folder', client, { win: {} }), null);
+// Desktop 壳(有 bridge 但没有专用文件选择器)仍走 daemon 的原生 REST 对话框。
+const shellWin = { aceDesktop_openInExplorer() {} };
+assert.equal(await pickEnvironmentPath('file', client, { win: shellWin }), '/rest');
+assert.equal(await pickEnvironmentPath('folder', client, { win: shellWin }), null);
 assert.equal(await pickEnvironmentPath('file', client, { win: { aceDesktop_pickPreviewFile: async () => ({ ok: true, cancelled: true }) } }), null);
+
+// 场景:没有 Desktop bridge(普通浏览器 / 兼容模式 / 远程 Web)。期望:走 web 路径选择器,
+// 目录模式起始目录为空、文件模式起始于当前值所在目录;取消返回 null;REST 原生对话框不被调用。
+const restCallsBeforeWeb = calls.filter((call) => call === 'rest').length;
+const webCalls = [];
+const webPicker = async (options) => {
+  webCalls.push(options);
+  return { path: options.mode === 'file' ? '/picked/pwsh' : '/picked', kind: options.mode === 'file' ? 'file' : 'dir' };
+};
+assert.equal(await pickEnvironmentPath('folder', client, { win: {}, webPicker }), '/picked');
+assert.equal(await pickEnvironmentPath('file', client, { win: {}, webPicker, initialFilePath: '/usr/local/bin/pwsh' }), '/picked/pwsh');
+assert.deepEqual(webCalls.map((options) => [options.mode, options.initialPath, options.purpose]), [
+  ['folder', '', 'settings'],
+  ['file', '/usr/local/bin/', 'settings'],
+]);
+assert.equal(await pickEnvironmentPath('folder', client, { win: {}, webPicker: async () => null }), null);
+assert.equal(calls.filter((call) => call === 'rest').length, restCallsBeforeWeb);
 
 for (const [initialFilePath, expectedDirectory] of [
   ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'C:/Program Files/PowerShell/7/'],

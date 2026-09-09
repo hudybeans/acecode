@@ -1,6 +1,7 @@
 #include "web_host.hpp"
 
 #include "external_url.hpp"
+#include "taskbar_badge_win.hpp"
 #include "web_host_close_policy.hpp"
 #include "webview2_runtime_probe.hpp"
 #include "window_background.hpp"
@@ -1860,6 +1861,7 @@ struct WebHost::Impl {
         if (w) {
             // Also cover the WebView-owned fallback window, whose class has no icon.
             apply_host_window_icons(hwnd());
+            taskbar_badge = std::make_unique<WindowsTaskbarBadge>(hwnd());
             configure_browser_defaults(*w);
             // 三层打底(host 类刷 / widget 类刷 / WebView2 合成器)统一走默认色。
             // offscreen 路径的 host 类注册时已带刷,这里等价换新;降级路径
@@ -1892,6 +1894,7 @@ struct WebHost::Impl {
 
     ~Impl() {
 #ifdef _WIN32
+        taskbar_badge.reset();
         HWND hwnd = custom_window;
 #endif
         // Destroy webview first; for m_owns_window=false it removes only the child widget.
@@ -1931,6 +1934,7 @@ struct WebHost::Impl {
     HWND custom_window = nullptr;
     bool center_on_first_show = false;
     ComApartment com{false};
+    std::unique_ptr<WindowsTaskbarBadge> taskbar_badge;
 
     HWND hwnd() const {
         if (custom_window) return custom_window;
@@ -2076,6 +2080,16 @@ bool WebHost::open_dev_tools() {
     return false;
 #endif
 }
+
+bool WebHost::set_taskbar_badge(const TaskbarBadge& badge) {
+#ifdef _WIN32
+    return impl_->taskbar_badge && impl_->taskbar_badge->set(badge);
+#else
+    (void)badge;
+    return false;
+#endif
+}
+
 bool WebHost::set_background_color(const std::string& color_text) {
 #ifdef _WIN32
     auto color = parse_window_background_color(color_text);

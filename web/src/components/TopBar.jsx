@@ -187,7 +187,7 @@ export function TopBar({
           panelToggle
           aria-expanded={!rightPanelCollapsed}
         >
-          <PanelToggleIcon side="right" size={15} expanded={!rightPanelCollapsed} />
+          <PanelToggleIcon side="right" size={16} expanded={!rightPanelCollapsed} />
         </QuickBtn>
         {framelessDesktop && <WindowControls isMaximized={isMaximized} />}
       </div>

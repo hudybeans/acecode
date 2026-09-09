@@ -17,6 +17,8 @@
 
 namespace acecode::desktop {
 
+struct TaskbarBadge;
+
 inline constexpr int kDefaultDesktopWindowWidth = 1280;
 inline constexpr int kDefaultDesktopWindowHeight = 820;
 inline constexpr int kMinimumDesktopWindowWidth = 1170;
@@ -82,6 +84,8 @@ public:
     // 推送,启动默认为浅色 body 底色(window_background.hpp)。GUI 主线程 only
     // (bind 回调天然满足)。
     bool set_background_color(const std::string& color_text);
+
+    bool set_taskbar_badge(const TaskbarBadge& badge);
 
     // Frameless desktop chrome helpers. Windows uses native non-client messages,
     // Linux uses GTK move/resize/window-state APIs, and macOS uses Cocoa window

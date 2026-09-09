@@ -33,6 +33,7 @@
 #include "splash_screen.hpp"
 #include "startup_progress.hpp"
 #include "strings.hpp"
+#include "taskbar_badge.hpp"
 #include "tray_menu_bridge.hpp"
 #include "tray_icon_win.hpp"
 #include "url_builder.hpp"
@@ -1987,6 +1988,15 @@ int main(int argc, char** argv) {
         bring_window_foreground();
         return nlohmann::json{{"ok", true}}.dump();
     });
+#ifdef _WIN32
+    host.bind("aceDesktop_setTaskbarBadge", [&host](const std::string& req) -> std::string {
+        const auto badge = parse_taskbar_badge_args(req);
+        if (!badge) {
+            return nlohmann::json{{"ok", false}, {"error", "invalid taskbar badge"}}.dump();
+        }
+        return nlohmann::json{{"ok", host.set_taskbar_badge(*badge)}}.dump();
+    });
+#endif
     host.bind("aceDesktop_activateFileDropWindow", [&](const std::string& /*req*/) -> std::string {
         // A drag-enter is direct user intent. Present the host once while the
         // pointer is still over it, but deliberately avoid the notification

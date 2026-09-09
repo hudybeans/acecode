@@ -63,6 +63,7 @@ void WebServer::Impl::register_routes() {
     register_themes();
     register_history();
     register_files();
+    register_fs();
     register_git();
     register_lsp();
     register_skills();

@@ -27,6 +27,13 @@ at the left sidebar boundary. The home title bar's right-side controls are white
 Settings, feedback and other pages restore solid title-bar chrome and icons in
 the theme colour.
 
+Theme version 1.0.2 uses the built-in blue theme's neutral base (`#F5F5F2`),
+white main surfaces and off-white sidebar (`#FBFBF9`) instead of large purple
+fills. Body text is dark gray and timestamps are neutral gray. Purple remains
+in branding and small action accents; user message bubbles stay pale lavender
+(`#F0E7FA`) with subtle lavender borders (`#DFCEF2`). Project selection uses a
+soft pale green. This palette-only update reuses the optimized 1.0.1 artwork.
+
 ## Package
 
 Use the approved `acecode-eva-background-v2.png` artwork and the palette in
@@ -40,10 +47,10 @@ To reproduce the optimized images and package on Windows:
 python -m venv build/theme-image-env
 ./build/theme-image-env/Scripts/python.exe -m pip install Pillow==11.3.0 imagequant==1.1.5
 ./build/theme-image-env/Scripts/python.exe scripts/optimize_eva_theme_images.py --background '<path-to-approved-background.png>' --output-directory build/eva-theme-images
-./scripts/package_eva_theme.ps1 -Background build/eva-theme-images/background.png -Thumbnail build/eva-theme-images/thumbnail.png -OutputDirectory build/eva-theme-package-1.0.1 -Version '1.0.1'
+./scripts/package_eva_theme.ps1 -Background build/eva-theme-images/background.png -Thumbnail build/eva-theme-images/thumbnail.png -OutputDirectory build/eva-theme-package-1.0.2 -Version '1.0.2'
 ```
 
-The output contains `catalog.json` and `eva-01/1.0.1/{theme.zip,thumbnail.png}`.
+The output contains `catalog.json` and `eva-01/1.0.2/{theme.zip,thumbnail.png}`.
 Supplying `-Thumbnail` preserves the optimized PNG bytes; omitting it retains
 the packager's original thumbnail-generation behaviour.
 The ZIP has exactly three root entries: `theme.json`, `background.png`, and
@@ -62,7 +69,7 @@ Use a new version if any approved artwork or palette changes after publication.
 
 The current aupdate root is `J:/jenkins_green/aupdate`, publicly served at
 `http://2017studio.imwork.net:82/aupdate/`. Copy the versioned ZIP and thumbnail
-under `themes/eva-01/1.0.1/`, verify the public downloads against their SHA-256
+under `themes/eva-01/1.0.2/`, verify the public downloads against their SHA-256
 and byte counts, then publish `themes/catalog.json` last with an atomic rename.
 Preserve unrelated catalogue entries if future catalogue versions add themes.
 This operation does not update `aceupdate.json`, an application version, or a

@@ -11,6 +11,7 @@ import { usePreference } from './lib/usePreference.js';
 import { api } from './lib/api.js';
 import { EVA_THEME_ID, themeCssProperties, validThemeDefinition } from './lib/themePackages.js';
 import { pushWindowBackgroundColor } from './lib/desktopWindowBackground.js';
+import { desktopTaskbarBadge } from './lib/desktopTaskbarBadge.js';
 import {
   effectiveAppearanceTheme,
   initialAppearancePreferences,
@@ -125,6 +126,7 @@ export function ThemeProvider({ children }) {
     // 桌面壳,native 换窗口打底色(快速 resize 的新暴露区域随主题,不闪黑/白)。
     // 非桌面壳环境内部 no-op。
     pushWindowBackgroundColor();
+    desktopTaskbarBadge.refresh();
     return () => {
       for (const key of Object.keys(properties)) root.style.removeProperty(key);
       root.removeAttribute('data-installed-theme');

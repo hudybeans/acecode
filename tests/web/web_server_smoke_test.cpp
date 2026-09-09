@@ -55,6 +55,7 @@
 #include "utils/state_file.hpp"
 #include "utils/text_file_buffer.hpp"
 #include "utils/utf8_path.hpp"
+#include "web/handlers/fs_browser_handler.hpp"
 #include "web/remote_web_proxy.hpp"
 #include "web/server.hpp"
 #include "worktree/worktree_manager.hpp"
@@ -9324,4 +9325,129 @@ TEST(WebServerHttp, DeleteBusyActiveSessionModelReturnsConflict) {
                            }),
               fx.cfg.saved_models.end());
     EXPECT_EQ(fx.cfg.default_model_name, "busy-fast");
+}
+
+// ---------------------------------------------------------------------
+// /api/fs — Web 路径选择器的服务端目录浏览(openspec add-web-path-picker)
+// ---------------------------------------------------------------------
+
+// 场景:弹窗打开时请求根节点。期望:200;含 host / os / home;roots 非空且都是正斜杠
+// 绝对路径并带 drive_type;quick 里有主目录;fixture 注册的默认 workspace 以归一后的
+// 路径出现在 workspaces 里(fixture 的 cwd 是 Windows 反斜杠原样字符串,接口必须归一)。
+TEST(WebServerHttp, FsRootsListDrivesHomeAndWorkspaces) {
+    WebServerFixture fx;
+
+    auto r = cpr::Get(cpr::Url{fx.url("/api/fs/roots")});
+    ASSERT_EQ(r.status_code, 200) << r.text;
+    auto j = json::parse(r.text);
+    EXPECT_TRUE(j["host"].is_string());
+    EXPECT_TRUE(j["os"].is_string());
+    ASSERT_TRUE(j["home"].is_string());
+    EXPECT_FALSE(j["home"].get<std::string>().empty());
+
+    ASSERT_TRUE(j["roots"].is_array());
+    ASSERT_FALSE(j["roots"].empty());
+    for (const auto& root : j["roots"]) {
+        const auto path = root.value("path", std::string{});
+        EXPECT_EQ(path.find('\\'), std::string::npos) << path;
+        EXPECT_TRUE(acecode::path_from_utf8(path).is_absolute()) << path;
+        EXPECT_FALSE(root.value("drive_type", std::string{}).empty()) << path;
+    }
+
+    ASSERT_TRUE(j["quick"].is_array());
+    bool saw_home = false;
+    for (const auto& q : j["quick"]) {
+        if (q.value("kind", std::string{}) == "home") {
+            saw_home = true;
+            EXPECT_EQ(q["path"], j["home"]);
+        }
+    }
+    EXPECT_TRUE(saw_home) << r.text;
+
+    ASSERT_TRUE(j["workspaces"].is_array());
+    const auto expected_cwd = acecode::web::normalize_browse_path(fx.cwd).value();
+    bool saw_default_workspace = false;
+    for (const auto& ws : j["workspaces"]) {
+        if (ws.value("path", std::string{}) == expected_cwd) {
+            saw_default_workspace = true;
+            EXPECT_FALSE(ws.value("hash", std::string{}).empty());
+            EXPECT_FALSE(ws.value("name", std::string{}).empty());
+        }
+    }
+    EXPECT_TRUE(saw_default_workspace) << r.text;
+}
+
+// 场景:列一个不在任何 workspace 白名单里的临时目录。期望:/api/files 因白名单拒绝(400),
+// /api/fs/list 却正常列出(已鉴权即全盘只读);条目目录优先、path 为完整正斜杠路径、
+// parent 指向上一级;隐藏项只在 show_hidden=1 时出现并标 hidden。
+TEST(WebServerHttp, FsListBrowsesOutsideWorkspaceAndTogglesHidden) {
+    WebServerFixture fx;
+
+    const auto outside = fx.tmp_dir / "fs-browse";
+    write_text(outside / "src" / "main.cpp", "int main() {}\n");
+    write_text(outside / "README.md", "# readme\n");
+    write_text(outside / ".env", "SECRET=1\n");
+    const std::string outside_utf8 = acecode::path_to_utf8(outside);
+
+    auto tree = cpr::Get(cpr::Url{fx.url("/api/files")},
+                         cpr::Parameters{{"cwd", outside_utf8}, {"path", ""}});
+    EXPECT_EQ(tree.status_code, 400) << tree.text;
+
+    auto plain = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                          cpr::Parameters{{"path", outside_utf8}});
+    ASSERT_EQ(plain.status_code, 200) << plain.text;
+    auto j = json::parse(plain.text);
+    const auto expected_dir = acecode::web::normalize_browse_path(outside_utf8).value();
+    EXPECT_EQ(j["path"], expected_dir);
+    EXPECT_EQ(j["parent"], acecode::web::browse_parent_path(expected_dir));
+    EXPECT_FALSE(j["truncated"].get<bool>());
+    ASSERT_EQ(j["entries"].size(), 2u) << plain.text;
+    EXPECT_EQ(j["entries"][0]["name"], "src");
+    EXPECT_EQ(j["entries"][0]["kind"], "dir");
+    EXPECT_EQ(j["entries"][0]["path"], expected_dir + "/src");
+    EXPECT_FALSE(j["entries"][0].contains("size"));
+    EXPECT_EQ(j["entries"][1]["name"], "README.md");
+    EXPECT_EQ(j["entries"][1]["kind"], "file");
+    EXPECT_EQ(j["entries"][1]["size"], 9);
+    EXPECT_FALSE(j["entries"][1]["hidden"].get<bool>());
+
+    auto hidden = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                           cpr::Parameters{{"path", outside_utf8}, {"show_hidden", "1"}});
+    ASSERT_EQ(hidden.status_code, 200) << hidden.text;
+    auto h = json::parse(hidden.text);
+    bool saw_env = false;
+    for (const auto& e : h["entries"]) {
+        if (e.value("name", std::string{}) == ".env") {
+            saw_env = true;
+            EXPECT_TRUE(e["hidden"].get<bool>());
+            EXPECT_EQ(e["path"], expected_dir + "/.env");
+        }
+    }
+    EXPECT_TRUE(saw_env) << hidden.text;
+}
+
+// 场景:三类坏请求。期望:缺 path / 相对路径 → 400;不存在 → 404 "not found";
+// 指向文件 → 404 "not a directory"。前端按状态码在弹窗内给内联提示,不整体报错。
+TEST(WebServerHttp, FsListRejectsRelativeMissingAndFilePaths) {
+    WebServerFixture fx;
+    const auto dir = fx.tmp_dir / "fs-errors";
+    write_text(dir / "file.txt", "x");
+
+    auto missing_param = cpr::Get(cpr::Url{fx.url("/api/fs/list")});
+    EXPECT_EQ(missing_param.status_code, 400) << missing_param.text;
+
+    auto relative = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                             cpr::Parameters{{"path", "relative/dir"}});
+    ASSERT_EQ(relative.status_code, 400) << relative.text;
+    EXPECT_EQ(json::parse(relative.text)["error"], "path must be absolute");
+
+    auto missing = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                            cpr::Parameters{{"path", acecode::path_to_utf8(dir / "nope")}});
+    ASSERT_EQ(missing.status_code, 404) << missing.text;
+    EXPECT_EQ(json::parse(missing.text)["error"], "not found");
+
+    auto file = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                         cpr::Parameters{{"path", acecode::path_to_utf8(dir / "file.txt")}});
+    ASSERT_EQ(file.status_code, 404) << file.text;
+    EXPECT_EQ(json::parse(file.text)["error"], "not a directory");
 }

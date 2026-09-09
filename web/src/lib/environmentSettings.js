@@ -1,4 +1,6 @@
 import { pickNativePreviewFile, hasNativePreviewFilePicker } from './desktopPreviewFilePicker.js';
+import { isDesktopShell } from './desktopShellMode.js';
+import { requestPathPick } from './pathPickerHost.js';
 
 export const TOOLCHAIN_FIELDS = [
   { id: 'python', label: 'Python 工具', detail: 'uv / ruff / mypy' },
@@ -52,18 +54,36 @@ export function environmentError(error) {
   return messages[code] || error?.body?.message || error?.message || '操作失败';
 }
 
+// 当前值所在目录(带尾斜杠),作为选择器的起始目录;相对路径 / 空值 → ''。
+function directoryOfPath(filePath) {
+  const normalized = typeof filePath === 'string'
+    ? filePath.trim().replace(/\\/g, '/') : '';
+  return /^(?:[A-Za-z]:\/|\/)/.test(normalized)
+    ? normalized.slice(0, normalized.lastIndexOf('/') + 1) : '';
+}
+
+// 设置页「浏览」的选择链路(openspec add-web-path-picker):
+//   Desktop 壳选文件 → bridge 原生文件对话框;Desktop 壳选目录 → daemon 原生 REST 对话框;
+//   没有 Desktop bridge(普通浏览器 / Edge --app 兼容模式 / 远程 Web)→ web 路径选择器,
+//   不再请求 REST(那会在 daemon 所在机器的桌面上弹框并把请求挂死)。
 export async function pickEnvironmentPath(kind, client, {
   initialFilePath = '',
   win = globalThis.window,
+  webPicker = requestPathPick,
 } = {}) {
+  const directory = directoryOfPath(initialFilePath);
   if (kind === 'file' && hasNativePreviewFilePicker(win)) {
-    const filePath = typeof initialFilePath === 'string'
-      ? initialFilePath.trim().replace(/\\/g, '/') : '';
-    const directory = /^(?:[A-Za-z]:\/|\/)/.test(filePath)
-      ? filePath.slice(0, filePath.lastIndexOf('/') + 1) : '';
     const result = await pickNativePreviewFile(directory, win);
     return result.cancelled ? null : result.path;
   }
-  const result = await (kind === 'file' ? client.pickSettingsFile() : client.pickSettingsFolder());
-  return typeof result?.path === 'string' && result.path ? result.path : null;
+  if (isDesktopShell(win)) {
+    const result = await (kind === 'file' ? client.pickSettingsFile() : client.pickSettingsFolder());
+    return typeof result?.path === 'string' && result.path ? result.path : null;
+  }
+  const picked = await webPicker({
+    mode: kind === 'file' ? 'file' : 'folder',
+    initialPath: directory,
+    purpose: 'settings',
+  });
+  return typeof picked?.path === 'string' && picked.path ? picked.path : null;
 }

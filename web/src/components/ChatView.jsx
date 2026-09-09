@@ -208,8 +208,7 @@ import {
   visiblePreviewTabs,
 } from '../lib/previewTabs.js';
 import {
-  hasNativePreviewFilePicker,
-  pickNativePreviewFile,
+  pickPreviewFile,
 } from '../lib/desktopPreviewFilePicker.js';
 import {
   editableFileConflict,
@@ -1107,11 +1106,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         workspaceHash: option.hash,
       });
     } catch (error) {
-      if (!hasDesktopBridge() && (error?.status === 404 || error?.status === 501)) {
-        toast({ kind: 'info', text: '需在 desktop webapp 中使用' });
-      } else {
-        toast({ kind: 'err', text: `打开现有目录失败：${error?.message || ''}` });
-      }
+      toast({ kind: 'err', text: `打开现有目录失败：${error?.message || ''}` });
     }
   }, [api, homeWorkspaces.length, selectHomeWorkspace]);
 
@@ -4382,15 +4377,16 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     else openFilePreview(path, lineAttr ? Number(lineAttr) : null);
   }, [locateInFileTree, openFilePreview]);
 
+  // 有专用原生文件选择器(Desktop 壳)走原生,否则走 web 路径选择器(add-web-path-picker)。
   const openPreviewFilePicker = useCallback(async () => {
-    if (!sidePanelCwd || !hasNativePreviewFilePicker()) return;
+    if (!sidePanelCwd) return;
     try {
-      const picked = await pickNativePreviewFile(sidePanelCwd);
+      const picked = await pickPreviewFile(sidePanelCwd, { api });
       if (!picked.cancelled && picked.path) openFilePreview(picked.path);
     } catch (error) {
-      toast({ kind: 'err', text: error?.message || '原生选择器不可用' });
+      toast({ kind: 'err', text: error?.message || '选择器不可用' });
     }
-  }, [openFilePreview, sidePanelCwd]);
+  }, [api, openFilePreview, sidePanelCwd]);
 
   const showBrowserPage = useCallback((pageId, title, favicon) => {
     if (!sid || !pageId) return;
@@ -5401,9 +5397,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onReorderTab={reorderPreview}
             onToggleMaximize={onToggleSidePanelMaximized}
             onToggleSidePanelList={onToggleSidePanelList}
-            onOpenFile={sidePanelCwd && hasNativePreviewFilePicker()
-              ? openPreviewFilePicker
-              : null}
+            onOpenFile={sidePanelCwd ? openPreviewFilePicker : null}
             onOpenBrowser={sid && hasNativeAgentBrowser() ? openBrowserPreview : null}
             onOpenSideChat={openSideQuestionComposer}
             onHide={hidePreviewPanel}

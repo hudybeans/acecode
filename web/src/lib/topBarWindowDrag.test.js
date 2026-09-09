@@ -35,7 +35,7 @@ assert.match(topbar, /document.removeEventListener\('mousedown', onWindowDragMou
 assert.doesNotMatch(topbar, /onMouseDown=\{onTopBarMouseDown\}/);
 assert.match(topbar, /panelToggle \? 'ace-topbar-panel-toggle' : 'ace-topbar-toggle-btn'/);
 assert.match(topbar, /side="left" size=\{16\} expanded=\{!sidebarCollapsed\}/);
-assert.match(topbar, /side="right" size=\{15\} expanded=\{!rightPanelCollapsed\}/);
+assert.match(topbar, /side="right" size=\{16\} expanded=\{!rightPanelCollapsed\}/);
 assert.match(icon, /name=\{expanded \? `\$\{name\}Filled` : name\}/);
 for (const side of ['Left', 'Right']) {
   const svg = fs.readFileSync(new URL(`../../public/vs-icons/Panel${side}Filled.svg`, import.meta.url), 'utf8');

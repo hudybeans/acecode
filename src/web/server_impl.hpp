@@ -538,6 +538,7 @@ struct WebServer::Impl {
     void register_themes();
     void register_history();
     void register_files();
+    void register_fs();
     void register_git();
     void register_lsp();
     void register_skills();

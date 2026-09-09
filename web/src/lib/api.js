@@ -639,6 +639,16 @@ export function createApi(base = null) {
     // path='' 列 cwd 根本身。showHidden=true 透出 dot 文件,但 noise 黑名单
     // (.git/node_modules/dist/build/__pycache__/.venv/venv/target/.next/.cache)
     // 始终过滤,不受 showHidden 影响。
+    // Web 路径选择器(add-web-path-picker):浏览 daemon 所在机器的文件系统。已鉴权即可,
+    // 不受 /api/files 的 workspace 白名单限制;list 只做词法归一,junction 不解析。
+    fsRoots: () => request('GET', '/api/fs/roots', undefined, base),
+    fsList: (path, { showHidden = false } = {}) => request(
+      'GET',
+      `/api/fs/list?path=${encodeURIComponent(path || '')}${showHidden ? '&show_hidden=1' : ''}`,
+      undefined,
+      base,
+    ),
+
     listFiles: (cwd, path, showHidden = false, showNoise = false) => {
       const qs = `?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path || '')}`
                  + (showHidden ? '&show_hidden=1' : '')

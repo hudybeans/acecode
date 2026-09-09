@@ -299,6 +299,8 @@ when known.
 | GET | `/api/files/content` | read text file |
 | GET | `/api/files/blob` | read previewable binary file |
 | GET / PUT | `/api/files/editable` | read or safely save a Desktop workspace text file |
+| GET | `/api/fs/roots` | browsable roots for the Web path picker |
+| GET | `/api/fs/list` | list any absolute directory for the Web path picker |
 | GET | `/api/git/info` | git repo info for a workspace |
 | POST | `/api/git/checkout` | switch branch (stash-aware) |
 | GET | `/api/git/changes` | working tree changes vs base |
@@ -1722,6 +1724,87 @@ encoding, BOM, and dominant line-ending style, uses the common safe-write
 path, invalidates Git snapshots, and clears the Agent file-read baseline so a
 later Agent edit must read the human-authored version first. This route is not
 registered on standalone Web daemons.
+
+### `GET /api/fs/roots`
+
+Browsable roots for the Web path picker (openspec `add-web-path-picker`). The
+picker is the browser-side replacement for the native folder and file dialogs
+that only a Desktop-launched daemon can show. It browses the daemon host's own
+filesystem, so every path below is a path on the machine running the daemon.
+
+```json
+{
+  "host": "DESKTOP-SHAO",
+  "os": "windows",
+  "home": "C:/Users/shao",
+  "roots": [
+    {"path": "C:/", "label": "Windows", "drive_type": "fixed",
+     "total_bytes": 511000000000, "free_bytes": 195000000000}
+  ],
+  "quick": [
+    {"kind": "home", "path": "C:/Users/shao"},
+    {"kind": "desktop", "path": "C:/Users/shao/Desktop"},
+    {"kind": "projects", "path": "C:/Users/shao/.acecode/workspaces"}
+  ],
+  "workspaces": [
+    {"hash": "0123456789abcdef", "name": "acecode", "path": "N:/Users/shao/acecode"}
+  ]
+}
+```
+
+`roots` lists every logical drive on Windows (`drive_type` is `fixed`,
+`removable`, `remote`, `cdrom`, or `ramdisk`; remote drives carry no label or
+capacity because probing a disconnected mapped drive can block), `/` on POSIX
+(`drive_type: "root"`), plus the direct children of `/Volumes` on macOS
+(`drive_type: "volume"`). `label`, `total_bytes`, and `free_bytes` are omitted
+when unavailable. `quick` entries of kind `desktop` and `projects` appear only
+when those directories exist. `os` is `windows`, `macos`, or `linux`. All
+paths use forward slashes; drive roots keep their trailing slash (`C:/`).
+
+### `GET /api/fs/list?path=<abs>&show_hidden=1`
+
+Lists the direct children of any absolute directory readable by the daemon
+process. Unlike `/api/files`, there is no workspace whitelist: any
+authenticated client (loopback without a token, or a remote client with a valid
+token) may browse the whole filesystem. The route is read-only and logs every
+listing with its path.
+
+```json
+{
+  "path": "C:/Users",
+  "parent": "C:/",
+  "truncated": false,
+  "entries": [
+    {"name": "shao", "path": "C:/Users/shao", "kind": "dir",
+     "modified_ms": 1783152000000, "hidden": false, "link_target": "N:/Users/shao"},
+    {"name": "desktop.ini", "path": "C:/Users/desktop.ini", "kind": "file",
+     "size": 174, "modified_ms": 1783152000000, "hidden": true}
+  ]
+}
+```
+
+- `path` is the request path after lexical normalization only (`\` becomes
+  `/`, `..` segments fold, the drive letter is upper-cased, a trailing slash is
+  dropped except on a root). Junctions and symlinks are **not** resolved:
+  browsing `C:/Users/shao` on a machine where that directory is a junction to
+  `N:/Users/shao` keeps returning `C:/Users/shao/...` paths, matching what the
+  native dialog returns so the same directory registers the same workspace
+  hash.
+- `parent` is empty when `path` is a drive or filesystem root.
+- Entries are sorted directories first, then case-insensitively by name.
+  Directory entries never carry `size`. `link_target` is present for junction
+  or symlink directories whose target can be read. Noise directories such as
+  `node_modules` or `build` are **not** filtered.
+- Hidden entries (dot-prefixed, or carrying the Windows HIDDEN or SYSTEM
+  attribute) are omitted unless `show_hidden=1`; when included they carry
+  `hidden: true`.
+- At most 5000 entries are returned; `truncated: true` marks a longer
+  directory.
+
+Errors: `400 {"error":"path must be absolute"}` for an empty or relative
+`path`; `404 {"error":"not found"}` and `404 {"error":"not a directory"}`;
+`403 {"error":"permission denied"}` when the daemon cannot read the directory;
+`500 {"error":"io error"}` otherwise. Error bodies may add a `detail` string.
 
 ### `GET /api/git/info?cwd=<abs>`
 
@@ -3686,6 +3769,24 @@ The daemon also serves the built frontend:
 | 503 | Required daemon subsystem unavailable |
 
 ---
+
+## Windows desktop taskbar badge bridge
+
+The embedded Windows desktop exposes `window.aceDesktop_setTaskbarBadge(payload)`
+as a native bridge, separate from the daemon HTTP/WS API. It resolves to JSON
+with an `ok` boolean. Browser, Edge app, and non-Windows hosts do not expose it.
+
+For a visible badge, pass an integer `count` greater than zero and `background`,
+`foreground`, and `outline` colors in `#RRGGBB` format. Counts above 99 display
+`99+`. Passing `{ "count": 0 }` restores the original ACECode window icons.
+Malformed input leaves the current icons unchanged and returns `ok: false`.
+
+The frontend counts distinct unread main tasks from full workspace status
+snapshots and workspace-free session lists. Windows subscribes status for all
+registered workspaces, including collapsed projects, while task lists remain
+lazy-loaded. Read acknowledgements and authoritative list refreshes remove read,
+archived, and deleted tasks; running and child tasks do not contribute. Badge
+colors come from the resolved theme tokens and update with theme changes.
 
 ## 17. Process Exit Codes
 
