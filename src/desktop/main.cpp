@@ -2665,10 +2665,18 @@ int main(int argc, char** argv) {
     shutdown_tray_icon();
 
     if (restart_requested.load()) LOG_INFO("[desktop] post-upgrade daemon shutdown started");
-    auto failures = pool.shutdown_all();
+    auto failures = pool.shutdown_all(restart_requested.load()
+        ? DaemonShutdownReason::UpgradeRestart
+        : DaemonShutdownReason::ApplicationExit);
     if (restart_requested.load()) {
         LOG_INFO("[desktop] post-upgrade daemon shutdown finished; failures=" +
                  std::to_string(failures.size()));
+        if (!failures.empty()) {
+            for (const auto& failure : failures) {
+                LOG_ERROR("[desktop] upgrade restart aborted: " + failure.first + ": " + failure.second);
+            }
+            return 100;
+        }
         // The replacement must not see the dying process's singleton guard and
         // focus it instead of starting. At this point the WebView loop, tray,
         // notifications, and managed daemons have all completed teardown.

@@ -8058,7 +8058,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
             res.set_content(update_manifest_for("9.9.9"), "application/json");
         });
     });
-    std::atomic<bool> called{false};
+    std::atomic<int> calls{0};
     WebServerFixture fx(
         true,
         false,
@@ -8068,7 +8068,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
             acecode::upgrade::UpgradeProgressCallback publish,
             acecode::upgrade::UpgradeCancelCheck,
             std::string*) {
-            called.store(true);
+            calls.fetch_add(1);
             acecode::upgrade::UpgradeProgress downloading;
             downloading.phase = acecode::upgrade::UpgradePhase::Downloading;
             downloading.current_version = "0.0.0-test";
@@ -8104,7 +8104,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
         if (status["state"] == "succeeded") break;
         std::this_thread::sleep_for(10ms);
     }
-    EXPECT_TRUE(called.load());
+    EXPECT_EQ(calls.load(), 1);
     EXPECT_EQ(status["state"], "succeeded");
     EXPECT_EQ(status["phase"], "complete");
     EXPECT_EQ(status["restart_required"], true);
@@ -8114,6 +8114,17 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
     auto latest = cpr::Get(cpr::Url{fx.url("/api/update/job")});
     ASSERT_EQ(latest.status_code, 200) << latest.text;
     EXPECT_EQ(json::parse(latest.text)["job_id"], job_id);
+
+    // Even if the old daemon still reports its previous version, a completed
+    // installation must never be downloaded/applied again before restart.
+    auto repeated = cpr::Post(cpr::Url{fx.url("/api/update/start")});
+    ASSERT_EQ(repeated.status_code, 202) << repeated.text;
+    const auto repeated_body = json::parse(repeated.text);
+    EXPECT_EQ(repeated_body["job_id"], job_id);
+    EXPECT_EQ(repeated_body["started"], false);
+    EXPECT_EQ(repeated_body["state"], "succeeded");
+    EXPECT_EQ(repeated_body["restart_required"], true);
+    EXPECT_EQ(calls.load(), 1);
 }
 
 // 场景:两个页面同时点更新,后端只允许第一个任务运行。

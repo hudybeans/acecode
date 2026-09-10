@@ -36,7 +36,8 @@ bool apply_staged_update(const std::filesystem::path& staging_dir,
                          const std::filesystem::path& backup_dir,
                          const std::string& target,
                          std::string* error,
-                         DiagnosticLog* diagnostics = nullptr);
+                         DiagnosticLog* diagnostics = nullptr,
+                         const std::string& expected_version = {});
 int run_apply_update_command(const std::vector<std::string>& args,
                              std::ostream& out,
                              std::ostream& err,

@@ -6,14 +6,45 @@
 #include "daemon_protocol.hpp"
 #include "../utils/constants.hpp"
 #include "../utils/logger.hpp"
+#include "version.hpp"
 
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <stdexcept>
 #include <thread>
 
 namespace acecode::desktop {
+
+ExistingDaemonAction managed_daemon_installation_action(
+    const std::string& expected_version, const std::string& live_version,
+    const std::string& expected_executable, const std::string& live_executable,
+    std::string* reason) {
+    if (expected_version.empty() || live_version != expected_version) {
+        if (reason) *reason = "Desktop daemon version differs: running=" +
+                              live_version + " expected=" + expected_version;
+        return ExistingDaemonAction::Replace;
+    }
+    if (expected_executable.empty() || live_executable.empty()) {
+        if (reason) *reason = "Desktop daemon executable path is unavailable";
+        return ExistingDaemonAction::Unsafe;
+    }
+    std::error_code ec;
+    const auto expected = std::filesystem::u8path(expected_executable);
+    const auto live = std::filesystem::u8path(live_executable);
+    const bool same = std::filesystem::equivalent(expected, live, ec);
+    if (ec) {
+        if (reason) *reason = "cannot compare Desktop daemon installation: " + ec.message();
+        return ExistingDaemonAction::Unsafe;
+    }
+    if (!same) {
+        if (reason) *reason = "Desktop daemon belongs to another installation: " + live_executable;
+        return ExistingDaemonAction::Replace;
+    }
+    if (reason) *reason = "healthy Desktop-managed daemon from the same version and installation";
+    return ExistingDaemonAction::Reuse;
+}
 
 namespace {
 
@@ -229,6 +260,12 @@ ExistingDaemonProbeResult inspect_existing_daemon(
         result.reason = result.action == ExistingDaemonAction::Reuse
             ? "healthy compatible Desktop-managed daemon"
             : "Desktop daemon protocol is incompatible";
+        if (result.action == ExistingDaemonAction::Reuse) {
+            const auto executable = acecode::daemon::process_executable_path(result.pid);
+            result.action = managed_daemon_installation_action(
+                ACECODE_VERSION, health.value("version", std::string{}),
+                req.daemon_exe_path, executable.value_or(std::string{}), &result.reason);
+        }
         return result;
     }
 
@@ -497,7 +534,10 @@ std::vector<std::pair<std::string, std::string>> DaemonPool::stop_all() {
     for (auto& [hash, s] : slots_) {
         try {
             std::lock_guard<std::mutex> sl(s->mu);
-            if (s->sup) s->sup->stop();
+            if (s->sup) {
+                s->sup->stop();
+                if (s->sup->running()) throw std::runtime_error("managed daemon did not exit");
+            }
             s->state = DaemonState::Stopped;
             s->port = 0;
             s->token.clear();
@@ -511,15 +551,20 @@ std::vector<std::pair<std::string, std::string>> DaemonPool::stop_all() {
     return failures;
 }
 
-std::vector<std::pair<std::string, std::string>> DaemonPool::shutdown_all() {
+std::vector<std::pair<std::string, std::string>> DaemonPool::shutdown_all(
+    DaemonShutdownReason reason) {
     std::vector<std::pair<std::string, std::string>> failures;
     std::lock_guard<std::mutex> lk(main_mu_);
     for (auto& [hash, s] : slots_) {
         try {
             std::lock_guard<std::mutex> sl(s->mu);
             if (s->sup) {
-                if (keep_alive_on_exit_) s->sup->release();
-                else s->sup->stop();
+                if (keep_alive_on_exit_ && reason == DaemonShutdownReason::ApplicationExit) {
+                    s->sup->release();
+                } else {
+                    s->sup->stop();
+                    if (s->sup->running()) throw std::runtime_error("managed daemon did not exit");
+                }
             }
             s->state = DaemonState::Stopped;
             s->port = 0;

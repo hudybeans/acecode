@@ -1456,8 +1456,24 @@ void WebServer::Impl::register_ui_preferences() {
             if (auto rej = require_auth(req)) return std::move(*rej);
             if (!deps.app_config) return crow::response(503);
 
+            auto pending_restart = [&]() -> std::optional<crow::response> {
+                // Called with the job mutex held, both before checking the
+                // network and after it to close the completed-job race.
+                const auto& job = update_job_runtime->current;
+                if (!job || job->state != "succeeded" || !job->restart_required) return std::nullopt;
+                auto body = update_job_to_json(*job);
+                body["started"] = false;
+                body["latest_version"] = job->target_version;
+                body["message"] = "update is already installed; restart ACECode to finish";
+                crow::response response(202);
+                response.add_header("Content-Type", "application/json");
+                response.body = body.dump();
+                return with_cors(req, std::move(response));
+            };
+
             {
                 std::lock_guard<std::mutex> lock(update_job_runtime->mu);
+                if (auto response = pending_restart()) return std::move(*response);
                 if (update_job_runtime->current &&
                     update_job_is_active(*update_job_runtime->current)) {
                     crow::response r(409);
@@ -1505,6 +1521,7 @@ void WebServer::Impl::register_ui_preferences() {
             initial.log_error = diagnostics->error();
             {
                 std::lock_guard<std::mutex> lock(update_job_runtime->mu);
+                if (auto response = pending_restart()) return std::move(*response);
                 if (update_job_runtime->current &&
                     update_job_is_active(*update_job_runtime->current)) {
                     crow::response r(409);

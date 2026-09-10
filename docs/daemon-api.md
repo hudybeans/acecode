@@ -3010,6 +3010,17 @@ with diagnostic `message` and failed `job`.
 Returns `409 UPDATE_IN_PROGRESS` when another job is pending or running. The
 response includes that job under `job`, so another WebUI tab can attach to it.
 
+When the daemon already holds a successful job with `restart_required: true`,
+returns `202` with that same job and `started: false`, without fetching or
+installing another package. This remains true while the old daemon still
+reports its previous version. Failed and cancelled jobs remain retryable.
+
+Package installation verifies the staged backend's `--version` output against
+the selected release with a bounded direct child process. Flat Windows/Linux
+packages also verify the installed backend before reporting success; a failed
+post-copy verification rolls back the installation. Version mismatch, timeout,
+invalid output and unsuccessful probe exit fail the job with an actionable error.
+
 On macOS, a daemon running from either the current-user
 `~/Applications/ACECode.app/Contents/MacOS/acecode-daemon` location or the
 supported system `/Applications/ACECode.app/Contents/MacOS/acecode-daemon`
@@ -3056,6 +3067,11 @@ In the native desktop shell, a successful job asks whether to restart now. The
 restart-now action uses the in-process desktop bridge to bypass close-to-tray,
 stop the shell's managed daemon processes and tray resources, release the
 single-instance guard, and launch the newly installed desktop executable.
+Upgrade restart always stops and waits for the managed backend, including when
+background continuation is enabled; it does not change that saved preference.
+A failed backend shutdown prevents replacement launch. On startup, Desktop
+reuses an owned backend only if its application version and executable
+installation match, recovering old backends preserved by earlier releases.
 Choosing restart later leaves the current process running. Normal browser and
 Edge-app compatibility clients do not own the desktop lifecycle, so they show
 manual full-exit-and-relaunch guidance instead of an automatic restart action.

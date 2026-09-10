@@ -1,4 +1,5 @@
 #include "apply.hpp"
+#include "executable_version.hpp"
 
 #include "console.hpp"
 #include "diagnostics.hpp"
@@ -478,7 +479,8 @@ bool apply_staged_update(const fs::path& staging_dir,
                          const fs::path& backup_dir,
                          const std::string& target,
                          std::string* error,
-                         DiagnosticLog* diagnostics) {
+                         DiagnosticLog* diagnostics,
+                         const std::string& expected_version) {
     if (diagnostics) diagnostics->record("install_started", {
         {"staging", path_to_utf8(staging_dir)}, {"install_dir", path_to_utf8(install_dir)},
         {"backup", path_to_utf8(backup_dir)}, {"target", target}});
@@ -486,6 +488,11 @@ bool apply_staged_update(const fs::path& staging_dir,
     auto staged = validate_staged_package(staging_dir, target, &stage_error);
     if (!staged) {
         if (error) *error = stage_error;
+        return false;
+    }
+
+    if (!expected_version.empty() &&
+        !verify_executable_version(staged->executable_path, expected_version, error)) {
         return false;
     }
 
@@ -521,7 +528,10 @@ bool apply_staged_update(const fs::path& staging_dir,
                                      backed_up, error, diagnostics) ||
         !copy_package_files(staged->content_root, install_dir, backup_dir,
                             staged_paths, backed_up, error, diagnostics) ||
-        !fs::is_regular_file(install_dir / expected_executable_name_for_target(target))) {
+        !fs::is_regular_file(install_dir / expected_executable_name_for_target(target)) ||
+        (!expected_version.empty() &&
+         !verify_executable_version(install_dir / expected_executable_name_for_target(target),
+                                    expected_version, error))) {
         if (error && error->empty()) {
             *error = "failed to verify updated executable";
         }

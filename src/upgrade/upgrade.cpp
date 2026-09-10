@@ -4,6 +4,7 @@
 #include "check.hpp"
 #include "console.hpp"
 #include "diagnostics.hpp"
+#include "executable_version.hpp"
 #include "http.hpp"
 #include "macos_bundle.hpp"
 #include "manifest.hpp"
@@ -605,6 +606,12 @@ static int run_upgrade_command_impl(const AppConfig& config,
                 << stage_error << "\n";
             return 1;
         }
+        if (!verify_executable_version(
+                *staged_app_bundle / "Contents" / "MacOS" / "acecode-daemon",
+                selected.version, &stage_error)) {
+            err << "acecode upgrade: invalid macOS executable: " << stage_error << "\n";
+            return 1;
+        }
     } else
 #endif
     if (!validate_staged_package(staging_dir, target, &stage_error)) {
@@ -640,7 +647,7 @@ static int run_upgrade_command_impl(const AppConfig& config,
     } else
 #endif
     if (!apply_staged_update(staging_dir, install_dir, backup_dir,
-                             target, &apply_error, &diagnostics)) {
+                             target, &apply_error, &diagnostics, selected.version)) {
         err << "acecode upgrade: failed to apply update: " << apply_error << "\n"
             << "Backup directory: " << backup_dir.string() << "\n";
         return 1;
