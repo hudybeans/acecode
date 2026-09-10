@@ -13,4 +13,14 @@
 
 Includes the reconciled master implementation and its archived-session/settings improvements and branding concept assets. The unfinished WhatsApp Channels implementation remains in its independent worktree for a separate release.
 
-The stable release must additionally verify the GitHub-built package, all six updater targets, and every downloadable release asset in aupdate before release completion.
+## Published release verification
+
+- Published stable tag v0.9.14 from bda73b54bfd626e91bee6ac06044e2df9d39c68b. GitHub Actions run 34508471448 completed all ten native build/package jobs and the release job successfully.
+- The official Windows x64 updater is 16,864,454 bytes, SHA256 05be854f82a415ed13bf2d21cd9a046efaa9ef67301ac01ed26bbfff9d6447ff. The GitHub archive, aupdate versioned file, alias and public downloads match.
+- Repeated the seed migration and managed-daemon replacement tests using that exact GitHub-built archive. All passed. Its 96 seed files exactly match a fresh Windows checkout of v0.9.14 with the repository's Git attributes; the long-lived local checkout had line-ending differences, not content changes.
+- Exercised real in-place self-update from the previously published 0.9.13 archive to the official 0.9.14 archive. The new updater also successfully reinstalled the same real package in force mode, including staged/installed executable checks. A manifest claiming 0.9.15 while serving the valid 0.9.14 archive was rejected without changing the installed executable.
+- ACECode Release completed its six-platform updater gate: Windows x64/ARM64, macOS x64/ARM64, and Linux x64/ARM64 updater-v1. Manifest latest is 0.9.14. Versioned files and aliases passed public MIME, byte-count and SHA256 verification.
+- Mirrored all 35 GitHub assets (759,893,465 bytes), including PKGs, regular/older-Linux archives, all debugging symbols and SHA256SUMS. All 50 versioned/alias download paths passed public content verification. Added explicit IIS MIME mappings for the public .pdb and .debug files while preserving the existing server configuration.
+- Agent Browser remains integrated in Desktop; the updater packages contain no legacy ace-browser-host/bridge or extension payload.
+
+The separate npm publishing job failed with E404 on PUT for @aceagent/darwin-arm64@0.9.14. This machine has no npm login (ENEEDAUTH), so registry publication requires a valid authorized credential. GitHub installation packages and the complete aupdate mirror are available; the release notes explicitly distinguish this npm limitation.

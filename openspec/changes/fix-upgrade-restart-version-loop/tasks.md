@@ -11,4 +11,4 @@
 ## 3. Verification and release
 
 - [x] 3.1 Reconcile usable release content, run relevant native and Web tests/builds, validate the OpenSpec change, and verify packaged upgrade behavior.
-- [ ] 3.2 Publish the next stable release using ACECode Release, await all platform assets, mirror all downloadable content to aupdate, and verify versioned files, aliases, manifest, public sizes and SHA256 checksums.
+- [x] 3.2 Publish the next stable release using ACECode Release, await all platform assets, mirror all downloadable content to aupdate, and verify versioned files, aliases, manifest, public sizes and SHA256 checksums.
