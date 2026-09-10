@@ -51,7 +51,9 @@ import {
   allArchivedSessionsSelected,
   archivedSessionKey,
   archivedSessionTarget,
+  groupArchivedSessions,
   removeArchivedSessionsByKey,
+  retainArchivedSessionSelection,
   selectedArchivedSessions,
   shouldToggleArchivedSessionRow,
   toggleAllArchivedSessionSelection,
@@ -130,6 +132,7 @@ export function SettingsPage({
   onModelProfileUpdated,
   onPermissionModeChanged,
   onDesktopNotificationsChanged,
+  onCheckUpdates,
   onReplayGuidedTour,
   initialNavKey = 'general',
   fontSize = 'medium',
@@ -335,7 +338,7 @@ export function SettingsPage({
           {activeNavKey === 'models' && (
             <SectionModel onModelProfileUpdated={onModelProfileUpdated} />
           )}
-          {activeNavKey === 'tools' && <SectionTools />}
+          {activeNavKey === 'tools' && <SectionTools onCheckUpdates={onCheckUpdates} />}
           {activeNavKey === 'hooks' && <SectionHooks />}
           {activeNavKey === 'archived' && <SectionArchived />}
           {activeNavKey === 'usage' && <SectionUsage />}
@@ -2177,7 +2180,7 @@ function SectionConnectors() {
               className="rounded-lg border border-border bg-surface px-4 py-3"
             >
               <div className="flex items-start gap-3">
-                <div className="h-9 w-9 rounded-md border border-border bg-surface-alt flex items-center justify-center text-fg-2 shrink-0">
+                <div data-settings-surface="true" className="h-9 w-9 rounded-md border border-border bg-surface-alt flex items-center justify-center text-fg-2 shrink-0">
                   <VsIcon name="extension" size={18} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -2216,7 +2219,7 @@ function SectionConnectors() {
 
 // ─── 工具 ──────────────────────────────────────────────────────────────────
 
-function SectionTools() {
+function SectionTools({ onCheckUpdates }) {
   const nativeBrowserAvailable = typeof globalThis?.aceDesktop_agentBrowserGetState === 'function';
 
   return (
@@ -2229,7 +2232,7 @@ function SectionTools() {
       </p>
 
       <div className="flex items-center gap-3 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
-        <div className="w-10 h-10 rounded-md bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
+        <div data-settings-surface="true" className="w-10 h-10 rounded-md bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
           <VsIcon name="globe" size={20} />
         </div>
         <div className="flex-1 min-w-0">
@@ -2243,7 +2246,7 @@ function SectionTools() {
         </span>
       </div>
 
-      <ImageGenerationSettings />
+      <ImageGenerationSettings onCheckUpdates={onCheckUpdates} />
     </>
   );
 }
@@ -2422,9 +2425,14 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
             {hook.timeoutSeconds > 0 && <span>超时: {hook.timeoutSeconds}s</span>}
           </div>
           {commandText && (
-            <div className="mt-2 rounded-md border border-border bg-code-bg px-2.5 py-1.5 font-mono text-[11px] text-code-fg break-all">
-              {commandText}
-            </div>
+            <details className="mt-2">
+              <summary className="w-fit cursor-pointer select-none text-[11px] text-fg-2 hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
+                钩子代码
+              </summary>
+              <pre tabIndex={0} className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-black px-3 py-2 font-mono text-[11px] leading-relaxed text-code-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
+                <code>{commandText}</code>
+              </pre>
+            </details>
           )}
           {hook.statusMessage && (
             <div className="mt-1 text-[11px] text-fg-mute">状态消息: {hook.statusMessage}</div>
@@ -2502,6 +2510,10 @@ function HookBadge({ hook }) {
 // ─── 已归档会话 ────────────────────────────────────────────────────────────
 function SectionArchived() {
   const [list, setList] = useState([]);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [search, setSearch] = useState('');
+  const [workspaceKey, setWorkspaceKey] = useState('');
+  const [sortOrder, setSortOrder] = useState('newest');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
@@ -2527,7 +2539,12 @@ function SectionArchived() {
             }));
           }
         }
-        if (!cancelled) setList(sessions);
+        if (!cancelled) {
+          setList(sessions);
+          setWorkspaces(groupArchivedSessions(sessions)
+            .map(({ key, name, path }) => ({ key, name, path }))
+            .sort((a, b) => a.name.localeCompare(b.name)));
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message || String(e));
@@ -2538,13 +2555,29 @@ function SectionArchived() {
     return () => { cancelled = true; };
   }, []);
 
+  const groups = useMemo(
+    () => groupArchivedSessions(list, { query: search, workspaceKey, sortOrder }),
+    [list, search, workspaceKey, sortOrder],
+  );
+  const visibleItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  const workspaceOptions = useMemo(() => workspaces.map((workspace) => ({
+    ...workspace,
+    label: workspaces.some((other) => other.key !== workspace.key && other.name === workspace.name)
+      ? `${workspace.name} · ${workspace.path || workspace.key}`
+      : workspace.name,
+  })), [workspaces]);
+
+  useEffect(() => {
+    setSelectedKeys((previous) => retainArchivedSessionSelection(visibleItems, previous));
+  }, [visibleItems]);
+
   const selectedItems = useMemo(
-    () => selectedArchivedSessions(list, selectedKeys),
-    [list, selectedKeys],
+    () => selectedArchivedSessions(visibleItems, selectedKeys),
+    [visibleItems, selectedKeys],
   );
   const allSelected = useMemo(
-    () => allArchivedSessionsSelected(list, selectedKeys),
-    [list, selectedKeys],
+    () => allArchivedSessionsSelected(visibleItems, selectedKeys),
+    [visibleItems, selectedKeys],
   );
   const operationBusy = unarchivingKeys.size > 0 || deletingKeys.size > 0;
 
@@ -2559,7 +2592,7 @@ function SectionArchived() {
   const toggleAllSelected = () => {
     if (operationBusy) return;
     setSelectedKeys((previous) => (
-      toggleAllArchivedSessionSelection(list, previous)
+      toggleAllArchivedSessionSelection(visibleItems, previous)
     ));
   };
 
@@ -2742,10 +2775,82 @@ function SectionArchived() {
 
   return (
     <>
-      <h2 className="text-xl font-bold mb-5">已归档会话</h2>
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold mb-2">已归档会话</h2>
+          <p className="text-[12px] text-fg-mute">已归档的会话不会出现在侧栏,可随时取消归档恢复</p>
+        </div>
+        <div data-archived-batch-actions className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={toggleAllSelected}
+            disabled={visibleItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {allSelected ? '全不选' : '全选'}
+          </button>
+          <button
+            type="button"
+            onClick={unarchiveSelected}
+            disabled={selectedItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            取消选中会话的归档
+          </button>
+          <button
+            type="button"
+            onClick={purgeSelected}
+            disabled={selectedItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            删除选中会话
+          </button>
+        </div>
+      </div>
 
-      <div className="text-[14px] font-semibold mb-1">归档列表</div>
-      <p className="text-[12px] text-fg-mute mb-3">已归档的会话不会出现在侧栏,可随时取消归档恢复</p>
+      <div data-archived-filters className="flex flex-wrap items-center gap-2.5 mb-6">
+        <label data-settings-control className="flex min-w-0 grow-[2] basis-60 items-center gap-2 rounded-md border border-border bg-surface px-3 focus-within:border-accent transition">
+          <VsIcon name="search" size={16} className="shrink-0 text-fg-mute" />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索已归档会话"
+            aria-label="搜索已归档会话"
+            className="h-9 w-full min-w-0 bg-transparent text-[13px] text-fg placeholder:text-fg-mute outline-none"
+          />
+        </label>
+        <div className="flex min-w-0 flex-1 basis-80 gap-2.5">
+          <label className="relative flex min-w-0 flex-1 items-center">
+            <VsIcon name="list" size={15} className="pointer-events-none absolute left-3 text-fg-mute" />
+            <select
+              value={sortOrder}
+              onChange={(event) => setSortOrder(event.target.value)}
+              aria-label="排序方式"
+              className="h-9 w-full min-w-0 appearance-none pl-9 pr-8 text-[12px] rounded-md border border-border bg-surface text-fg outline-none focus:border-accent transition"
+            >
+              <option value="newest">最近更新</option>
+              <option value="oldest">最早更新</option>
+            </select>
+            <VsIcon name="expandDown" size={12} className="pointer-events-none absolute right-3 text-fg-mute" />
+          </label>
+          <label className="relative flex min-w-0 flex-1 items-center">
+            <VsIcon name="folder" size={15} className="pointer-events-none absolute left-3 text-fg-mute" />
+            <select
+              value={workspaceKey}
+              onChange={(event) => setWorkspaceKey(event.target.value)}
+              aria-label="选择工作区"
+              className="h-9 w-full min-w-0 appearance-none truncate pl-9 pr-8 text-[12px] rounded-md border border-border bg-surface text-fg outline-none focus:border-accent transition"
+            >
+              <option value="">所有工作区</option>
+              {workspaceOptions.map((workspace) => (
+                <option key={workspace.key} value={workspace.key}>{workspace.label}</option>
+              ))}
+            </select>
+            <VsIcon name="expandDown" size={12} className="pointer-events-none absolute right-3 text-fg-mute" />
+          </label>
+        </div>
+      </div>
 
       {loading ? (
         <div className="px-3.5 py-8 rounded-md bg-surface border border-border text-[12px] text-fg-mute text-center">
@@ -2759,93 +2864,87 @@ function SectionArchived() {
         <div className="px-3.5 py-8 rounded-md bg-surface border border-border text-[12px] text-fg-mute text-center">
           暂无已归档会话
         </div>
+      ) : groups.length === 0 ? (
+        <div className="px-3.5 py-8 text-[12px] text-fg-mute text-center" role="status">
+          没有匹配的已归档会话
+        </div>
       ) : (
-        <>
-          {list.map((item) => {
-            const target = archivedSessionTarget(item);
-            const title = sessionDisplayTitle(item, item.name || '');
-            const selected = selectedKeys.has(target.key);
-            const unarchiving = unarchivingKeys.has(target.key);
-            const deleting = deletingKeys.has(target.key);
-            const busy = unarchiving || deleting;
-            return (
-              <div
-                key={target.key || item.id}
-                onClick={(event) => {
-                  if (shouldToggleArchivedSessionRow(event.target)) toggleSelected(item);
-                }}
-                className={clsx(
-                  'flex items-center gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 transition',
-                  busy
-                    ? 'cursor-wait opacity-60'
-                    : 'cursor-pointer hover:bg-surface-hi',
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  disabled={busy}
-                  onChange={() => toggleSelected(item)}
-                  aria-label={`选择会话 ${title || '未命名会话'}`}
-                  className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium truncate">{title}</div>
-                  <div className="text-[11px] text-fg-mute mt-0.5 truncate">
-                    {relativeTime(item.updated_at || item.created_at)} · {item.workspaceName || item.cwd || item.workspace_hash || 'workspace'}
-                  </div>
-                </div>
-                <div className="shrink-0 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => unarchive(item)}
-                    disabled={busy}
-                    className="px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
-                  >
-                    {unarchiving ? '取消中' : '取消归档'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => purgeOne(item)}
-                    disabled={busy}
-                    className="px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-60"
-                  >
-                    {deleting ? '删除中' : '彻底删除'}
-                  </button>
-                </div>
+        <div className="space-y-6">
+          {groups.map((group) => (
+            <section key={group.key} aria-label={group.name}>
+              <div className="mb-2.5 flex min-w-0 items-center gap-2">
+                <VsIcon name="folder" size={17} className="shrink-0 text-fg-2" />
+                <h3 className="min-w-0 truncate text-[14px] font-semibold" title={group.path || group.key}>
+                  {workspaceOptions.find((workspace) => workspace.key === group.key)?.label || group.name}
+                </h3>
+                <span className="ml-auto shrink-0 text-[12px] text-fg-mute">{formatCount(group.items.length, 'sessions')}</span>
               </div>
-            );
-          })}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleAllSelected}
-              disabled={operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {allSelected ? '全不选' : '全选'}
-            </button>
-            <button
-              type="button"
-              onClick={unarchiveSelected}
-              disabled={selectedItems.length === 0 || operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              取消选中会话的归档
-            </button>
-            <button
-              type="button"
-              onClick={purgeSelected}
-              disabled={selectedItems.length === 0 || operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              删除选中会话
-            </button>
-          </div>
-        </>
+              <ul className="overflow-hidden rounded-lg border border-border divide-y divide-border">
+                {group.items.map((item) => {
+                  const target = archivedSessionTarget(item);
+                  const title = sessionDisplayTitle(item, item.name || '');
+                  const selected = selectedKeys.has(target.key);
+                  const unarchiving = unarchivingKeys.has(target.key);
+                  const deleting = deletingKeys.has(target.key);
+                  const busy = unarchiving || deleting;
+                  return (
+                    <li
+                      key={target.key || item.id}
+                      onClick={(event) => {
+                        if (shouldToggleArchivedSessionRow(event.target)) toggleSelected(item);
+                      }}
+                      className={clsx(
+                        'flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-3 transition',
+                        selected ? 'bg-accent-bg' : 'bg-surface',
+                        busy
+                          ? 'cursor-wait opacity-60'
+                          : 'cursor-pointer hover:bg-surface-hi',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={busy}
+                        onChange={() => toggleSelected(item)}
+                        aria-label={`选择会话 ${title || '未命名会话'}`}
+                        className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
+                      />
+                      <div className="min-w-0 flex-1 basis-32">
+                        <div className="text-[13px] font-medium truncate" title={title}>{title}</div>
+                        <div className="text-[11px] text-fg-mute mt-0.5 truncate">
+                          {relativeTime(item.updated_at || item.created_at)}
+                        </div>
+                      </div>
+                      <div className="ml-auto shrink-0 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => purgeOne(item)}
+                          disabled={busy}
+                          title="彻底删除"
+                          aria-label={`彻底删除会话 ${title || '未命名会话'}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-mute hover:text-danger hover:bg-danger-bg transition disabled:opacity-60"
+                        >
+                          {deleting ? <span className="ace-spinner" /> : <VsIcon name="delete" size={16} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => unarchive(item)}
+                          disabled={busy}
+                          className="px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
+                        >
+                          {unarchiving ? '取消中' : '取消归档'}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
       )}
       {purgeConfirmation && (
-        <Modal onClose={() => setPurgeConfirmation(null)} width={440}>
+        <Modal onClose={() => setPurgeConfirmation(null)} width={440} layerClassName="z-[310]">
           {({ close }) => (
             <div className="p-4">
               <div className="text-[14px] font-semibold mb-2">

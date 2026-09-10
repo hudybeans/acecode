@@ -62,6 +62,15 @@ function mergeSavedDraft(current, submitted, snapshot) {
   return saved;
 }
 
+function settingsError(error, action) {
+  const status = error?.status;
+  let code = error?.code;
+  if (status === 404 || status === 405) code = 'IMAGE_SETTINGS_UNSUPPORTED';
+  else if (status === 401 || status === 403) code = 'IMAGE_SETTINGS_AUTH_REQUIRED';
+  else if (status >= 500 && (!code || code === 'UNAVAILABLE')) code = 'IMAGE_SETTINGS_UNAVAILABLE';
+  return { code, status, action };
+}
+
 // A connection-scoped queue survives settings navigation. It keeps pending
 // edits in memory only and prevents reopening from racing an unfinished write.
 const settingsStores = new WeakMap();
@@ -104,7 +113,7 @@ export function imageGenerationSettingsStore(client) {
           const snapshot = await client.getImageGeneration();
           publish({ snapshot, draft: imageGenerationDraft(snapshot) });
         } catch (error) {
-          publish({ error: { code: error.code, action: 'load' } });
+          publish({ error: settingsError(error, 'load') });
         } finally { publish({ loading: false }); }
       }).finally(() => { reading = null; });
       return reading;
@@ -132,7 +141,7 @@ export function imageGenerationSettingsStore(client) {
             const snapshot = await client.setImageGeneration(patch);
             publish({ snapshot, draft: mergeSavedDraft(state.draft, submitted, snapshot) });
           } catch (error) {
-            publish({ error: { code: error.code, action: 'save' } });
+            publish({ error: settingsError(error, 'save') });
             return false;
           }
         }

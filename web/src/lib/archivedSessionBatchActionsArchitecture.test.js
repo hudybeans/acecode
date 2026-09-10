@@ -34,13 +34,15 @@ const archivedSection = between(
   '// ─── 使用情况',
 );
 
-run('archived footer exposes exactly three ordered batch actions', () => {
+run('archived header exposes exactly three ordered batch actions above filters and groups', () => {
   const actionStart = archivedSection.indexOf(
-    '<div className="mt-3 flex flex-wrap items-center gap-2">',
+    '<div data-archived-batch-actions',
   );
   const actionEnd = archivedSection.indexOf('</div>', actionStart);
   assert.ok(actionStart >= 0);
   assert.ok(actionEnd > actionStart);
+  assert.ok(actionEnd < archivedSection.indexOf('<div data-archived-filters'));
+  assert.ok(actionEnd < archivedSection.indexOf('{groups.map('));
   const actions = archivedSection.slice(actionStart, actionEnd);
 
   assert.equal((actions.match(/<button\b/g) || []).length, 3);
@@ -56,7 +58,7 @@ run('archived footer exposes exactly three ordered batch actions', () => {
   assert.match(actions, /onClick=\{toggleAllSelected\}/);
   assert.match(actions, /onClick=\{unarchiveSelected\}/);
   assert.match(actions, /onClick=\{purgeSelected\}/);
-  assert.match(actions, /disabled=\{operationBusy\}/);
+  assert.match(actions, /disabled=\{visibleItems\.length === 0 \|\| operationBusy\}/);
   assert.match(
     actions,
     /disabled=\{selectedItems\.length === 0 \|\| operationBusy\}/,
@@ -92,5 +94,6 @@ run('archived operations share busy guards and deletion keeps the shared Modal',
     archivedSection,
     /<Modal onClose=\{\(\) => setPurgeConfirmation\(null\)\}/,
   );
+  assert.match(archivedSection, /width=\{440\} layerClassName="z-\[310\]"/);
   assert.doesNotMatch(archivedSection, /window\.confirm|window\.alert/);
 });

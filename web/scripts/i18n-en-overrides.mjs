@@ -1,6 +1,7 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '钩子代码': 'Hook code',
   '主题下载失败': 'Theme download failed',
   // Web 路径选择器(add-web-path-picker)
   '{{p0}} 可用': '{{p0}} free',
@@ -132,6 +133,9 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '终端类型': 'Terminal type',
   '重新检测': 'Detect again',
   '加载图像生成配置失败': 'Could not load image generation settings',
+  '当前后台服务不支持图像生成，请更新 ACECode 并重启后重试': 'The current backend does not support image generation. Update ACECode, restart, and try again.',
+  '后台连接认证已失效，请重新连接 ACECode 后重试': 'Backend authentication has expired. Reconnect to ACECode and try again.',
+  '后台服务暂不可用，请稍后重试': 'The backend is temporarily unavailable. Try again later.',
   '图像生成配置已保存': 'Image generation settings saved',
   '保存图像生成配置失败': 'Could not save image generation settings',
   '生成测试图片失败，请检查连接和模型名称': 'Could not generate a test image. Check the connection and model name.',
@@ -267,6 +271,14 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '取消中': 'Unarchiving…',
   '取消选中会话的归档': 'Unarchive selected sessions',
   '删除选中会话': 'Delete selected sessions',
+  '搜索已归档会话': 'Search archived sessions',
+  '排序方式': 'Sort order',
+  '最近更新': 'Recently updated',
+  '最早更新': 'Oldest updated',
+  '所有工作区': 'All workspaces',
+  '选择工作区': 'Select workspace',
+  '没有匹配的已归档会话': 'No matching archived sessions',
+  '彻底删除会话 {{p0}}': 'Permanently delete session {{p0}}',
   '已取消 {{p0}} 个会话的归档': 'Unarchived {{p0}} sessions',
   '已取消 {{p0}} 个会话的归档，{{p1}} 个失败': 'Unarchived {{p0}} sessions; {{p1}} failed',
   '问题反馈': 'Feedback',

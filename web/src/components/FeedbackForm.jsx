@@ -87,7 +87,7 @@ export function FeedbackForm({ onClose }) {
 
   const content = (
     <form onSubmit={submit} aria-busy={submitting} data-feedback-form="true"
-      className={clsx('flex flex-col gap-4', onClose ? 'p-5' : 'max-w-2xl')}>
+      className={clsx('flex flex-col gap-4', onClose ? 'p-5' : 'w-full min-w-0')}>
       <div className="flex items-center justify-between gap-3">
         <h2 id={`${formId}-title`} className="text-[18px] font-semibold">{onClose ? '意见反馈' : '问题反馈'}</h2>
         {onClose && (
@@ -99,7 +99,7 @@ export function FeedbackForm({ onClose }) {
       </div>
       <div>
         <label htmlFor={`${formId}-text`} className="sr-only">反馈内容</label>
-        <div className={clsx('overflow-hidden rounded-lg border bg-bg focus-within:border-accent', tooLong ? 'border-danger' : 'border-border')}>
+        <div data-settings-surface="true" className={clsx('overflow-hidden rounded-lg border bg-bg focus-within:border-accent', tooLong ? 'border-danger' : 'border-border')}>
           <textarea ref={inputRef} id={`${formId}-text`} value={feedbackText}
             onChange={(event) => setFeedbackText(event.target.value)} disabled={submitting}
             placeholder="描述你遇到的问题" aria-describedby={`${formId}-count${tooLong ? ` ${formId}-limit` : ''}`}

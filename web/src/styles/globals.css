@@ -1891,14 +1891,14 @@ body {
 .ace-settings-content :where(input, select, textarea).bg-surface-alt {
   background: var(--ace-surface);
 }
-/* Open groups replace the old stack of outlined cards, preserving input and selection affordances. */
-.ace-settings-content :where(div, section).border.border-border {
+/* Open groups replace outlined cards; marked input and icon surfaces keep their own frame and spacing. */
+.ace-settings-content :where(div, section).border.border-border:not([data-settings-surface]) {
   border: 0;
   border-radius: 0;
   box-shadow: none;
   background: transparent;
 }
-.ace-settings-content :where(div, section).flex.border.border-border {
+.ace-settings-content :where(div, section).flex.border.border-border:not([data-settings-surface]) {
   border-bottom: 1px solid var(--ace-settings-divider);
   padding-inline: 0;
   margin-bottom: 0;

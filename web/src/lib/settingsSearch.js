@@ -31,7 +31,7 @@ export function settingsSearchEntries() {
     ['tools', '内置工具', 'builtin tools'],
     ['tools', 'Agent 浏览器', 'agent browser'],
     ['tools', '图像生成', 'image generation drawing'],
-    ['archived', '归档列表', 'archived sessions restore delete'],
+    ['archived', '搜索已归档会话', 'archived sessions restore delete search sort workspace'],
     ['usage', '每日用量趋势', 'daily tokens usage statistics'],
     ['usage', '模型用量明细', 'model tokens usage'],
     ['usage', '工作区用量', 'workspace usage'],

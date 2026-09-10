@@ -2134,6 +2134,10 @@ export function App() {
         {showSettings && (
           <SettingsPage
             onClose={() => setShowSettings(false)}
+            onCheckUpdates={() => {
+              setShowSettings(false);
+              void checkForUpdates();
+            }}
             initialNavKey={settingsNavKey}
             health={health}
             activeSessionId={activeId}
