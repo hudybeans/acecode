@@ -8,6 +8,7 @@
 import MarkdownIt from 'markdown-it';
 import taskLists from 'markdown-it-task-lists';
 import { classifyFileLink } from './fileLink.js';
+import { createMarkdownHighlightCache } from './markdownHighlightCache.js';
 
 import hljs from 'highlight.js/lib/core';
 import c          from 'highlight.js/lib/languages/c';
@@ -81,6 +82,7 @@ function markdownEnv(source) {
 function isCompleteFence(token, env) {
   const lines = env?.[SOURCE_LINES_ENV];
   if (!Array.isArray(lines) || !Array.isArray(token?.map) || token.map.length < 2) return false;
+  if (token.map[1] - token.map[0] < 2) return false;
   const closingLine = lines[token.map[1] - 1];
   const marker = String(token.markup || '');
   if (!closingLine || marker.length < 3) return false;
@@ -90,24 +92,16 @@ function isCompleteFence(token, env) {
   return count >= marker.length && trimmed.slice(count).trim() === '';
 }
 
-// 高亮结果缓存:流式渲染每个 delta 都会重渲全部块,已定稿代码块的内容
-// 不再变化,直接复用上次高亮结果,避免大代码块被反复重新高亮。
-//
-// 淘汰策略是 LRU(命中即移到 Map 尾部,满了删最老的一条),不是整表清空:
-// 大会话的代码块数量很容易超过上限,整表清空会让每一轮渲染都从零重新
-// 高亮全部块 —— 缓存形同虚设,transcript 越大主线程烧得越狠。上限按
-// "条目数" 计,单条高亮结果通常几 KB,512 条约几 MB,可接受。
-const HIGHLIGHT_CACHE_MAX = 512;
-const highlightCache = new Map();
+// Cache completed blocks only: retaining each streaming revision multiplies
+// a large code block by the number of retained entries. The LRU also bounds
+// source keys plus highlighted HTML to 8 MiB, in addition to 512 entries.
+const highlightCache = createMarkdownHighlightCache();
 
-function highlightCode(str, lang) {
+function highlightCode(str, lang, cacheable = true) {
   const norm = normalizeLang(lang);
-  const cacheKey = `${norm} ${str}`;
-  const cached = highlightCache.get(cacheKey);
+  const cacheKey = cacheable ? `${norm} ${str}` : '';
+  const cached = cacheable ? highlightCache.get(cacheKey) : null;
   if (cached) {
-    // Map 的迭代序 = 插入序;删掉再插回把该条移到"最近使用"端。
-    highlightCache.delete(cacheKey);
-    highlightCache.set(cacheKey, cached);
     return cached;
   }
 
@@ -124,10 +118,7 @@ function highlightCode(str, lang) {
     result = { lang: norm && hljs.getLanguage(norm) ? norm : '', html: escapeHtml(str) };
   }
 
-  if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
-    highlightCache.delete(highlightCache.keys().next().value);
-  }
-  highlightCache.set(cacheKey, result);
+  if (cacheable) highlightCache.set(cacheKey, result);
   return result;
 }
 
@@ -178,7 +169,7 @@ md.renderer.rules.fence = (tokens, idx, _options, env) => {
       + `<pre class="ace-mermaid-source"><code data-code-copy-source="true" data-mermaid-source="true">${source}</code></pre>`
       + `</div>\n`;
   }
-  const highlighted = highlightCode(token.content, lang);
+  const highlighted = highlightCode(token.content, lang, isCompleteFence(token, env));
   const preClass = highlighted.lang ? ' class="hljs"' : '';
   const codeClass = highlighted.lang ? ` class="hljs language-${escapeHtml(highlighted.lang)}"` : '';
   const langAttr = highlighted.lang ? ` data-code-lang="${escapeHtml(highlighted.lang)}"` : '';

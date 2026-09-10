@@ -11,6 +11,7 @@
 #include "session/event_dispatcher.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_storage.hpp"
+#include "session/tool_result_storage.hpp"
 #include "session/turn_net_diff.hpp"
 #include "stub_provider.hpp"
 #include "tool/file_edit_tool.hpp"
@@ -503,6 +504,70 @@ TEST(AgentLoopModelStepEvents, ProviderFailureStillClosesActiveStep) {
     }
     EXPECT_TRUE(saw_concrete_error);
 
+    fs::remove_all(cwd);
+}
+
+TEST(AgentLoopToolLifecycleEvents, LargeResultIsPersistedBeforeEveryLiveOutputEvent) {
+    const auto cwd = make_temp_dir("acecode_large_live_tool_result");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    const std::string original(100000, 'x');
+    {
+        ToolLifecycleHarness h(cwd.string());
+        auto tool = make_probe_tool("large_probe", true);
+        tool.execute = [&original](const std::string&, const ToolContext&) {
+            ToolResult result{original, true};
+            result.metadata = {{"source", "large-probe"}};
+            acecode::DiffHunk hunk;
+            hunk.old_start = 7;
+            acecode::DiffLine line;
+            line.kind = acecode::DiffLineKind::Added;
+            line.text = "preserved diff line";
+            hunk.lines.push_back(line);
+            result.hunks = std::vector<acecode::DiffHunk>{hunk};
+            return result;
+        };
+        h.tools().register_tool(std::move(tool));
+        h.enable_session_manager();
+        ScriptedResponse tools_turn;
+        tools_turn.tool_calls.push_back({"call-large-live", "large_probe", "{}"});
+        h.provider().push_response(std::move(tools_turn));
+        h.provider().push_text("done");
+        ASSERT_TRUE(h.submit_and_wait());
+        h.shutdown();
+
+        const auto ends = h.events_of(SessionEventKind::ToolEnd);
+        ASSERT_EQ(ends.size(), 1u);
+        const std::string preview = ends.front().payload.value("output", "");
+        EXPECT_TRUE(acecode::is_persisted_output_message(preview));
+        EXPECT_LT(preview.size(), 4000u);
+        EXPECT_EQ(ends.front().payload["metadata"]["source"], "large-probe");
+        ASSERT_EQ(ends.front().payload["hunks"].size(), 1u);
+        EXPECT_EQ(ends.front().payload["hunks"][0]["old_start"], 7);
+        EXPECT_EQ(ends.front().payload["hunks"][0]["lines"][0]["text"],
+                  "preserved diff line");
+
+        std::ifstream file(acecode::path_from_utf8(
+            acecode::persisted_output_filepath(preview)), std::ios::binary);
+        ASSERT_TRUE(file.good());
+        const std::string persisted{std::istreambuf_iterator<char>(file),
+                                    std::istreambuf_iterator<char>()};
+        EXPECT_EQ(persisted, original);
+        file.close();
+
+        int result_messages = 0;
+        for (const auto& event : h.events_of(SessionEventKind::Message)) {
+            if (event.payload.value("role", "") != "tool_result") continue;
+            ++result_messages;
+            EXPECT_EQ(event.payload.value("content", ""), preview);
+        }
+        EXPECT_EQ(result_messages, 1);
+        for (const auto& message : h.persisted_session_messages()) {
+            if (message.role == "tool" && message.tool_call_id == "call-large-live") {
+                EXPECT_EQ(message.content, preview);
+            }
+        }
+    }
+    fs::remove_all(project_dir);
     fs::remove_all(cwd);
 }
 

@@ -64,6 +64,17 @@ PersistedToolResult persist_tool_result(const std::string& content,
 std::string build_large_tool_result_message(const PersistedToolResult& result,
                                             std::size_t preview_bytes = TOOL_RESULT_PREVIEW_BYTES);
 
+// Apply the per-result policy before lifecycle events and display callbacks.
+// The later batch policy still applies across all completed results. Preserve
+// the original result on storage failure, matching the existing budget policy.
+// Structured metadata, summaries and file-diff hunks are preserved.
+bool prepare_tool_result_for_delivery(
+    ToolResult& result,
+    const std::string& tool_name,
+    const std::string& tool_call_id,
+    const std::string& tool_results_dir,
+    const ToolResultBudgetOptions& options = {});
+
 ToolResultBudgetResult enforce_tool_result_budget(
     const std::vector<ToolCall>& tool_calls,
     std::vector<ToolResult>& results,

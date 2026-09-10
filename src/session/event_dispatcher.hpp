@@ -3,8 +3,8 @@
 // EventDispatcher: AgentLoop 的事件广播 + seq 编号 + 环形回放缓存。
 // 每个 AgentLoop 实例持有一个 EventDispatcher,负责:
 //   - 给每个 emit 分配单调递增 seq(从 1 开始)
-//   - 缓存最近 N 个事件(默认 1024,token 流为主时已经够大;非-token 事件
-//     远比 token 少,所以 1024 实际能覆盖很长一段对话)
+//   - 缓存最近 N 个事件(默认 1024),同时限制计量内存为 8 MiB。
+//     超大单条事件仍实时投递,但不进入回放缓存。
 //   - 维护 listener 列表(unordered_map<SubscriptionId, listener>),emit 时
 //     遍历调用
 //   - subscribe(since_seq) 时把缓存里 seq > since_seq 的事件按序回放给该
@@ -56,7 +56,11 @@ public:
         std::string coalesce_key;
     };
 
-    explicit EventDispatcher(std::size_t buffer_capacity = 1024);
+    static constexpr std::size_t default_buffer_byte_capacity = 8 * 1024 * 1024;
+
+    explicit EventDispatcher(
+        std::size_t buffer_capacity = 1024,
+        std::size_t buffer_byte_capacity = default_buffer_byte_capacity);
 
     // 由 AgentLoop 调用。线程安全。返回分配的 seq(从 1 开始)。
     std::uint64_t emit(SessionEventKind kind, nlohmann::json payload);
@@ -84,6 +88,12 @@ public:
     std::size_t listener_count() const;
 
 private:
+    struct BufferedEvent {
+        SessionEvent event;
+        std::size_t bytes = 0;
+        std::string coalesce_key;
+    };
+
     // 单个订阅的投递状态。catching_up=true 表示 subscribe 还在按序回放历史事件,
     // 此时 emit() 把实时事件压入 pending;回放结束后由 subscribe 线程 flush。
     // delivering=true 表示已有 emit 线程负责在锁外 drain,其它 emit 只排队。
@@ -96,14 +106,19 @@ private:
 
     void drain_subscription(SubscriptionId id,
                             const std::shared_ptr<Subscription>& sub);
+    void deliver_to_listener(SubscriptionId id, const EventListener& listener,
+                             const SessionEvent& evt) const;
     void push_to_buffer(const SessionEvent& evt, const std::string& coalesce_key = {});
+    void erase_buffered_event(std::deque<BufferedEvent>::iterator it);
 
     std::atomic<std::uint64_t> seq_counter_{0};
     std::atomic<SubscriptionId> next_sub_id_{1};
     std::size_t                buffer_capacity_;
+    std::size_t                buffer_byte_capacity_;
+    std::size_t                buffered_bytes_ = 0;
 
     mutable std::mutex                                                mu_;
-    std::deque<SessionEvent>                                          buffer_;
+    std::deque<BufferedEvent>                                         buffer_;
     std::unordered_map<std::string, std::uint64_t>                    coalesced_seq_by_key_;
     std::unordered_map<SubscriptionId, std::shared_ptr<Subscription>> subscriptions_;
     SubscriptionId observer_subscription_id_ = 0;

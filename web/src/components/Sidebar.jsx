@@ -690,6 +690,7 @@ function SessionHoverCard({
   anchorRef,
   cardId,
   session,
+  title,
 }) {
   const cardRef = useRef(null);
   const baseDetails = sessionHoverDetails(session);
@@ -757,7 +758,7 @@ function SessionHoverCard({
       window.removeEventListener('resize', updatePosition);
       document.removeEventListener('scroll', updatePosition, true);
     };
-  }, [anchorRef, details?.branch, details?.hasWorkspace, details?.updatedAt]);
+  }, [anchorRef, details?.branch, details?.hasWorkspace, details?.updatedAt, title]);
 
   if (!details || typeof document === 'undefined') return null;
 
@@ -777,6 +778,7 @@ function SessionHoverCard({
         visibility: position ? 'visible' : 'hidden',
       }}
     >
+      <div className="ace-session-hover-title">{title}</div>
       <div className="ace-session-hover-detail-row">
         <span className="ace-session-hover-detail-label">工作目录</span>
         <span className="ace-session-hover-detail-value">
@@ -859,7 +861,6 @@ function SidebarSessionTitle({ title, marqueeReady = true }) {
       )}
       data-sidebar-session-title-overflow={metrics.overflowing ? 'true' : 'false'}
       data-sidebar-session-title-complete={marqueeReady ? 'true' : 'false'}
-      title={metrics.overflowing && marqueeReady ? title : undefined}
       style={marqueeStyle}
     >
       <span ref={contentRef} className="ace-sidebar-session-title-content">
@@ -1341,6 +1342,7 @@ function SessionRow({
           anchorRef={rowRef}
           cardId={hoverCardId}
           session={s}
+          title={marqueeTitle}
         />
       )}
     </div>

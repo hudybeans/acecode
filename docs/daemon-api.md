@@ -3371,6 +3371,13 @@ cursor. Clients should de-duplicate both interaction types by
 `payload.request_id` and retain resolved tombstones until the owning turn is
 terminal so a delayed snapshot cannot reopen a closed request.
 
+Each active session retains at most 1024 replay events and an estimated 8 MiB
+of event payload/container storage. The oldest retained events are evicted when
+either limit is reached. A single event larger than the byte budget is delivered
+live but is not retained for replay. `since` only replays retained events; it does
+not guarantee recovery of older or oversized frames. Load the session history
+through REST when a complete persisted transcript is needed.
+
 Session event `type` values from `SessionEventKind`:
 
 - `token`
@@ -3399,6 +3406,15 @@ For a successful `task_complete` call, the `tool_end` payload also includes
 trajectory/replay records use the same id so clients can attach copy, fork, and
 other message actions to the completion summary without relying on its
 synthetic display id.
+
+Completed tool text above the per-result limit (30,000 bytes for Bash, 50,000
+bytes for other tools) is saved under the session's `tool-results` directory
+before `tool_end` or the result message is broadcast. Their output contains the
+existing `<persisted-output>` file reference and a 2,000-byte preview. Structured
+file-diff hunks, metadata and attachments remain available. The aggregate
+model-context budget still applies later. As with the existing result budget,
+if storage fails the original completed result is retained rather than discarded;
+the preview reduction is therefore not guaranteed during storage failures.
 
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable

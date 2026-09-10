@@ -3363,6 +3363,10 @@ bool AgentLoop::execute_tool_calls(
     // Results array indexed by original position
     std::vector<ToolResult> results(accumulated.tool_calls.size());
     std::vector<bool> result_ready(accumulated.tool_calls.size(), false);
+    // Each parallel tool writes only its own slot. Collect after joining so
+    // early delivery replacements keep the existing durable replacement audit.
+    std::vector<ToolResultReplacementRecord> delivery_replacements(
+        accumulated.tool_calls.size());
     struct DeferredTaskCompleteEnd {
         std::int64_t started_at_ms = 0;
         std::int64_t completed_at_ms = 0;
@@ -3767,6 +3771,17 @@ bool AgentLoop::execute_tool_calls(
         }
         materialize_result_attachments(result);
         mark_workspace_scratch_change(result, tool_ctx);
+        if (session_manager_) {
+            // Both ToolEnd and the following tool_result Message are sent live.
+            // Persist before either can retain a full output in replay/UI state.
+            // PostToolUse has already seen its original input; preserve hunks
+            // and other structured fields for specialized file-diff rendering.
+            if (prepare_tool_result_for_delivery(
+                    result, tc.function_name, tc.id,
+                    session_manager_->ensure_tool_results_dir()) && !tc.id.empty()) {
+                delivery_replacements[tool_index] = {tc.id, result.output};
+            }
+        }
         ensure_tool_summary(
             tc.function_name, tc.function_arguments, result);
 
@@ -3821,9 +3836,9 @@ bool AgentLoop::execute_tool_calls(
 
     // 展示层的结果行派发(tool_result 伪行 + on_tool_result 补挂 summary/
     // hunks)。从 Phase 3 前移到各执行点,让「调用行 → 结果行」成对相邻出现
-    // 而不是先挤一排调用再挤一排结果。注意:这里显示的是工具原始输出
-    // (渲染端有 3 行折叠 / 2000 行展开上限兜底);canonical 落盘仍在
-    // Phase 3 统一进行,超大输出的 budget 替换只影响落盘与模型上下文。
+    // 而不是先挤一排调用再挤一排结果。单个大结果已在 lifecycle 内落盘并
+    // 替换为文件引用,避免 live 事件与 TUI 再保留全文;结构化 hunks 保留。
+    // canonical 落盘与跨结果的 aggregate budget 仍在 Phase 3 统一进行。
     auto dispatch_tool_result_display =
         [this](const ToolCall& tc, const ToolResult& result) {
         std::string display_output = result.output;
@@ -4221,6 +4236,11 @@ bool AgentLoop::execute_tool_calls(
     }
 
     std::vector<ToolResultReplacementRecord> replacement_records;
+    for (size_t i = 0; i < delivery_replacements.size(); ++i) {
+        if (result_ready[i] && !delivery_replacements[i].tool_call_id.empty()) {
+            replacement_records.push_back(std::move(delivery_replacements[i]));
+        }
+    }
     if (session_manager_) {
         const std::string tool_results_dir = session_manager_->ensure_tool_results_dir();
         if (!tool_results_dir.empty()) {
@@ -4231,7 +4251,9 @@ bool AgentLoop::execute_tool_calls(
                 result_ready,
                 tool_results_dir,
                 replacement_state);
-            replacement_records = std::move(budget_result.newly_replaced);
+            for (auto& record : budget_result.newly_replaced) {
+                replacement_records.push_back(std::move(record));
+            }
         }
     }
 

@@ -21,6 +21,7 @@ import './codeBlockCopy.test.js';
 import './createdFileSource.test.js';
 import './sourceCodeHighlight.test.js';
 import './markdownBlocks.test.js';
+import './markdownHighlightCache.test.js';
 import './markdownWysiwyg.test.js';
 import './gfmAutolinkCompat.test.js';
 import './editablePreviewSelection.test.js';

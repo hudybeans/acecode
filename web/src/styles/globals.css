@@ -2278,6 +2278,14 @@ body {
 .ace-session-hover-card[data-placement="left"] {
   --ace-session-hover-card-offset: 3px;
 }
+.ace-session-hover-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .ace-session-hover-detail-row {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);

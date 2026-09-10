@@ -425,6 +425,54 @@ TEST(AnthropicProviderTest, NonStreamingHttpErrorIsStructured) {
               std::string::npos);
 }
 
+TEST(AnthropicProviderTest, LargeStreamingHardQuotaBodyRemainsTerminal) {
+    const std::string raw_body = nlohmann::json{
+        {"type", "error"},
+        {"error", {
+            {"type", "credit_balance_too_low"},
+            {"message", std::string(128 * 1024, 'x')},
+        }},
+    }.dump();
+    std::atomic<int> hits{0};
+    LocalHttpServer server([&](httplib::Server& s) {
+        s.Post("/messages", [&](const httplib::Request&, httplib::Response& res) {
+            ++hits;
+            res.status = 429;
+            res.set_header("Retry-After", "0");
+            res.set_content(raw_body, "application/json");
+        });
+    });
+    AnthropicProvider provider(
+        server.base_url(), "sk-ant-test", "claude-test", 5000);
+    std::atomic<bool> abort_flag{false};
+    acecode::ProviderErrorInfo error;
+    int error_events = 0;
+    int retry_events = 0;
+    int done_events = 0;
+    provider.chat_stream({user_message("hi")}, {}, [&](const StreamEvent& event) {
+        if (event.type == StreamEventType::Error) {
+            ++error_events;
+            error = event.provider_error;
+        } else if (event.type == StreamEventType::Retry) {
+            ++retry_events;
+            // Do not hang the suite if a truncated body becomes retryable.
+            abort_flag.store(true);
+        } else if (event.type == StreamEventType::Done) {
+            ++done_events;
+        }
+    }, &abort_flag);
+
+    EXPECT_EQ(error_events, 1);
+    EXPECT_EQ(error.kind, ProviderErrorKind::Http);
+    EXPECT_EQ(error.status_code, 429);
+    EXPECT_FALSE(error.retryable);
+    EXPECT_TRUE(error.body_is_json);
+    EXPECT_EQ(error.raw_body, raw_body);
+    EXPECT_EQ(retry_events, 0);
+    EXPECT_EQ(done_events, 0);
+    EXPECT_EQ(hits.load(), 1);
+}
+
 TEST(AnthropicProviderTest, StreamParsesTextToolUseUsageAndDone) {
     std::mutex mu;
     std::string seen_api_key;

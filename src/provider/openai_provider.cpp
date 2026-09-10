@@ -1,4 +1,5 @@
 #include "openai_provider.hpp"
+#include "stream_diagnostic_capture.hpp"
 #include "dsml_tool_call_recovery.hpp"
 #include "session/session_history_recovery.hpp"
 #include "image/image_processor.hpp"
@@ -1265,7 +1266,8 @@ ChatResponse OpenAiCompatProvider::parse_sse_stream(
         // Done 事件只透传这个原始值,空 = 上游没发(部分兼容网关会省略)。
         std::string reported_finish_reason;
         std::string sse_buffer;
-        std::string raw_body_capture;
+        StreamDiagnosticCapture raw_capture;
+        cpr::Session stream_session;
         std::map<int, ToolCallAccumulator> pending_tools;
         bool saw_done = false;
         bool saw_sse_data = false;
@@ -1383,7 +1385,10 @@ ChatResponse OpenAiCompatProvider::parse_sse_stream(
             if (!data.empty()) {
                 last_stream_activity_ms.store(steady_now_ms());
             }
-            raw_body_capture.append(data.data(), data.size());
+            long http_status = 0;
+            curl_easy_getinfo(stream_session.GetCurlHolder()->handle,
+                              CURLINFO_RESPONSE_CODE, &http_status);
+            raw_capture.append(data, http_status);
             sse_buffer += std::string(data);
 
             size_t pos = 0;
@@ -1555,19 +1560,19 @@ ChatResponse OpenAiCompatProvider::parse_sse_stream(
         // Re-resolve routing on every attempt so moving between a VPN,
         // system proxy, and direct networking takes effect after the wait.
         auto proxy_opts = network::proxy_options_for(url);
-        cpr::Response r = cpr::Post(
-            cpr::Url{url},
-            headers,
-            cpr::Body{body.dump()},
-            cpr::ConnectTimeout{
-                (std::min)(stream_idle_timeout_ms, kStreamConnectTimeoutCapMs)},
-            network::build_ssl_options(proxy_opts),
-            proxy_opts.proxies,
-            proxy_opts.auth,
-            write_cb,
-            progress_cb
-        );
+        stream_session.SetOption(cpr::Url{url});
+        stream_session.SetOption(headers);
+        stream_session.SetOption(cpr::Body{body.dump()});
+        stream_session.SetOption(cpr::ConnectTimeout{
+            (std::min)(stream_idle_timeout_ms, kStreamConnectTimeoutCapMs)});
+        stream_session.SetOption(network::build_ssl_options(proxy_opts));
+        stream_session.SetOption(proxy_opts.proxies);
+        stream_session.SetOption(proxy_opts.auth);
+        stream_session.SetOption(write_cb);
+        stream_session.SetOption(progress_cb);
+        cpr::Response r = stream_session.Post();
 
+        const std::string raw_body_capture = raw_capture.str();
         last_accumulated = accumulated;
         const bool user_aborted = abort_flag && abort_flag->load();
         if (user_aborted) {
