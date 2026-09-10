@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "tui/ask_question_layout.hpp"
 
 using acecode::AskOption;
@@ -57,19 +59,26 @@ TEST(AskQuestionLayoutTest, ScrollAndHitUseVisibleRows) {
     snapshot.scroll_offset = 2;
     AskQuestionLayoutInput input{&snapshot, 40, 5, 2, {}};
     const auto layout = build_ask_question_layout(input);
-    EXPECT_GE(layout.total_rows, layout.visible_rows);
-    EXPECT_EQ(hit_test_ask_question_layout(layout, 1, 0), 0);
-    EXPECT_EQ(hit_test_ask_question_layout(layout, 1, 3), -1);
+    const auto visible_first = layout.rows[2];
+    ASSERT_GT(visible_first.rect.height, 0);
+    EXPECT_EQ(hit_test_ask_question_layout(layout, 1, visible_first.rect.y),
+              visible_first.option_index);
+    const auto visible_last = layout.rows[std::min<std::size_t>(
+        layout.rows.size() - 1, static_cast<std::size_t>(
+            layout.scroll_offset + layout.visible_rows - 1))];
+    ASSERT_GT(visible_last.rect.height, 0);
+    EXPECT_EQ(hit_test_ask_question_layout(layout, 1, visible_last.rect.y),
+              visible_last.option_index);
 }
 
-TEST(AskQuestionLayoutTest, SummaryRowsExposeQuestionAndSubmitTargets) {
+TEST(AskQuestionLayoutTest, SummaryRowsExposeQuestionTargets) {
     AskQuestionController controller({question(), question()}, {});
     controller.handle({acecode::tui::AskQuestionEventKind::MoveRight});
     controller.handle({acecode::tui::AskQuestionEventKind::MoveRight});
     const auto snapshot = controller.snapshot();
     ASSERT_EQ(snapshot.page, acecode::tui::AskQuestionPage::Summary);
     const auto layout = build_ask_question_layout({&snapshot, 60, 20, 4, {}});
-    ASSERT_EQ(layout.rows.size(), 5u);
+    ASSERT_EQ(layout.rows.size(), 3u);
     EXPECT_EQ(layout.rows[1].kind, AskQuestionLayoutKind::Summary);
     EXPECT_EQ(layout.rows[1].question_index, 0);
     EXPECT_EQ(layout.rows[2].kind, AskQuestionLayoutKind::Summary);
@@ -77,8 +86,13 @@ TEST(AskQuestionLayoutTest, SummaryRowsExposeQuestionAndSubmitTargets) {
     auto summary = hit_test_ask_question_target(layout, 2, 1);
     EXPECT_EQ(summary.kind, AskQuestionHitKind::SummaryQuestion);
     EXPECT_EQ(summary.question_index, 0);
-    auto submit = hit_test_ask_question_target(layout, 2, 3);
-    EXPECT_EQ(submit.kind, AskQuestionHitKind::Submit);
+}
+
+TEST(AskQuestionLayoutTest, MinimumVisibleRowsDegradesToViewport) {
+    AskQuestionController controller({question()}, {});
+    const auto snapshot = controller.snapshot();
+    const auto layout = build_ask_question_layout({&snapshot, 60, 3, 8, {}});
+    EXPECT_EQ(layout.visible_rows, 3);
 }
 
 TEST(AskQuestionLayoutTest, NarrowTerminalClampsVisibleRows) {

@@ -506,7 +506,8 @@ TEST(TuiAskChannelTest, TimeoutReportsTimedOutAndCleansOverlay) {
 
     std::lock_guard<std::mutex> lk(state.mu);
     EXPECT_FALSE(state.ask_pending);
-    EXPECT_TRUE(state.ask_questions.empty());
+    // AskQuestionSession owns the question state; TuiState only retains the FIFO queue.
+    EXPECT_TRUE(state.ask_queue.empty());
     EXPECT_EQ(state.ask_timeout_hint_seconds, 0);
 }
 
@@ -533,8 +534,11 @@ TEST(TuiAskChannelTest, TimeoutHintIsShownAndEarlyAnswerWins) {
     {
         std::lock_guard<std::mutex> lk(state.mu);
         EXPECT_EQ(state.ask_timeout_hint_seconds, 30);
-        state.ask_result_answers["Pick one?"] = "B";
-        state.ask_result_ok = true;
+        acecode::tui::AskQuestionCompletion completion;
+        acecode::tui::AskQuestionAnswer answer;
+        answer.selected = {"B"};
+        completion.answers.push_back(std::move(answer));
+        state.ask_completion_override = std::move(completion);
         state.ask_pending = false;
     }
     state.ask_cv.notify_all();
@@ -568,7 +572,9 @@ TEST(TuiAskChannelTest, OriginLabelMarksSubagentQuestions) {
     {
         std::lock_guard<std::mutex> lk(state.mu);
         EXPECT_EQ(state.ask_origin_label, "[subagent] child task");
-        state.ask_result_ok = false;
+        acecode::tui::AskQuestionCompletion completion;
+        completion.cancelled = true;
+        state.ask_completion_override = std::move(completion);
         state.ask_pending = false;
     }
     state.ask_cv.notify_all();

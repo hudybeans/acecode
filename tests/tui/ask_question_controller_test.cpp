@@ -278,17 +278,25 @@ TEST(AskQuestionControllerTest, CopyFocusedIgnoresEmptyCustomDraft) {
               effects.end());
 }
 
-TEST(AskQuestionControllerTest, SummaryFocusSelectsSubmitOrCancel) {
-    AskQuestionController controller({make_question(), make_question()}, {});
-    controller.handle({AskQuestionEventKind::ChooseOption, 0});
-    controller.handle(event(AskQuestionEventKind::SelectionFeedbackElapsed));
-    controller.handle({AskQuestionEventKind::ChooseOption, 0});
-    controller.handle(event(AskQuestionEventKind::SelectionFeedbackElapsed));
-    ASSERT_EQ(controller.snapshot().page, AskQuestionPage::Summary);
+TEST(AskQuestionControllerTest, SummaryEnterSubmitsAndEscapeCancels) {
+    AskQuestionController submit_controller({make_question(), make_question()}, {});
+    submit_controller.handle({AskQuestionEventKind::ChooseOption, 0});
+    submit_controller.handle(event(AskQuestionEventKind::SelectionFeedbackElapsed));
+    submit_controller.handle({AskQuestionEventKind::ChooseOption, 0});
+    submit_controller.handle(event(AskQuestionEventKind::SelectionFeedbackElapsed));
+    ASSERT_EQ(submit_controller.snapshot().page, AskQuestionPage::Summary);
 
-    controller.handle({AskQuestionEventKind::FocusOption, 1});
-    controller.handle(event(AskQuestionEventKind::SubmitFocused));
-    ASSERT_TRUE(controller.finished());
-    ASSERT_TRUE(controller.completion().has_value());
-    EXPECT_TRUE(controller.completion()->cancelled);
+    submit_controller.handle(event(AskQuestionEventKind::SubmitFocused));
+    ASSERT_TRUE(submit_controller.finished());
+    ASSERT_TRUE(submit_controller.completion().has_value());
+    EXPECT_FALSE(submit_controller.completion()->cancelled);
+
+    AskQuestionController cancel_controller({make_question(), make_question()}, {});
+    cancel_controller.handle({AskQuestionEventKind::MoveRight});
+    cancel_controller.handle({AskQuestionEventKind::MoveRight});
+    ASSERT_EQ(cancel_controller.snapshot().page, AskQuestionPage::Summary);
+    cancel_controller.handle(event(AskQuestionEventKind::Escape));
+    ASSERT_TRUE(cancel_controller.finished());
+    ASSERT_TRUE(cancel_controller.completion().has_value());
+    EXPECT_TRUE(cancel_controller.completion()->cancelled);
 }

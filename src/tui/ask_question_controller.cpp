@@ -78,7 +78,6 @@ AskQuestionSnapshot AskQuestionController::snapshot() const {
     result.completed = finished_;
     result.cancelled = cancelled_;
     result.origin_label = origin_label_;
-    result.submit_focus = submit_focus_;
     result.answers.reserve(questions_.size());
     result.question_options.reserve(questions_.size());
     result.custom_texts.reserve(questions_.size());
@@ -358,14 +357,7 @@ std::vector<AskQuestionEffect> AskQuestionController::handle(
         switch (event.kind) {
             case AskQuestionEventKind::SubmitFocused:
             case AskQuestionEventKind::SubmitCurrentSelection:
-                if (submit_focus_ == 0) {
-                    complete(effects, false);
-                } else {
-                    cancel(effects);
-                }
-                break;
-            case AskQuestionEventKind::FocusOption:
-                submit_focus_ = std::clamp(event.option_index, 0, 1);
+                complete(effects, false);
                 break;
             case AskQuestionEventKind::OpenQuestion:
                 if (event.option_index >= 0 &&
@@ -373,14 +365,19 @@ std::vector<AskQuestionEffect> AskQuestionController::handle(
                     enter_question(event.option_index);
                 }
                 break;
-            case AskQuestionEventKind::Escape: cancel(effects); break;
+            case AskQuestionEventKind::Escape:
+                cancel(effects);
+                break;
             case AskQuestionEventKind::MoveLeft:
             case AskQuestionEventKind::PreviousPage:
-                enter_question(static_cast<int>(questions_.size()) - 1); break;
+                enter_question(static_cast<int>(questions_.size()) - 1);
+                break;
             case AskQuestionEventKind::MoveRight:
             case AskQuestionEventKind::NextPage:
-                enter_question(0); break;
-            default: return effects;
+                enter_question(0);
+                break;
+            default:
+                return effects;
         }
         effects.push_back({AskQuestionEffectKind::Redraw, {}});
         return effects;

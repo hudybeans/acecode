@@ -1334,6 +1334,7 @@ std::optional<size_t> input_cursor_vertical_target(
         input_value, input_box, hit_regions, mouse_x, *target_row);
 }
 
+// ask_session owns whether the custom answer editor is active.
 InputPointerTarget input_pointer_target(const TuiState& state) {
     if (state.confirm_pending ||
         state.rewind_picker_active ||
@@ -1343,7 +1344,7 @@ InputPointerTarget input_pointer_target(const TuiState& state) {
         return InputPointerTarget::None;
     }
     if (state.ask_pending) {
-        return state.ask_other_input_active
+        return state.ask_session && state.ask_session->snapshot().editing_custom
             ? InputPointerTarget::AskOther
             : InputPointerTarget::None;
     }

@@ -259,6 +259,7 @@ set(ACECODE_TESTABLE_TUI_SOURCES
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_controller.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_editor.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_layout.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/ask_question_adapter.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_session.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_text.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/chat_file_link.cpp

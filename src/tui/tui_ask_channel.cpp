@@ -115,35 +115,8 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
         state.ask_session = session;
         state.ask_origin_label = origin_label;
         state.ask_pending = true;
-        state.ask_payload_json = questions_payload.dump();
-        state.ask_questions = questions;
-        state.ask_question_order = question_order;
-        // timeout 策略:overlay 顶部渲染静态提示「N 秒无操作将自动选择推荐项」;
-        // 0 = 无提示。
         state.ask_timeout_hint_seconds = timeout_seconds > 0 ? timeout_seconds : 0;
-        state.ask_result_answers.clear();
-        state.ask_result_ok = false;
-        state.ask_current_question = 0;
-        state.ask_submit_page = false;
-        state.ask_submit_focus = 0;
-        state.ask_option_focus = 0;
-        state.ask_question_option_focus.assign(questions.size(), 0);
-        state.ask_answered_questions.assign(questions.size(), false);
-        state.ask_selected_options.assign(questions.size(), -1);
-        state.ask_multi_selected_by_question.clear();
-        state.ask_multi_selected_by_question.reserve(questions.size());
-        for (const auto& q : questions) {
-            state.ask_multi_selected_by_question.emplace_back(q.options.size(), false);
-        }
-        state.ask_custom_answer_selected.assign(questions.size(), false);
-        state.ask_custom_answers.assign(questions.size(), std::string{});
-        state.ask_multi_selected.assign(questions[0].options.size(), false);
-        state.ask_other_input_active = false;
-        state.ask_scroll_offset = 0;
-        state.ask_scroll_total_rows = 0;
-        state.ask_scroll_visible_rows = 0;
-        state.ask_scrollbar_dragging = false;
-        state.ask_scroll_to_focus_requested = true;
+        state.ask_completion_override.reset();
     }
     screen.PostEvent(ftxui::Event::Custom);
 
@@ -182,49 +155,16 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
             ok = !completion->cancelled;
             timed_out = completion->timed_out;
             structured_answers = completion->answers;
-        } else {
-            // 保留旧渲染适配器的完成信号兼容性：升级期间某些测试/外层
-            // 适配器仍通过 ask_result_answers + ask_pending=false 唤醒 channel。
-            // 新会话路径优先使用结构化 completion；只有会话尚未完成时才读取
-            // 这个一次性兼容快照，避免丢失已经提交的答案。
-            ok = state.ask_result_ok;
-            if (!state.ask_result_answers.empty()) {
-                structured_answers.reserve(question_order.size());
-                for (const auto& question_id : question_order) {
-                    AskQuestionAnswer answer;
-                    const auto it = state.ask_result_answers.find(question_id);
-                    if (it == state.ask_result_answers.end() || it->second.empty() ||
-                        it->second == "Not answered") {
-                        answer.not_answered = true;
-                    } else {
-                        answer.selected.push_back(it->second);
-                    }
-                    structured_answers.push_back(std::move(answer));
-                }
-            }
+        } else if (state.ask_completion_override.has_value()) {
+            const auto& override_completion = *state.ask_completion_override;
+            ok = !override_completion.cancelled;
+            timed_out = override_completion.timed_out;
+            structured_answers = override_completion.answers;
         }
 
         state.ask_pending = false;
         state.ask_session.reset();
-        state.ask_questions.clear();
-        state.ask_question_order.clear();
-        state.ask_multi_selected.clear();
-        state.ask_multi_selected_by_question.clear();
-        state.ask_question_option_focus.clear();
-        state.ask_answered_questions.clear();
-        state.ask_selected_options.clear();
-        state.ask_custom_answer_selected.clear();
-        state.ask_custom_answers.clear();
-        state.ask_other_input_active = false;
-        state.ask_current_question = 0;
-        state.ask_submit_page = false;
-        state.ask_submit_focus = 0;
-        state.ask_option_focus = 0;
-        state.ask_scroll_offset = 0;
-        state.ask_scroll_total_rows = 0;
-        state.ask_scroll_visible_rows = 0;
-        state.ask_scrollbar_dragging = false;
-        state.ask_scroll_to_focus_requested = false;
+        state.ask_completion_override.reset();
         state.ask_origin_label.clear();
         state.ask_timeout_hint_seconds = 0;
         state.overlay_cv.notify_all();

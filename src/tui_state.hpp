@@ -213,85 +213,18 @@ struct TuiState {
     // 不可能同时为 true。渲染层的优先级仍然写成 `ask > confirm`,作为
     // 显式护栏,键盘事件则在 confirm 分支之前先被 ask 分支拦截。
     //   ask_pending          — 工具线程翻起 true,TUI 完成回答 / Esc 后翻回 false
-    //   ask_payload_json     — 原始参数 JSON,便于日志 / 调试
-    //   ask_questions        — parse 后的题目列表,TUI 直接按此渲染
-    //   ask_question_order   — question 文本的原始顺序,format_ask_answers 使用
-    //   ask_result_answers   — question 文本 → answer 字符串(multi-select 已 join)
-    //   ask_result_ok        — 提交成功时 true;Esc / shutdown 为 false
     //   ask_cv               — 工具线程 wait,事件线程 notify
-    // 下面是 overlay 内部的 navigation 状态,仅在 ask_pending=true 期间有效:
-    //   ask_current_question — 当前正在作答的题目下标
-    //   ask_submit_page      — true 时显示最终提交确认页,而非某个问题页
-    //   ask_submit_focus     — 提交页焦点:0 = Submit answers,1 = Cancel
-    //   ask_option_focus     — 当前题目的焦点选项下标([options.size()] 表示 "Other")
-    //   ask_question_option_focus — 每题最近焦点,用于左右换页后恢复
-    //   ask_answered_questions — 每题是否已通过 Enter/Other 正式提交过答案
-    //   ask_selected_options — 单选题已提交的选项下标;options.size() 表示 Other
-    //   ask_multi_selected   — 当前题目多选勾选标记(大小等于该题 options 数)
-    //   ask_multi_selected_by_question — 每题多选勾选状态,用于换页保持
-    //   ask_custom_answer_selected / ask_custom_answers — Other 已提交答案
-    //   ask_other_input_active — true 时输入框为 "Other" 自定义文本模式
+    // 下面是 overlay 内部的渲染适配状态,仅在 ask_pending=true 期间有效。
+    // 问答业务状态统一由 ask_session 持有,渲染/输入层必须读取 snapshot(),
+    // 不在 TuiState 中复制每题的选择、焦点或编辑文本。
     bool ask_pending = false;
     std::shared_ptr<tui::AskQuestionSession> ask_session;
+    // 仅用于测试/旧渲染适配器注入的一次性结构化完成结果。正常生产路径
+    // 直接读取 ask_session->completion();禁止使用字符串 map 传递答案。
+    std::optional<tui::AskQuestionCompletion> ask_completion_override;
     tui::AskQuestionConfig ask_config;
-    std::string ask_payload_json;
-    std::vector<AskQuestion> ask_questions;
-    std::vector<std::string> ask_question_order;
-    std::map<std::string, std::string> ask_result_answers;
-    bool ask_result_ok = false;
     std::condition_variable ask_cv;
-    int ask_current_question = 0;
-    bool ask_submit_page = false;
-    int ask_submit_focus = 0;
-    int ask_option_focus = 0;
-    std::vector<int> ask_question_option_focus;
-    std::vector<bool> ask_answered_questions;
-    std::vector<int> ask_selected_options;
-    std::vector<bool> ask_multi_selected;
-    std::vector<std::vector<bool>> ask_multi_selected_by_question;
-    std::vector<bool> ask_custom_answer_selected;
-    std::vector<std::string> ask_custom_answers;
-    bool ask_other_input_active = false;
-    int ask_scroll_offset = 0;
-    int ask_scroll_total_rows = 0;
-    int ask_scroll_visible_rows = 0;
-    bool ask_scrollbar_dragging = false;
-    bool ask_scroll_to_focus_requested = false;
-    // question_policy=timeout 时的静态提示秒数(add-ask-question-policy);
-    // >0 时 overlay 顶部渲染「N 秒无操作将自动选择推荐项」,0 = 无提示。
     int ask_timeout_hint_seconds = 0;
-    // 鼠标点击选项行支持(add-tui-ask-overlay-mouse-select):
-    //   左键按下命中选项行时记录按下位置与选项下标;松开时位移 ≤2 格
-    //   才视为一次点击(等价 Enter/Space),否则当作拖拽选词继续走复制
-    //   文本路径。submit_page/question 快照用于防止按下与松开之间翻页
-    //   后仍把旧下标的点击套到新页面上。
-    //   ask_row_option_indices 是渲染帧产出的 layout row → option_index
-    //   映射(非选项行为 -1),供事件线程把点击行映射回选项下标。
-    int ask_mouse_press_x = -1;
-    int ask_mouse_press_y = -1;
-    int ask_mouse_press_option = -1;
-    int ask_mouse_press_target_kind = 0;
-    int ask_mouse_press_target_question = -1;
-    bool ask_mouse_press_submit_page = false;
-    int ask_mouse_press_question = -1;
-    std::vector<int> ask_row_option_indices;
-    std::vector<int> ask_row_target_kinds;
-    std::vector<int> ask_row_target_questions;
-    std::vector<std::size_t> ask_row_text_byte_begins;
-    std::vector<std::size_t> ask_row_text_byte_ends;
-    int ask_layout_number_width = 0;
-    int ask_scrollbar_thumb_y = 0;
-    int ask_scrollbar_thumb_height = 0;
-    int ask_scrollbar_grab_offset = 0;
-    bool ask_mouse_dragging_text = false;
-    bool ask_terminal_too_narrow = false;
-    // 鼠标单击/双击判定只保存适配层状态；同一逻辑命中区域 500ms 内
-    // 的第二次点击才提交预设项，自定义项双击仍只保持编辑态。
-    std::chrono::steady_clock::time_point ask_last_click_at{};
-    int ask_last_click_option = -1;
-    int ask_last_click_target_kind = 0;
-    bool ask_last_click_submit_page = false;
-    int ask_last_click_question = -1;
 
     // Resume session picker state
     struct ResumeItem {

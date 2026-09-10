@@ -32,7 +32,7 @@ TUI SHALL 对单题请求使用快问模式：完成当前答案后直接提交�
 
 ### Requirement: 预设与自定义答案语义
 
-预设项 SHALL 显示为数字、选择标记、标题列和说明列。单选未选/已选标记分别为 `( )` / `(●)`，多选为 `[ ]` / `[x]`。标题列 SHALL 使用正常前景色，说明列 SHALL 使用弱化前景色，并在自身列折行。推荐项 SHALL 显示 `[Recommended]` 但不得自动选中。
+预设项 SHALL 显示为数字、选择标记、标题列和说明列。单选未选/已选标记分别为 `( )` / `(*)`，多选为 `[ ]` / `[x]`。标题列 SHALL 使用正常前景色，说明列 SHALL 使用弱化前景色，并在自身列折行。推荐项 SHALL 显示 `[Recommended]` 但不得自动选中。
 
 自定义项 SHALL 位于预设项后，并使用“预设项数量 + 1”的数字编号。空且未选中时 SHALL 显示 `Type your own answer here`。单选题选择自定义项 MUST 清除预设选择；改选预设项 MUST 取消自定义激活但保留草稿。多选题可同时保留预设项和激活的非空自定义补充。提交时预设 label 按显示顺序输出，非空自定义文本最后追加；没有有效答案时 SHALL 输出 `Not answered`。
 
@@ -107,7 +107,7 @@ timeout 到期时，TUI MUST 对每题保留有效预设或已完成自定义答
 
 ### Requirement: TUI 配置校验
 
-系统 SHALL 支持 `tui.question_min_visible_rows`，默认 4、合法范围 [2,12]，以及 `tui.question_selection_feedback_ms`，默认 200、合法范围 [0,1000]。配置加载层 MUST 在非法值时统一钳制到默认或边界并通过既有配置警告日志输出一次诊断；控制器 MUST 只接收已校验配置。
+系统 SHALL 支持 `tui.question_min_visible_rows`，默认 4、合法范围 [2,12]，以及 `tui.question_selection_feedback_ms`，默认 200、合法范围 [0,1000]。`question_min_visible_rows` 是当前可见内容行数的最小目标值；实际空间不足时 MUST 按当前终端视口降级，不得强行撑大问答面板。配置加载层 MUST 在非法值时统一钳制到默认或边界并通过既有配置警告日志输出一次诊断；控制器 MUST 只接收已校验配置。
 
 #### Scenario: 非法反馈时长
 

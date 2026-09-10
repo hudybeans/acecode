@@ -398,7 +398,11 @@ TEST(TuiInputPointerTest, EnablesOnlyEditablePromptStates) {
     state.ask_pending = true;
     EXPECT_EQ(acecode::tui::input_pointer_target(state),
               acecode::tui::InputPointerTarget::None);
-    state.ask_other_input_active = true;
+    auto session = std::make_shared<acecode::tui::AskQuestionSession>(
+        std::vector<acecode::AskQuestion>{{"Question", "", {}, false}});
+    state.ask_session = std::move(session);
+    state.ask_session->dispatch({
+        acecode::tui::AskQuestionEventKind::BeginCustom});
     EXPECT_EQ(acecode::tui::input_pointer_target(state),
               acecode::tui::InputPointerTarget::AskOther);
 

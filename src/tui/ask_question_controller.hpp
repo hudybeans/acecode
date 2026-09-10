@@ -134,7 +134,6 @@ struct AskQuestionSnapshot {
     std::string question_header;
     std::string custom_text;
     bool custom_selected = false;
-    int submit_focus = 0;
     bool multi_select = false;
     AskQuestionEditorSnapshot editor;
     std::vector<AskQuestionItemSnapshot> options;
@@ -177,7 +176,6 @@ private:
     int scroll_offset_ = 0;
     bool editing_custom_ = false;
     bool feedback_locked_ = false;
-    int submit_focus_ = 0;
     bool finished_ = false;
     bool cancelled_ = false;
     bool timed_out_ = false;

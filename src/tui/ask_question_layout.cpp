@@ -208,11 +208,9 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
     const int row_content_width = std::max(1, content_width - 3);
     layout.number_width = std::min(8, std::max(1, row_content_width / 5));
     const int columns_width = std::max(2, row_content_width - layout.number_width);
-    const int content_rows = std::max(1, input.viewport_height - 5);
+    const int available_rows = std::max(1, input.viewport_height);
     const int requested_minimum = std::clamp(input.minimum_visible_rows, 2, 12);
-    layout.visible_rows = std::min(
-        std::max(1, input.viewport_height),
-        std::max(content_rows, requested_minimum));
+    layout.visible_rows = available_rows;
     layout.title_width = columns_width < 16
         ? std::max(1, columns_width / 2)
         : std::clamp(columns_width * 2 / 5, 8, 36);
@@ -247,12 +245,6 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
                            !answer.not_answered, answer.auto_selected, y++);
             }
         }
-        append_row(layout, AskQuestionLayoutKind::Submit, -1, 0,
-                   "1", "Submit answers", {}, snapshot.submit_focus == 0,
-                   false, false, y++);
-        append_row(layout, AskQuestionLayoutKind::Cancel, -1, 1,
-                   "2", "Cancel", {}, snapshot.submit_focus == 1,
-                   false, false, y++);
     } else {
         append_row(layout, AskQuestionLayoutKind::Header,
                    snapshot.current_question, -1, {},
@@ -333,6 +325,9 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
                                           -1, -1, {}, input.toast, {}, false, false,
                                           false, y++);
     layout.total_rows = static_cast<int>(layout.rows.size());
+    layout.visible_rows = std::min(
+        available_rows,
+        std::max(layout.total_rows, requested_minimum));
     int requested_scroll = snapshot.scroll_offset;
     int focused_begin = -1;
     int focused_end = -1;
@@ -407,7 +402,8 @@ int hit_test_ask_question_layout(const AskQuestionLayout& layout, int x, int y) 
 AskQuestionHit hit_test_ask_question_target(const AskQuestionLayout& layout,
                                             int x,
                                             int y) {
-    if (layout.scrollbar_track.contains(x, y)) {
+    if (layout.total_rows > layout.visible_rows &&
+        layout.scrollbar_track.contains(x, y)) {
         return {AskQuestionHitKind::Scrollbar, -1, -1};
     }
     for (const auto& row : layout.rows) {
@@ -424,10 +420,6 @@ AskQuestionHit hit_test_ask_question_target(const AskQuestionLayout& layout,
                     ? AskQuestionHit{AskQuestionHitKind::SummaryQuestion,
                                      row.question_index, -1}
                     : AskQuestionHit{AskQuestionHitKind::None, -1, -1};
-            case AskQuestionLayoutKind::Submit:
-                return {AskQuestionHitKind::Submit, -1, -1};
-            case AskQuestionLayoutKind::Cancel:
-                return {AskQuestionHitKind::Cancel, -1, -1};
             default:
                 break;
         }

@@ -24,8 +24,6 @@ enum class AskQuestionLayoutKind {
     Option,
     Custom,
     Summary,
-    Submit,
-    Cancel,
     Hint,
     Origin,
     Toast,
@@ -36,8 +34,6 @@ enum class AskQuestionHitKind {
     Option,
     Custom,
     SummaryQuestion,
-    Submit,
-    Cancel,
     Scrollbar,
 };
 
@@ -66,6 +62,9 @@ struct AskQuestionLayoutRow {
 struct AskQuestionLayoutInput {
     const AskQuestionSnapshot* snapshot = nullptr;
     int viewport_width = 80;
+    // Height available to the question rows, excluding the overlay border and
+    // footer. Callers must measure this from the current frame; the layout does
+    // not reserve a fixed number of terminal rows.
     int viewport_height = 20;
     int minimum_visible_rows = 4;
     int timeout_remaining_seconds = 0;
