@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACECode Logo 预览</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: #263d50;
+      background: #f3f4f6;
+      accent-color: #486879;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; display: flex; flex-direction: column; }
+    ::selection { background: #c0eaf1; color: #263d50; }
+    button, input { font: inherit; }
+    button { min-height: 36px; border: 1px solid #c1cbd1; border-radius: 0; padding: 7px 12px; background: transparent; color: inherit; cursor: pointer; }
+    button:hover { background: #e2e8ec; }
+    :focus-visible { outline: 2px solid #355a73; outline-offset: 4px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 28px; }
+    h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    .actions { display: flex; gap: 8px; }
+    .download { background: #263d50; color: #fff; border-color: #263d50; }
+    .download:hover { background: #3b596e; border-color: #3b596e; }
+    .stage { flex: 1; min-height: 350px; display: grid; place-items: center; padding: 12px 24px; background: #f3f4f6; }
+    .stage[data-background="white"] { background: #fff; }
+    .stage[data-background="dark"] { background: #17232f; }
+    .stage > svg { display: block; width: min(100%, 620px); height: auto; max-height: 68svh; }
+    footer { padding: 24px 28px 30px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 24px 42px; }
+    .adjustment { width: 185px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px 16px; }
+    label, legend { font-size: 13px; font-weight: 500; }
+    output { font-size: 12px; font-variant-numeric: tabular-nums; }
+    input[type="range"] { appearance: none; width: 100%; height: 28px; grid-column: 1 / -1; margin: 0; background: transparent; cursor: pointer; }
+    input[type="range"]::-webkit-slider-runnable-track { height: 2px; background: #bac8d0; }
+    input[type="range"]::-moz-range-track { height: 2px; background: #bac8d0; }
+    input[type="range"]::-webkit-slider-thumb { appearance: none; width: 12px; height: 18px; border: 0; border-radius: 0; background: #486879; margin-top: -8px; }
+    input[type="range"]::-moz-range-thumb { width: 12px; height: 18px; border: 0; border-radius: 0; background: #486879; }
+    fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+    legend { padding: 0; margin-bottom: 10px; }
+    .backgrounds { display: flex; gap: 6px; }
+    .backgrounds button { min-width: 58px; font-size: 12px; }
+    .backgrounds button[aria-pressed="true"] { border-color: #486879; background: #dce6eb; }
+    @media (max-width: 600px) {
+      header { padding: 16px; gap: 10px; }
+      h1 { font-size: 14px; }
+      .actions { gap: 6px; }
+      .actions button { padding: 7px 9px; font-size: 12px; }
+      .stage { min-height: 300px; padding: 16px; }
+      footer { padding: 20px 24px 26px; gap: 18px; }
+      .adjustment { width: calc(50% - 9px); }
+      fieldset { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ACECode Logo</h1>
+    <div class="actions">
+      <button id="reset" type="button">恢复默认</button>
+      <button id="download" class="download" type="button">下载 SVG</button>
+    </div>
+  </header>
+  <main class="stage" id="stage" data-background="gray" aria-label="Logo 效果预览">
+    <!-- Inline the companion SVG here so this preview works offline. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="512"
+  height="512"
+  viewBox="0 0 512 512"
+  fill="none"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">ACECode mark</title>
+  <desc id="description">The original white A and cyan terminal prompt with a thin blue-gray outline and a crisp shadow cast toward the lower right, on a transparent background.</desc>
+
+  <defs>
+    <linearGradient id="letter" x1="92" y1="126" x2="314" y2="388" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white"/>
+      <stop offset="1" stop-color="#E0F2FE"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="345" y1="199" x2="432" y2="313" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CFFAFE"/>
+      <stop offset="1" stop-color="#67E8F9"/>
+    </linearGradient>
+    <filter id="mark-shadow" x="32" y="88" width="488" height="368" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow id="shadow-projection" dx="12" dy="12" stdDeviation="0" flood-color="#263343" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <g transform="translate(-16 -6)" filter="url(#mark-shadow)">
+    <path
+      id="letter-shape"
+      fill="url(#letter)"
+      stroke="#486879"
+      stroke-width="4"
+      stroke-linejoin="miter"
+      paint-order="stroke fill"
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M73 384L164.5 139.5C169.1 127.2 178.3 121 192 121H210C223.7 121 232.9 127.2 237.5 139.5L329 384H265L245.7 326H154.3L135 384H73ZM174.7 266H225.3L200.3 190.8L174.7 266Z"
+    />
+    <path
+      id="prompt-outline"
+      d="M348 203L431 256L348 309"
+      stroke="#486879"
+      stroke-width="42"
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+    />
+    <path
+      id="prompt-shape"
+      d="M348 203L431 256L348 309"
+      stroke="url(#prompt)"
+      stroke-width="38"
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+    />
+  </g>
+</svg>
+  </main>
+  <footer aria-label="调整 Logo 效果">
+    <div class="adjustment">
+      <label for="outline-width">描边粗细</label>
+      <output id="outline-value" for="outline-width">2</output>
+      <input id="outline-width" type="range" min="0" max="5" step="0.25" value="2">
+    </div>
+    <div class="adjustment">
+      <label for="shadow-distance">阴影距离</label>
+      <output id="shadow-value" for="shadow-distance">12</output>
+      <input id="shadow-distance" type="range" min="0" max="24" step="1" value="12">
+    </div>
+    <fieldset>
+      <legend>预览背景</legend>
+      <div class="backgrounds">
+        <button type="button" data-background="gray" aria-pressed="true">浅灰</button>
+        <button type="button" data-background="white" aria-pressed="false">纯白</button>
+        <button type="button" data-background="dark" aria-pressed="false">深色</button>
+      </div>
+    </fieldset>
+  </footer>
+  <script>
+    const stage = document.getElementById('stage');
+    const svg = stage.querySelector('svg');
+    const outlineWidth = document.getElementById('outline-width');
+    const shadowDistance = document.getElementById('shadow-distance');
+    const backgrounds = [...document.querySelectorAll('button[data-background]')];
+
+    function updateMark() {
+      const outline = Number(outlineWidth.value);
+      const distance = Number(shadowDistance.value);
+      svg.querySelector('#letter-shape').setAttribute('stroke-width', outline * 2);
+      svg.querySelector('#prompt-outline').setAttribute('stroke-width', 38 + outline * 2);
+      const shadow = svg.querySelector('#shadow-projection');
+      shadow.setAttribute('dx', distance);
+      shadow.setAttribute('dy', distance);
+      document.getElementById('outline-value').value = String(outline);
+      document.getElementById('shadow-value').value = String(distance);
+    }
+
+    function setBackground(background) {
+      stage.dataset.background = background;
+      backgrounds.forEach(button => {
+        button.setAttribute('aria-pressed', String(button.dataset.background === background));
+      });
+    }
+
+    outlineWidth.addEventListener('input', updateMark);
+    shadowDistance.addEventListener('input', updateMark);
+    backgrounds.forEach(button => button.addEventListener('click', () => setBackground(button.dataset.background)));
+    document.getElementById('reset').addEventListener('click', () => {
+      outlineWidth.value = '2';
+      shadowDistance.value = '12';
+      setBackground('gray');
+      updateMark();
+    });
+    document.getElementById('download').addEventListener('click', () => {
+      const markup = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
+      const url = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'acecode-mark.svg';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  </script>
+</body>
+</html>
