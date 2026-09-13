@@ -2352,6 +2352,23 @@ std::optional<crow::response> WebServer::Impl::parse_session_options(
     return std::nullopt;
 }
 
+crow::response WebServer::Impl::session_route_failure(const crow::request& req,
+                                                      const char* error_code,
+                                                      const std::string& cwd,
+                                                      const std::exception& e) {
+    // e.what() 可能是系统代码页文本(中文 Windows 上 std::system_error 的
+    // 消息是 GBK),进 JSON 前必须转成合法 UTF-8,否则 dump() 自己再抛一次。
+    const std::string message = ensure_utf8(e.what());
+    LOG_ERROR("[web] " + std::string(error_code) + " cwd=" + cwd +
+              " exception=" + message);
+    crow::response r(500);
+    r.body = json{{"error", error_code},
+                  {"message", message},
+                  {"cwd", cwd}}.dump();
+    r.add_header("Content-Type", "application/json");
+    return with_cors(req, std::move(r));
+}
+
 std::optional<SessionModelState> WebServer::Impl::current_model_state_for_session(
     const std::string& session_id,
     const std::string& workspace_hash_hint) const {

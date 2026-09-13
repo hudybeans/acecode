@@ -13,13 +13,13 @@ namespace fs = std::filesystem;
 
 namespace acecode {
 
-std::string cwd_model_override_path(const fs::path& cwd) {
-    std::string project_dir = SessionStorage::get_project_dir(path_to_utf8(cwd));
+std::string cwd_model_override_path(const std::string& cwd_utf8) {
+    std::string project_dir = SessionStorage::get_project_dir(cwd_utf8);
     return path_to_utf8(path_from_utf8(project_dir) / "model_override.json");
 }
 
-std::optional<std::string> load_cwd_model_override(const fs::path& cwd) {
-    std::string path = cwd_model_override_path(cwd);
+std::optional<std::string> load_cwd_model_override(const std::string& cwd_utf8) {
+    std::string path = cwd_model_override_path(cwd_utf8);
     std::error_code ec;
     if (!fs::exists(path_from_utf8(path), ec) || ec) return std::nullopt;
 
@@ -43,8 +43,8 @@ std::optional<std::string> load_cwd_model_override(const fs::path& cwd) {
     }
 }
 
-void save_cwd_model_override(const fs::path& cwd, const std::string& name) {
-    std::string path = cwd_model_override_path(cwd);
+void save_cwd_model_override(const std::string& cwd_utf8, const std::string& name) {
+    std::string path = cwd_model_override_path(cwd_utf8);
     std::string tmp = path + ".tmp";
 
     try {
@@ -88,8 +88,8 @@ void save_cwd_model_override(const fs::path& cwd, const std::string& name) {
     }
 }
 
-void remove_cwd_model_override(const fs::path& cwd) {
-    std::string path = cwd_model_override_path(cwd);
+void remove_cwd_model_override(const std::string& cwd_utf8) {
+    std::string path = cwd_model_override_path(cwd_utf8);
     std::error_code ec;
     fs::remove(path_from_utf8(path), ec);
     if (ec) {

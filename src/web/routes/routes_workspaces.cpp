@@ -530,6 +530,8 @@ void WebServer::Impl::register_workspaces() {
                               {"message", ex.what()}}.dump();
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
+            } catch (const std::exception& ex) {
+                return session_route_failure(req, "SESSION_CREATE_FAILED", ws->cwd, ex);
             }
             LOG_INFO("[web] workspace session created hash=" + ws->hash + " id=" + id);
             if (global_session_search) {
@@ -594,7 +596,12 @@ void WebServer::Impl::register_workspaces() {
             }
             // Registry 自己在短共享锁内取得 config+revision 快照；外层不再
             // 重入同一 shared_mutex，耗时的 jsonl 恢复和 Provider 构造均无锁。
-            const bool resumed = deps.session_client->resume_session(id, opts);
+            bool resumed = false;
+            try {
+                resumed = deps.session_client->resume_session(id, opts);
+            } catch (const std::exception& ex) {
+                return session_route_failure(req, "SESSION_RESUME_FAILED", ws->cwd, ex);
+            }
             if (!resumed) {
                 if (SessionStorage::has_incompatible_pid_session_files(project_dir, id)) {
                     crow::response r(409);

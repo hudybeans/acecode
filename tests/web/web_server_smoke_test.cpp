@@ -284,6 +284,27 @@ private:
     bool released_ = false;
 };
 
+// 会话 create / resume / destroy 一律抛 std::runtime_error 的 SessionClient。
+// 用来模拟 SessionRegistry 深处逃逸出来的非 invalid_argument 异常(线上案例:
+// 中文 cwd 触发 std::filesystem::path 的代码页转换抛 std::system_error),
+// 验证路由层与 Crow 全局兜底把它变成带原因的 JSON 500 而不是空 body。
+class ThrowingSessionClient final : public acecode::LocalSessionClient {
+public:
+    explicit ThrowingSessionClient(acecode::SessionRegistry& registry)
+        : acecode::LocalSessionClient(registry) {}
+
+    std::string create_session(const acecode::SessionOptions&) override {
+        throw std::runtime_error("boom: create");
+    }
+    bool resume_session(const std::string&,
+                        const acecode::SessionOptions& = {}) override {
+        throw std::runtime_error("boom: resume");
+    }
+    void destroy_session(const std::string&) override {
+        throw std::runtime_error("boom: destroy");
+    }
+};
+
 class TurnSteeringProvider : public acecode::LlmProvider {
 public:
     acecode::ChatResponse chat(const std::vector<acecode::ChatMessage>&,
@@ -3426,6 +3447,116 @@ TEST(WebServerHttp, WorkspaceScopedSessionLifecycle) {
     EXPECT_EQ(sessions[0]["id"], created["session_id"]);
     EXPECT_EQ(sessions[0]["workspace_hash"], other_hash);
     EXPECT_EQ(sessions[0]["cwd"], other_cwd);
+}
+
+// 回归(2026-09-11 用户反馈:「新建会话失败:HTTP 500: 500 Internal Server Error」):
+// Desktop 目录选择器注册 workspace 用的是正斜杠形态,例如
+// `E:/SS项目数据库/SS项目数据库V2.0`。该 cwd 一路以 UTF-8 string 传到
+// SessionRegistry::make_entry_locked → load_cwd_model_override(opts.cwd);修复前
+// 后者的参数是 std::filesystem::path,MSVC 的隐式 string→path 转换按系统 ANSI
+// 代码页 + MB_ERR_INVALID_CHARS 解码 —— `库/` 的字节 `93 2F` 在 GBK(CP936)里
+// 0x2F 不是合法尾字节,MultiByteToWideChar 报 1113,构造 path 抛 std::system_error,
+// 路由只接 invalid_argument,于是 Crow 回裸 500,daemon 日志里只剩一行
+// `workspace registered`。
+// 触发场景:注册一个目录名含奇数个 CJK 字符、后面紧跟 `/` 的 workspace,再
+// POST 新建会话。
+// 期望行为:201,响应里的 cwd 与注册时逐字节相同;列表接口能看到这条会话。
+// 注意:该用例只有在系统代码页是 CJK 双字节页(如 zh-CN 的 936)的机器上才会在
+// 修复前失败;CI(1252)上修复前后都过 —— 真正跨代码页的哨兵是
+// tests/provider/cwd_model_override_test.cpp 里的 hash 一致性用例。
+TEST(WebServerHttp, WorkspaceSessionCreateWorksForCjkCwdRegisteredWithForwardSlashes) {
+    WebServerFixture fx;
+    const std::string cjk_cwd =
+        acecode::path_to_utf8_generic(fx.tmp_dir) + "/SS项目数据库/SS项目数据库V2.0";
+    std::filesystem::create_directories(path_from_utf8(cjk_cwd));
+    const std::string cjk_hash = acecode::compute_cwd_hash(cjk_cwd);
+    RemoveTreeOnExit project_cleanup{
+        path_from_utf8(acecode::SessionStorage::get_project_dir(cjk_cwd)),
+    };
+
+    auto post_ws = cpr::Post(cpr::Url{fx.url("/api/workspaces")},
+                             cpr::Header{{"Content-Type", "application/json"}},
+                             cpr::Body{json{{"cwd", cjk_cwd}}.dump()});
+    ASSERT_EQ(post_ws.status_code, 201) << post_ws.text;
+    EXPECT_EQ(json::parse(post_ws.text)["cwd"], cjk_cwd);
+
+    auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + cjk_hash + "/sessions")},
+                            cpr::Header{{"Content-Type", "application/json"}},
+                            cpr::Body{R"({})"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    auto created = json::parse(create.text);
+    ASSERT_TRUE(created.contains("session_id"));
+    EXPECT_EQ(created["workspace_hash"], cjk_hash);
+    EXPECT_EQ(created["cwd"], cjk_cwd);
+
+    auto list = cpr::Get(cpr::Url{fx.url("/api/workspaces/" + cjk_hash + "/sessions")});
+    ASSERT_EQ(list.status_code, 200) << list.text;
+    auto sessions = json::parse(list.text);
+    ASSERT_TRUE(sessions.is_array());
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions[0]["id"], created["session_id"]);
+}
+
+// 场景:SessionClient 的 create / resume 抛出非 invalid_argument 的 std::exception
+// (ThrowingSessionClient 模拟 SessionRegistry 深处的运行期异常)。
+// 期望行为:四条会话路由(workspace 级 + 兼容级各一对 create/resume)都回 500,
+// body 是 JSON `{error, message, cwd}`,message 带上异常原文,cwd 是会话目录 ——
+// 前端 toast 直接显示原因,而不是修复前的裸 "500 Internal Server Error"。
+TEST(WebServerHttp, SessionRoutesReportEscapedExceptionsAsJson500) {
+    WebServerFixture fx(WebServerFixture::SessionClientFactory{
+        [](acecode::SessionRegistry& registry)
+            -> std::unique_ptr<acecode::LocalSessionClient> {
+            return std::make_unique<ThrowingSessionClient>(registry);
+        }});
+    const std::string hash = acecode::compute_cwd_hash(fx.cwd);
+    const cpr::Header json_header{{"Content-Type", "application/json"}};
+
+    struct Case {
+        std::string path;
+        std::string error_code;
+        std::string message_fragment;
+    };
+    const std::vector<Case> cases = {
+        {"/api/workspaces/" + hash + "/sessions", "SESSION_CREATE_FAILED", "boom: create"},
+        {"/api/sessions", "SESSION_CREATE_FAILED", "boom: create"},
+        {"/api/workspaces/" + hash + "/sessions/20260911-000000-dead/resume",
+         "SESSION_RESUME_FAILED", "boom: resume"},
+        {"/api/sessions/20260911-000000-dead/resume",
+         "SESSION_RESUME_FAILED", "boom: resume"},
+    };
+    for (const auto& c : cases) {
+        auto r = cpr::Post(cpr::Url{fx.url(c.path)}, json_header, cpr::Body{R"({})"});
+        EXPECT_EQ(r.status_code, 500) << c.path << ": " << r.text;
+        EXPECT_NE(r.header["Content-Type"].find("application/json"), std::string::npos)
+            << c.path << ": " << r.header["Content-Type"];
+        json body;
+        ASSERT_NO_THROW(body = json::parse(r.text)) << c.path << ": " << r.text;
+        EXPECT_EQ(body.value("error", ""), c.error_code) << c.path;
+        EXPECT_NE(body.value("message", "").find(c.message_fragment), std::string::npos)
+            << c.path << ": " << r.text;
+        EXPECT_EQ(body.value("cwd", ""), fx.cwd) << c.path;
+    }
+}
+
+// 场景:没有路由级 try/catch 的 handler(DELETE /api/sessions/:id 直接调
+// destroy_session)抛 std::exception,走 Crow 的全局 exception_handler。
+// 期望行为:修复前 Crow 默认实现回空 body 的 500、原因只写 stderr(Desktop 下是
+// NUL);现在回 JSON `{error:"INTERNAL_ERROR", message:<异常原文>}`。
+TEST(WebServerHttp, UncaughtRouteExceptionBecomesJson500) {
+    WebServerFixture fx(WebServerFixture::SessionClientFactory{
+        [](acecode::SessionRegistry& registry)
+            -> std::unique_ptr<acecode::LocalSessionClient> {
+            return std::make_unique<ThrowingSessionClient>(registry);
+        }});
+
+    auto r = cpr::Delete(cpr::Url{fx.url("/api/sessions/20260911-000000-dead")});
+    EXPECT_EQ(r.status_code, 500) << r.text;
+    EXPECT_NE(r.header["Content-Type"].find("application/json"), std::string::npos)
+        << r.header["Content-Type"];
+    json body;
+    ASSERT_NO_THROW(body = json::parse(r.text)) << r.text;
+    EXPECT_EQ(body.value("error", ""), "INTERNAL_ERROR");
+    EXPECT_NE(body.value("message", "").find("boom: destroy"), std::string::npos) << r.text;
 }
 
 TEST(WebServerHttp, WorkspaceHintLoadsInactiveTranscriptFromRequestedProject) {

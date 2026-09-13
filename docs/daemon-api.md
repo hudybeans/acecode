@@ -848,6 +848,22 @@ The compatibility `POST /api/sessions` response includes:
 }
 ```
 
+Session create/resume failures that escape the registry as a generic
+`std::exception` (for example a filesystem or encoding error while resolving
+the workspace directory) return `500` with a JSON body instead of an empty
+Crow error page, on both the compatibility and the workspace-scoped routes:
+
+```json
+{"error":"SESSION_CREATE_FAILED","message":"<exception text>","cwd":"E:/repo"}
+```
+
+Resume uses `"error":"SESSION_RESUME_FAILED"`. Invalid expert bindings keep
+returning `400 {"error":"INVALID_EXPERT"}`. Any other route handler that lets an
+exception escape returns `500 {"error":"INTERNAL_ERROR","message":"<exception
+text>"}`; the same text is written to the daemon log as an `ERR` line, so a
+bare `500 Internal Server Error` body no longer occurs for daemon-side
+exceptions.
+
 ### Model-facing thread and workspace tools
 
 Daemon, TUI, and headless runtimes expose the same in-process thread and

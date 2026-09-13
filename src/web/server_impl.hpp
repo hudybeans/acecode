@@ -519,6 +519,14 @@ struct WebServer::Impl {
     std::optional<SessionModelState> current_model_state_for_session(
         const std::string& session_id,
         const std::string& workspace_hash_hint = {}) const;
+    // 会话 create/resume 路由里逃逸的 std::exception 统一收口:记 ERROR 日志
+    // (带 cwd 上下文)并返回 JSON 500 `{error, message, cwd}`。没有这层时异常
+    // 交给 Crow 变成裸 "500 Internal Server Error",原因只会写到 stderr ——
+    // Desktop 托管的 daemon stderr 指向 NUL,用户与日志两边都看不到任何线索。
+    crow::response session_route_failure(const crow::request& req,
+                                         const char* error_code,
+                                         const std::string& cwd,
+                                         const std::exception& e);
 
     // -----------------------------------------------------------------
     // 路由注册  (each defined in its own routes/routes_*.cpp)
