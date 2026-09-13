@@ -2,6 +2,8 @@
 // 提交前的快速校验,避免没必要的 4xx 往返。规则与后端 saved_models_editor
 // 保持一致;后端是真值源,前端不重复实现复杂分支。
 
+import { expandModelAliases } from './modelAlias.js';
+
 export const MODEL_CAPABILITY_OPTIONS = [
   {
     id: 'vision',
@@ -400,39 +402,23 @@ export function normalizeModelProbeResult(result) {
   return { models, contextWindows, capabilitiesByModel };
 }
 
-export function modelNameSlug(value, fallback = 'model') {
-  const cleaned = String(value || '')
-    .trim()
-    .replace(/^\(+/, '')
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-  return cleaned || fallback;
-}
-
-export function buildModelDraftsFromSelection(draft) {
+// 把多选草稿拆成每个模型一份的单模型草稿。名字按 modelAlias.js 的规则展开:
+// 单选 = 别名原样(空则模型 ID),多选 = <别名前缀>-<模型 ID>,并对 existingNames
+// (已保存条目)去重。editing 模式只拆不改名 —— 编辑现有条目时空名应当报
+// INVALID_NAME 而不是悄悄改成模型 ID,交给 buildModelMutationPayload 处理。
+export function buildModelDraftsFromSelection(
+  draft,
+  { existingNames = [], editing = false } = {},
+) {
   const ids = splitModelIds(draft?.model);
   if (ids.length === 0) return [];
-  const baseName = String(draft?.name || '').trim();
-  const seenNames = new Set();
-  return ids.map((modelId, index) => {
-    const modelSlug = modelNameSlug(modelId, `model-${index + 1}`);
-    const rawName = ids.length === 1
-      ? modelNameSlug(baseName || modelId, modelSlug)
-      : baseName
-        ? `${modelNameSlug(baseName)}-${modelSlug}`
-        : modelSlug;
-    let name = rawName;
-    let suffix = 2;
-    while (seenNames.has(name)) {
-      name = `${rawName}-${suffix}`;
-      suffix += 1;
-    }
-    seenNames.add(name);
-    return {
-      ...draft,
-      name,
-      model: modelId,
-    };
-  });
+  const alias = String(draft?.name || '').trim();
+  const names = editing
+    ? ids.map(() => alias)
+    : expandModelAliases(alias, ids, { existingNames });
+  return ids.map((modelId, index) => ({
+    ...draft,
+    name: names[index],
+    model: modelId,
+  }));
 }

@@ -6,10 +6,11 @@ import {
   applyCatalogProviderToDraft,
   buildModelMutationPayload,
   buildModelMutationPayloads,
-  compatibleCredentialSources,
   emptyModelProfileDraft,
   hasAdvancedModelValues,
+  isAutoModelAlias,
   markModelMetadataOverrides,
+  modelAliasProviderName,
   modelFieldPolicy,
   modelNameSuggestion,
   modelProfileDraftFromSaved,
@@ -20,6 +21,7 @@ import {
   redactModelDraftSecrets,
   replaceDraftModelsFromProbe,
   serializeModelReasoningMutation,
+  syncAutoModelAlias,
   toggleCatalogModelInDraft,
   toggleModelCapability,
   validateModelProfileDraft,
@@ -769,82 +771,9 @@ run('有密钥的 catalog OpenAI 切到 no-auth 本地 Provider 会明确清除�
   assert.equal(Object.hasOwn(result.payload, 'api_key'), false);
 });
 
-run('凭据复用只接受 Provider、规范 Base URL 与 models.dev 身份均匹配的条目', () => {
-  const models = [
-    {
-      name: 'openrouter-key', provider: 'openai', model: 'a', has_api_key: true,
-      base_url: 'https://openrouter.ai/api/v1/', models_dev_provider_id: 'openrouter',
-    },
-    {
-      name: 'wrong-provider', provider: 'anthropic', model: 'b', has_api_key: true,
-      base_url: 'https://openrouter.ai/api/v1', models_dev_provider_id: 'openrouter',
-    },
-    {
-      name: 'no-key', provider: 'openai', model: 'c', has_api_key: false,
-      base_url: 'https://openrouter.ai/api/v1', models_dev_provider_id: 'openrouter',
-    },
-  ];
-  const draft = {
-    provider: 'openai',
-    base_url: 'HTTPS://OPENROUTER.AI/api/v1',
-    models_dev_provider_id: 'openrouter',
-  };
-  assert.deepEqual(compatibleCredentialSources(models, draft).map((item) => item.name), [
-    'openrouter-key',
-  ]);
-});
-
-run('凭据复用规范 scheme/host/尾斜杠但保留大小写敏感 URL path', () => {
-  const models = [{
-    name: 'upper-path',
-    provider: 'openai',
-    model: 'a',
-    has_api_key: true,
-    base_url: 'HTTPS://Gateway.Example:443/TeamAPI/',
-    models_dev_provider_id: 'private',
-  }];
-  const baseDraft = {
-    provider: 'openai',
-    models_dev_provider_id: 'private',
-  };
-  assert.deepEqual(compatibleCredentialSources(models, {
-    ...baseDraft,
-    base_url: 'https://gateway.example/TeamAPI',
-  }).map((item) => item.name), ['upper-path']);
-  assert.deepEqual(compatibleCredentialSources(models, {
-    ...baseDraft,
-    base_url: 'https://gateway.example/teamapi',
-  }), []);
-});
-
-run('凭据复用保留大小写敏感的 URL query 与 fragment 身份', () => {
-  const models = [{
-    name: 'scoped-key',
-    provider: 'openai',
-    model: 'a',
-    has_api_key: true,
-    base_url: 'HTTPS://Gateway.Example:443/api/?Tenant=TeamA#RouteOne',
-    models_dev_provider_id: 'private',
-  }];
-  const baseDraft = {
-    provider: 'openai',
-    models_dev_provider_id: 'private',
-  };
-  assert.deepEqual(compatibleCredentialSources(models, {
-    ...baseDraft,
-    base_url: 'https://gateway.example/api?Tenant=TeamA#RouteOne',
-  }).map((item) => item.name), ['scoped-key']);
-  assert.deepEqual(compatibleCredentialSources(models, {
-    ...baseDraft,
-    base_url: 'https://gateway.example/api?tenant=teama#routeone',
-  }), []);
-  assert.deepEqual(compatibleCredentialSources(models, {
-    ...baseDraft,
-    base_url: 'https://gateway.example/api?Tenant=TeamA#RouteTwo',
-  }), []);
-});
-
-run('自定义 OpenAI 兼容 API 的空预设名称精确回退 Model ID', () => {
+// 场景:别名留空提交 → 无论自定义兼容 API 还是目录 Provider,保存名都精确等于模型 ID
+// (含 `/`,不做 slug 清洗;旧实现目录 Provider 会变成 vendor-model-v1)。
+run('空别名精确回退 Model ID 原文', () => {
   const draft = {
     ...applyCatalogProviderToDraft(emptyModelProfileDraft(), customProvider),
     name: '   ',
@@ -867,7 +796,20 @@ run('自定义 OpenAI 兼容 API 的空预设名称精确回退 Model ID', () =>
     api_key: 'sk-openrouter',
   }, openRouterProvider);
   assert.equal(catalog.ok, true);
-  assert.equal(catalog.payloads[0].name, 'vendor-model-v1');
+  assert.equal(catalog.payloads[0].name, 'vendor/model-v1');
+});
+
+// 场景:编辑目录 Provider 的条目时把别名清空 → 仍报 INVALID_NAME,不会像新增那样
+// 悄悄改名成模型 ID(那等于替用户把条目重命名了)。
+run('编辑模式空别名报 INVALID_NAME 而不是回退模型 ID', () => {
+  const result = buildModelMutationPayloads({
+    ...applyCatalogProviderToDraft(emptyModelProfileDraft(), openRouterProvider),
+    name: '',
+    model: 'vendor/model-v1',
+    api_key: 'sk-openrouter',
+  }, openRouterProvider, { editing: true, existingNames: ['vendor/model-v1'] });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'INVALID_NAME');
 });
 
 run('探测模型确认事务性替换选择并保留自定义连接草稿', () => {
@@ -936,21 +878,32 @@ run('探测模型确认事务性替换选择并保留自定义连接草稿', () 
   assert.equal(single.name, 'stable-name');
 });
 
-run('批量新增生成稳定名称并只发送凭据来源名称', () => {
+// 场景:多选批量新增 → 每条 = <别名前缀>-<模型 ID>,与已保存条目撞名的那条追加 (1);
+// 「复用已有凭据」已删除,payload 不再带 credential_source_name,API Key 缺失就按
+// Provider 的 auth_mode 校验(openrouter 必填 → INVALID_API_KEY)。
+run('批量新增按前缀-模型 ID 命名并对已保存条目去重', () => {
   const draft = {
     ...applyCatalogProviderToDraft(emptyModelProfileDraft(), openRouterProvider),
     name: 'coding',
     model: 'alpha/model, beta/model',
-    credential_source_name: 'openrouter-key',
+    api_key: 'sk-batch',
   };
-  const result = buildModelMutationPayloads(draft, openRouterProvider);
+  const result = buildModelMutationPayloads(draft, openRouterProvider, {
+    existingNames: ['coding-beta/model'],
+  });
   assert.equal(result.ok, true);
   assert.deepEqual(result.payloads.map((item) => item.name), [
-    'coding-alpha-model',
-    'coding-beta-model',
+    'coding-alpha/model',
+    'coding-beta/model(1)',
   ]);
-  assert.equal(result.payloads[0].credential_source_name, 'openrouter-key');
-  assert.equal(Object.hasOwn(result.payloads[0], 'api_key'), false);
+  for (const payload of result.payloads) {
+    assert.equal(Object.hasOwn(payload, 'credential_source_name'), false);
+    assert.equal(payload.api_key, 'sk-batch');
+  }
+
+  const withoutKey = buildModelMutationPayloads({ ...draft, api_key: '' }, openRouterProvider);
+  assert.equal(withoutKey.ok, false);
+  assert.equal(withoutKey.code, 'INVALID_API_KEY');
 });
 
 run('目录批量选择按模型 ID 生成各自元数据，取消后不残留最后模型元数据', () => {
@@ -1157,9 +1110,109 @@ run('推理能力与推理 supported 不一致时在发送前拒绝', () => {
   assert.equal(buildModelMutationPayload(inconsistent, openRouterProvider).code, 'INVALID_REASONING');
 });
 
-run('名称冲突建议使用稳定的最小可用后缀', () => {
-  assert.equal(modelNameSuggestion('luna', ['luna', 'luna-2', 'luna-4']), 'luna-3');
+// 场景:保存撞名后弹出的「另存为」建议名,与别名自动去重同一套 (N) 规则
+// (旧实现是 luna-2 风格,与别名字段的 luna(1) 并存会让界面上出现两种编号)。
+run('名称冲突建议使用 (N) 后缀且取最小可用序号', () => {
+  assert.equal(modelNameSuggestion('luna', ['luna', 'luna(1)', 'luna(3)']), 'luna(2)');
   assert.equal(modelNameSuggestion('fresh', ['luna']), 'fresh');
+  assert.equal(modelNameSuggestion('', ['model']), 'model(1)');
+});
+
+// 场景:目录 Provider 里勾选 / 取消模型,别名跟着自动变。
+//   单选 → 模型 ID(撞已有名字追加 (1));多选 → 厂商名作前缀;全部取消 → 空。
+// 回归:旧实现在勾第一个模型时把它的目录显示名写进 name,多选时其它条目就被拼成
+// <首个模型显示名>-<其它模型 ID>。
+run('syncAutoModelAlias 单选填模型 ID、多选退化为厂商名前缀、清空选择回到空', () => {
+  const options = { providerName: 'OpenRouter', existingNames: ['vendor/model-a'] };
+  let draft = applyCatalogProviderToDraft(emptyModelProfileDraft(), openRouterProvider);
+  assert.equal(syncAutoModelAlias(draft, options), draft, '没有选择时无需改动,返回同一引用');
+
+  draft = syncAutoModelAlias(toggleCatalogModelInDraft(
+    draft, 'vendor/model-a', { id: 'vendor/model-a', name: 'Model A' }, { allowMultiple: true },
+  ), options);
+  assert.equal(draft.name, 'vendor/model-a(1)', '单选取模型 ID 而不是目录显示名,并对已有条目去重');
+  assert.equal(draft._auto_alias, 'vendor/model-a(1)');
+
+  draft = syncAutoModelAlias(toggleCatalogModelInDraft(
+    draft, 'vendor/model-b', { id: 'vendor/model-b', name: 'Model B' }, { allowMultiple: true },
+  ), options);
+  assert.equal(draft.name, 'OpenRouter', '多选时别名字段变成厂商名前缀');
+
+  draft = syncAutoModelAlias(toggleCatalogModelInDraft(
+    draft, 'vendor/model-a', null, { allowMultiple: true },
+  ), options);
+  assert.equal(draft.name, 'vendor/model-b', '退回单选后重新取剩下那个模型的 ID');
+
+  draft = syncAutoModelAlias(toggleCatalogModelInDraft(
+    draft, 'vendor/model-b', null, { allowMultiple: true },
+  ), options);
+  assert.equal(draft.name, '', '全部取消后别名清空');
+  assert.equal(isAutoModelAlias(draft), true);
+});
+
+// 场景:用户手改过别名之后再增删模型 → 手填值保持不动;把输入框清空又会恢复自动跟随。
+run('syncAutoModelAlias 不覆盖用户手改的别名,清空后恢复自动', () => {
+  const options = { providerName: 'OpenRouter', existingNames: [] };
+  let draft = syncAutoModelAlias(addManualModelToDraft(
+    applyCatalogProviderToDraft(emptyModelProfileDraft(), openRouterProvider),
+    'vendor/model-a', { allowMultiple: true },
+  ), options);
+  assert.equal(draft.name, 'vendor/model-a');
+
+  draft = { ...draft, name: 'my-favorite' };
+  assert.equal(isAutoModelAlias(draft), false);
+  const afterAdd = syncAutoModelAlias(
+    addManualModelToDraft(draft, 'vendor/model-b', { allowMultiple: true }), options,
+  );
+  assert.equal(afterAdd.name, 'my-favorite', '多选也不能把手填别名改成厂商名前缀');
+
+  const cleared = syncAutoModelAlias(
+    addManualModelToDraft({ ...afterAdd, name: '' }, 'vendor/model-c', { allowMultiple: true }),
+    options,
+  );
+  assert.equal(cleared.name, 'OpenRouter', '清空后下一次选择变化重新自动生成');
+});
+
+// 场景:编辑已有条目时,改模型不能碰别名(那是用户已经保存过的名字)。
+run('syncAutoModelAlias 编辑模式不改别名', () => {
+  const draft = {
+    ...modelProfileDraftFromSaved({
+      name: 'kept-name', provider: 'openai', model: 'old/model',
+      models_dev_provider_id: 'openrouter', base_url: 'https://openrouter.ai/api/v1',
+    }),
+    model: 'new/model',
+  };
+  const result = syncAutoModelAlias(draft, {
+    providerName: 'OpenRouter', existingNames: [], editing: true,
+  });
+  assert.equal(result, draft);
+  assert.equal(result.name, 'kept-name');
+});
+
+// 场景:切换 Provider 会清空模型选择,此时自动别名也要跟着清空,不能把上一个
+// Provider 模型的 ID 带到新 Provider 的表单里。
+run('syncAutoModelAlias 切换 Provider 后自动别名随选择一起清空', () => {
+  let draft = syncAutoModelAlias(addManualModelToDraft(
+    applyCatalogProviderToDraft(emptyModelProfileDraft(), openRouterProvider),
+    'vendor/model-a',
+  ), { providerName: 'OpenRouter', existingNames: [] });
+  assert.equal(draft.name, 'vendor/model-a');
+  draft = syncAutoModelAlias(
+    applyCatalogProviderToDraft(draft, anthropicProvider),
+    { providerName: 'Anthropic', existingNames: [] },
+  );
+  assert.equal(draft.model, '');
+  assert.equal(draft.name, '');
+});
+
+// 场景:多选前缀取厂商展示名;自定义 OpenAI 兼容 API 没有真正的厂商,前缀留空只用模型 ID。
+run('modelAliasProviderName 目录 Provider 取展示名,自定义兼容 API 为空', () => {
+  assert.equal(modelAliasProviderName(openRouterProvider), 'OpenRouter');
+  // 真实的 ACEModel 目录条目是 model_input=catalog(见 model_catalog_handler.cpp),
+  // 这里的 aceModelProvider fixture 从 customProvider 继承了 manual,显式改回去。
+  assert.equal(modelAliasProviderName({ ...aceModelProvider, model_input: 'catalog' }), 'ACEModel');
+  assert.equal(modelAliasProviderName(customProvider), '');
+  assert.equal(modelAliasProviderName(null), '');
 });
 
 run('高级校验拒绝完整端点越权、强制推理关闭和超出输出的推理预算', () => {

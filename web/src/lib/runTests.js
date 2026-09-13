@@ -216,6 +216,7 @@ import './sessionNavigationMaskArchitecture.test.js';
 import './sessionListEvents.test.js';
 import './errors.test.js';
 import './modelPicker.test.js';
+import './modelAlias.test.js';
 import './modelManager.test.js';
 import './modelSettings.test.js';
 import './providerCatalogGroups.test.js';
