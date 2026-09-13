@@ -50,3 +50,11 @@
 - [x] 7.2 `docs/user-manual.md` §10、`docs/daemon-api.md`(模式取值、`permission_request.args.permission`)、`CLAUDE.md` 新增「Auto 模式与 exec 沙盒」一节
 - [x] 7.3 `acecode_testable` + `acecode_unit_tests` Release 构建通过;`tests/sandbox/*`、`permissions_test`、`agent_loop_auto_mode_test`、`system_prompt_test`、config 用例通过;Web `pnpm test` 通过
 - [x] 7.4 Windows 真机冒烟:auto 模式下 `git status` 免确认、`echo > %USERPROFILE%\x` 在沙盒内失败并附升级提示、升级后确认弹出、`rm -rf` 弹确认
+
+## 8. 复审补充(2026-09-13)
+
+- [x] 8.1 goal 无人值守下 bash 的 Prompt 决策自动放行(沿用决策表的批准后沙盒,Forbidden 不受影响),修掉「bash 被排除 → daemon 空等 5 分钟再 Deny」;`agent_loop_goal_test.cpp` 加两条用例
+- [x] 8.2 `/sandbox on` 调 `SandboxRuntime::reset_probe()`,粘性的 `mark_unavailable` 有不重启的恢复入口;bash 失败只把单行原因(`metadata.sandbox_unavailable_reason`)记进状态与 system prompt
+- [x] 8.3 沙盒拒绝特征词去掉裸 `sandbox`(本仓库 `src/sandbox/` 的编译错误会被误判),改认 `sandbox-exec` / `sandbox: deny` / `seatbelt` / `bwrap:`;加回归用例并同步 spec
+- [x] 8.4 所有新增测试补中文场景 / 期望注释;`docs/sandbox.md` 与 `CLAUDE.md` 记录 goal 行为、`/sandbox on` 重探、合成 SID 随策略累积 ACE 的已知限制
+- [x] 8.5 分支合入 master(7f501a73)后重新构建 `acecode_unit_tests`,跑完整单测与 Web `pnpm test`

@@ -63,7 +63,7 @@ DELETE / FILE_DELETE_CHILD 可能绕过限制 SID 检查，包含外部与受保
 - **THEN** 沙盒不可用,auto 模式按不可用分支工作,日志说明原因
 
 ### Requirement: 沙盒拒绝检测与升级提示
-bash 工具在沙盒内执行且退出码非 0 时,SHALL 用 `is_likely_sandbox_denied(exit_code, output)` 判定(退出码 0 / 2 / 126 / 127 不算;输出大小写不敏感含 `operation not permitted` / `permission denied` / `read-only file system` / `access is denied` / `拒绝访问` / `seccomp` / `sandbox` / `landlock` / `failed to write file` 之一即算);判定为真时 MUST 在输出末尾追加固定的升级提示(说明可写根与网络状态,指明用 `with_escalated_permissions=true` 与一句 `justification` 重试)并置 `metadata.sandbox_denied=true`。
+bash 工具在沙盒内执行且退出码非 0 时,SHALL 用 `is_likely_sandbox_denied(exit_code, output)` 判定(退出码 0 / 2 / 126 / 127 不算;输出大小写不敏感含 `operation not permitted` / `permission denied` / `read-only file system` / `access is denied` / `拒绝访问` / `seccomp` / `sandbox-exec` / `sandbox: deny` / `seatbelt` / `bwrap:` / `landlock` / `failed to write file` 之一即算;裸 `sandbox` 一词 MUST NOT 作为特征,否则提到 `src/sandbox/` 源文件的编译错误会被误判);判定为真时 MUST 在输出末尾追加固定的升级提示(说明可写根与网络状态,指明用 `with_escalated_permissions=true` 与一句 `justification` 重试)并置 `metadata.sandbox_denied=true`。
 
 #### Scenario: 拒绝输出附提示
 - **WHEN** 沙盒内命令退出码 1,输出含 `Access is denied.`

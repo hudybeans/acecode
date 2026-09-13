@@ -54,3 +54,23 @@ after compilation; no behavior changed during that normalization.
 macOS Seatbelt policy/argument generation is covered by portable unit tests. No macOS machine
 was used for native execution. Linux smoke exercises the real backend; it is not a full Linux
 ACECode build. No running user daemon was replaced, and no release was published.
+
+## Review supplement (2026-09-13, Claude)
+
+- Restored goal-unattended auto-approval for `bash` prompts. The approved sandbox from
+  `ExecDecision::sandbox` is still applied, so a dangerous command under an active goal runs
+  inside workspace-write instead of blocking the daemon prompter for five minutes. Forbidden
+  rules still refuse. New tests: `AgentLoopGoal.UnattendedGoalAutoApprovesDangerousBashInsideSandbox`,
+  `AgentLoopGoal.UnattendedGoalCannotOverrideForbiddenExecRule`.
+- `/sandbox on` now calls `SandboxRuntime::reset_probe()` so a sticky `mark_unavailable`
+  can be recovered without restarting; the recorded reason is the single-line
+  `metadata.sandbox_unavailable_reason` rather than the whole tool output.
+- Dropped the bare `sandbox` denial needle (compile errors in `src/sandbox/*.cpp` matched it);
+  the backend-specific spellings `sandbox-exec`, `sandbox: deny`, `seatbelt`, `bwrap:` remain.
+- Added scenario/expectation comments to every new test; merged `master` (7f501a73) into the
+  branch; rebuilt `acecode_unit_tests`; the focused set (101 tests, 1 expected Windows skip)
+  and Web `pnpm test` (2175 assertions) pass. Full-suite results are recorded below.
+- Full `acecode_unit_tests` run after the merge: 4104 passed, 5 environment skips (network
+  smokes, real-JSONL replay fixture, POSIX-only prompt case), 1 failure
+  `McpManagerAsync.DisableConnectedServerUnregistersToolsAndSnapshots` (5 s startup-settle
+  timeout under full-suite load; passes in isolation, unrelated to this change).

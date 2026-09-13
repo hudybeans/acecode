@@ -33,7 +33,13 @@ bool is_likely_sandbox_denied(int exit_code, const std::string& output) {
         "access denied",
         "拒绝访问",
         "seccomp",
-        "sandbox",
+        // 裸 "sandbox" 刻意不收:本仓库自己就有 src/sandbox/,一次编译错误的
+        // 输出里全是 sandbox_*.cpp,非零退出就会被当成沙盒拒绝、误导模型去
+        // 申请越权。只认后端自己报错时的拼写。
+        "sandbox-exec",
+        "sandbox: deny",
+        "seatbelt",
+        "bwrap:",
         "landlock",
         "failed to write file",
         "eacces",

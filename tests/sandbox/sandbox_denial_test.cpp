@@ -13,6 +13,11 @@ TEST(SandboxDenial, RecognizesPermissionFailuresWithoutBlamingEveryError) {
         EXPECT_FALSE(is_likely_sandbox_denied(0, output));
     }
     EXPECT_FALSE(is_likely_sandbox_denied(1, "compilation failed"));
+    // 回归:输出只是提到了名为 sandbox 的源文件(本仓库 src/sandbox/ 编译失败
+    // 就是这样),不能因为出现 "sandbox" 字样就判成沙盒拒绝。
+    EXPECT_FALSE(is_likely_sandbox_denied(1,
+        "src/sandbox/sandbox_runtime.cpp(12): error C2065: undeclared identifier"));
+    EXPECT_TRUE(is_likely_sandbox_denied(1, "sandbox-exec: failed to open file"));
     EXPECT_FALSE(is_likely_sandbox_denied(127, "command not found"));
     EXPECT_FALSE(is_likely_sandbox_denied(2, "invalid option"));
 #ifndef _WIN32
