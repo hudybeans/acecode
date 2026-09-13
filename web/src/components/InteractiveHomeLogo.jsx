@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../theme.jsx';
 import { EVA_THEME_ID } from '../lib/themePackages.js';
 import { themeLogoRgb } from '../lib/brandLogoColors.js';
+import { HOME_LOGO_SHADER_ENABLED } from '../lib/homeLogoEffectPolicy.js';
 import BrandLogo from './BrandLogo.jsx';
 import {
   IDLE_LOGO_LIGHT_RADIUS_PX,
@@ -407,7 +408,7 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
   const { colorTheme, appearance } = useTheme();
   const logoColor = appearance?.logoColor || null;
   const isEvaTheme = colorTheme === EVA_THEME_ID;
-  const animated = enabled && !isEvaTheme;
+  const animated = HOME_LOGO_SHADER_ENABLED && enabled && !isEvaTheme;
   const canvasRef = useRef(null);
   const [rendererRevision, setRendererRevision] = useState(0);
   const [ready, setReady] = useState(false);
@@ -760,7 +761,7 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
       role="img"
       aria-label="ACECode"
       data-dynamic-logo-ready={animated && ready ? 'true' : 'false'}
-      data-dynamic-logo-fallback={isEvaTheme ? 'theme' : enabled ? undefined : 'session-visited'}
+      data-dynamic-logo-fallback={!HOME_LOGO_SHADER_ENABLED ? 'disabled' : isEvaTheme ? 'theme' : enabled ? undefined : 'session-visited'}
     >
       <BrandLogo
         alt=""

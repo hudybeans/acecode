@@ -67,10 +67,10 @@ test('home logo effect permanently latches off after the first real session', ()
   assert.match(chatView, /homeLogoEffectEnabled = true/);
   assert.match(chatView, /<InteractiveHomeLogo enabled=\{homeLogoEffectEnabled\}\s*\/>/);
   assert.match(logo, /function InteractiveHomeLogo\(\{ className = '', enabled = true \}\)/);
-  assert.match(logo, /const animated = enabled && !isEvaTheme;/);
+  assert.match(logo, /const animated = HOME_LOGO_SHADER_ENABLED && enabled && !isEvaTheme;/);
   assert.match(logo, /setReady\(false\);\s*if \(!animated\) return undefined;/);
   assert.match(logo, /data-dynamic-logo-ready=\{animated && ready \? 'true' : 'false'\}/);
-  assert.match(logo, /data-dynamic-logo-fallback=\{isEvaTheme \? 'theme' : enabled \? undefined : 'session-visited'\}/);
+  assert.match(logo, /data-dynamic-logo-fallback=\{!HOME_LOGO_SHADER_ENABLED \? 'disabled' : isEvaTheme \? 'theme' : enabled \? undefined : 'session-visited'\}/);
   assert.match(logo, /\{animated && \(\s*<canvas/);
   assert.doesNotMatch(logo, /fps|frameRate|framesPerSecond|lowFps/i);
   assert.doesNotMatch(performance, /fps|frameRate|framesPerSecond|lowFps/i);

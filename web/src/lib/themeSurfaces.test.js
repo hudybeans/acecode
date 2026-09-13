@@ -12,6 +12,7 @@ import {
 } from './themePackages.js';
 import { themeLogoDataUrl, themeLogoPalette, themeLogoRgb } from './brandLogoColors.js';
 import * as logoPerformance from './interactiveHomeLogoPerformance.js';
+import { HOME_LOGO_SHADER_ENABLED } from './homeLogoEffectPolicy.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -136,7 +137,7 @@ async function compiledComponent(relative, name) {
     loader: 'jsx', jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment',
   });
   return (globals = {}) => vm.runInNewContext(`${transformed.code}; ${name};`, {
-    React, ...React, logoSvg, themeLogoDataUrl, themeLogoRgb, EVA_THEME_ID, ...logoPerformance, ...globals,
+    React, ...React, logoSvg, themeLogoDataUrl, themeLogoRgb, EVA_THEME_ID, HOME_LOGO_SHADER_ENABLED, ...logoPerformance, ...globals,
   });
 }
 const brandComponent = await compiledComponent('../components/BrandLogo.jsx', 'BrandLogo');
@@ -152,9 +153,11 @@ await run('actual home and sidebar logo components share custom SVG color and pr
     const sidebar = renderToStaticMarkup(React.createElement(BrandLogo, { width: 20, height: 20, className: 'ace-brand-logo' }));
     const home = renderToStaticMarkup(React.createElement(InteractiveHomeLogo, { enabled: true }));
     const fallback = renderToStaticMarkup(React.createElement(InteractiveHomeLogo, { enabled: false }));
-    assert.match(home, /<canvas/);
+    assert.doesNotMatch(home, /<canvas/);
+    assert.match(home, /data-dynamic-logo-ready="false"/);
     assert.doesNotMatch(fallback, /<canvas/);
-    assert.match(fallback, /data-dynamic-logo-fallback="session-visited"/);
+    assert.match(home, /data-dynamic-logo-fallback="disabled"/);
+    assert.match(fallback, /data-dynamic-logo-fallback="disabled"/);
     const source = (markup) => markup.match(/src="([^"]+)"/)[1];
     assert.equal(source(sidebar), source(home));
     assert.equal(source(home), source(fallback));
@@ -165,13 +168,13 @@ await run('actual home and sidebar logo components share custom SVG color and pr
     activeTheme = { colorTheme: EVA_THEME_ID, appearance: { logoColor: color } };
     const home = renderToStaticMarkup(React.createElement(InteractiveHomeLogo, { enabled: true }));
     assert.doesNotMatch(home, /<canvas/);
-    assert.match(home, /data-dynamic-logo-fallback="theme"/);
+    assert.match(home, /data-dynamic-logo-fallback="disabled"/);
   }
 });
 
-function rendererHarness({ color, reducedMotion = false, noGl = false }) {
+function rendererHarness({ color, reducedMotion = false, noGl = false, shaderEnabled = HOME_LOGO_SHADER_ENABLED }) {
   const effects = [], frames = new Map(), timers = new Map(), events = new Map(), uniforms = new Map();
-  let nextId = 0, drawCount = 0;
+  let nextId = 0, drawCount = 0, contextRequests = 0;
   const listen = (target) => ({
     addEventListener: (name, fn) => events.set(`${target}:${name}`, fn),
     removeEventListener: (name) => events.delete(`${target}:${name}`),
@@ -184,11 +187,13 @@ function rendererHarness({ color, reducedMotion = false, noGl = false }) {
     drawArrays: () => { drawCount += 1; },
   }, { get: (object, key) => object[key] || (/^[A-Z_]+$/.test(key) ? 1 : () => ({})) });
   const canvas = {
-    width: 156, height: 156, ...listen('canvas'), getContext: () => noGl ? null : gl,
+    width: 156, height: 156, ...listen('canvas'),
+    getContext: () => { contextRequests += 1; return noGl ? null : gl; },
     getBoundingClientRect: () => ({ width: 156, height: 156, left: 0, top: 0, bottom: 156 }),
   };
   const observer = class { observe() {} disconnect() {} };
   const globals = {
+    HOME_LOGO_SHADER_ENABLED: shaderEnabled,
     useTheme: () => ({ colorTheme: 'ai-surface-test', appearance: { logoColor: color } }), BrandLogo,
     useRef: () => ({ current: canvas }), useState: (value) => [value, () => {}],
     useEffect: (fn) => effects.push(fn), MutationObserver: observer, ResizeObserver: observer,
@@ -209,12 +214,21 @@ function rendererHarness({ color, reducedMotion = false, noGl = false }) {
     const [id, draw] = frames.entries().next().value;
     frames.delete(id); draw(2000);
   };
-  return { uniforms, events, timers, frames, cleanup, frame, drawCount: () => drawCount };
+  return { uniforms, events, timers, frames, cleanup, frame, drawCount: () => drawCount, contextRequests: () => contextRequests };
 }
 
-await run('actual home renderer sends finite custom uniforms through pointer, idle and reduced-motion paths', () => {
+await run('home shader stays suspended while the retained renderer preserves pointer, idle and reduced-motion paths', () => {
+  const disabled = rendererHarness({ color: '#9B6DFF' });
+  assert.equal(disabled.contextRequests(), 0);
+  assert.equal(disabled.frames.size, 0);
+  assert.equal(disabled.timers.size, 0);
+  assert.equal(disabled.events.size, 0);
+  assert.equal(disabled.drawCount(), 0);
+  assert.equal(disabled.cleanup, undefined);
+
+  // Enable only the isolated harness to keep coverage of the retained shader code.
   for (const color of ['#000000', '#FFFFFF', '#7f8081', '#E03145', null]) {
-    const renderer = rendererHarness({ color });
+    const renderer = rendererHarness({ color, shaderEnabled: true });
     renderer.frame();
     assert.deepEqual([...renderer.uniforms.get('u_logo_color')], color ? themeLogoRgb(color) : [0, 0, 0]);
     assert.equal(renderer.uniforms.get('u_custom_logo'), color ? 1 : 0);
@@ -230,12 +244,12 @@ await run('actual home renderer sends finite custom uniforms through pointer, id
     renderer.cleanup();
     assert.equal(renderer.events.size, 0);
   }
-  const reduced = rendererHarness({ color: '#9B6DFF', reducedMotion: true });
+  const reduced = rendererHarness({ color: '#9B6DFF', reducedMotion: true, shaderEnabled: true });
   reduced.frame();
   assert.equal(reduced.timers.size, 0);
   assert.equal(reduced.uniforms.get('u_custom_logo'), 1);
   reduced.cleanup();
-  const fallback = rendererHarness({ color: '#9B6DFF', noGl: true });
+  const fallback = rendererHarness({ color: '#9B6DFF', noGl: true, shaderEnabled: true });
   assert.equal(fallback.frames.size, 0);
   assert.equal(fallback.cleanup, undefined);
 });
