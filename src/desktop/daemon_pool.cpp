@@ -30,7 +30,19 @@ ExistingDaemonAction managed_daemon_installation_action(
         if (reason) *reason = "Desktop daemon executable path is unavailable";
         return ExistingDaemonAction::Unsafe;
     }
+    // 先确认两个可执行文件都存在,再比较是否同一安装。
+    // std::filesystem::equivalent 对不存在的文件行为未定义且随平台分叉
+    // (部分实现置 ec → Unsafe,部分返回"不相同" → Replace),这里显式判定,
+    // 让"期望文件缺失"稳定归为 Unsafe。
     std::error_code ec;
+    const bool expected_exists =
+        std::filesystem::is_regular_file(std::filesystem::u8path(expected_executable), ec);
+    if (ec || !expected_exists ||
+        !std::filesystem::is_regular_file(std::filesystem::u8path(live_executable), ec) || ec) {
+        if (reason) *reason = "Desktop daemon installation executable is unavailable: expected=" +
+                              expected_executable + " live=" + live_executable;
+        return ExistingDaemonAction::Unsafe;
+    }
     const auto expected = std::filesystem::u8path(expected_executable);
     const auto live = std::filesystem::u8path(live_executable);
     const bool same = std::filesystem::equivalent(expected, live, ec);

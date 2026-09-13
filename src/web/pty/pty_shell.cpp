@@ -248,7 +248,7 @@ std::vector<ConsoleShellOption> detect_console_shells(
         std::string sh = probe.getenv("SHELL");
         if (sh.empty() && probe.login_shell) sh = probe.login_shell();
         def.detected_path = sh.empty() ? std::string("/bin/sh") : sh;
-        if (def.detected_path != "/bin/sh") def.fallback_programs.push_back("/bin/sh");
+        // 通用 /bin/sh 兜底不在这里加:见下方候选构建完成后的二次判定。
         if (!apply_configured_program(def, shell_paths, probe)) def.program = def.detected_path;
         def.command = def.program;
         def.available = true;
@@ -275,6 +275,17 @@ std::vector<ConsoleShellOption> detect_console_shells(
         o.available = !o.program.empty();
         o.needs_path = !o.available;
         out.push_back(std::move(o));
+    }
+    // 通用 /bin/sh 兜底只在"没有任何命名 shell(bash/zsh/fish)可用"时才挂到
+    // 默认 shell 候选上。否则登录 shell 损坏时应回退到真实的 bash 等,
+    // 而不是名不副实的 /bin/sh(见 BrokenLoginShellFallsBackToBash 用例)。
+    if (!std::any_of(out.begin(), out.end(), [](const ConsoleShellOption& o) {
+            return (o.id == "bash" || o.id == "zsh" || o.id == "fish") && o.available;
+        })) {
+        for (auto& o : out) {
+            if (o.id == "shell" && o.detected_path != "/bin/sh")
+                o.fallback_programs.push_back("/bin/sh");
+        }
     }
 #endif
     return out;

@@ -41,6 +41,9 @@ TEST(ToolchainsDetectTest, WindowsAppsAliasIsRecognized) {
 // 场景:node 在 PATH 上,python 只有商店桩,dotnet 没有。
 // 期望:node 目录 = 可执行文件所在目录;python 因桩被排除而未检出;csharp 未检出;
 // anchors 记录命中的完整路径。
+// 注:该场景用 Windows 风格路径(C:\...)并通过 parent_path() 取目录,
+// 仅能在 Windows 上按预期求值(POSIX 下反斜杠不是路径分隔符),故限定 _WIN32。
+#ifdef _WIN32
 TEST(ToolchainsDetectTest, DetectsDirectoriesAndSkipsStoreStub) {
     auto which = mock_which({
         {"node", "C:\\Program Files\\nodejs\\node.exe"},
@@ -53,6 +56,7 @@ TEST(ToolchainsDetectTest, DetectsDirectoriesAndSkipsStoreStub) {
     EXPECT_EQ(d.anchors.at("node"), "C:\\Program Files\\nodejs\\node.exe");
     EXPECT_EQ(d.anchors.count("python"), 0u);
 }
+#endif  // _WIN32
 
 // 场景:python 没有但 python3 有(Linux/macOS 常态)。
 // 期望:第二个锚点命中,目录取自 python3。
