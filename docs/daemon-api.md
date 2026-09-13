@@ -848,6 +848,33 @@ The compatibility `POST /api/sessions` response includes:
 }
 ```
 
+Session create/resume failures that escape the registry as a generic
+`std::exception` (for example a filesystem or encoding error while resolving
+the workspace directory) return `500` with a JSON body instead of an empty
+Crow error page, on both the compatibility and the workspace-scoped routes:
+
+```json
+{"error":"SESSION_CREATE_FAILED","message":"<exception text>","cwd":"E:/repo"}
+```
+
+Resume uses `"error":"SESSION_RESUME_FAILED"`. Invalid expert bindings keep
+returning `400 {"error":"INVALID_EXPERT"}`. Any other route handler that lets an
+exception escape returns `500 {"error":"INTERNAL_ERROR","message":"<exception
+text>"}`; the same text is written to the daemon log as an `ERR` line, so a
+bare `500 Internal Server Error` body no longer occurs for daemon-side
+exceptions.
+
+These responses follow the same loopback CORS policy as successful requests,
+including errors handled by the global exception handler. A supported loopback
+`Origin` receives `Access-Control-Allow-Origin` on the JSON error response;
+cross-origin requests still require the daemon token.
+
+On Windows, directory model settings saved by older versions remain readable
+when the canonical UTF-8 setting is absent. An existing canonical file takes
+priority even if malformed. New saves use the canonical location, while explicit
+removal clears both canonical and applicable legacy copies so an old model
+choice cannot become active again through compatibility lookup.
+
 ### Model-facing thread and workspace tools
 
 Daemon, TUI, and headless runtimes expose the same in-process thread and

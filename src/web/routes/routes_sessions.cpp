@@ -923,6 +923,8 @@ void WebServer::Impl::register_sessions() {
                               {"message", ex.what()}}.dump();
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
+            } catch (const std::exception& ex) {
+                return session_route_failure(req, "SESSION_CREATE_FAILED", opts.cwd, ex);
             }
             LOG_INFO("[web] compatibility /api/sessions create id=" + id + " cwd=" + ws.cwd);
             if (global_session_search) {
@@ -995,7 +997,12 @@ void WebServer::Impl::register_sessions() {
             }
             // SessionRegistry 在内部短持共享锁复制 config+revision，随后释放
             // 再解析 jsonl/构造 Provider；路由不可在外层重复获取同一 shared_mutex。
-            const bool resumed = deps.session_client->resume_session(id, opts);
+            bool resumed = false;
+            try {
+                resumed = deps.session_client->resume_session(id, opts);
+            } catch (const std::exception& ex) {
+                return session_route_failure(req, "SESSION_RESUME_FAILED", opts.cwd, ex);
+            }
             if (!resumed) {
                 if (SessionStorage::has_incompatible_pid_session_files(project_dir, id)) {
                     crow::response r(409);

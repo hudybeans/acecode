@@ -186,6 +186,7 @@ std::string ascii_lower(std::string s);
 bool is_loopback_origin(const std::string& origin);
 bool is_loopback_host(const std::string& host);
 bool is_same_request_origin(const crow::request& req, const std::string& origin);
+void add_loopback_cors_headers(const crow::request& req, crow::response& resp);
 void log_unauthorized(const std::string& path, const std::string& client_ip, const char* reason);
 AuthResult check_explicit_token(std::string_view server_token,
                                  std::string_view header_token,
@@ -217,6 +218,16 @@ struct UpdateJobRuntime {
     std::shared_ptr<acecode::upgrade::DiagnosticLog> diagnostics;
 };
 
+// 在 Crow 完成响应时补齐 CORS,覆盖绕过路由返回助手的全局异常路径。
+struct ResponseCorsMiddleware {
+    struct context {};
+
+    void before_handle(crow::request&, crow::response&, context&) {}
+    void after_handle(crow::request& req, crow::response& resp, context&) {
+        add_loopback_cors_headers(req, resp);
+    }
+};
+
 // =====================================================================
 // WebServer::Impl — hidden pimpl implementation
 // =====================================================================
@@ -226,7 +237,7 @@ struct WebServer::Impl {
     // persist config-file values, but a live bind change must never move the
     // already-running daemon to a different port.
     const int                  runtime_port;
-    crow::SimpleApp            app;
+    crow::App<ResponseCorsMiddleware> app;
 
     // 静态资源 source(EmbeddedAssetSource / FileSystemAssetSource),按
     // web.static_dir 路径在 register_routes 前实例化。
@@ -519,6 +530,14 @@ struct WebServer::Impl {
     std::optional<SessionModelState> current_model_state_for_session(
         const std::string& session_id,
         const std::string& workspace_hash_hint = {}) const;
+    // 会话 create/resume 路由里逃逸的 std::exception 统一收口:记 ERROR 日志
+    // (带 cwd 上下文)并返回 JSON 500 `{error, message, cwd}`。没有这层时异常
+    // 交给 Crow 变成裸 "500 Internal Server Error",原因只会写到 stderr ——
+    // Desktop 托管的 daemon stderr 指向 NUL,用户与日志两边都看不到任何线索。
+    crow::response session_route_failure(const crow::request& req,
+                                         const char* error_code,
+                                         const std::string& cwd,
+                                         const std::exception& e);
 
     // -----------------------------------------------------------------
     // 路由注册  (each defined in its own routes/routes_*.cpp)

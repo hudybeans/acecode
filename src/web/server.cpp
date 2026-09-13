@@ -13,6 +13,65 @@ namespace acecode::web {
 
 using nlohmann::json;
 
+namespace {
+
+// Crow 自带的 CerrLogHandler 只写 stderr。Desktop 拉起 daemon 时 stderr 已经
+// 重定向到 NUL,Crow 记下的告警(路由里逃逸的异常、socket 错误)就此蒸发 ——
+// 用户看到裸 500,daemon-*.log 里却一行线索都没有。桥到 ACECode Logger 后
+// 落进同一个日志文件。Info/Debug 丢弃:Crow 每个响应都打一行 Info,侧边栏
+// 轮询会把日志刷爆;启动横幅由 `[web] Web UI:` 那行覆盖。
+class CrowLogBridge final : public crow::ILogHandler {
+public:
+    void log(const std::string& message, crow::LogLevel level) override {
+        switch (level) {
+            case crow::LogLevel::Warning:
+                LOG_WARN("[crow] " + message);
+                break;
+            case crow::LogLevel::Error:
+            case crow::LogLevel::Critical:
+                LOG_ERROR("[crow] " + message);
+                break;
+            default:
+                break;
+        }
+    }
+};
+
+void install_crow_log_bridge() {
+    // Crow 的 handler / level 是进程级静态量,多个 WebServer 实例(单测)共用。
+    static CrowLogBridge bridge;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        crow::logger::setHandler(&bridge);
+        crow::logger::setLogLevel(crow::LogLevel::Warning);
+    });
+}
+
+// 路由 handler 逃逸的异常兜底。Crow 在 catch(...) 里回调本函数,所以这里可以
+// `throw;` 重新抛出当前异常来分类。默认实现只回一个空 body 的 500 并把原因写
+// stderr;这里改成记 ERROR 日志 + JSON body,前端 toast 与日志两边都能看到原因。
+void route_exception_handler(crow::response& res) {
+    res = crow::response(500);
+    try {
+        throw;
+    } catch (const crow::bad_request& e) {
+        // 与 Crow 默认实现一致:请求格式错误回 400。
+        res = crow::response(400);
+        res.body = e.what();
+    } catch (const std::exception& e) {
+        const std::string message = ensure_utf8(e.what());
+        LOG_ERROR("[web] uncaught exception in route handler: " + message);
+        res.body = json{{"error", "INTERNAL_ERROR"}, {"message", message}}.dump();
+        res.add_header("Content-Type", "application/json");
+    } catch (...) {
+        LOG_ERROR("[web] uncaught non-std exception in route handler");
+        res.body = R"({"error":"INTERNAL_ERROR","message":"unknown exception"})";
+        res.add_header("Content-Type", "application/json");
+    }
+}
+
+} // namespace
+
 WebServer::Impl::~Impl() {
     if (global_session_search) global_session_search->stop();
     if (!shutdown_requested.exchange(true)) {
@@ -88,6 +147,8 @@ WebServer::WebServer(WebServerDeps deps)
     } catch (const std::exception& e) {
         LOG_ERROR(std::string("[web] failed to init asset source: ") + e.what());
     }
+    install_crow_log_bridge();
+    impl_->app.exception_handler(&route_exception_handler);
     impl_->register_routes();
 }
 

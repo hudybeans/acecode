@@ -491,14 +491,20 @@ std::optional<crow::response> WebServer::Impl::require_auth(const crow::request&
     return resp;
 }
 
-void WebServer::Impl::add_cors(const crow::request& req, crow::response& resp) {
+void add_loopback_cors_headers(const crow::request& req, crow::response& resp) {
     std::string origin = req.get_header_value("Origin");
     if (origin.empty() || !is_loopback_origin(origin)) return;
+    // 路由可提前加头,响应完成的兜底不能重复追加 ACAO,否则浏览器拒收。
+    if (!resp.get_header_value("Access-Control-Allow-Origin").empty()) return;
     resp.add_header("Access-Control-Allow-Origin", origin);
     resp.add_header("Vary", "Origin");
     resp.add_header("Access-Control-Allow-Credentials", "false");
     resp.add_header("Access-Control-Allow-Headers", "Content-Type, X-ACECode-Token");
     resp.add_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+}
+
+void WebServer::Impl::add_cors(const crow::request& req, crow::response& resp) {
+    add_loopback_cors_headers(req, resp);
 }
 
 crow::response WebServer::Impl::with_cors(const crow::request& req, crow::response resp) {
@@ -2350,6 +2356,23 @@ std::optional<crow::response> WebServer::Impl::parse_session_options(
         return with_cors(req, std::move(r));
     }
     return std::nullopt;
+}
+
+crow::response WebServer::Impl::session_route_failure(const crow::request& req,
+                                                      const char* error_code,
+                                                      const std::string& cwd,
+                                                      const std::exception& e) {
+    // e.what() 可能是系统代码页文本(中文 Windows 上 std::system_error 的
+    // 消息是 GBK),进 JSON 前必须转成合法 UTF-8,否则 dump() 自己再抛一次。
+    const std::string message = ensure_utf8(e.what());
+    LOG_ERROR("[web] " + std::string(error_code) + " cwd=" + cwd +
+              " exception=" + message);
+    crow::response r(500);
+    r.body = json{{"error", error_code},
+                  {"message", message},
+                  {"cwd", cwd}}.dump();
+    r.add_header("Content-Type", "application/json");
+    return with_cors(req, std::move(r));
 }
 
 std::optional<SessionModelState> WebServer::Impl::current_model_state_for_session(
