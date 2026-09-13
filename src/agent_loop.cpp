@@ -82,6 +82,18 @@ std::vector<ChatMessage> recovered_provider_messages(
     return std::move(recovery.messages);
 }
 
+// 发给模型的历史**唯一入口**:先做历史修复,再把 tool_calls 的名字改写成
+// 模型侧名(「工具重写」生效时才有差异)。新增任何「构造 provider 消息」
+// 的路径都必须走这里 —— 曾经 side-question 与主请求各自拼装,漏掉改写的
+// 那条路径会让模型看到它工具表里没有的原生名。
+std::vector<ChatMessage> model_facing_provider_messages(
+    const std::vector<ChatMessage>& messages,
+    const char* boundary) {
+    auto history = recovered_provider_messages(messages, boundary);
+    rewrite_tool_calls_for_model(history);
+    return history;
+}
+
 bool has_meaningful_user_input(const UserInput& input) {
     if (input.has_content_parts()) return true;
     return std::any_of(input.text.begin(), input.text.end(), [](unsigned char ch) {
@@ -2316,10 +2328,18 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     auto mcp_tool_defs = tools_.get_model_tool_definitions_by_source(
         ToolSource::Mcp, &tool_capability_policy_);
     if (emergency_profile) {
-        const auto is_core_tool = [](const ToolDef& definition) {
-            return definition.name == "bash" || definition.name == "read" ||
-                   definition.name == "write" || definition.name == "edit" ||
-                   definition.name == "task_complete";
+        // 这里拿到的已是模型侧定义,核心工具名必须经映射取,不能写死 read/write:
+        // 「工具重写」关闭时它们叫 file_read / file_write,写死会把核心工具整个滤掉。
+        const std::vector<std::string> core_tool_names = {
+            model_tool_name_for_native("bash"),
+            model_tool_name_for_native("file_read"),
+            model_tool_name_for_native("file_write"),
+            model_tool_name_for_native("file_edit"),
+            model_tool_name_for_native("task_complete"),
+        };
+        const auto is_core_tool = [&core_tool_names](const ToolDef& definition) {
+            return std::find(core_tool_names.begin(), core_tool_names.end(),
+                             definition.name) != core_tool_names.end();
         };
         builtin_tool_defs.erase(
             std::remove_if(builtin_tool_defs.begin(), builtin_tool_defs.end(),
@@ -2359,8 +2379,7 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     }
 
     // Prepare provider-facing messages with system prompt at front.
-    auto api_messages = recovered_provider_messages(messages_, "provider-request");
-    rewrite_tool_calls_for_model(api_messages);
+    auto api_messages = model_facing_provider_messages(messages_, "provider-request");
     PromptContextCategoryBytes context_category_bytes;
     const bool skill_view_available = !emergency_profile &&
         tools_.is_allowed("skill_view", &tool_capability_policy_);
@@ -2493,8 +2512,7 @@ void AgentLoop::prime_side_question_context() {
     }
 
     auto context = build_compaction_initial_context();
-    auto history = recovered_provider_messages(messages_, "side-question-prime");
-    rewrite_tool_calls_for_model(history);
+    auto history = model_facing_provider_messages(messages_, "side-question-prime");
     context.insert(context.end(), history.begin(), history.end());
     publish_side_question_context(context);
 }
@@ -4035,7 +4053,9 @@ bool AgentLoop::execute_tool_calls(
                             return ToolResult{
                                 "[Error] Shell write blocked for " + failed_path +
                                 " because a recent safe file edit failed. "
-                                "Re-read the file and retry with an exact file_edit old_string, or perform an explicit encoding conversion instead of bypassing text safety.",
+                                "Re-read the file and retry with an exact " +
+                                model_tool_name_for_native("file_edit") +
+                                " old_string, or perform an explicit encoding conversion instead of bypassing text safety.",
                                 false};
                         }
                     }

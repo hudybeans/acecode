@@ -31,6 +31,7 @@ function transferableRef(ref) {
   const displayTitle = boundedRefValue(ref, ['displayTitle', 'display_title'], MAX_LABEL_LENGTH);
   const title = boundedRefValue(ref, ['title'], MAX_LABEL_LENGTH);
   const workspaceName = boundedRefValue(ref, ['workspaceName', 'workspace_name'], MAX_LABEL_LENGTH);
+  if (ref.home && ref.composerDraftScope === 'ai-theme') out.composerDraftScope = 'ai-theme';
 
   if (workspaceHash) out.workspaceHash = workspaceHash;
   if (sessionId) out.sessionId = sessionId;
@@ -102,6 +103,7 @@ export function navigationKey(ref) {
     refValue(ref, 'sessionId', 'session_id', 'id'),
     refValue(ref, 'contextId', 'context_id'),
     refValue(ref, 'cwd'),
+    type === 'home' ? refValue(ref, 'composerDraftScope') : '',
   ].join(SEP);
 }
 

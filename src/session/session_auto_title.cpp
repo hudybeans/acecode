@@ -77,6 +77,13 @@ std::optional<ModelProfile> resolve_auto_title_profile(
     const AppConfig& cfg,
     const std::string& session_model_name,
     const std::string& cwd) {
+    if (cfg.summary_generation.enabled) {
+        auto profile = explicit_profile(cfg, cfg.summary_generation.model_name);
+        if (!profile) {
+            LOG_WARN("[auto_title] configured summary model is unavailable; skipping title generation");
+        }
+        return profile;
+    }
     if (!cfg.session_title.model_name.empty()) {
         if (auto profile = explicit_profile(cfg, cfg.session_title.model_name)) {
             return profile;

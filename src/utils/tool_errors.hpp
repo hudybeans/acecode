@@ -1,10 +1,15 @@
 #pragma once
 
+#include "../tool/tool_protocol_names.hpp"
+
 #include <string>
 
 namespace acecode {
 
-// Standardized error messages for tools
+// Standardized error messages for tools.
+// 文案里的工具名一律经 model_tool_name_for_native 取模型侧名:「工具重写」
+// 生效时模型只认识 read / edit,提示里再写 file_read 它会去调一个它工具表里
+// 没有的名字。
 class ToolErrors {
 public:
     static std::string parse_failed() {
@@ -97,8 +102,11 @@ public:
     }
 
     static std::string file_not_read_for_edit(const std::string& path) {
-        return "[Error] File has not been read yet. Read the target file with file_read "
-               "before editing it: " + path;
+        // agent_loop_doom_guard.cpp::is_retryable_precondition_failure 按
+        // "read the target file with" 前缀识别这条错误,改措辞要同步。
+        return "[Error] File has not been read yet. Read the target file with " +
+               model_tool_name_for_native("file_read") +
+               " before editing it: " + path;
     }
 
     static std::string file_read_not_safe_for_edit(const std::string& path) {
@@ -115,20 +123,24 @@ public:
     }
 
     static std::string notebook_edit_required(const std::string& path) {
-        return "[Error] File is a Jupyter Notebook. Use a notebook-specific editor instead of file_edit: " + path;
+        return "[Error] File is a Jupyter Notebook. Use a notebook-specific editor instead of " +
+               model_tool_name_for_native("file_edit") + ": " + path;
     }
 
     static std::string string_not_found(const std::string& file_path) {
         return "[Error] old_string not found in " + file_path +
-               ". Re-read the current file content with file_read and retry with "
+               ". Re-read the current file content with " +
+               model_tool_name_for_native("file_read") + " and retry with "
                "an exact old_string including enough surrounding whitespace and "
                "indentation to identify the target.";
     }
 
     static std::string legacy_range_edit_arguments(const std::string& file_path) {
-        return "[Error] file_edit no longer supports start_line, end_line, "
+        return "[Error] " + model_tool_name_for_native("file_edit") +
+               " no longer supports start_line, end_line, "
                "expected_hash, or read_id arguments. Read the current file content "
-               "with file_read and retry with an exact old_string replacement: " +
+               "with " + model_tool_name_for_native("file_read") +
+               " and retry with an exact old_string replacement: " +
                file_path;
     }
 

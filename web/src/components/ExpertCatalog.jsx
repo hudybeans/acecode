@@ -336,6 +336,7 @@ export function ExpertDetailDialog({
         <footer className="flex justify-end border-t border-border px-5 py-3">
           <button
             type="button"
+            data-ace-dialog-primary="true"
             disabled={!!busyKey}
             onClick={() => invoke('dispatch')}
             className="h-9 rounded-md bg-accent px-5 text-[12px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-50"

@@ -369,6 +369,7 @@ json session_event_to_json(const SessionEvent& evt,
     msg["type"]         = to_string(evt.kind);
     msg["seq"]          = evt.seq;
     msg["timestamp_ms"] = evt.timestamp_ms;
+    msg["replayed"] = evt.replayed;
     msg["payload"]      = evt.payload;
     if (!session_id.empty()) {
         msg["session_id"] = session_id;

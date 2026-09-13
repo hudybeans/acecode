@@ -728,6 +728,7 @@ function MemberPickerDialog({ form, experts, onConfirm, onClose }) {
             <button type="button" onClick={onClose} className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-2 hover:bg-surface-hi">取消</button>
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={() => onConfirm(selectedIds)}
               className="h-8 rounded-md bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90"
             >
@@ -1014,6 +1015,7 @@ export function ExpertEditor({
               </button>
               <button
                 type="button"
+                data-ace-dialog-primary="true"
                 onClick={save}
                 disabled={saving}
                 className="h-8 rounded-md bg-accent px-4 text-[12px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-50"
@@ -1032,7 +1034,7 @@ export function ExpertEditor({
             <p className="mt-2 text-[12px] leading-5 text-fg-2">关闭后，本次填写的内容和能力选择不会保存。</p>
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" onClick={() => setConfirmClose(false)} className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-2 hover:bg-surface-hi">继续编辑</button>
-              <button type="button" onClick={onClose} className="h-8 rounded-md bg-danger px-3 text-[12px] font-medium text-white hover:opacity-90">放弃更改</button>
+              <button type="button" data-ace-dialog-primary="true" onClick={onClose} className="h-8 rounded-md bg-danger px-3 text-[12px] font-medium text-white hover:opacity-90">放弃更改</button>
             </div>
           </div>
         </Modal>

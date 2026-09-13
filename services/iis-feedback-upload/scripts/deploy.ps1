@@ -3,6 +3,7 @@ param(
     [string]$SiteRoot = 'J:\jenkins_green',
     [string]$UpdateDirectory = 'J:\jenkins_green\aupdate',
     [string]$FeedbackDirectory = 'J:\feedback',
+    [string]$WorkshopStorageDirectory = 'J:\acecode-workshop',
     [string]$EndpointPath = '/aupdate/',
     [long]$MaxFileBytes = 67108864,
     [long]$MinimumFreeBytes = 1073741824,
@@ -97,7 +98,7 @@ function Remove-HandlerNodes {
             continue
         }
         $name = $child.GetAttribute('name')
-        if ($name -eq 'AcecodeFeedbackUpload' -or $name -eq 'StaticFile') {
+        if ($name -in @('AcecodeFeedbackUpload', 'AcecodeWorkshop', 'AcecodeWorkshopRoot', 'StaticFile')) {
             [void]$Handlers.RemoveChild($child)
         }
     }
@@ -215,6 +216,7 @@ function Set-RestrictedDirectoryAcl {
 $SiteRoot = Get-NormalizedPath $SiteRoot
 $UpdateDirectory = Get-NormalizedPath $UpdateDirectory
 $FeedbackDirectory = Get-NormalizedPath $FeedbackDirectory
+$WorkshopStorageDirectory = Get-NormalizedPath $WorkshopStorageDirectory
 $BackupRoot = Get-NormalizedPath $BackupRoot
 
 if (-not (Test-Path -LiteralPath $SiteRoot -PathType Container)) {
@@ -228,6 +230,11 @@ if (-not (Test-PathWithinDirectory -Candidate $UpdateDirectory -Directory $SiteR
 }
 if (Test-PathWithinDirectory -Candidate $FeedbackDirectory -Directory $SiteRoot) {
     throw 'The feedback directory must be outside the public IIS site root.'
+}
+if ((Test-PathWithinDirectory -Candidate $WorkshopStorageDirectory -Directory $SiteRoot) -or
+    (Test-PathWithinDirectory -Candidate $WorkshopStorageDirectory -Directory $FeedbackDirectory) -or
+    (Test-PathWithinDirectory -Candidate $FeedbackDirectory -Directory $WorkshopStorageDirectory)) {
+    throw 'Workshop storage must be outside the public web root and separate from feedback storage.'
 }
 if (Test-PathWithinDirectory -Candidate $BackupRoot -Directory $SiteRoot) {
     throw 'The deployment backup directory must be outside the public IIS site root.'
@@ -280,6 +287,20 @@ Set-AppSetting -Document $rootDocument -AppSettings $appSettings `
     -Key 'AcecodeFeedback.MaxFileBytes' -Value $MaxFileBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 Set-AppSetting -Document $rootDocument -AppSettings $appSettings `
     -Key 'AcecodeFeedback.MinimumFreeBytes' -Value $MinimumFreeBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+Set-AppSetting -Document $rootDocument -AppSettings $appSettings `
+    -Key 'AcecodeWorkshop.StoragePath' -Value $WorkshopStorageDirectory
+$existingAdminHash = $appSettings.SelectSingleNode("add[@key='AcecodeWorkshop.AdminKeyHash']")
+$newAdminKey = $null
+$adminKeyFile = Join-Path $BackupRoot 'workshop-admin-key.txt'
+if (-not $existingAdminHash -or $existingAdminHash.GetAttribute('value') -notmatch '^[a-f0-9]{64}$') {
+    $random = New-Object byte[] 32
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($random) } finally { $generator.Dispose() }
+    $newAdminKey = [Convert]::ToBase64String($random)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try { $adminHash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($newAdminKey))).Replace('-', '').ToLowerInvariant() } finally { $hasher.Dispose() }
+    Set-AppSetting -Document $rootDocument -AppSettings $appSettings -Key 'AcecodeWorkshop.AdminKeyHash' -Value $adminHash
+}
 
 $location = $null
 foreach ($child in @($configuration.ChildNodes)) {
@@ -333,6 +354,16 @@ if (-not $hasClear) {
     $removeStatic.SetAttribute('name', 'StaticFile')
     [void]$handlers.AppendChild($removeStatic)
 }
+foreach ($mapping in @(@{ Name = 'AcecodeWorkshopRoot'; Path = 'workshop' }, @{ Name = 'AcecodeWorkshop'; Path = 'workshop/*' })) {
+    $workshopHandler = $updateDocument.CreateElement('add')
+    $workshopHandler.SetAttribute('name', $mapping.Name)
+    $workshopHandler.SetAttribute('path', $mapping.Path)
+    $workshopHandler.SetAttribute('verb', '*')
+    $workshopHandler.SetAttribute('type', 'Acecode.Workshop.WorkshopHandler, Acecode.FeedbackUpload')
+    $workshopHandler.SetAttribute('resourceType', 'Unspecified')
+    $workshopHandler.SetAttribute('preCondition', 'integratedMode,runtimeVersionv4.0')
+    [void]$handlers.AppendChild($workshopHandler)
+}
 $feedbackHandler = $updateDocument.CreateElement('add')
 $feedbackHandler.SetAttribute('name', 'AcecodeFeedbackUpload')
 $feedbackHandler.SetAttribute('path', '*')
@@ -364,11 +395,24 @@ $handlerTargetAssembly = Join-Path $handlerTargetDirectory 'Acecode.FeedbackUplo
 $backupId = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmssfff') + '-' +
     [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $backupDirectory = Join-Path $BackupRoot $backupId
+$workshopDirectory = Join-Path $UpdateDirectory 'workshop'
+$workshopFiles = @('index.html', 'workshop.css', 'workshop.js', 'assets/acecode-logo.png', 'assets/acecode-light.png', 'assets/acecode-dark.png')
+foreach ($relative in $workshopFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $componentRoot 'workshop') $relative) -PathType Leaf)) {
+        throw "Workshop asset is missing: $relative"
+    }
+}
+$assetManifest = @($workshopFiles | ForEach-Object {
+    [ordered]@{ relative_path = $_; existed = (Test-Path -LiteralPath (Join-Path $workshopDirectory $_) -PathType Leaf) }
+})
 
 $summary = [ordered]@{
     SiteRoot = $SiteRoot
     UpdateDirectory = $UpdateDirectory
     FeedbackDirectory = $FeedbackDirectory
+    WorkshopUrl = $normalizedEndpoint + 'workshop'
+    WorkshopStorageDirectory = $WorkshopStorageDirectory
+    AdminKeyFile = $adminKeyFile
     EndpointPath = $normalizedEndpoint
     HandlerAssembly = $handlerTargetAssembly
     HandlerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $handlerSourceAssembly).Hash.ToLowerInvariant()
@@ -379,7 +423,7 @@ $summary = [ordered]@{
 
 if (-not $PSCmdlet.ShouldProcess(
         $UpdateDirectory,
-        "Install the ACECode feedback POST handler and configure storage at $FeedbackDirectory")) {
+        "Install the shared ACECode feedback upload and moderated theme workshop service")) {
     [pscustomobject]$summary
     return
 }
@@ -388,6 +432,7 @@ $backupCreated = $false
 $assemblyExisted = Test-Path -LiteralPath $handlerTargetAssembly -PathType Leaf
 try {
     New-Item -ItemType Directory -Force -Path $FeedbackDirectory | Out-Null
+    New-Item -ItemType Directory -Force -Path $WorkshopStorageDirectory | Out-Null
     New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
     New-Item -ItemType Directory -Path $backupDirectory | Out-Null
     $backupCreated = $true
@@ -402,7 +447,7 @@ try {
     }
 
     $manifest = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         created_at = (Get-Date).ToUniversalTime().ToString('o')
         site_root = $SiteRoot
         update_directory = $UpdateDirectory
@@ -411,14 +456,35 @@ try {
         update_web_config = $updateWebConfig
         handler_assembly = $handlerTargetAssembly
         handler_assembly_existed = $assemblyExisted
+        workshop_files = $assetManifest
+        admin_key_file = $adminKeyFile
+        admin_key_created = [bool]$newAdminKey
+        admin_key_sha256 = $(if ($newAdminKey) { $adminHash } else { '' })
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $backupDirectory 'manifest.json'),
-        ($manifest | ConvertTo-Json -Depth 4),
+        ($manifest | ConvertTo-Json -Depth 6),
         (New-Object System.Text.UTF8Encoding($false)))
 
     Set-RestrictedDirectoryAcl -Path $BackupRoot
     Set-RestrictedDirectoryAcl -Path $FeedbackDirectory -AllowIisModify
+    Set-RestrictedDirectoryAcl -Path $WorkshopStorageDirectory -AllowIisModify
+    foreach ($asset in $assetManifest) {
+        if ($asset.existed) {
+            $assetBackup = Join-Path (Join-Path $backupDirectory 'workshop') $asset.relative_path
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $assetBackup) | Out-Null
+            [IO.File]::Copy((Join-Path $workshopDirectory $asset.relative_path), $assetBackup, $false)
+        }
+    }
+    if ($newAdminKey) {
+        if (Test-Path -LiteralPath $adminKeyFile) { throw "Admin key file already exists without a matching configured hash: $adminKeyFile" }
+        [IO.File]::WriteAllText($adminKeyFile, $newAdminKey, (New-Object Text.UTF8Encoding($false)))
+    }
+    foreach ($relative in $workshopFiles) {
+        $assetTarget = Join-Path $workshopDirectory $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $assetTarget) | Out-Null
+        Copy-FileAtomic -Source (Join-Path (Join-Path $componentRoot 'workshop') $relative) -Destination $assetTarget
+    }
 
     New-Item -ItemType Directory -Force -Path $handlerTargetDirectory | Out-Null
     Copy-FileAtomic -Source $handlerSourceAssembly -Destination $handlerTargetAssembly
@@ -440,6 +506,19 @@ try {
                     -Destination $handlerTargetAssembly
             } elseif (Test-Path -LiteralPath $handlerTargetAssembly) {
                 Remove-Item -LiteralPath $handlerTargetAssembly -Force
+            }
+            foreach ($asset in $assetManifest) {
+                $assetTarget = Join-Path $workshopDirectory $asset.relative_path
+                $assetBackup = Join-Path (Join-Path $backupDirectory 'workshop') $asset.relative_path
+                if ($asset.existed -and (Test-Path -LiteralPath $assetBackup)) {
+                    Copy-FileAtomic -Source $assetBackup -Destination $assetTarget
+                } elseif (-not $asset.existed -and (Test-Path -LiteralPath $assetTarget)) {
+                    Remove-Item -LiteralPath $assetTarget -Force
+                }
+            }
+            if ($newAdminKey -and (Test-Path -LiteralPath $adminKeyFile)) {
+                $currentAdminKey = [IO.File]::ReadAllText($adminKeyFile)
+                if ($currentAdminKey -eq $newAdminKey) { Remove-Item -LiteralPath $adminKeyFile -Force }
             }
         } catch {
             Write-Warning (

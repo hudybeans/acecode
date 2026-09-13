@@ -9,6 +9,7 @@ import MarkdownIt from 'markdown-it';
 import taskLists from 'markdown-it-task-lists';
 import { classifyFileLink } from './fileLink.js';
 import { createMarkdownHighlightCache } from './markdownHighlightCache.js';
+import { markdownColorSwatches } from './markdownColorSwatches.js';
 
 import hljs from 'highlight.js/lib/core';
 import c          from 'highlight.js/lib/languages/c';
@@ -137,6 +138,7 @@ const md = new MarkdownIt({
 });
 
 md.use(taskLists, { enabled: false, label: false });
+md.use(markdownColorSwatches);
 
 // markdown-it 默认 fuzzyLink=true,会把 SKILL.MD / AGENTS.COM / README.md /
 // file.rs 这类「名字.后缀」当成域名(.md/.com/.rs 都是真实 TLD)。编码助手

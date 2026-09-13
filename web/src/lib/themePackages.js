@@ -1,3 +1,5 @@
+import { isAiColorTheme, isInstalledColorTheme } from './colorTheme.js';
+
 export const EVA_THEME_ID = 'eva-01';
 export const THEME_COLOR_KEYS = Object.freeze([
   'bg', 'surface', 'surface-alt', 'surface-hi', 'shell-hi', 'shell-bg', 'border',
@@ -6,11 +8,40 @@ export const THEME_COLOR_KEYS = Object.freeze([
   'code-bg', 'code-fg', 'code-line', 'selection', 'on-selection', 'send-bg', 'send-fg',
 ]);
 
+export function validThemeHexColor(value) {
+  return typeof value === 'string' && value.length === 7 && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+export function validThemeAppearance(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, entry]) => {
+    if (key === 'logo_color' || key === 'home_title_color') return validThemeHexColor(entry);
+    return key === 'extend_to_titlebar' && typeof entry === 'boolean';
+  });
+}
+
 export function validThemeDefinition(value) {
-  return value?.schema_version === 1 && value.id === EVA_THEME_ID && value.mode === 'light'
-    && typeof value.version === 'string' && value.colors && typeof value.colors === 'object'
+  const identity = value?.id === EVA_THEME_ID ? value.mode === 'light'
+    : isAiColorTheme(value?.id) && typeof value.name === 'string' && !!value.name.trim()
+      && ['light', 'dark'].includes(value.mode);
+  return value?.schema_version === 1 && identity
+    && typeof value.version === 'string' && !!value.version && value.colors && typeof value.colors === 'object'
     && Object.keys(value.colors).length === THEME_COLOR_KEYS.length
-    && THEME_COLOR_KEYS.every((key) => /^#[0-9a-f]{6}$/i.test(value.colors[key]));
+    && THEME_COLOR_KEYS.every((key) => validThemeHexColor(value.colors[key]))
+    && (!Object.hasOwn(value, 'appearance') || validThemeAppearance(value.appearance));
+}
+
+export function resolveThemeAppearance(definition) {
+  if (!validThemeDefinition(definition)) throw new Error('主题配色数据无效');
+  const appearance = definition.appearance || {};
+  const legacyEvaTitlebar = definition.id === EVA_THEME_ID && !Object.hasOwn(appearance, 'extend_to_titlebar');
+  const extendToTitlebar = appearance.extend_to_titlebar ?? definition.id === EVA_THEME_ID;
+  return {
+    logoColor: appearance.logo_color ?? null,
+    homeTitleColor: appearance.home_title_color ?? definition.colors.fg,
+    extendToTitlebar,
+    whiteTitlebarControls: extendToTitlebar && (definition.mode === 'dark' || legacyEvaTitlebar),
+  };
 }
 
 export function themeCssProperties(definition, backgroundUrl) {
@@ -21,11 +52,39 @@ export function themeCssProperties(definition, backgroundUrl) {
     result[`--ace-${key}`] = hex;
     result[`--ace-${key}-rgb`] = [1, 3, 5].map((start) => parseInt(hex.slice(start, start + 2), 16)).join(', ');
   }
+  const appearance = resolveThemeAppearance(definition);
+  result['--ace-home-title-color'] = appearance.homeTitleColor;
+  if (appearance.logoColor) {
+    result['--ace-logo-color'] = appearance.logoColor;
+    result['--ace-logo-color-rgb'] = [1, 3, 5].map((start) => parseInt(appearance.logoColor.slice(start, start + 2), 16)).join(', ');
+  }
   // Only application-created blob URLs may become CSS image values.
   if (typeof backgroundUrl === 'string' && backgroundUrl.startsWith('blob:') && !/["()\s]/.test(backgroundUrl)) {
     result['--ace-home-background-image'] = `url("${backgroundUrl}")`;
   }
   return result;
+}
+
+export function applyInstalledTheme(root, definition, backgroundUrl) {
+  const properties = definition ? themeCssProperties(definition, backgroundUrl) : {};
+  const appearance = definition ? resolveThemeAppearance(definition) : null;
+  const hasBackground = !!properties['--ace-home-background-image'];
+  const attributes = {
+    'data-installed-theme': definition?.id,
+    'data-theme-wallpaper': hasBackground ? 'true' : null,
+    'data-theme-extend-to-titlebar': hasBackground ? String(appearance.extendToTitlebar) : null,
+    'data-theme-titlebar-controls': hasBackground && appearance.whiteTitlebarControls ? 'white' : null,
+    'data-theme-logo-color': appearance?.logoColor ? 'custom' : null,
+  };
+  for (const [key, value] of Object.entries(properties)) root.style.setProperty(key, value);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (value) root.setAttribute(key, value);
+    else root.removeAttribute(key);
+  }
+  return () => {
+    for (const key of Object.keys(properties)) root.style.removeProperty(key);
+    for (const key of Object.keys(attributes)) root.removeAttribute(key);
+  };
 }
 
 export function themeDownloadConsent(entry) {
@@ -59,14 +118,33 @@ export function themeErrorText(error) {
 
 export function themeFailure(error, fallbackPath = '') {
   const path = error?.body?.error_path || error?.error_path || fallbackPath;
-  return { message: themeErrorText(error?.error || error), path: typeof path === 'string' ? path : '' };
+  const detail = error?.body?.message || (!error?.code ? error?.message : '');
+  const message = typeof detail === 'string' && detail ? detail : themeErrorText(error?.error || error);
+  return { message, path: typeof path === 'string' ? path : '' };
+}
+
+export function localThemeEntries(catalog) {
+  const seen = new Set();
+  return (Array.isArray(catalog?.themes) ? catalog.themes : []).filter((entry) => {
+    if (!isAiColorTheme(entry?.id) || entry.source !== 'local' || entry.installed !== true
+        || typeof entry.name !== 'string' || !entry.name.trim() || seen.has(entry.id)) return false;
+    seen.add(entry.id);
+    return true;
+  });
+}
+
+export function releaseThemeResource(cache, id, revoke = (url) => URL.revokeObjectURL(url)) {
+  const pending = cache.get(id);
+  cache.delete(id);
+  if (pending) Promise.resolve(pending).then((item) => revoke(item.backgroundUrl)).catch(() => {});
 }
 
 // The controller outlives Settings. A later selection revokes an older
 // download's automatic application, while the useful local install can finish.
-export function createThemeDownloadController({ api, prepare, apply, onChange, wait = () => new Promise((resolve) => setTimeout(resolve, 400)) }) {
+export function createThemeDownloadController({ api, prepare, apply, remove = (id) => api.deleteTheme(id), forget, onChange, wait = () => new Promise((resolve) => setTimeout(resolve, 400)) }) {
   let active = true, revision = 0, polling = null, intent = null;
-  let state = { entry: null, loading: false, error: '', failure: null, job: { state: 'idle' } };
+  const removedIds = new Set();
+  let state = { entry: null, localEntries: [], deletingId: '', loading: false, error: '', failure: null, job: { state: 'idle' } };
   const patch = (value) => { state = { ...state, ...value }; if (active) onChange?.(state); };
   const report = (error, notify = false, path = state.entry?.package?.url || state.entry?.package?.path || '') => {
     const failure = themeFailure(error, path);
@@ -115,20 +193,70 @@ export function createThemeDownloadController({ api, prepare, apply, onChange, w
       try {
         const catalog = await api.getThemes(true);
         const entry = catalog?.themes?.find((item) => item.id === EVA_THEME_ID) || null;
-        themeDownloadConsent(entry);
-        patch({ entry, loading: false, error: '' });
+        // Local themes remain available when the remote catalogue is offline.
+        // An installed EVA descriptor can also lack download metadata offline.
+        if (entry && !entry.installed && entry.available !== false) themeDownloadConsent(entry);
+        patch({ entry, localEntries: localThemeEntries(catalog).filter((item) => !removedIds.has(item.id)), loading: false,
+          error: catalog.catalog_error ? themeErrorText(catalog.catalog_error.error) : '' });
         await consumeJob(catalog.job || { state: 'idle' }, themeJobActive(state.job));
         if (themeJobActive(state.job)) void poll();
         return entry;
       } catch (error) { patch({ loading: false }); report(error, notifyFailure); return null; }
     },
     async select(id) {
+      if (state.deletingId === id || removedIds.has(id)) return;
       const selected = ++revision;
       intent = null;
       try {
-        if (id === EVA_THEME_ID) await prepare(id);
-        if (active && selected === revision) await apply(id);
+        if (isInstalledColorTheme(id)) await prepare(id);
+        if (active && selected === revision && state.deletingId !== id && !removedIds.has(id)) await apply(id);
       } catch (error) { report(error, true); }
+    },
+    beginCreation() {
+      intent = null;
+      return ++revision;
+    },
+    async importLocal(file, digest, applyAfter = true) {
+      if (state.deletingId) throw new Error('主题正在处理中，请稍后重试');
+      const selected = ++revision;
+      intent = null;
+      const result = await api.importTheme(file, digest);
+      if (!isAiColorTheme(result?.id)) throw new Error('导入主题返回了无效结果，请刷新后重试');
+      removedIds.delete(result.id);
+      forget?.(result.id);
+      await this.refresh();
+      let applied = false;
+      if (applyAfter && active && selected === revision) {
+        await prepare(result.id, { refresh: true });
+        if (active && selected === revision) { await apply(result.id); applied = true; }
+      }
+      return { ...result, applied };
+    },
+    async created(theme, selected) {
+      if (!isAiColorTheme(theme?.id) || theme.apply !== true || removedIds.has(theme.id)) return;
+      try {
+        await this.refresh();
+        if (!active || !Number.isSafeInteger(selected) || selected !== revision) return;
+        await prepare(theme.id, { refresh: true });
+        if (active && selected === revision && state.deletingId !== theme.id && !removedIds.has(theme.id)) await apply(theme.id);
+      } catch (error) { report(error, true, theme.id); }
+    },
+    async remove(id) {
+      if (!isAiColorTheme(id)) throw new Error('内置主题不能导出或删除');
+      if (state.deletingId) throw new Error('主题正在处理中，请稍后重试');
+      patch({ deletingId: id });
+      try {
+        const result = await remove(id);
+        if (result?.deleted !== true || result.id !== id) throw new Error('删除主题返回了无效结果，请刷新后重试');
+        removedIds.add(id);
+        if (intent?.id === id) intent = null;
+        forget?.(id);
+        patch({ localEntries: state.localEntries.filter((item) => item.id !== id) });
+        // Removing a local theme succeeds offline; never await the remote
+        // catalogue before removing its card and releasing its image.
+        void this.refresh();
+        return result;
+      } finally { patch({ deletingId: '' }); }
     },
     async install(entry) {
       const selected = ++revision;

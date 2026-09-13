@@ -122,6 +122,33 @@ TEST_F(ThemeStoreTest, CatalogAndDefinitionRejectUnsafePathsAndExecutableValues)
     EXPECT_FALSE(valid_theme_definition(theme));
 }
 
+TEST_F(ThemeStoreTest, AppearanceAcceptsOnlyOptionalHexColorsAndBooleanTitlebarExtension) {
+    EXPECT_TRUE(valid_theme_definition(definition));
+    for (const auto& appearance : std::vector<json>{
+             json::object(), {{"logo_color", "#aBcDeF"}}, {{"home_title_color", "#012345"}},
+             {{"extend_to_titlebar", false}},
+             {{"logo_color", "#9B6DFF"}, {"home_title_color", "#FFFFFF"}, {"extend_to_titlebar", true}}}) {
+        auto theme = definition;
+        theme["appearance"] = appearance;
+        EXPECT_TRUE(valid_theme_definition(theme)) << appearance;
+        theme["id"] = "ai-example";
+        theme["name"] = "Example";
+        theme["mode"] = "dark";
+        EXPECT_TRUE(valid_theme_definition(theme)) << appearance;
+    }
+    for (const auto& appearance : std::vector<json>{
+             nullptr, true, 1, "#FFFFFF", json::array(), {{"unknown", true}},
+             {{"logo_color", nullptr}}, {{"logo_color", "#FFF"}}, {{"logo_color", "#FFFFFF80"}},
+             {{"logo_color", "#GGGGGG"}}, {{"logo_color", "var(--accent)"}},
+             {{"home_title_color", 123}}, {{"home_title_color", "url(https://example.com)"}},
+             {{"extend_to_titlebar", "true"}}, {{"extend_to_titlebar", 1}},
+             {{"extend_to_titlebar", nullptr}}}) {
+        auto theme = definition;
+        theme["appearance"] = appearance;
+        EXPECT_FALSE(valid_theme_definition(theme)) << appearance;
+    }
+}
+
 TEST_F(ThemeStoreTest, NoDownloadUntilExactSizeAndIdentityAreConfirmed) {
     ThemeStore store(root / "cache", "https://example.com/aupdate/", transport());
     EXPECT_FALSE(store.catalog()["themes"][0]["installed"]);

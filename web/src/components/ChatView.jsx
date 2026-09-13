@@ -110,6 +110,7 @@ import { pickExistingWorkspace } from '../lib/workspacePicker.js';
 import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
 import { homeComposerDraftText } from '../lib/homeComposerDrafts.js';
+import { homeComposerScopedWorkspace } from '../lib/aiThemeCreation.js';
 import {
   createPendingNewSessionFirstUserMessage,
   withPendingNewSessionFirstUserMessage,
@@ -517,7 +518,7 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
+export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
@@ -880,11 +881,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const explicitHomeDraftWorkspaceHash = !sid && ref?.homeWorkspaceExplicit
     ? (isRealWorkspaceHash(ref?.workspaceHash) ? ref.workspaceHash : '')
     : null;
-  const homeDraftWorkspaceHash = sid
+  const homeDraftWorkspaceHash = homeComposerScopedWorkspace(sid
     ? ''
     : (explicitHomeDraftWorkspaceHash ?? (
         isRealWorkspaceHash(homeWorkspaceHash) ? homeWorkspaceHash : ''
-      ));
+      )), sid ? '' : ref?.composerDraftScope);
   const currentHomeDraftText = homeComposerDraftText(
     homeComposerDrafts,
     homeDraftWorkspaceHash,
@@ -1699,16 +1700,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     if (!preserveComposerInput) setComposerSubmitting(false);
 
     if (!targetSid || !targetKey) {
-      const homeText = stagedExpertDraft.present
-        ? stagedExpertDraft.text
-        : currentHomeDraftText;
-      composerDirtyRef.current = !!homeText;
-      setComposerValue(homeText);
+      composerDirtyRef.current = !!currentHomeDraftText;
+      setComposerValue(currentHomeDraftText);
       draftLastSavedRef.current = { key: '', text: '' };
-      if (stagedExpertDraft.present) {
-        onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text);
-        onInitialDraftConsumed?.();
-      }
       return () => { cancelled = true; };
     }
 
@@ -1747,13 +1741,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       });
 
     return () => { cancelled = true; };
-  // stagedExpertDraft and currentHomeDraftText deliberately stay out of the
-  // dependency list. App
-  // consumes the one-shot route payload after this effect applies it; that
-  // parent re-render, as well as each home keystroke stored in App, must not
-  // immediately run this effect again. A real session/workspace transition
-  // still changes the scoped keys and performs the normal draft reset/load.
-  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftChange, onInitialDraftConsumed, sid]);
+  // Home edits update App's draft store without triggering restoration again.
+  // Only session/workspace changes should reset or load the scoped draft.
+  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, sid]);
 
   useEffect(() => {
     const targetSid = sid;
@@ -2265,6 +2255,26 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       window.setTimeout(() => focusChatInput(force), 80);
     });
   }, [focusChatInput]);
+
+  useEffect(() => {
+    if (sid || !stagedExpertDraft.present) return;
+    // The expert page shares this mounted ChatView. A new prompt can arrive
+    // without a scope change; apply it after normal draft restoration.
+    draftEditVersionRef.current += 1;
+    composerDirtyRef.current = !!stagedExpertDraft.text;
+    setComposerValue(stagedExpertDraft.text);
+    onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text);
+    onInitialDraftConsumed?.();
+    restoreChatInputFocusSoon(true);
+  }, [
+    sid,
+    stagedExpertDraft.present,
+    stagedExpertDraft.text,
+    homeDraftWorkspaceHash,
+    onHomeComposerDraftChange,
+    onInitialDraftConsumed,
+    restoreChatInputFocusSoon,
+  ]);
 
   useEffect(() => {
     if (composerSubmitting || !restoreComposerFocusAfterSubmitRef.current) return;
@@ -4777,6 +4787,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               <InputBar
                 ref={inputRef}
                 variant="hero"
+                attentionRequest={homeComposerAttentionRequest}
                 pathReferenceApi={api}
                 currentSessionId=""
                 cwd={selectedHomeWorkspace?.cwd || ''}
@@ -5479,6 +5490,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                 </button>
                 <button
                   type="button"
+                  data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg bg-accent text-white hover:opacity-90 transition-opacity disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
                   onClick={saveAndClosePreviews}

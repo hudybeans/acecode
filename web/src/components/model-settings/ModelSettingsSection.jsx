@@ -34,7 +34,7 @@ function catalogErrorCopy(error) {
     : lookupErrorMessage(error?.code, error?.message);
 }
 
-export function ModelSettingsSection({ onModelProfileUpdated }) {
+export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, onClose }) {
   const [models, setModels] = useState([]);
   const [defaultName, setDefaultName] = useState('');
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -343,6 +343,12 @@ export function ModelSettingsSection({ onModelProfileUpdated }) {
     });
   }, [catalogError, providers]);
 
+  useEffect(() => {
+    if (addOnly && !profileDialog && !modelsLoading && !modelsError && !catalogLoading && providers.length) {
+      openAddDialog();
+    }
+  }, [addOnly, profileDialog, modelsLoading, modelsError, catalogLoading, providers, openAddDialog]);
+
   const openEditDialog = useCallback((model) => {
     const provider = providerForSavedModel(providers, model);
     if (!provider) {
@@ -497,40 +503,56 @@ export function ModelSettingsSection({ onModelProfileUpdated }) {
 
   return (
     <div
-      className="space-y-6 pb-8"
+      className={addOnly ? '' : 'space-y-6 pb-8'}
       aria-busy={modelsLoading || catalogLoading || !!mutationBusy}
     >
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-[16px] font-semibold text-fg">模型</h2>
-          <p className="mt-1 max-w-[680px] text-[12px] leading-5 text-fg-mute">
-            快速找到、配置并维护聊天使用的模型连接。Provider 决定可用字段，预设保存后才会出现在会话模型选择器中。
-          </p>
-          {catalogMeta && (
-            <div className="mt-1 text-[10px] text-fg-mute">{`目录状态：${catalogMeta}`}</div>
-          )}
-        </div>
-      </header>
-
-      {modelsError && (
-        <div role="status" className="rounded-md border border-danger bg-danger-bg px-3.5 py-2.5 text-[11px] text-danger">
-          {modelsError}
-        </div>
+      {addOnly && !profileDialog && (
+        <Modal onClose={onClose} layerClassName="z-[310]" width="min(520px, calc(100vw - 32px))" labelledBy="summary-add-model-title">
+          <div className="p-5">
+            <h3 id="summary-add-model-title" className="mb-3 text-[14px] font-semibold">添加模型</h3>
+            <div role="status" className="text-[12px] text-fg-mute">
+              {modelsLoading || catalogLoading ? '加载中…' : modelsError || catalogError || '模型目录尚未就绪'}
+            </div>
+            {!modelsLoading && !catalogLoading && <button type="button"
+              className="mt-3 px-3 py-1 text-[12px] rounded-md border border-border hover:bg-surface-hi"
+              onClick={() => { void loadSavedModels(); void loadCatalog(); }}>重试</button>}
+            <button type="button" onClick={onClose} className="ml-2 mt-3 px-3 py-1 text-[12px] hover:underline">取消</button>
+          </div>
+        </Modal>
       )}
-      <SavedModelList
-        models={models}
-        defaultName={defaultName}
-        query={savedQuery}
-        onQueryChange={setSavedQuery}
-        loading={modelsLoading}
-        busy={mutationBusy}
-        blockedDeletes={blockedDeletes}
-        onRefresh={() => { void loadSavedModels(); }}
-        onAdd={openAddDialog}
-        onSetDefault={setDefaultModel}
-        onEdit={openEditDialog}
-        onDelete={(model) => setDeleteTarget({ ...model, error: '', blocked: false })}
-      />
+      {!addOnly && <>
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[16px] font-semibold text-fg">模型</h2>
+            <p className="mt-1 max-w-[680px] text-[12px] leading-5 text-fg-mute">
+              快速找到、配置并维护聊天使用的模型连接。Provider 决定可用字段，预设保存后才会出现在会话模型选择器中。
+            </p>
+            {catalogMeta && (
+              <div className="mt-1 text-[10px] text-fg-mute">{`目录状态：${catalogMeta}`}</div>
+            )}
+          </div>
+        </header>
+
+        {modelsError && (
+          <div role="status" className="rounded-md border border-danger bg-danger-bg px-3.5 py-2.5 text-[11px] text-danger">
+            {modelsError}
+          </div>
+        )}
+        <SavedModelList
+          models={models}
+          defaultName={defaultName}
+          query={savedQuery}
+          onQueryChange={setSavedQuery}
+          loading={modelsLoading}
+          busy={mutationBusy}
+          blockedDeletes={blockedDeletes}
+          onRefresh={() => { void loadSavedModels(); }}
+          onAdd={openAddDialog}
+          onSetDefault={setDefaultModel}
+          onEdit={openEditDialog}
+          onDelete={(model) => setDeleteTarget({ ...model, error: '', blocked: false })}
+        />
+      </>}
 
       {profileDialog && (
         <ModelProfileDialog
@@ -573,7 +595,7 @@ export function ModelSettingsSection({ onModelProfileUpdated }) {
           }}
           onSubmit={submitProfiles}
           onResolveConflict={resolveConflict}
-          onClose={() => setProfileDialog(null)}
+          onClose={() => { setProfileDialog(null); if (addOnly) onClose?.(); }}
         />
       )}
 
@@ -619,6 +641,7 @@ export function ModelSettingsSection({ onModelProfileUpdated }) {
               </button>
               <button
                 type="button"
+                data-ace-dialog-primary="true"
                 onClick={confirmDelete}
                 disabled={!!mutationBusy || deleteTarget.blocked}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-danger px-3.5 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-danger-bg disabled:cursor-not-allowed disabled:opacity-50"

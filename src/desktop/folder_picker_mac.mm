@@ -89,6 +89,8 @@ SaveFilePickOutcome pick_save_file_outcome(
     void* /* parent_window */,
     const std::string& suggested_filename) {
     __block SaveFilePickOutcome outcome;
+    const bool theme_zip = suggested_filename.size() >= 4 &&
+        suggested_filename.compare(suggested_filename.size() - 4, 4, ".zip") == 0;
 
     dispatch_block_t work = ^{
         NSApplication* app = [NSApplication sharedApplication];
@@ -104,9 +106,9 @@ SaveFilePickOutcome pick_save_file_outcome(
         panel.canCreateDirectories = YES;
         panel.allowsOtherFileTypes = NO;
         panel.extensionHidden = NO;
-        panel.allowedFileTypes = @[@"md"];
+        panel.allowedFileTypes = theme_zip ? @[@"zip"] : @[@"md"];
         const std::string title = std::string(
-            native_string(DesktopStringId::SessionExportSaveTitle));
+            native_string(theme_zip ? DesktopStringId::ThemeExportSaveTitle : DesktopStringId::SessionExportSaveTitle));
         const std::string prompt = std::string(
             native_string(DesktopStringId::SessionExportSavePrompt));
         panel.title = [NSString stringWithUTF8String:title.c_str()];
@@ -125,7 +127,7 @@ SaveFilePickOutcome pick_save_file_outcome(
                 outcome.path = std::string(path);
             } else {
                 outcome.error = std::string(
-                    native_string(DesktopStringId::SessionExportSaveFailed));
+                    native_string(theme_zip ? DesktopStringId::ThemeExportSaveFailed : DesktopStringId::SessionExportSaveFailed));
             }
         }
     };

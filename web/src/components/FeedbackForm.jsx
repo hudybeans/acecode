@@ -130,7 +130,7 @@ export function FeedbackForm({ onClose }) {
       </div>
       {submitError && <p role="alert" className="break-words text-[12px] text-danger">上传失败:{submitError}</p>}
       <div className="flex justify-end">
-        <button type="submit" disabled={submitting || tooLong}
+        <button type="submit" data-ace-dialog-primary="true" disabled={submitting || tooLong}
           className="h-8 px-3 flex items-center gap-1.5 rounded-md bg-accent text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
           {submitting ? <span className="ace-spinner" /> : <VsIcon name="send" size={13} />}
           提交反馈

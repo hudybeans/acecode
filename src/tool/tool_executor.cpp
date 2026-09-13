@@ -315,14 +315,18 @@ std::vector<ToolDef> ToolExecutor::get_tool_definitions_by_source(
     return defs;
 }
 
+// 翻译失败(重写映射与注册表在运行期产生冲突)时回退到原生定义,而不是
+// 返回空表 —— 空表意味着模型在零工具状态下静默运行,症状极难定位;原生名
+// 永远可被 resolve_model_tool_name_to_native 精确命中,功能不受影响。
 std::vector<ToolDef> ToolExecutor::get_model_tool_definitions(
     const ToolCapabilityPolicy* policy) const {
+    auto native = get_tool_definitions(policy);
     std::vector<ToolDef> definitions;
     std::string error;
-    if (!translate_tool_definitions_for_model(
-            get_tool_definitions(policy), definitions, &error)) {
-        LOG_ERROR("Unable to build model-facing tool definitions: " + error);
-        return {};
+    if (!translate_tool_definitions_for_model(native, definitions, &error)) {
+        LOG_ERROR("Unable to build model-facing tool definitions; "
+                  "falling back to native names: " + error);
+        return native;
     }
     return definitions;
 }
@@ -330,12 +334,13 @@ std::vector<ToolDef> ToolExecutor::get_model_tool_definitions(
 std::vector<ToolDef> ToolExecutor::get_model_tool_definitions_by_source(
     ToolSource source,
     const ToolCapabilityPolicy* policy) const {
+    auto native = get_tool_definitions_by_source(source, policy);
     std::vector<ToolDef> definitions;
     std::string error;
-    if (!translate_tool_definitions_for_model(
-            get_tool_definitions_by_source(source, policy), definitions, &error)) {
-        LOG_ERROR("Unable to build model-facing tool definitions by source: " + error);
-        return {};
+    if (!translate_tool_definitions_for_model(native, definitions, &error)) {
+        LOG_ERROR("Unable to build model-facing tool definitions by source; "
+                  "falling back to native names: " + error);
+        return native;
     }
     return definitions;
 }

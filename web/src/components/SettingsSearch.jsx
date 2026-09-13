@@ -13,7 +13,8 @@ export function SettingsSearch({ query, onQuery, results, selected, onSelect, on
           onCompositionStart={() => onComposing(true)} onCompositionEnd={() => onComposing(false)}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
-            if (event.key === 'Escape') { event.stopPropagation(); onQuery(''); }
+            // 有内容时 Esc 只清空搜索;已空时放行,让它冒泡去关闭设置窗口。
+            if (event.key === 'Escape' && query) { event.stopPropagation(); onQuery(''); }
             if (results.length && ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) {
               event.preventDefault();
               onSelect(event.key === 'Enter' ? selected : (selected + (event.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length);

@@ -70,6 +70,29 @@ TEST(EventDispatcher, SubscribeWithZeroSinceDoesNotReplay) {
     EXPECT_EQ(got[0].payload["text"], "new");
 }
 
+TEST(EventDispatcher, ReplayProvenanceDoesNotLeakIntoLiveOrStoredPayloads) {
+    EventDispatcher d;
+    std::vector<SessionEvent> live;
+    d.subscribe([&](const SessionEvent& e) { live.push_back(e); });
+    d.emit(SessionEventKind::Token, {{"text", "before"}});
+    d.emit(SessionEventKind::ToolEnd, {{"tool", "theme_create"}, {"ok", true}});
+    std::vector<SessionEvent> catch_up;
+    d.subscribe([&](const SessionEvent& e) {
+        catch_up.push_back(e);
+        if (e.replayed) d.emit(SessionEventKind::Done, {});
+    }, 1);
+    ASSERT_EQ(catch_up.size(), 2u);
+    EXPECT_TRUE(catch_up[0].replayed);
+    EXPECT_FALSE(catch_up[1].replayed);
+    EXPECT_FALSE(catch_up[0].payload.contains("replayed"));
+    ASSERT_EQ(live.size(), 3u);
+    for (const auto& e : live) EXPECT_FALSE(e.replayed);
+    std::vector<SessionEvent> second;
+    d.subscribe([&](const SessionEvent& e) { second.push_back(e); }, 1);
+    ASSERT_EQ(second.size(), 2u);
+    for (const auto& e : second) EXPECT_TRUE(e.replayed);
+}
+
 // 场景: 缓存容量超出后,旧事件被淘汰,subscribe 拿不到太老的。
 TEST(EventDispatcher, BufferEvictsOldEventsBeyondCapacity) {
     EventDispatcher d(/*buffer_capacity=*/3);

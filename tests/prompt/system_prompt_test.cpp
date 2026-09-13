@@ -10,6 +10,7 @@
 #include "memory/memory_registry.hpp"
 #include "memory/memory_types.hpp"
 #include "prompt/system_prompt.hpp"
+#include "tool/tool_protocol_names.hpp"
 #include "tool/tool_executor.hpp"
 
 #include <cstdlib>
@@ -413,6 +414,9 @@ TEST_F(SystemPromptTest, EffectiveToolPolicyOmitsDisabledToolGuidance) {
         register_tool(name);
     }
 
+    // 模型侧名只在「工具重写」生效时出现,这里显式启用内置种子映射。
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolCapabilityPolicy policy;
     policy.builtin_tools =
         std::unordered_set<std::string>{"file_read"};
@@ -437,6 +441,8 @@ TEST_F(SystemPromptTest, EffectiveToolPolicyOmitsDisabledToolGuidance) {
 // 场景:工具使用与进度更新文案应鼓励同一 assistant turn 中批量发出独立工具调用,
 // 而不是形成一句旁白配一个工具调用的低密度交替模式。
 TEST_F(SystemPromptTest, PromptEncouragesBatchedToolCallsWithoutPerCallNarration) {
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolExecutor tools;
     std::string out = acecode::build_system_prompt(tools, temp_home.string());
 
@@ -455,6 +461,8 @@ TEST_F(SystemPromptTest, PromptEncouragesBatchedToolCallsWithoutPerCallNarration
 }
 
 TEST_F(SystemPromptTest, PromptUsesClaudeStyleReadFailureGuidanceAndGuidesScratchScripts) {
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolExecutor tools;
     std::string out = acecode::build_system_prompt(tools, temp_home.string());
 
@@ -472,6 +480,22 @@ TEST_F(SystemPromptTest, PromptUsesClaudeStyleReadFailureGuidanceAndGuidesScratc
     EXPECT_EQ(out.find("file_read"), std::string::npos);
     EXPECT_EQ(out.find("file_edit"), std::string::npos);
     EXPECT_EQ(out.find("file_write"), std::string::npos);
+}
+
+// 场景:「工具重写」未启用(进程默认)。
+// 期望:system prompt 里的工具指引直接使用原生名 file_read / file_edit /
+// file_write,与发给模型的工具表一致;不出现任何 OpenCode 别名。
+TEST_F(SystemPromptTest, PromptUsesNativeToolNamesWhenNoRewriteIsActive) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    std::string out = acecode::build_system_prompt(tools, temp_home.string());
+
+    EXPECT_NE(out.find("`file_edit` will error if you attempt an edit without reading the file"), std::string::npos);
+    EXPECT_NE(out.find("`file_write` will fail if you did not read the file first"), std::string::npos);
+    EXPECT_NE(out.find("Do not call `file_read` again for the same file/range"), std::string::npos);
+    EXPECT_EQ(out.find("`read`"), std::string::npos);
+    EXPECT_EQ(out.find("`edit`"), std::string::npos);
+    EXPECT_EQ(out.find("`write`"), std::string::npos);
 }
 
 // 场景:Windows 平台 build prompt 必须注入 "# Shell Command Guidance (Windows)" 段。

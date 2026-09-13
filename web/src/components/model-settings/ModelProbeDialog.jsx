@@ -198,6 +198,7 @@ export function ModelProbeDialog({
           </span>
           <button
             type="button"
+            data-ace-dialog-primary="true"
             onClick={confirmSelection}
             disabled={status !== 'ready' || selectedModelIds.length === 0}
             className="h-8 rounded-md bg-accent px-4 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"

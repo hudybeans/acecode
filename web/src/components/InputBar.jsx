@@ -179,7 +179,7 @@ export const InputBar = forwardRef(function InputBar({
   disabled, submitting = false,
   placeholder = '输入消息或 / 命令…', onSubmit, onAbort, busy, goal = null,
   onGoalEdit, onGoalStatusChange, onGoalClear,
-  history = [], variant = 'default',
+  history = [], variant = 'default', attentionRequest = 0,
   value: controlledValue, onChange,
   attachments = EMPTY_COMPOSER_ATTACHMENTS, contexts = [], annotationPresentations = null,
   onMediaFiles, onRemoveAttachment, onRemoveContext,
@@ -218,6 +218,8 @@ export const InputBar = forwardRef(function InputBar({
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const ta = useRef(null);
   const rootRef = useRef(null);
+  const attentionRingRef = useRef(null);
+  const lastAttentionRequestRef = useRef(attentionRequest);
   const fileInputRef = useRef(null);
   const dismissedPathSignatureRef = useRef('');
   const mentionGenerationRef = useRef(0);
@@ -236,6 +238,28 @@ export const InputBar = forwardRef(function InputBar({
   const caretRestoreSelectionRef = useRef(null);
   const caretRestoreScheduleRef = useRef({ firstRaf: 0, secondRaf: 0, timeout: 0 });
   const isHero = variant === 'hero';
+  useLayoutEffect(() => {
+    // A request is transient: mounting a composer must not replay an old click.
+    if (lastAttentionRequestRef.current === attentionRequest) return;
+    lastAttentionRequestRef.current = attentionRequest;
+    const ring = attentionRingRef.current;
+    if (!ring) return;
+    if (!isComposerEditorFocused(rootRef.current)) ta.current?.focus();
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const peakOpacity = reduceMotion ? 0.35 : 1;
+    const animation = ring.animate([
+      { opacity: 0 },
+      { opacity: peakOpacity, offset: 0.125 },
+      { opacity: peakOpacity, offset: 0.375 },
+      { opacity: 0, offset: 0.625 },
+      { opacity: 0 },
+    ], {
+      duration: reduceMotion ? 180 : 160,
+      iterations: 3,
+      easing: 'linear',
+    });
+    return () => animation.cancel();
+  }, [attentionRequest]);
   const textareaVerticalPadding = isHero ? 16 : 12;
   // 状态控制已经收进 composer，空输入区统一保留两行高度，整体比例与
   // WorkBuddy 式输入框一致；最大高度仍保持原有 8 行上限。
@@ -1346,6 +1370,7 @@ export const InputBar = forwardRef(function InputBar({
       onDragLeave={fileDropManagedExternally ? undefined : handleDragLeave}
       onDrop={fileDropManagedExternally ? undefined : handleDrop}
       >
+        {isHero && <span ref={attentionRingRef} className="ace-composer-attention-ring" aria-hidden="true" />}
         {activePathDropdown && (
           <PathReferenceDropdown
             fileItems={activePathDropdown.fileItems || []}

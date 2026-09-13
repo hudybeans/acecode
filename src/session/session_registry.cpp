@@ -1477,9 +1477,9 @@ bool SessionRegistry::set_permission_mode(const std::string& id, PermissionMode 
 }
 
 void SessionRegistry::maybe_start_auto_title(const std::string& id, const UserInput& input) {
+    const auto cfg = snapshot_model_config(deps_).config;
     if (shutting_down_.load() ||
-        !deps_.config ||
-        !deps_.config->session_title.enabled) {
+        !cfg || !cfg->session_title.enabled) {
         return;
     }
     std::string text = visible_auto_title_input(input);
@@ -1498,7 +1498,8 @@ void SessionRegistry::start_auto_title_attempt(const std::string& id,
 
     auto title_generator = deps_.auto_title_generator;
     std::optional<ModelProfile> profile;
-    const AppConfig* cfg = deps_.config;
+    const auto cfg = snapshot_model_config(deps_).config;
+    if (!cfg) return;
     if (!title_generator) {
         auto entry = acquire(id);
         if (entry && entry->sm) {
@@ -1506,7 +1507,7 @@ void SessionRegistry::start_auto_title_attempt(const std::string& id,
                 ? entry->model_binding->state_snapshot()
                 : SessionModelState{};
             profile = resolve_auto_title_profile(
-                *deps_.config,
+                *cfg,
                 model_state.name,
                 entry->cwd);
         }

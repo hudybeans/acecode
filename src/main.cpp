@@ -62,6 +62,7 @@
 #include "tool/tool_executor.hpp"
 #include "tool/bash_tool.hpp"
 #include "tool/builtin_tool_registry.hpp"
+#include "tool/tool_rewrites.hpp"
 #include "tool/file_read_tool.hpp"
 #include "tool/file_write_tool.hpp"
 #include "tool/file_edit_tool.hpp"
@@ -4842,6 +4843,10 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     auto provider_accessor = [&model_binding]() {
         return model_binding.provider_snapshot();
     };
+
+    // 「工具重写」与 daemon 共用同一份 <data_dir>/tool-rewrites.json,
+    // 必须先于 register_tool 发布(见 src/tool/tool_rewrites.hpp)。
+    tool_rewrites::load_and_apply(get_acecode_dir());
 
     ToolExecutor tools;
     SkillRegistry skill_registry;

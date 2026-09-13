@@ -206,6 +206,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
 )
 
 set(ACECODE_DESKTOP_SUPPORT_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/desktop/application_icon.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_supervisor.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/desktop_about.cpp

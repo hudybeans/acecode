@@ -45,6 +45,7 @@ export function DesktopCloseDialog({
           </button>
           <button
             type="button"
+            data-ace-dialog-primary="true"
             disabled={busy}
             onClick={onExit}
             className="px-3 py-1.5 text-[12.5px] rounded-lg bg-accent text-white hover:opacity-90 transition-opacity disabled:cursor-wait disabled:opacity-60"

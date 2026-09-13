@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { clsx } from '../../lib/format.js';
 import { lookupErrorMessage } from '../../lib/errors.js';
 import {
@@ -16,8 +16,10 @@ import {
 } from '../../lib/modelSettings.js';
 import { MODEL_CAPABILITY_OPTIONS, splitModelIds } from '../../lib/modelManager.js';
 import { expandModelAliases } from '../../lib/modelAlias.js';
+import { modelTestFailureMessage, testModelDraft } from '../../lib/modelConnectionTest.js';
 import { Modal, Toggle } from '../Modal.jsx';
 import { VsIcon } from '../Icon.jsx';
+import { toast } from '../Toast.jsx';
 import { ProviderCatalogPicker } from './ProviderCatalogPicker.jsx';
 
 function inputClass(extra = '') {
@@ -34,6 +36,65 @@ function fieldLabel(id, label, optional = false) {
       {label}
       {optional && <span className="ml-1 font-normal text-fg-mute">可选</span>}
     </label>
+  );
+}
+
+function ModelApiKeyInput({ draft, apiKeyVisible, onPatchDraft, onToggleApiKey,
+  testStatus, onTest, submitting }) {
+  const testing = testStatus === 'testing';
+  const succeeded = testStatus === 'success';
+  const testLabel = testing ? '检测中…' : succeeded ? '检测成功，点击重新检测' : '检测';
+  return (
+    <div className="relative">
+      <input
+        id="model-api-key"
+        type={apiKeyVisible ? 'text' : 'password'}
+        value={draft.api_key}
+        onChange={(event) => onPatchDraft({
+          api_key: event.target.value,
+          clear_api_key: false,
+        })}
+        placeholder="输入 API Key"
+        className={inputClass('pr-24')}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        onClick={onToggleApiKey}
+        aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+        aria-pressed={apiKeyVisible}
+        aria-controls="model-api-key"
+        title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+        className={clsx(
+          'absolute inset-y-px right-14 flex w-9 items-center justify-center transition',
+          'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
+          apiKeyVisible && 'text-accent',
+        )}
+      >
+        <VsIcon name="eye" size={14} />
+      </button>
+      <button
+        type="button"
+        onClick={onTest}
+        disabled={testing || submitting}
+        aria-label={testLabel}
+        aria-busy={testing}
+        title={testLabel}
+        data-model-connection-test={testStatus}
+        className={clsx(
+          'absolute inset-y-0 right-0 flex w-14 items-center justify-center rounded-r-md text-[12px] transition',
+          'focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60',
+          succeeded
+            ? 'border border-ok text-ok hover:bg-ok-bg'
+            : 'border-l border-border text-fg-2 hover:bg-surface-hi',
+        )}
+      >
+        {testing ? <span className="ace-spinner" />
+          : succeeded ? <VsIcon name="check" size={17} /> : '检测'}
+      </button>
+      <span className="sr-only" role="status">{testStatus === 'idle' ? '' : testLabel}</span>
+    </div>
   );
 }
 
@@ -81,6 +142,9 @@ function CustomCompatibilityApiFields({
   apiKeyVisible,
   onPatchDraft,
   onToggleApiKey,
+  testStatus,
+  onTest,
+  submitting,
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -109,36 +173,15 @@ function CustomCompatibilityApiFields({
       {policy?.show_api_key && (
         <div>
           {fieldLabel('model-api-key', 'API Key')}
-          <div className="relative">
-            <input
-              id="model-api-key"
-              type={apiKeyVisible ? 'text' : 'password'}
-              value={draft.api_key}
-              onChange={(event) => onPatchDraft({
-                api_key: event.target.value,
-                clear_api_key: false,
-              })}
-              placeholder="输入 API Key"
-              className={inputClass('pr-10')}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              onClick={onToggleApiKey}
-              aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-              aria-pressed={apiKeyVisible}
-              aria-controls="model-api-key"
-              title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-              className={clsx(
-                'absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md transition',
-                'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
-                apiKeyVisible && 'text-accent',
-              )}
-            >
-              <VsIcon name="eye" size={14} />
-            </button>
-          </div>
+          <ModelApiKeyInput
+            draft={draft}
+            apiKeyVisible={apiKeyVisible}
+            onPatchDraft={onPatchDraft}
+            onToggleApiKey={onToggleApiKey}
+            testStatus={testStatus}
+            onTest={onTest}
+            submitting={submitting}
+          />
         </div>
       )}
     </div>
@@ -177,6 +220,11 @@ export function ModelProfileDialog({
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(() => editing && hasAdvancedModelValues(seed));
   const [submitting, setSubmitting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const testRunRef = useRef(null);
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const testStatus = testResult?.draft === draft ? testResult.status : 'idle';
   const [formError, setFormError] = useState('');
   const [conflict, setConflict] = useState(null);
   const [conflictMode, setConflictMode] = useState('');
@@ -192,6 +240,33 @@ export function ModelProfileDialog({
     () => (Array.isArray(savedModels) ? savedModels : []).map((model) => model.name),
     [savedModels],
   );
+
+  useEffect(() => () => {
+    testRunRef.current?.abort();
+    testRunRef.current = null;
+  }, [draft, apiClient]);
+
+  const testConnection = async () => {
+    if (submitting || testRunRef.current) return;
+    const controller = new AbortController();
+    testRunRef.current = controller;
+    const isCurrent = () => testRunRef.current === controller
+      && latestDraftRef.current === draft && !controller.signal.aborted;
+    setTestResult({ draft, status: 'testing' });
+    try {
+      await testModelDraft(apiClient, draft, provider, {
+        editing, originalName, signal: controller.signal,
+      });
+      if (isCurrent()) setTestResult({ draft, status: 'success' });
+    } catch (error) {
+      if (isCurrent()) {
+        setTestResult({ draft, status: 'idle' });
+        toast({ kind: 'err', text: modelTestFailureMessage(error, draft) });
+      }
+    } finally {
+      if (testRunRef.current === controller) testRunRef.current = null;
+    }
+  };
 
   // 所有会改变「选了哪些模型 / 哪个 Provider」的草稿更新都经这里,让自动别名
   // 跟着刷新;只改其它字段的 patchDraft 不走它,避免用户正在手打的别名被覆盖。
@@ -359,6 +434,9 @@ export function ModelProfileDialog({
                 apiKeyVisible={apiKeyVisible}
                 onPatchDraft={patchDraft}
                 onToggleApiKey={() => setApiKeyVisible((visible) => !visible)}
+                testStatus={testStatus}
+                onTest={testConnection}
+                submitting={submitting}
               />
             ) : null}
             managedAuthenticated={managedAuthenticated}
@@ -395,36 +473,15 @@ export function ModelProfileDialog({
               {policy?.show_api_key && (
                 <div>
                   {fieldLabel('model-api-key', 'API Key')}
-                  <div className="relative">
-                    <input
-                      id="model-api-key"
-                      type={apiKeyVisible ? 'text' : 'password'}
-                      value={draft.api_key}
-                      onChange={(event) => patchDraft({
-                        api_key: event.target.value,
-                        clear_api_key: false,
-                      })}
-                      placeholder="输入 API Key"
-                      className={inputClass('pr-10')}
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setApiKeyVisible((visible) => !visible)}
-                      aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-                      aria-pressed={apiKeyVisible}
-                      aria-controls="model-api-key"
-                      title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-                      className={clsx(
-                        'absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md transition',
-                        'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
-                        apiKeyVisible && 'text-accent',
-                      )}
-                    >
-                      <VsIcon name="eye" size={14} />
-                    </button>
-                  </div>
+                  <ModelApiKeyInput
+                    draft={draft}
+                    apiKeyVisible={apiKeyVisible}
+                    onPatchDraft={patchDraft}
+                    onToggleApiKey={() => setApiKeyVisible((visible) => !visible)}
+                    testStatus={testStatus}
+                    onTest={testConnection}
+                    submitting={submitting}
+                  />
                 </div>
               )}
             </div>
@@ -699,6 +756,7 @@ export function ModelProfileDialog({
           </button>
           <button
             type="button"
+            data-ace-dialog-primary="true"
             onClick={submit}
             disabled={submitting || !provider || !draft.model}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"

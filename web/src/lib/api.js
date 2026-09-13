@@ -230,7 +230,7 @@ async function request(method, path, body, base, options = {}) {
   const headers = {};
   const token = baseToken(base);
   if (token) headers['X-ACECode-Token'] = token;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (body !== undefined) headers['Content-Type'] = options.rawBody ? 'application/zip' : 'application/json';
 
   const rawTimeout = options.timeoutMs;
   const timeoutMs = rawTimeout === undefined
@@ -261,7 +261,7 @@ async function request(method, path, body, base, options = {}) {
     const resp = await fetch(fullUrl(path, base), {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : options.rawBody ? body : JSON.stringify(body),
       ...(options.keepalive ? { keepalive: true } : {}),
       ...(controller
         ? { signal: controller.signal }
@@ -487,6 +487,8 @@ export function createApi(base = null) {
     disableHook:      (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/disable`, undefined, base),
     enableHook:       (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/enable`, undefined, base),
     listModels:       ()             => request('GET',    '/api/models', undefined, base),
+    testModel: (draft, options = {}) => request('POST', '/api/models/test', draft, base,
+      { timeoutMs: 35000, signal: options.signal }),
     probeModels:      (draft)        => request('POST',   '/api/models/probe', draft, base),
     getModelProbeCache: (draft)      => request('POST',   '/api/models/probe/cache', draft, base),
     getModelCatalog:  ()             => request('GET',    '/api/models/catalog', undefined, base),
@@ -538,8 +540,15 @@ export function createApi(base = null) {
     getTheme: (id) => request('GET', `/api/themes/${encodeURIComponent(id)}`, undefined, base),
     getThemeJob: () => request('GET', '/api/themes/job', undefined, base),
     installTheme: (id, consent) => request('POST', `/api/themes/${encodeURIComponent(id)}/install`, consent, base),
+    previewThemeImport: (file, options = {}) => request('POST', '/api/themes/import/preview', file, base, { rawBody: true, signal: options.signal }),
+    importTheme: (file, digest) => request('POST', `/api/themes/import?sha256=${encodeURIComponent(digest)}`, file, base, { rawBody: true }),
     cancelThemeInstall: () => request('POST', '/api/themes/job/cancel', {}, base),
     readThemeImage: (id, kind, version = '') => request('GET', `/api/themes/${encodeURIComponent(id)}/images/${encodeURIComponent(kind)}${version ? `?version=${encodeURIComponent(version)}` : ''}`, undefined, base, { responseType: 'blob' }),
+    exportTheme: (id, { native_save = false } = {}) => request('POST', `/api/themes/${encodeURIComponent(id)}/export`, { native_save }, base, { timeoutMs: native_save ? NO_TIMEOUT : DEFAULT_REQUEST_TIMEOUT_MS }),
+    getThemeExport: (jobId) => request('GET', `/api/themes/exports/${encodeURIComponent(jobId)}`, undefined, base),
+    cancelThemeExport: (jobId) => request('POST', `/api/themes/exports/${encodeURIComponent(jobId)}/cancel`, {}, base),
+    readThemeExport: (jobId, options = {}) => request('GET', `/api/themes/exports/${encodeURIComponent(jobId)}/download`, undefined, base, { responseType: 'blob', signal: options.signal }),
+    deleteTheme: (id) => request('DELETE', `/api/themes/${encodeURIComponent(id)}`, undefined, base),
     setUiPreferences: (prefs)        => request('PUT',    '/api/config/ui-preferences', prefs, base),
     getUiLocale: ()                  => request('GET',    '/api/config/ui-locale', undefined, base),
     setUiLocale: (locale)            => request('PUT',    '/api/config/ui-locale', { locale }, base),
@@ -552,9 +561,13 @@ export function createApi(base = null) {
     setCustomInstructions: (cfg)     => request('PUT',    '/api/config/custom-instructions', cfg, base),
     getConnectors: ()                => request('GET',    '/api/config/connectors', undefined, base),
     getImageGeneration: ()           => request('GET', '/api/config/image-generation', undefined, base),
+    getSummaryGeneration: ()         => request('GET', '/api/config/summary-generation', undefined, base),
+    setSummaryGeneration: (config)   => request('PUT', '/api/config/summary-generation', config, base, { keepalive: true }),
     setImageGeneration: (config)     => request('PUT', '/api/config/image-generation', config, base, { keepalive: true }),
     testImageGeneration: (config)    => request('POST', '/api/config/image-generation/test',
       { config, confirm_cost: true }, base, { timeoutMs: 615000 }),
+    getToolRewrites: ()              => request('GET', '/api/config/tool-rewrites', undefined, base),
+    setToolRewrites: (settings)      => request('PUT', '/api/config/tool-rewrites', settings, base, { keepalive: true }),
     setConnectors: (cfg)             => request('PUT',    '/api/config/connectors', cfg, base),
     getUpgradeConfig: ()             => request('GET',    '/api/config/upgrade', undefined, base),
     setUpgradeConfig: (cfg)          => request('PUT',    '/api/config/upgrade', cfg, base),

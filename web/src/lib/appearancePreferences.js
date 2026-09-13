@@ -1,5 +1,6 @@
 import {
   DEFAULT_COLOR_THEME,
+  isAiColorTheme,
   isValidColorTheme,
 } from './colorTheme.js';
 import {
@@ -127,6 +128,9 @@ export function createAppearancePersistenceController({
   let revision = 0;
   let queue = Promise.resolve();
   let active = true;
+  const deletedColorThemes = new Set();
+  const withoutDeletedTheme = (value) => deletedColorThemes.has(value.colorTheme)
+    ? { ...value, colorTheme: DEFAULT_COLOR_THEME } : value;
 
   const applyIfActive = (value) => {
     if (active) apply?.(value);
@@ -135,7 +139,7 @@ export function createAppearancePersistenceController({
   return {
     restore(value) {
       const parsed = parseAppearancePreferences(value, scope);
-      if (!parsed || revision !== 0) return false;
+      if (!parsed || revision !== 0 || deletedColorThemes.size > 0) return false;
       visible = parsed;
       confirmed = parsed;
       applyIfActive(parsed);
@@ -143,7 +147,7 @@ export function createAppearancePersistenceController({
     },
 
     change(patch) {
-      const target = mergeAppearancePreferences(visible, patch, scope);
+      const target = withoutDeletedTheme(mergeAppearancePreferences(visible, patch, scope));
       visible = target;
       revision += 1;
       const changeRevision = revision;
@@ -151,15 +155,15 @@ export function createAppearancePersistenceController({
 
       queue = queue
         .then(async () => {
-          const response = await save(appearancePreferencesToApi(target, scope));
+          const response = await save(appearancePreferencesToApi(withoutDeletedTheme(target), scope));
           const persisted = parseAppearancePreferences(response, scope);
           if (!persisted) {
             throw new Error('当前 daemon 不支持外观配置持久化');
           }
-          confirmed = persisted;
+          confirmed = withoutDeletedTheme(persisted);
           if (changeRevision === revision) {
-            visible = persisted;
-            applyIfActive(persisted);
+            visible = confirmed;
+            applyIfActive(confirmed);
           }
         })
         .catch((error) => {
@@ -169,6 +173,28 @@ export function createAppearancePersistenceController({
           if (active) onError(error);
         });
       return queue;
+    },
+
+    removeColorTheme(id, remove) {
+      if (!isAiColorTheme(id)) return Promise.reject(new Error('内置主题不能导出或删除'));
+      // Put removal between complete appearance snapshots. Later font/theme
+      // changes may already be visible, so only replace references to this ID.
+      const removal = queue.then(async () => {
+        const result = await remove();
+        if (result?.deleted !== true || result.id !== id) throw new Error('删除主题返回了无效结果，请刷新后重试');
+        deletedColorThemes.add(id);
+        confirmed = withoutDeletedTheme(parseAppearancePreferences(result.ui_preferences, scope) || confirmed);
+        const next = withoutDeletedTheme(visible);
+        if (next !== visible) {
+          visible = next;
+          applyIfActive(visible);
+        }
+        return result;
+      });
+      // The caller owns deletion feedback; a failed deletion cannot poison the
+      // appearance queue or roll back unrelated, later user preferences.
+      queue = removal.catch(() => {});
+      return removal;
     },
 
     current() {

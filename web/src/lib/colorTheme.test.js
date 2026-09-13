@@ -5,6 +5,7 @@ import {
   DEFAULT_COLOR_THEME,
   effectiveColorTheme,
   isValidColorTheme,
+  isAiColorTheme,
 } from './colorTheme.js';
 
 function run(name, fn) {
@@ -44,4 +45,14 @@ run('color theme preference rejects and normalizes invalid values', () => {
 run('effective color theme preserves valid stored values', () => {
   assert.equal(effectiveColorTheme('blue'), 'blue');
   assert.equal(effectiveColorTheme('orange'), 'orange');
+});
+
+run('local AI theme IDs have a bounded path-safe namespace', () => {
+  for (const value of ['ai-eva-night', 'ai-123', `ai-${'a'.repeat(61)}`]) {
+    assert.equal(isAiColorTheme(value), true);
+    assert.equal(effectiveColorTheme(value), value);
+  }
+  for (const value of ['ai-', 'ai-/tmp', 'ai-../blue', 'ai-A', 'ai-a--b', 'ai-a-', `ai-${'a'.repeat(62)}`, 'blue']) {
+    assert.equal(isAiColorTheme(value), false);
+  }
 });

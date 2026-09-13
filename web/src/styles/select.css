@@ -1,0 +1,62 @@
+/* Keep Windows WebView2 selects in the document's top layer: native popup
+ * windows can dismiss immediately on mouse input, even without React handlers.
+ * Startup opts in only when the engine supports both parts of this appearance.
+ */
+@supports (appearance: base-select) and selector(::picker(select)) {
+  :where(html[data-ace-webview-selects="true"]) select:not([multiple]):where(:not([size]), [size="0"], [size="1"]) {
+    appearance: base-select;
+    display: inline-grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+    padding-inline-end: 0;
+
+    &::picker(select) {
+      appearance: base-select;
+      width: anchor-size(width);
+      max-width: calc(100vw - 16px);
+      max-height: min(320px, calc(100dvh - 16px));
+      overflow: auto;
+      margin-block: 4px;
+      padding: 4px;
+      border: 1px solid var(--ace-border);
+      border-radius: 8px;
+      background: var(--ace-surface);
+      color: var(--ace-fg);
+      box-shadow: var(--ace-shadow-lg);
+    }
+
+    &::picker-icon {
+      grid-area: 1 / 2;
+      z-index: 1;
+      padding-inline: 4px 8px;
+      background: inherit;
+      color: var(--ace-fg-mute);
+    }
+
+    & option {
+      min-height: 28px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-weight: normal;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    & option:checked {
+      background: var(--ace-accent-bg);
+      color: var(--ace-accent);
+    }
+
+    & option:not(:disabled):is(:hover, :focus-visible) {
+      outline: none;
+      background: var(--ace-surface-hi);
+      color: var(--ace-fg);
+    }
+
+    & option:disabled {
+      opacity: 0.5;
+    }
+  }
+}

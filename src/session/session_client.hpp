@@ -65,6 +65,9 @@ struct SessionEvent {
     std::uint64_t    seq = 0;        // 该 session 内单调递增,从 1 开始
     std::int64_t     timestamp_ms = 0;
     nlohmann::json   payload;
+    // Delivery provenance only. The dispatcher marks catch-up copies, never
+    // the retained event or its application payload.
+    bool            replayed = false;
 };
 
 // ----- 客户端 → 服务端的命令 -----
