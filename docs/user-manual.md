@@ -377,7 +377,21 @@ yes / always / no: _
 - `file_read` — 读取文件内容
 - `grep` — 搜索文件
 - `glob` — 查找文件路径
-- `AskUserQuestion` — AI 反向向你发起 1–4 道多选题（每题 2–4 个选项 + 自动追加的 "Other..." 自定义文本行，支持多选）。弹出独占的多选 overlay，操作：↑/↓ 选项、Space 切换（仅多选）、Enter 提交、Esc 拒绝。拒绝时工具返回 `[Error] User declined to answer questions.`
+- `AskUserQuestion` — AI 反向向你发起默认 1–10 道多选题（每题 2–4 个选项 + 自动追加的 "Other..." 自定义文本行，支持多选）。单次题目数量上限由 `ask.max_questions` 配置控制，合法范围为 1–50；超过上限时模型应自行分多次提问，系统不会自动拆分。弹出独占的多选 overlay，操作：↑/↓ 选项、Space 切换（仅多选）、Enter 提交、Esc 拒绝。拒绝时工具返回 `[Error] User declined to answer questions.`
+
+### AskUserQuestion 题目数量配置
+
+在 `config.json` 中可配置单次 AskUserQuestion 的题目上限：
+
+```json
+{
+  "ask": {
+    "max_questions": 10
+  }
+}
+```
+
+`ask.max_questions` 默认值为 10，允许范围为 1–50。超出范围的整数会被钳制到边界并记录配置警告；非整数会被忽略并保留默认值。默认值不会写入配置文件。单次请求超过上限时，工具返回错误并提示模型分批提问，不会由系统自动拆分或合并问答。
 
 ### 文本编辑与编码保护
 

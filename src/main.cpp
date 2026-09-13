@@ -133,6 +133,8 @@
 #include "tui/pending_attachment_selection.hpp"
 #include "tui/ask_question_layout.hpp"
 #include "tui/ask_question_adapter.hpp"
+#include "tui/ask_question_panel.hpp"
+#include "tui/ask_question_view.hpp"
 #include "tui/picker_scroll.hpp"
 #include "tui/render_mode_factory.hpp"
 #include "utils/terminal_capability.hpp"
@@ -201,6 +203,25 @@ constexpr auto kTerminalShift =
 constexpr auto kTerminalAlt =
     acecode::tui::terminal_modifier(
         acecode::tui::TerminalKeyModifier::Alt);
+// Semantic theme colors for the question panel. The panel resolves its own
+// colors instead of inheriting a decorator from the composing container: a
+// container-wide `color(...)` was what turned the whole chat area blue.
+static acecode::tui::AskQuestionPanelColors ask_question_panel_colors() {
+    const auto& palette = acecode::tui::theme();
+    acecode::tui::AskQuestionPanelColors colors;
+    colors.border = palette.ui.border;
+    colors.question = palette.ui.text_primary;
+    colors.answer = palette.ui.text_primary;
+    colors.description = palette.ui.text_muted;
+    colors.placeholder = palette.ui.text_dim;
+    colors.focus_bg = palette.ui.selection_bg;
+    colors.panel_bg = palette.ui.input_bg;
+    colors.secondary = palette.ui.text_secondary;
+    colors.selection_fg = palette.ui.selection_fg;
+    colors.selection_bg = palette.ui.selection_bg;
+    return colors;
+}
+
 static int ask_timeout_remaining_seconds(
     const tui::AskQuestionSession& session,
     tui::AskQuestionSession::TimePoint now) {
@@ -348,7 +369,9 @@ static bool dispatch_ask_session_mouse_locked(
             const auto& layout_row = ask_question_layout.rows[
                 static_cast<std::size_t>(row)];
             if (!snapshot.editing_custom) break;
-            const int text_x = box.x_min + ask_question_layout.number_width;
+            // Custom answer text starts in the title column, not after the
+            // number column: the marker column sits between them.
+            const int text_x = box.x_min + ask_question_layout.title_x;
             const auto cursor = tui::ask_question_text_byte_offset_for_x(
                 snapshot.editor.text,
                 layout_row.text_byte_begin,
@@ -412,7 +435,7 @@ static bool dispatch_ask_session_mouse_locked(
                     const auto& layout_row = ask_question_layout.rows[
                         static_cast<std::size_t>(row)];
                     const int text_x = visible_it->x_min +
-                                       ask_question_layout.number_width;
+                                       ask_question_layout.title_x;
                     const auto cursor = tui::ask_question_text_byte_offset_for_x(
                         snapshot.editor.text, layout_row.text_byte_begin,
                         layout_row.text_byte_end, mouse.x - text_x);
@@ -1787,6 +1810,7 @@ static std::size_t message_render_revision(const TuiState::Message& msg,
 
     add_string(msg.role);
     add_size(msg.is_tool ? 1u : 0u);
+    add_size(msg.ask_result ? 1u : 0u);
     add_string(msg.display_override);
     add_size(msg.expanded ? 1u : 0u);
     add_string(msg.compact_notice_id);
@@ -4143,6 +4167,22 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
             }
             message_elements.push_back(
                 tracked_message(i, line | focus_decorator));
+        } else if (msg.ask_result) {
+            // AskUserQuestion already rendered its structured Q/A text into
+            // `content`. Show it in full and ignore Ctrl+E / Ctrl+O: folding it
+            // would hide answers, and expanding it would fall back to the raw
+            // tool arguments, which is exactly the parameter-name leak this
+            // branch exists to prevent.
+            auto line = hbox({
+                text("  \xE2\x94\x94 ") |
+                    color(tui::theme().ui.text_dim), // "└"
+                render_tool_result_lines_preserving_breaks(msg.content) | flex,
+            });
+            if (focused_message) {
+                line = line | focus;
+            }
+            message_elements.push_back(
+                tracked_message(i, line | focus_decorator));
         } else if (msg.role == "tool_result") {
             // 新优先级:有结构化 hunks → 走彩色 diff 视图(summary + 色带);
             // 其次 summary(无 hunks)→ 单行摘要;都没有 → 灰色 fold。
@@ -4801,7 +4841,11 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
             question_layout_input.timeout_remaining_seconds =
                 ask_timeout_remaining_seconds(
                     *state.ask_session, std::chrono::steady_clock::now());
-            question_layout_input.toast = state.status_line;
+            // The transient status line is deliberately NOT injected here: it
+            // belongs to the header/bottom status area. Rendering it as a panel
+            // row pushed sibling notices (model switches and similar) inside the
+            // question box and made the panel height change with unrelated
+            // events.
             auto question_layout = tui::build_ask_question_layout(
                 question_layout_input);
             ask_question_frame.layout = question_layout;
@@ -4825,140 +4869,16 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 static_cast<std::size_t>(question_layout.visible_rows),
                 Box{0, -1, 0, -1});
 
-            Elements rows;
-            if (question_layout.terminal_too_narrow) {
-                rows.push_back(text(" Terminal too narrow ") |
-                               bold | color(tui::theme().semantic.error));
-                rows.push_back(text(" Resize the terminal to continue ") |
-                               tui::readable_secondary());
-            } else {
-                const int begin = question_layout.scroll_offset;
-                const int end = std::min(
-                    question_layout.total_rows,
-                    begin + question_layout.visible_rows);
-                for (int i = begin; i < end; ++i) {
-                    const auto& row = question_layout.rows[
-                        static_cast<std::size_t>(i)];
-                    const int visible_row = i - begin;
-                    auto& row_box = ask_row_boxes[
-                        static_cast<std::size_t>(visible_row)];
-                    Element row_element;
-                    if (row.kind == tui::AskQuestionLayoutKind::Option) {
-                        auto title = text(row.number + row.title);
-                        auto description = text(row.description) |
-                            color(tui::theme().ui.text_muted);
-                        row_element = hbox({
-                            std::move(title) |
-                                size(WIDTH, EQUAL,
-                                     std::max(1, question_layout.number_width +
-                                                  question_layout.title_width)),
-                            std::move(description) |
-                                size(WIDTH, EQUAL,
-                                     std::max(1, question_layout.description_width)),
-                        });
-                    } else if (row.kind == tui::AskQuestionLayoutKind::Custom) {
-                        Element custom_text = text(row.title);
-                        if (snapshot.editing_custom &&
-                            row.question_index == snapshot.current_question &&
-                            row.option_index == static_cast<int>(snapshot.options.size())) {
-                            const std::size_t begin = row.text_byte_begin;
-                            const std::size_t end = row.text_byte_end;
-                            const std::size_t cursor = snapshot.editor.cursor;
-                            const auto selection = snapshot.editor.has_selection &&
-                                                   snapshot.editor.selection_anchor.has_value()
-                                ? std::optional<std::pair<std::size_t, std::size_t>>(
-                                      std::minmax(cursor,
-                                                  *snapshot.editor.selection_anchor))
-                                : std::nullopt;
-                            const std::size_t selected_begin = selection.has_value()
-                                ? std::max(begin, selection->first) : begin;
-                            const std::size_t selected_end = selection.has_value()
-                                ? std::min(end, selection->second) : begin;
-                            if (selected_begin < selected_end &&
-                                !(cursor >= begin && cursor <= end)) {
-                                Elements fragments;
-                                const auto append_fragment = [&](std::size_t from,
-                                                                 std::size_t to,
-                                                                 bool selected) {
-                                    if (from >= to) return;
-                                    auto fragment = text(row.title.substr(
-                                        from - begin, to - from));
-                                    if (selected) {
-                                        fragment = std::move(fragment) |
-                                            color(tui::theme().ui.selection_fg) |
-                                            bgcolor(tui::theme().ui.selection_bg);
-                                    }
-                                    fragments.push_back(std::move(fragment));
-                                };
-                                append_fragment(begin, selected_begin, false);
-                                append_fragment(selected_begin, selected_end, true);
-                                append_fragment(selected_end, end, false);
-                                custom_text = hbox(std::move(fragments));
-                            }
-                            if (cursor >= begin && cursor <= end) {
-                                std::optional<std::size_t> anchor;
-                                if (snapshot.editor.selection_anchor.has_value()) {
-                                    anchor = std::clamp(
-                                        *snapshot.editor.selection_anchor, begin, end) - begin;
-                                }
-                                custom_text = tui::render_wrapped_input_text(
-                                    row.title, cursor - begin, nullptr, anchor);
-                            }
-                        }
-                        row_element = hbox({
-                            text(row.number) |
-                                size(WIDTH, EQUAL,
-                                     std::max(1, question_layout.number_width)),
-                            custom_text |
-                                size(WIDTH, EQUAL, std::max(1,
-                                    question_layout.title_width +
-                                    question_layout.description_width)),
-                        });
-                    } else {
-                        row_element = hbox({
-                            text(row.number + row.title),
-                            text(row.description),
-                        });
-                    }
-                    if (row.focused) {
-                        row_element = row_element | bold |
-                            color(tui::theme().ui.selection_fg) |
-                            bgcolor(tui::theme().ui.selection_bg);
-                    } else if (row.selected &&
-                               (row.kind == tui::AskQuestionLayoutKind::Option ||
-                                row.kind == tui::AskQuestionLayoutKind::Custom)) {
-                        row_element = row_element |
-                            bgcolor(tui::theme().ui.badge_bg);
-                    } else if (row.kind == tui::AskQuestionLayoutKind::Header ||
-                               row.kind == tui::AskQuestionLayoutKind::Question) {
-                        row_element = row_element | color(
-                            tui::theme().ui.border);
-                    } else if (row.kind == tui::AskQuestionLayoutKind::Origin ||
-                               row.kind == tui::AskQuestionLayoutKind::Toast) {
-                        row_element = row_element | tui::readable_secondary();
-                    } else if (row.kind != tui::AskQuestionLayoutKind::Option) {
-                        row_element = row_element | color(
-                            tui::theme().ui.text_muted);
-                    }
-                    row_element = row_element | reflect(row_box);
-                    rows.push_back(std::move(row_element));
-                }
-            }
-            Elements bar_rows;
-            for (int i = 0; i < question_layout.visible_rows; ++i) {
-                const bool thumb = question_layout.scrollbar_thumb.height > 0 &&
-                    i >= question_layout.scrollbar_thumb.y &&
-                    i < question_layout.scrollbar_thumb.y +
-                        question_layout.scrollbar_thumb.height;
-                bar_rows.push_back(text(thumb ? " | " : "   ") |
-                                   color(thumb ? tui::theme().ui.border
-                                               : tui::theme().ui.text_dim));
-            }
-            ask_overlay_element = hbox({
-                vbox(std::move(rows)) | flex,
-                vbox(std::move(bar_rows)) | reflect(ask_scrollbar_box),
-            }) | border | color(tui::theme().ui.border) |
-                reflect(ask_overlay_box);
+            tui::AskQuestionPanelInput panel_input;
+            panel_input.layout = &question_layout;
+            panel_input.snapshot = &snapshot;
+            panel_input.colors = ask_question_panel_colors();
+            panel_input.terminal_too_narrow =
+                question_layout.terminal_too_narrow;
+            panel_input.row_boxes = &ask_row_boxes;
+            panel_input.scrollbar_box = &ask_scrollbar_box;
+            panel_input.overlay_box = &ask_overlay_box;
+            ask_overlay_element = tui::build_ask_question_panel(panel_input);
         }
     }
 
@@ -5030,27 +4950,14 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
         const auto ask_prompt_snapshot = state.ask_session
             ? state.ask_session->snapshot()
             : tui::AskQuestionSnapshot{};
-        std::string ask_help;
-        if (ask_prompt_snapshot.page == tui::AskQuestionPage::Summary) {
-            ask_help = "<- last question  -> first question  up/down no-op  Enter submit/cancel  Esc cancel";
-        } else if (ask_prompt_snapshot.editing_custom) {
-            ask_help = "editing custom answer  Enter submit  Ctrl+Enter newline  Esc stop editing  Shift+X cancel";
-        } else if (ask_prompt_snapshot.custom_selected &&
-                   ask_prompt_snapshot.focused_option ==
-                       static_cast<int>(ask_prompt_snapshot.options.size())) {
-            ask_help = ask_prompt_snapshot.multi_select
-                ? "up/down move  Space toggle  Enter edit/submit  1-9 choose  Esc clear  Shift+X cancel"
-                : "up/down move  Enter edit/submit  1-9 choose  Esc clear  Shift+X cancel";
-        } else {
-            ask_help = ask_prompt_snapshot.multi_select
-                ? "up/down move  Space toggle  Enter submit  1-9 choose  y copy  Esc clear  Shift+X cancel"
-                : "up/down move  Enter submit  1-9 choose  y copy  Esc clear  Shift+X cancel";
-        }
-        if (ask_prompt_snapshot.page != tui::AskQuestionPage::Summary &&
+        // Scroll hint applies to the question page only; the summary page
+        // scrolls with the wheel and never needs the shortcut.
+        const bool ask_scrollable =
+            ask_prompt_snapshot.page != tui::AskQuestionPage::Summary &&
             ask_question_frame.layout.total_rows >
-                ask_question_frame.layout.visible_rows) {
-            ask_help += "  PgUp/PgDn or wheel scroll";
-        }
+                ask_question_frame.layout.visible_rows;
+        const auto ask_help_entries = tui::ask_question_help_entries(
+            ask_prompt_snapshot, ask_scrollable);
 
         Elements ask_prompt_parts;
         ask_prompt_parts.push_back(
@@ -5061,7 +4968,15 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 text("[" + state.ask_origin_label + "] ") |
                 color(tui::theme().ui.text_muted));
         }
-        ask_prompt_parts.push_back(text(ask_help) | tui::readable_secondary());
+        const int ask_help_width = std::max(
+            20, terminal_width - 16 -
+                    (show_regular_sidebar ? kRegularSidebarWidthCols : 0));
+        // Reserve two rows: the footer shares the vertical stack with the chat
+        // viewport, so a footer that changes height on state transitions also
+        // moves the question panel (and with it the panel's visible row count).
+        ask_prompt_parts.push_back(tui::build_ask_question_help_line(
+            ask_help_entries, ask_question_panel_colors(), ask_help_width,
+            /*minimum_rows=*/2));
         prompt_line = hbox(std::move(ask_prompt_parts));
     } else if (state.confirm_pending) {
         // overlay 已经把选项画在 message_view 之上,prompt_line 仅作静态
@@ -5226,13 +5141,15 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
     Element main_root = vbox({
         header,
         header_separator | color(acecode::tui::theme().ui.text_dim),
-        message_view,
+        acecode::tui::compose_ask_question_message_area(
+            std::move(message_view),
+            std::move(ask_overlay_element),
+            state.ask_pending) | flex,
         mcp_loading_element,
         resume_picker_element,
         rewind_picker_element,
         model_picker_element,
         mode_picker_element,
-        ask_overlay_element,
         confirm_overlay_element,
         path_reference_element,
         slash_dropdown_element,
@@ -5468,7 +5385,7 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     // ToolContext::ask_user_questions 注入(见 agent_loop 里的 set_ask_question_channel
     // 接线)。无需等 state/screen 就绪,但保留在这里以免和下面的 MCP
     // 启动顺序拉开。
-    tools.register_tool(create_ask_user_question_tool_async());
+    tools.register_tool(create_ask_user_question_tool_async(config.ask.max_questions));
     start_mcp_servers_async(mcp_manager, tools, state, screen);
 
     std::atomic<bool> mcp_first_turn_wait_done{false};
@@ -5740,16 +5657,18 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     // appended) so the renderer can switch to the single-line summary mode.
     callbacks.on_tool_result = [&state, &screen, &invalidate_chat_line_measure_at](
                                                  const ChatMessage& call_msg,
-                                                 const std::string& /*tool_name*/,
+                                                 const std::string& tool_name,
                                                  const ToolResult& result) {
         std::lock_guard<std::mutex> lk(state.mu);
         // Walk the tail backwards: most recent tool_result gets `summary` +
         // `hunks`, the nearest preceding tool_call gets `display_override`.
         // Both were just pushed by `on_message` on the agent worker thread.
         for (auto it = state.conversation.rbegin(); it != state.conversation.rend(); ++it) {
-            if (it->role == "tool_result" && !it->summary.has_value()) {
+            if (it->role == "tool_result" && !it->summary.has_value() &&
+                !it->ask_result) {
                 it->summary = result.summary;
                 it->hunks = result.hunks;
+                it->ask_result = tool_name == "AskUserQuestion";
                 const int index = static_cast<int>(
                     state.conversation.size() - 1 -
                     static_cast<std::size_t>(

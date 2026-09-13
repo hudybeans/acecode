@@ -247,6 +247,12 @@ struct AgentLoopConfig {
 //   "never"  = 始终走 TerminalOutput。
 //
 // 非法值会在 load_config 中被规范化为 "auto" 并 LOG_WARN。
+struct AskConfig {
+    // 单次 AskUserQuestion 调用允许的题目数量；所有运行端共享。
+    // load_config clamp 到 [1, 50]，默认 10。
+    int max_questions = 10;
+};
+
 struct TuiConfig {
     std::string alt_screen_mode = "auto";
     // 同步刷新(DEC mode 2026):把每帧输出包在 CSI ?2026h/?2026l 里,终端
@@ -485,6 +491,7 @@ struct AppConfig {
     GitContextConfig git_context;                // git 感知(参见 add-git-context)
     RemoteControlConfig remote_control;          // TUI /remote-control channel 托管
     UpgradeConfig upgrade;                       // explicit self-upgrade command config
+    AskConfig ask;                               // AskUserQuestion 跨端题目数量
     TuiConfig tui;                               // 终端渲染策略(legacy fallback 等)
     DesktopConfig desktop;                       // desktop shell 配置(系统通知等)
     UiConfig ui;                                 // Desktop/WebUI locale preference

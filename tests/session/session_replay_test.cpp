@@ -377,15 +377,42 @@ TEST(SessionReplay, AskUserQuestionMetadataRestoresDisplayText) {
     ASSERT_EQ(out.size(), 1u);
     EXPECT_EQ(out[0].role, "tool_result");
     EXPECT_EQ(out[0].content,
-              "已确认 2 项\n"
-              "Q  Q1?\n"
-              "A  直接修改并补测试\n"
-              "---\n"
-              "Q  Q2?\n"
-              "A  onBeforeUnmount");
+              "1. Q1?\xEF\xBC\x9A直接修改并补测试\n"
+              "\n"
+              "2. Q2?\xEF\xBC\x9AonBeforeUnmount");
     EXPECT_TRUE(out[0].is_tool);
+    EXPECT_TRUE(out[0].ask_result);
     EXPECT_FALSE(out[0].summary.has_value());
     EXPECT_FALSE(out[0].hunks.has_value());
+}
+
+// 场景:旧会话把 AskUserQuestion 的通用参数摘要写在磁盘上。该摘要内嵌原始
+// 问题 schema(question/header/options/multiSelect),回放时必须丢弃它,
+// 只展示结构化问答结果,否则参数字段名会重新出现在转录里。
+TEST(SessionReplay, AskUserQuestionDropsLegacyArgumentSummary) {
+    ChatMessage m;
+    m.role = "tool";
+    m.content = "User has answered your questions: \"Q1?\"=\"A1\"";
+    m.tool_call_id = "ask-1";
+    m.metadata = build_ask_user_question_result_metadata(
+        {"Q1?"}, {{"Q1?", "直接修改并补测试"}});
+    ToolSummary legacy;
+    legacy.verb = "AskUserQuestion";
+    legacy.icon = "*";
+    legacy.object =
+        R"([{"question":"Q1?","header":"方式","multiSelect":false,)"
+        R"("options":[{"label":"A","description":"a"}]}])";
+    m.metadata["tool_summary"] = encode_tool_summary(legacy);
+
+    ToolExecutor tools;
+    auto out = replay_session_messages({m}, tools);
+
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_TRUE(out[0].ask_result);
+    EXPECT_FALSE(out[0].summary.has_value());
+    EXPECT_EQ(out[0].content.find("multiSelect"), std::string::npos);
+    EXPECT_EQ(out[0].content.find("\"question\""), std::string::npos);
+    EXPECT_NE(out[0].content.find("Q1?"), std::string::npos);
 }
 
 TEST(SessionReplay, ToolMessageWithOutputAttachmentShowsTextFallback) {

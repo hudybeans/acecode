@@ -31,7 +31,7 @@ AskQuestionFrame frame_for(const acecode::tui::AskQuestionSnapshot& snapshot,
                            int height = 20) {
     AskQuestionFrame frame;
     frame.layout = build_ask_question_layout(
-        AskQuestionLayoutInput{&snapshot, width, height, 4, 0, {}});
+        AskQuestionLayoutInput{&snapshot, width, height, 4, 0});
     frame.row_boxes.resize(static_cast<std::size_t>(frame.layout.visible_rows));
     for (int i = 0; i < frame.layout.visible_rows; ++i) {
         frame.row_boxes[static_cast<std::size_t>(i)] =

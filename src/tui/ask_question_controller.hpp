@@ -140,6 +140,11 @@ struct AskQuestionSnapshot {
     std::vector<std::vector<AskQuestionItemSnapshot>> question_options;
     std::vector<std::string> custom_texts;
     std::vector<AskQuestionAnswer> answers;
+    // Question text and header per index, aligned with `answers`. The summary
+    // page pairs a question with its answer, so the text must travel with the
+    // snapshot instead of staying private to the controller.
+    std::vector<std::string> question_texts;
+    std::vector<std::string> question_headers;
 };
 
 // Pure state machine for the TUI AskUserQuestion interaction. Adapters own

@@ -201,7 +201,7 @@ void register_headless_tools(
     const std::shared_ptr<ThreadToolDeps>& thread_deps,
     const std::shared_ptr<WorkspaceToolDeps>& workspace_deps) {
     register_session_builtin_tools(tools, cfg);
-    tools.register_tool(create_ask_user_question_tool_async());
+    tools.register_tool(create_ask_user_question_tool_async(cfg.ask.max_questions));
     if (skill_registry && cfg.skills.allowed &&
         !cfg.skills.allowed->empty()) {
         tools.register_tool(create_skills_list_tool(*skill_registry, &cfg));

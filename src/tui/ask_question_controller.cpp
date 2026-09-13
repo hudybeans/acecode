@@ -81,6 +81,8 @@ AskQuestionSnapshot AskQuestionController::snapshot() const {
     result.answers.reserve(questions_.size());
     result.question_options.reserve(questions_.size());
     result.custom_texts.reserve(questions_.size());
+    result.question_texts.reserve(questions_.size());
+    result.question_headers.reserve(questions_.size());
     for (int i = 0; i < static_cast<int>(questions_.size()); ++i) {
         const auto& question = questions_[static_cast<std::size_t>(i)];
         const auto& state = states_[static_cast<std::size_t>(i)];
@@ -95,6 +97,8 @@ AskQuestionSnapshot AskQuestionController::snapshot() const {
         result.question_options.push_back(std::move(items));
         result.custom_texts.push_back(state.editor.text());
         result.answers.push_back(answer_for(i));
+        result.question_texts.push_back(question.question);
+        result.question_headers.push_back(question.header);
     }
     if (page_ == AskQuestionPage::Summary || questions_.empty()) return result;
 

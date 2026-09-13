@@ -42,8 +42,6 @@ std::size_t utf8_codepoint_count(const std::string& s) {
 }
 
 constexpr int kMaxHeaderChars = 12;
-constexpr int kMinQuestions = 1;
-constexpr int kMaxQuestions = 4;
 constexpr int kMinOptions = 2;
 constexpr int kMaxOptions = 4;
 
@@ -80,6 +78,12 @@ constexpr const char* kToolDescription =
 
 std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
     const std::string& arguments_json, std::string& err) {
+    return validate_ask_user_question_args(
+        arguments_json, err, kDefaultAskMaxQuestions);
+}
+
+std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
+    const std::string& arguments_json, std::string& err, int max_questions) {
     err.clear();
     if (arguments_json.empty()) {
         err = "[Error] AskUserQuestion requires arguments.";
@@ -94,14 +98,20 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
         return std::nullopt;
     }
 
+    const int effective_max_questions = std::clamp(
+        max_questions, kMinAskQuestions, kMaxAskQuestions);
     if (!root.is_object() || !root.contains("questions") || !root["questions"].is_array()) {
-        err = "[Error] `questions` must be an array (length 1-4).";
+        err = "[Error] `questions` must be an array (length 1-" +
+              std::to_string(effective_max_questions) + ").";
         return std::nullopt;
     }
     const auto& qs = root["questions"];
-    if (qs.size() < kMinQuestions || qs.size() > kMaxQuestions) {
-        err = "[Error] `questions` length must be between 1 and 4 (got " +
-              std::to_string(qs.size()) + ").";
+    if (qs.size() < kMinAskQuestions ||
+        qs.size() > static_cast<std::size_t>(effective_max_questions)) {
+        err = "[Error] `questions` length must be between 1 and " +
+              std::to_string(effective_max_questions) + " (got " +
+              std::to_string(qs.size()) +
+              "). Split the questions across multiple AskUserQuestion calls.";
         return std::nullopt;
     }
 
@@ -263,13 +273,14 @@ std::string format_ask_user_question_result_display(
 
     if (items.empty()) return {};
 
+    // One `question：answer` pair per item, blank line between items. The
+    // question is always part of the row: a transcript that only lists answers
+    // is unreadable once the surrounding chat has scrolled away.
+    const std::string separator = "\xEF\xBC\x9A";  // fullwidth colon
     std::ostringstream out;
-    out << "已确认 " << items.size() << " 项";
     for (size_t i = 0; i < items.size(); ++i) {
-        out << "\n";
-        if (i > 0) out << "---\n";
-        out << "Q  " << items[i].first << "\n";
-        out << "A  ";
+        if (i > 0) out << "\n\n";
+        out << (i + 1) << ". " << items[i].first << separator;
         if (i < auto_selected.size() && auto_selected[i]) {
             out << "[Auto-selected] ";
         }
@@ -386,7 +397,9 @@ namespace {
 
 // 构造 daemon 工厂会用到的同一份 ToolDef。复用 create_ask_user_question_tool
 // 那段拼装太长 —— 把 def 抽出来共享。
-ToolDef build_ask_user_question_def() {
+ToolDef build_ask_user_question_def(int max_questions) {
+    const int effective_max_questions = std::clamp(
+        max_questions, kMinAskQuestions, kMaxAskQuestions);
     ToolDef def;
     def.name = "AskUserQuestion";
     def.description = kToolDescription;
@@ -450,11 +463,12 @@ ToolDef build_ask_user_question_def() {
         {"properties", {
             {"questions", {
                 {"type", "array"},
-                {"minItems", kMinQuestions},
-                {"maxItems", kMaxQuestions},
+                {"minItems", kMinAskQuestions},
+                {"maxItems", effective_max_questions},
                 {"items", question_schema},
                 {"description",
-                 "1-4 questions to ask the user. Question texts must be unique."}
+                 "1-" + std::to_string(effective_max_questions) +
+                 " questions to ask the user. Question texts must be unique."}
             }}
         }}
     };
@@ -529,10 +543,17 @@ parse_async_response(const nlohmann::json& resp_json,
 } // namespace
 
 ToolImpl create_ask_user_question_tool_async() {
-    auto execute = [](const std::string& arguments_json,
-                       const ToolContext& ctx) -> ToolResult {
+    return create_ask_user_question_tool_async(kDefaultAskMaxQuestions);
+}
+
+ToolImpl create_ask_user_question_tool_async(int max_questions) {
+    const int effective_max_questions = std::clamp(
+        max_questions, kMinAskQuestions, kMaxAskQuestions);
+    auto execute = [effective_max_questions](const std::string& arguments_json,
+                                               const ToolContext& ctx) -> ToolResult {
         std::string err;
-        auto parsed = validate_ask_user_question_args(arguments_json, err);
+        auto parsed = validate_ask_user_question_args(
+            arguments_json, err, effective_max_questions);
         if (!parsed.has_value()) {
             return ToolResult{err, false};
         }
@@ -604,7 +625,7 @@ ToolImpl create_ask_user_question_tool_async() {
     };
 
     ToolImpl impl;
-    impl.definition   = build_ask_user_question_def();
+    impl.definition   = build_ask_user_question_def(effective_max_questions);
     impl.execute      = execute;
     impl.is_read_only = true;
     impl.source       = ToolSource::Builtin;

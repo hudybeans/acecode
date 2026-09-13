@@ -68,22 +68,22 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// 构造一个合法的 AskUserQuestion JSON 入参,单题单选,2 个选项。
-std::string make_ask_args() {
-    nlohmann::json args = {
-        {"questions", nlohmann::json::array({
-            {
-                {"question", "Which library should we use?"},
-                {"header",   "Library"},
-                {"options",  nlohmann::json::array({
-                    {{"label", "axios"},   {"description", "popular http client"}},
-                    {{"label", "fetch"},   {"description", "native browser api"}},
-                })},
-                {"multiSelect", false},
-            }
-        })}
-    };
-    return args.dump();
+// 构造合法的 AskUserQuestion JSON 入参,每题单选、2 个选项。
+std::string make_ask_args(int question_count = 1) {
+    nlohmann::json questions = nlohmann::json::array();
+    for (int i = 0; i < question_count; ++i) {
+        const std::string suffix = std::to_string(i + 1);
+        questions.push_back({
+            {"question", "Which library should we use? " + suffix},
+            {"header", "Library" + suffix},
+            {"options", nlohmann::json::array({
+                {{"label", "axios"}, {"description", "popular http client"}},
+                {{"label", "fetch"}, {"description", "native browser api"}},
+            })},
+            {"multiSelect", false},
+        });
+    }
+    return nlohmann::json{{"questions", std::move(questions)}}.dump();
 }
 
 // 探针工具: 每次执行把 ToolContext 的关键字段非空状态写到外部 atomic
@@ -183,6 +183,7 @@ public:
                 {
                     std::lock_guard<std::mutex> lk(req_mu_);
                     last_request_id_ = rid;
+                    request_payloads_.push_back(e.payload);
                     request_count_++;
                 }
                 if (prompter_) prompter_->notify_response(rid, resp);
@@ -234,6 +235,11 @@ public:
         return request_count_;
     }
 
+    std::vector<nlohmann::json> request_payloads() {
+        std::lock_guard<std::mutex> lk(req_mu_);
+        return request_payloads_;
+    }
+
     CtxProbe& probe() { return probe_; }
 
 private:
@@ -253,6 +259,7 @@ private:
     std::mutex                  req_mu_;
     int                         request_count_ = 0;
     std::string                 last_request_id_;
+    std::vector<nlohmann::json> request_payloads_;
 
     std::mutex                  busy_mu_;
     std::condition_variable     busy_cv_;
@@ -340,4 +347,30 @@ TEST(AgentLoopAskUserQuestionParallel, ParallelCtxHasTrackFileWriteBefore) {
         << "并行 ctx 应注入 track_file_write_before(session_manager_ 非空)";
     EXPECT_TRUE(h.probe().seen_ask_user_questions.load())
         << "并行 ctx 应注入 ask_user_questions(prompter 非空)";
+}
+
+// 回归场景:一次模型调用携带 5 道题时,完整 payload 应通过工具并只产生
+// 一次 QuestionRequest。这样“随机问我 5 个多选题”不会因共享上限为 4 而被
+// 模型拆成 4+1 两次问答,要求用户回答两遍。
+TEST(AgentLoopAskUserQuestionParallel, FiveQuestionsProduceSingleRequest) {
+    AskParallelHarness h(/*with_prompter=*/true);
+    h.push_tool_call("AskUserQuestion", make_ask_args(5), "ask-five");
+    h.push_task_complete("done");
+
+    ASSERT_TRUE(h.submit_and_wait("ask me five questions"));
+    EXPECT_EQ(h.request_count(), 1)
+        << "5 道题应作为一个 QuestionRequest 交给 TUI,而不是拆成两次提问";
+    const auto payloads = h.request_payloads();
+    ASSERT_EQ(payloads.size(), 1u);
+    ASSERT_TRUE(payloads[0].contains("questions"));
+    EXPECT_EQ(payloads[0]["questions"].size(), 5u);
+
+    const auto results = h.snapshot_tool_results();
+    bool found_ask = false;
+    for (const auto& result : results) {
+        if (result.tool_name != "AskUserQuestion") continue;
+        found_ask = true;
+        EXPECT_TRUE(result.success) << result.output;
+    }
+    EXPECT_TRUE(found_ask);
 }

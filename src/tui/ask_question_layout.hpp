@@ -24,9 +24,10 @@ enum class AskQuestionLayoutKind {
     Option,
     Custom,
     Summary,
+    // Stacked (narrow panel) summary answer line. In two-column mode the answer
+    // shares the row with its question line instead.
+    SummaryAnswer,
     Hint,
-    Origin,
-    Toast,
 };
 
 enum class AskQuestionHitKind {
@@ -43,17 +44,29 @@ struct AskQuestionHit {
     int option_index = -1;
 };
 
+// One visual line of the question panel. Column text is kept in separate fields
+// instead of one concatenated string so the renderer can place each column at an
+// exact x offset; the `*_x` fields hold those offsets so a renderer never has to
+// recompute column widths.
 struct AskQuestionLayoutRow {
     AskQuestionLayoutKind kind = AskQuestionLayoutKind::Question;
     int question_index = -1;
     int option_index = -1;
     std::string number;
+    std::string marker;
     std::string title;
     std::string description;
+    std::string answer;
     bool focused = false;
     bool selected = false;
     bool recommended = false;
-    bool continuation = false;
+    // Custom rows only: this line shows the placeholder instead of real text.
+    bool placeholder = false;
+    // Column offsets, relative to the panel content area.
+    int title_x = 0;
+    int description_x = -1;
+    int answer_x = -1;
+    // Custom rows only: byte range of the editor text covered by this line.
     std::size_t text_byte_begin = 0;
     std::size_t text_byte_end = 0;
     AskQuestionLayoutRect rect;
@@ -68,13 +81,26 @@ struct AskQuestionLayoutInput {
     int viewport_height = 20;
     int minimum_visible_rows = 4;
     int timeout_remaining_seconds = 0;
-    std::string toast;
 };
 
 struct AskQuestionLayout {
+    // Four-slot option grid: number | marker | title | description.
+    int content_width = 0;
     int number_width = 0;
+    int marker_width = 0;
     int title_width = 0;
     int description_width = 0;
+    // ASCII spaces between adjacent option columns.
+    int column_gap = 2;
+    int title_x = 0;
+    int description_x = 0;
+    // Summary grid: number | 2 spaces | question | 2 spaces | answer.
+    int summary_question_width = 0;
+    int summary_answer_width = 0;
+    int summary_answer_x = -1;
+    // True when the panel is too narrow for two summary columns; answers move to
+    // their own lines below the matching question line.
+    bool summary_stacked = false;
     int total_rows = 0;
     int visible_rows = 0;
     int scroll_offset = 0;
@@ -94,6 +120,9 @@ int ask_question_content_width_for_frame(int terminal_width,
                                          int regular_sidebar_width);
 int ask_question_visible_rows_for_terminal(int terminal_rows,
                                            int minimum_visible_rows = 4);
+// Width-aware wrap. Keeps ASCII words whole, never starts a line with closing
+// punctuation, and always respects the width bound (over-long words are split
+// as a last resort). Explicit '\n' starts a new line.
 std::vector<std::string> ask_question_wrap(const std::string& text, int width);
 std::size_t ask_question_text_byte_offset_for_x(const std::string& text,
                                                 std::size_t byte_begin,

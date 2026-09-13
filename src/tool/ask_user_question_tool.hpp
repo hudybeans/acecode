@@ -15,12 +15,21 @@ namespace acecode {
 
 struct TuiState;
 
+inline constexpr int kDefaultAskMaxQuestions = 10;
+inline constexpr int kMinAskQuestions = 1;
+inline constexpr int kMaxAskQuestions = 50;
+
 // 解析 + 校验 `AskUserQuestion` 工具的 JSON 参数。成功时返回解析出来的
 // question 列表,失败时返回 std::nullopt 并把错误消息写入 `err`
 // (以 "questions" / "options" / "unique" / "labels" / "header" 等关键词
 // 为索引供上层匹配)。纯函数 —— 不碰 TuiState,供单测直接调用。
 std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
     const std::string& arguments_json, std::string& err);
+
+// 使用指定的跨端题目上限校验单次调用。上限应来自已校验的
+// AppConfig::ask.max_questions;保留上面的无参上限版本供独立调用方兼容。
+std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
+    const std::string& arguments_json, std::string& err, int max_questions);
 
 // 拼接最终的 ToolResult 输出字符串。question_order 保留模型给问题的原始顺序,
 // answers 的 value 对于 multi-select 是调用方已经用 ", " 拼好的单一字符串。
@@ -76,5 +85,6 @@ ToolResult make_timeout_adopted_ask_result(
 // 两端只有传输不同,工具逻辑只有这一份。ctx.ask_user_questions 为空时
 // 直接报错(该会话没接提问通道 = AskUserQuestion 不可用)。
 ToolImpl create_ask_user_question_tool_async();
+ToolImpl create_ask_user_question_tool_async(int max_questions);
 
 } // namespace acecode

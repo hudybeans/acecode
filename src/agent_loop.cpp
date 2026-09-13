@@ -4023,8 +4023,12 @@ bool AgentLoop::execute_tool_calls(
                 tc.function_name, tc.function_arguments, interrupted_result);
             tool_msg = ToolExecutor::format_tool_result(
                 tc.id, interrupted_result);
-            tool_msg.metadata["tool_summary"] =
-                encode_tool_summary(*interrupted_result.summary);
+            // AskUserQuestion deliberately has no synthesized summary, so the
+            // metadata key must stay absent instead of dereferencing nullopt.
+            if (interrupted_result.summary.has_value()) {
+                tool_msg.metadata["tool_summary"] =
+                    encode_tool_summary(*interrupted_result.summary);
+            }
         }
         messages_.push_back(tool_msg);
         if (session_manager_) session_manager_->on_message(tool_msg);

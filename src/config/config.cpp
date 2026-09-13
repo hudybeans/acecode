@@ -525,6 +525,10 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
     if (cfg.memory.max_index_bytes == 0) {
         errors.push_back("memory.max_index_bytes must be > 0");
     }
+    if (cfg.ask.max_questions < 1 || cfg.ask.max_questions > 50) {
+        errors.push_back("ask.max_questions out of range (1-50): " +
+                         std::to_string(cfg.ask.max_questions));
+    }
     if (cfg.openai.stream_timeout_ms <= 0) {
         errors.push_back("openai.stream_timeout_ms must be > 0");
     }
@@ -1286,6 +1290,32 @@ static AppConfig load_config_from_path_once(
                         if (cj.contains("settings"))
                             channel.settings = cj["settings"];
                         cfg.remote_control.channels[item.key()] = std::move(channel);
+                    }
+                }
+            }
+
+            // AskUserQuestion 跨端题目数量配置。不存在时保持默认上限 10。
+            // 非整数忽略,整数统一钳制到 [1,50]。
+            if (j.contains("ask")) {
+                if (!j["ask"].is_object()) {
+                    LOG_WARN("[config] 'ask' must be an object, ignoring");
+                } else {
+                    const auto& aj = j["ask"];
+                    if (aj.contains("max_questions")) {
+                        const auto& value = aj["max_questions"];
+                        if (!value.is_number_integer()) {
+                            LOG_WARN("[config] ask.max_questions must be an integer; ignoring");
+                        } else {
+                            const int configured = value.get<int>();
+                            const int normalized = std::clamp(configured, 1, 50);
+                            if (configured != normalized) {
+                                LOG_WARN("[config] ask.max_questions=" +
+                                         std::to_string(configured) +
+                                         " is outside [1, 50]; clamping to " +
+                                         std::to_string(normalized));
+                            }
+                            cfg.ask.max_questions = normalized;
+                        }
                     }
                 }
             }
@@ -2214,6 +2244,12 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         if (cfg.agent_loop.question_timeout_seconds != al_d.question_timeout_seconds)
             alj["question_timeout_seconds"] = cfg.agent_loop.question_timeout_seconds;
         if (!alj.empty()) j["agent_loop"] = alj;
+
+        AskConfig ask_d;
+        nlohmann::json askj = nlohmann::json::object();
+        if (cfg.ask.max_questions != ask_d.max_questions)
+            askj["max_questions"] = cfg.ask.max_questions;
+        if (!askj.empty()) j["ask"] = askj;
 
         TuiConfig tui_d;
         nlohmann::json tj = nlohmann::json::object();

@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <ftxui/component/screen_interactive.hpp>
+#include <nlohmann/json.hpp>
 
 #include "tool/ask_user_question_tool.hpp"
 #include "tui/tui_ask_channel.hpp"
@@ -59,6 +60,21 @@ bool wait_for_ask_overlay(acecode::TuiState& state,
     return false;
 }
 
+std::string questions_json(std::size_t count) {
+    nlohmann::json questions = nlohmann::json::array();
+    for (std::size_t i = 0; i < count; ++i) {
+        questions.push_back({
+            {"question", "Question " + std::to_string(i) + "?"},
+            {"header", "Q" + std::to_string(i)},
+            {"options", nlohmann::json::array({
+                nlohmann::json{{"label", "A"}, {"description", "first"}},
+                nlohmann::json{{"label", "B"}, {"description", "second"}},
+            })},
+        });
+    }
+    return nlohmann::json{{"questions", std::move(questions)}}.dump();
+}
+
 } // namespace
 
 // 场景:合法最小输入(1 题 2 选项,均含必填字段)应通过校验,并把
@@ -86,30 +102,70 @@ TEST(AskUserQuestionValidateTest, MinimalValidInputIsAccepted) {
     EXPECT_EQ((*out)[0].options[0].label, "axios");
 }
 
-// 场景:questions 长度越界(0 题或 5 题)应被拒,错误信息里包含 "questions"。
-TEST(AskUserQuestionValidateTest, QuestionsLengthOutOfRangeRejected) {
+// 场景:默认上限允许 10 题,超过默认上限的 11 题被拒绝。
+TEST(AskUserQuestionValidateTest, DefaultQuestionLimitIsTen) {
     std::string err;
-    auto empty = validate_ask_user_question_args(
-        R"({"questions": []})", err);
-    EXPECT_FALSE(empty.has_value());
-    EXPECT_NE(err.find("questions"), std::string::npos) << err;
+    auto ten = validate_ask_user_question_args(questions_json(10), err);
+    ASSERT_TRUE(ten.has_value()) << err;
+    ASSERT_EQ(ten->size(), 10u);
 
     err.clear();
-    auto too_many = validate_ask_user_question_args(
-        R"({"questions": [
-            {"question":"A?", "header":"A",
-             "options":[{"label":"1","description":""},{"label":"2","description":""}]},
-            {"question":"B?", "header":"B",
-             "options":[{"label":"1","description":""},{"label":"2","description":""}]},
-            {"question":"C?", "header":"C",
-             "options":[{"label":"1","description":""},{"label":"2","description":""}]},
-            {"question":"D?", "header":"D",
-             "options":[{"label":"1","description":""},{"label":"2","description":""}]},
-            {"question":"E?", "header":"E",
-             "options":[{"label":"1","description":""},{"label":"2","description":""}]}
-        ]})", err);
-    EXPECT_FALSE(too_many.has_value());
-    EXPECT_NE(err.find("questions"), std::string::npos) << err;
+    auto eleven = validate_ask_user_question_args(questions_json(11), err);
+    EXPECT_FALSE(eleven.has_value());
+    EXPECT_NE(err.find("between 1 and 10"), std::string::npos) << err;
+    EXPECT_NE(err.find("got 11"), std::string::npos) << err;
+    EXPECT_NE(err.find("Split the questions"), std::string::npos) << err;
+}
+
+TEST(AskUserQuestionValidateTest, CustomQuestionLimitIsApplied) {
+    std::string err;
+    auto three = validate_ask_user_question_args(questions_json(3), err, 3);
+    ASSERT_TRUE(three.has_value()) << err;
+
+    err.clear();
+    auto four = validate_ask_user_question_args(questions_json(4), err, 3);
+    EXPECT_FALSE(four.has_value());
+    EXPECT_NE(err.find("between 1 and 3"), std::string::npos) << err;
+    EXPECT_NE(err.find("got 4"), std::string::npos) << err;
+    EXPECT_NE(err.find("Split the questions"), std::string::npos) << err;
+}
+
+TEST(AskUserQuestionValidateTest, CustomLimitIsDefensivelyClamped) {
+    std::string err;
+    auto one = validate_ask_user_question_args(questions_json(1), err, 0);
+    EXPECT_TRUE(one.has_value()) << err;
+
+    err.clear();
+    auto two = validate_ask_user_question_args(questions_json(2), err, 51);
+    EXPECT_TRUE(two.has_value()) << err;
+}
+
+TEST(AskUserQuestionSchemaTest, SchemaUsesConfiguredQuestionLimit) {
+    const auto default_tool = acecode::create_ask_user_question_tool_async();
+    EXPECT_EQ(default_tool.definition.parameters["properties"]["questions"]["maxItems"], 10);
+
+    const auto custom_tool = acecode::create_ask_user_question_tool_async(3);
+    EXPECT_EQ(custom_tool.definition.parameters["properties"]["questions"]["maxItems"], 3);
+    EXPECT_NE(custom_tool.definition.parameters["properties"]["questions"]["description"]
+                  .get<std::string>().find("1-3 questions"),
+              std::string::npos);
+}
+
+TEST(AskUserQuestionExecutionTest, ConfiguredLimitRejectsBeforeOpeningChannel) {
+    const auto tool = acecode::create_ask_user_question_tool_async(3);
+    acecode::ToolContext ctx;
+    bool channel_called = false;
+    ctx.ask_user_questions = [&](const nlohmann::json&) {
+        channel_called = true;
+        return nlohmann::json{{"cancelled", false}};
+    };
+
+    const auto result = tool.execute(questions_json(4), ctx);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(channel_called);
+    EXPECT_NE(result.output.find("between 1 and 3"), std::string::npos);
+    EXPECT_NE(result.output.find("got 4"), std::string::npos);
+    EXPECT_NE(result.output.find("Split the questions"), std::string::npos);
 }
 
 // 场景:某题 options 长度越界(1 或 5)应被拒,错误信息里包含 "options"。
@@ -244,7 +300,8 @@ TEST(AskUserQuestionFormatTest, StructuredResultMetadataKeepsOrderedPairs) {
 }
 
 // 场景:TUI 等文本界面可以从同一份 UI metadata 生成紧凑 Q/A 留档,
-// 而不是显示 provider-visible 的英文 tool output。
+// 而不是显示 provider-visible 的英文 tool output。每题一项、问题与答案成对,
+// 项间空一行,问题永远不能被省略。
 TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsDisplayText) {
     std::vector<std::string> order{"Q1?", "Q2?"};
     std::map<std::string, std::string> ans{
@@ -255,12 +312,9 @@ TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsDisplayText) {
     auto meta = build_ask_user_question_result_metadata(order, ans);
 
     EXPECT_EQ(format_ask_user_question_result_display(meta),
-              "已确认 2 项\n"
-              "Q  Q1?\n"
-              "A  直接修改并补测试\n"
-              "---\n"
-              "Q  Q2?\n"
-              "A  onBeforeUnmount");
+              "1. Q1?\xEF\xBC\x9A直接修改并补测试\n"
+              "\n"
+              "2. Q2?\xEF\xBC\x9AonBeforeUnmount");
 }
 
 TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsAutoSelectedDisplayText) {
@@ -275,12 +329,22 @@ TEST(AskUserQuestionFormatTest, StructuredResultMetadataFormatsAutoSelectedDispl
         order, ans, &auto_selected);
 
     EXPECT_EQ(format_ask_user_question_result_display(meta),
-              "已确认 2 项\n"
-              "Q  Q1?\n"
-              "A  [Auto-selected] Recommended\n"
-              "---\n"
-              "Q  Q2?\n"
-              "A  Not answered");
+              "1. Q1?\xEF\xBC\x9A[Auto-selected] Recommended\n"
+              "\n"
+              "2. Q2?\xEF\xBC\x9ANot answered");
+}
+
+// 场景:带 [Recommended] 后缀的 label 与超时自动选择标记共存时,
+// 问题文本不能被答案吞掉或替换。
+TEST(AskUserQuestionFormatTest, DisplayTextNeverDropsQuestionText) {
+    std::vector<std::string> order{"希望我直接修改还是先给出方案?"};
+    std::map<std::string, std::string> ans{
+        {"希望我直接修改还是先给出方案?", "先给方案"}
+    };
+    const auto meta = build_ask_user_question_result_metadata(order, ans);
+    const std::string display = format_ask_user_question_result_display(meta);
+    EXPECT_NE(display.find("希望我直接修改还是先给出方案?"), std::string::npos);
+    EXPECT_NE(display.find("先给方案"), std::string::npos);
 }
 
 // 场景:缺失或畸形 metadata 不应污染 UI,调用方据此回退旧输出。

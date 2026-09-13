@@ -168,6 +168,35 @@ TEST(AskQuestionControllerTest, EditingTreatsNumberAndNavigationLettersAsText) {
     EXPECT_EQ(snapshot.current_question, 0);
 }
 
+// 场景:单选题已选项再次被点击时必须取消选中 —— 单击是「切换」而不是
+// 「只选不取消」,否则用户没有退路。
+TEST(AskQuestionControllerTest, ToggleFocusedClearsSelectedSingleChoiceOption) {
+    AskQuestionController controller({make_question()}, {});
+    controller.handle(event(AskQuestionEventKind::ToggleFocused));
+    EXPECT_TRUE(controller.snapshot().options[0].selected);
+    controller.handle(event(AskQuestionEventKind::ToggleFocused));
+    EXPECT_FALSE(controller.snapshot().options[0].selected);
+    EXPECT_FALSE(controller.snapshot().custom_selected);
+}
+
+// 场景:点击自定义行进入行内编辑,复用带光标的编辑器,而不是弹出普通输入框。
+TEST(AskQuestionControllerTest, ToggleWithoutSubmitOnCustomRowStartsInlineEditing) {
+    AskQuestionController controller({make_question()}, {});
+    const int custom_index =
+        static_cast<int>(controller.snapshot().options.size());
+    controller.handle({AskQuestionEventKind::FocusOption, custom_index});
+    controller.handle(event(AskQuestionEventKind::ToggleFocusedWithoutSubmit));
+
+    const auto snapshot = controller.snapshot();
+    EXPECT_TRUE(snapshot.editing_custom);
+    EXPECT_TRUE(snapshot.custom_selected);
+    EXPECT_EQ(snapshot.focused_option, custom_index);
+    // 行内编辑器已经就位:输入直接进草稿,不经过任何外部输入框。
+    controller.handle({AskQuestionEventKind::InsertText, -1, 0, "abc"});
+    EXPECT_EQ(controller.snapshot().custom_text, "abc");
+    EXPECT_EQ(controller.snapshot().editor.cursor, 3u);
+}
+
 TEST(AskQuestionControllerTest, EscapeClearsSelectionAndGlobalCancelCancels) {
     AskQuestionController controller({make_question()}, {});
     controller.handle({AskQuestionEventKind::ToggleFocused});

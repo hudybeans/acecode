@@ -81,6 +81,10 @@ struct TuiState {
         // joined source text remains available when a completed row is folded.
         std::string compact_notice_id;
         bool compact_notice_complete = false;
+        // AskUserQuestion result rows render their structured Q/A text verbatim:
+        // never folded and never expanded into the raw argument JSON, so tool
+        // parameter names cannot reach the transcript.
+        bool ask_result = false;
     };
 
     std::vector<Message> conversation;

@@ -510,7 +510,8 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     acecode::register_session_builtin_tools(tools, cfg_mut);
     // daemon 用 async 版本(走 ToolContext::ask_user_questions → AskUserQuestionPrompter
     // → WS question_request)。TUI 工厂版需要 TuiState/ScreenInteractive,这里没有。
-    tools.register_tool(acecode::create_ask_user_question_tool_async());
+    tools.register_tool(acecode::create_ask_user_question_tool_async(
+        cfg_mut.ask.max_questions));
 
     // skills_list / skill_view 让 LLM 按需加载 SKILL.md(配合 expand-webui-skill-commands
     // 的轻量提示策略 — daemon expander 不再 inject SKILL.md body,LLM 看到提示后用

@@ -4,21 +4,21 @@
 
 当前 TUI 已通过 `ToolContext::ask_user_questions` 接入共享 `AskUserQuestion` 工具；`src/tui/tui_ask_channel.cpp` 负责把 JSON payload 写入 `TuiState`、等待结果并返回 JSON。overlay 的排版和滚动数学集中在 `src/tui/ask_question_overlay.*`，而题目选择、Other 输入、导航、鼠标和提交事件仍散落在 `TuiState` 与 `main.cpp`。现有实现虽有多题、滚动、鼠标和 timeout 基础能力，但模型不统一，且 `Other...` 复用普通 prompt 输入状态。
 
-此变更只替换 TUI 适配路径。公开工具参数、共享异步 channel 形状、daemon/Web/Desktop UI 和持久化会话消息不改变。
+此变更主要替换 TUI 适配路径，并补充 AskUserQuestion 的跨端题目数量配置。公开工具参数的字段、共享异步 channel 形状、daemon/Web/Desktop UI 和持久化会话消息不改变；题目数组上限由固定值改为 `ask.max_questions`，默认 10、合法范围 1–50。TUI、daemon、Web、Desktop 背后的 daemon 以及 headless 均使用同一配置值。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
 - 将 TUI 问答交互从 `main.cpp` / `TuiState` 中提炼为纯 C++、可单测的深模块。
-- 保持单题快速完成，并为 2–4 题请求提供自动前进、回看和只读汇总提交。
+- 保持单题快速完成，并为 2–`ask.max_questions` 题请求提供自动前进、回看和只读汇总提交；当配置上限为 1 时，仅允许单题快问模式。
 - 使自定义答案、键盘、鼠标、滚动、超时和选中反馈的优先级明确、非阻塞且可测试。
 - 保持既有 FIFO 请求队列和 `ToolContext::ask_user_questions` 异步边界。
 - 不因 TUI 视觉重设计改变模型可见的成功/取消基本语义。
 
 **Non-Goals:**
 
-- 不修改 `AskUserQuestion` 公开 schema、题目/选项数限制或 `multiSelect` 语义。
+- 不修改 `AskUserQuestion` 的选项数限制或 `multiSelect` 语义；题目数上限由 `ask.max_questions` 控制，默认 10。单次请求超过有效上限时工具返回明确错误，由模型自行拆成多次调用；系统不自动拆分，也不自动合并多次问答。
 - 不重做 daemon、Web 或 Desktop 问答界面，也不引入跨端新协议。
 - 不把 AskUserQuestion 扩展为纯文本题或通用表单。
 - 不保留旧、新两套 TUI 问答路径的运行时开关。
@@ -81,7 +81,9 @@
 
 ### D5. 布局、视口与安全降级
 
-布局层从控制器只读快照生成：头部、题干、预设项、自定义行、汇总项、动态帮助、来源和 toast。预设项使用编号/选择标记、白色标题列、灰色说明列；说明仅在自身列中折行。推荐项由工具解析层从现有 label 的 `[Recommended]` 约定解析为显式领域标志，控制器不扫描展示文本。
+布局层从控制器只读快照生成：头部、题干、预设项、自定义行、汇总项、动态帮助和超时提示。预设项使用编号列、标记列、标题列、说明列四个固定槽位，标题列用主文字色不加粗、说明列用弱化色不加粗；说明仅在自身列中折行。推荐项由工具解析层从现有 label 的 `[Recommended]` 约定解析为显式领域标志，控制器不扫描展示文本。
+
+顶层瞬时状态行（模型切换、更新提示等）不属于面板内容，只出现在顶部标题区与底部状态区；把它塞进面板行既会误导用户，也会让面板高度随无关事件变化。面板绘制前对其矩形整体做擦除（字符层面，而不只是背景色），否则聊天内容会从面板未写字的格子透出。绘制集中在 `src/tui/ask_question_panel.*`：颜色由调用方注入语义值，因此渲染结果可以用 FTXUI `Screen` 逐格断言。
 
 布局以当前终端行/列动态计算可视区域；`question_min_visible_rows` 是最小可见内容行数的目标值，而不是强制占用的固定高度或像素阈值。实际终端空间不足时按当前视口降级，不强行撑大 overlay。内容超过视口时才渲染可拖动滚动条。控制器持有逻辑行偏移，布局计算最大偏移与最小滚动调整以确保焦点、编辑光标或选择范围可见；适配器将滚轮、PageUp/PageDown 与滚动条拖动转换为滚动事件。汇总页不响应键盘上下，但支持滚轮和拖动条。
 

@@ -139,7 +139,8 @@ std::vector<TuiState::Message> replay_session_messages(
             tr_row.content = msg.content;
             std::string ask_display =
                 format_ask_user_question_result_display(msg.metadata);
-            if (!ask_display.empty()) {
+            tr_row.ask_result = !ask_display.empty();
+            if (tr_row.ask_result) {
                 tr_row.content = std::move(ask_display);
             }
             std::string attachment_fallback =
@@ -153,7 +154,11 @@ std::vector<TuiState::Message> replay_session_messages(
             tr_row.is_tool = true;
 
             if (msg.metadata.is_object()) {
-                if (msg.metadata.contains("tool_summary")) {
+                // Older sessions persisted a generic argument preview for
+                // AskUserQuestion. That preview embeds the raw question schema,
+                // so it is dropped even though it is on disk; the replay shows
+                // the structured Q/A text instead.
+                if (msg.metadata.contains("tool_summary") && !tr_row.ask_result) {
                     auto s = decode_tool_summary(msg.metadata["tool_summary"]);
                     if (s.has_value()) {
                         tr_row.summary = std::move(*s);

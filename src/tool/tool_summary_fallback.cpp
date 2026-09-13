@@ -170,10 +170,15 @@ void ensure_tool_summary(
     const std::string& tool_name,
     const std::string& arguments_json,
     ToolResult& result) {
-    if (!result.summary.has_value()) {
-        result.summary = build_fallback_tool_summary(
-            tool_name, arguments_json);
-    }
+    if (result.summary.has_value()) return;
+    // AskUserQuestion never gets a generic argument preview: its arguments hold
+    // the full question schema, so a preview would leak `question`, `header`,
+    // `options`, `description` and `multiSelect` field names into the
+    // transcript. The tool produces its own structured Q/A display text
+    // instead, and every other branch (headless, deny, cancel, timeout) already
+    // returns a self-contained message.
+    if (tool_name == "AskUserQuestion") return;
+    result.summary = build_fallback_tool_summary(tool_name, arguments_json);
 }
 
 } // namespace acecode
