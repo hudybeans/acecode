@@ -29,10 +29,11 @@ run('color theme preference defaults to blue', () => {
 });
 
 run('color theme preference accepts built-in colors and the registered downloadable theme', () => {
-  assert.deepEqual(COLOR_THEME_VALUES, ['blue', 'orange', 'eva-01']);
+  assert.deepEqual(COLOR_THEME_VALUES, ['blue', 'orange', 'national-day-2026', 'eva-01']);
   assert.equal(isValidColorTheme('blue'), true);
   assert.equal(isValidColorTheme('orange'), true);
   assert.equal(isValidColorTheme('eva-01'), true);
+  assert.equal(isValidColorTheme('national-day-2026'), true);
 });
 
 run('color theme preference rejects and normalizes invalid values', () => {

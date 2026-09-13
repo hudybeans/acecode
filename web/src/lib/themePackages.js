@@ -1,6 +1,11 @@
-import { isAiColorTheme, isInstalledColorTheme } from './colorTheme.js';
+import { isAiColorTheme, isDownloadableColorTheme, isInstalledColorTheme, NATIONAL_DAY_THEME_ID } from './colorTheme.js';
 
+export { NATIONAL_DAY_THEME_ID };
 export const EVA_THEME_ID = 'eva-01';
+export const BUILTIN_THEME_CARDS = Object.freeze([
+  { id: NATIONAL_DAY_THEME_ID, name: '国庆节', thumbnail: '/themes/national-day-2026-thumbnail.png', swatches: ['#FFF8F2', '#FFFFFF', '#D9272E'] },
+  { id: EVA_THEME_ID, name: 'EVA 初号机', thumbnail: '/themes/eva-01-thumbnail.png', swatches: ['#E9DEFA', '#F9F5FE', '#B7EF65'] },
+]);
 export const THEME_COLOR_KEYS = Object.freeze([
   'bg', 'surface', 'surface-alt', 'surface-hi', 'shell-hi', 'shell-bg', 'border',
   'border-soft', 'fg', 'fg-2', 'fg-mute', 'accent', 'accent-bg', 'accent-soft',
@@ -22,7 +27,7 @@ export function validThemeAppearance(value) {
 
 export function validThemeDefinition(value) {
   const identity = value?.id === EVA_THEME_ID ? value.mode === 'light'
-    : isAiColorTheme(value?.id) && typeof value.name === 'string' && !!value.name.trim()
+    : (value?.id === NATIONAL_DAY_THEME_ID || isAiColorTheme(value?.id)) && typeof value.name === 'string' && !!value.name.trim()
       && ['light', 'dark'].includes(value.mode);
   return value?.schema_version === 1 && identity
     && typeof value.version === 'string' && !!value.version && value.colors && typeof value.colors === 'object'
@@ -88,7 +93,7 @@ export function applyInstalledTheme(root, definition, backgroundUrl) {
 }
 
 export function themeDownloadConsent(entry) {
-  if (entry?.id !== EVA_THEME_ID || !Number.isSafeInteger(entry?.package?.bytes)
+  if (!isDownloadableColorTheme(entry?.id) || !Number.isSafeInteger(entry?.package?.bytes)
       || entry.package.bytes <= 0 || !/^[a-f0-9]{64}$/i.test(entry.package.sha256)
       || typeof entry.version !== 'string') throw new Error('暂时无法获取主题下载大小，请重试');
   return { confirm_download: true, version: entry.version, bytes: entry.package.bytes, sha256: entry.package.sha256 };
@@ -143,31 +148,37 @@ export function releaseThemeResource(cache, id, revoke = (url) => URL.revokeObje
 // download's automatic application, while the useful local install can finish.
 export function createThemeDownloadController({ api, prepare, apply, remove = (id) => api.deleteTheme(id), forget, onChange, wait = () => new Promise((resolve) => setTimeout(resolve, 400)) }) {
   let active = true, revision = 0, polling = null, intent = null;
+  let startup = null, userIntent = false;
   const removedIds = new Set();
-  let state = { entry: null, localEntries: [], deletingId: '', loading: false, error: '', failure: null, job: { state: 'idle' } };
+  let state = { entry: null, entries: [], localEntries: [], deletingId: '', loading: false, error: '', failure: null, job: { state: 'idle' } };
   const patch = (value) => { state = { ...state, ...value }; if (active) onChange?.(state); };
-  const report = (error, notify = false, path = state.entry?.package?.url || state.entry?.package?.path || '') => {
+  const report = (error, notify = false, path = state.entry?.package?.url || state.entry?.package?.path || '', silent = false) => {
+    if (silent) return;
     const failure = themeFailure(error, path);
     patch({ error: failure.message, ...(notify ? { failure } : {}) });
   };
   const consumeJob = async (job, notify = false) => {
+    job = { automatic: state.job.automatic === true && state.job.id === job.id, ...job };
     patch({ job });
     if (job.state === 'completed') {
       // A passive refresh can replay completion of an older version. It must
       // not clear an update offered by a newer catalogue.
-      patch({ entry: state.entry ? {
-        ...state.entry,
+      const updated = (entry) => entry?.id === job.id ? {
+        ...entry,
         installed: true,
-        installed_version: job.version || state.entry.installed_version,
-        update_available: job.version === state.entry.version ? false : state.entry.update_available,
-      } : null, error: '' });
+        installed_version: job.version || entry.installed_version,
+        update_available: job.version === entry.version ? false : entry.update_available,
+      } : entry;
+      patch({ entry: updated(state.entry), entries: state.entries.map(updated), error: '' });
       const pending = intent;
       if (pending && pending.revision === revision && pending.id === job.id && pending.version === job.version) {
         intent = null;
         await prepare(job.id, { refresh: true });
-        if (active && pending.revision === revision) await apply(job.id);
+        if (active && pending.revision === revision) await apply(job.id, {
+          silent: pending.automatic === true, expectedAppearance: pending.expectedAppearance,
+        });
       }
-    } else if (job.state === 'failed') { intent = null; report(job, notify); }
+    } else if (job.state === 'failed') { intent = null; report(job, notify, undefined, job.automatic); }
     else if (job.state === 'cancelled') intent = null;
   };
   const poll = () => {
@@ -178,7 +189,12 @@ export function createThemeDownloadController({ api, prepare, apply, remove = (i
         if (!active) return;
         await consumeJob(await api.getThemeJob(), true);
       }
-    })().catch((error) => { if (active) report(error, true); })
+    })().catch((error) => {
+      if (!active) return;
+      intent = null;
+      if (state.job.automatic) patch({ job: { ...state.job, state: 'failed' } });
+      report(error, true, undefined, state.job.automatic);
+    })
       .finally(() => { polling = null; });
     return polling;
   };
@@ -187,23 +203,43 @@ export function createThemeDownloadController({ api, prepare, apply, remove = (i
     dismissFailure() { patch({ failure: null }); },
     activate() { active = true; },
     dispose() { active = false; revision += 1; intent = null; },
-    async refresh({ notify = false } = {}) {
+    async refresh({ notify = false, id = EVA_THEME_ID, silent = false } = {}) {
       const notifyFailure = notify || themeJobActive(state.job);
       patch({ loading: true });
       try {
         const catalog = await api.getThemes(true);
-        const entry = catalog?.themes?.find((item) => item.id === EVA_THEME_ID) || null;
+        const entries = (catalog?.themes || []).filter((item) => isDownloadableColorTheme(item.id));
+        const entry = entries.find((item) => item.id === EVA_THEME_ID) || null;
         // Local themes remain available when the remote catalogue is offline.
         // An installed EVA descriptor can also lack download metadata offline.
-        if (entry && !entry.installed && entry.available !== false) themeDownloadConsent(entry);
-        patch({ entry, localEntries: localThemeEntries(catalog).filter((item) => !removedIds.has(item.id)), loading: false,
-          error: catalog.catalog_error ? themeErrorText(catalog.catalog_error.error) : '' });
+        for (const item of entries) if (!item.installed && item.available !== false) themeDownloadConsent(item);
+        patch({ entry, entries, localEntries: localThemeEntries(catalog).filter((item) => !removedIds.has(item.id)), loading: false,
+          error: catalog.catalog_error && !silent && (notify || !state.job.automatic) ? themeErrorText(catalog.catalog_error.error) : '' });
         await consumeJob(catalog.job || { state: 'idle' }, themeJobActive(state.job));
         if (themeJobActive(state.job)) void poll();
-        return entry;
-      } catch (error) { patch({ loading: false }); report(error, notifyFailure); return null; }
+        return entries.find((item) => item.id === id) || null;
+      } catch (error) { patch({ loading: false }); report(error, notifyFailure, undefined, silent || (!notify && state.job.automatic)); return null; }
+    },
+    applyStartupTheme(expectedAppearance) {
+      if (startup) return startup;
+      const selected = revision;
+      const eligible = () => active && !userIntent && selected === revision && !themeJobActive(state.job);
+      startup = (async () => {
+        const claim = await api.claimStartupTheme();
+        if (claim?.claimed !== true || claim.id !== NATIONAL_DAY_THEME_ID || !eligible()) return;
+        const entry = await this.refresh({ id: NATIONAL_DAY_THEME_ID, silent: true });
+        if (!entry || !eligible()) return;
+        if (entry.installed) {
+          await prepare(entry.id);
+          if (eligible()) await apply(entry.id, { silent: true, expectedAppearance });
+        } else if (entry.available !== false) {
+          await this.install(entry, { automatic: true, expectedAppearance });
+        }
+      })().catch(() => {});
+      return startup;
     },
     async select(id) {
+      userIntent = true;
       if (state.deletingId === id || removedIds.has(id)) return;
       const selected = ++revision;
       intent = null;
@@ -213,10 +249,12 @@ export function createThemeDownloadController({ api, prepare, apply, remove = (i
       } catch (error) { report(error, true); }
     },
     beginCreation() {
+      userIntent = true;
       intent = null;
       return ++revision;
     },
     async importLocal(file, digest, applyAfter = true) {
+      userIntent = true;
       if (state.deletingId) throw new Error('主题正在处理中，请稍后重试');
       const selected = ++revision;
       intent = null;
@@ -258,20 +296,22 @@ export function createThemeDownloadController({ api, prepare, apply, remove = (i
         return result;
       } finally { patch({ deletingId: '' }); }
     },
-    async install(entry) {
+    async install(entry, { automatic = false, expectedAppearance } = {}) {
+      if (!automatic) userIntent = true;
       const selected = ++revision;
-      intent = { id: entry.id, version: entry.version, revision: selected };
+      intent = { id: entry.id, version: entry.version, revision: selected, automatic, expectedAppearance };
       try {
-        patch({ error: '', failure: null, job: { id: entry.id, state: 'downloading', bytes_downloaded: 0, bytes_total: entry.package.bytes } });
-        const job = await api.installTheme(entry.id, themeDownloadConsent(entry));
+        patch({ error: '', failure: null, job: { id: entry.id, state: 'downloading', bytes_downloaded: 0, bytes_total: entry.package.bytes, automatic } });
+        const consent = themeDownloadConsent(entry);
+        const job = await api.installTheme(entry.id, automatic ? { ...consent, automatic: true } : consent);
         // Even a very fast install is observed by polling once so the same
         // completion path applies the theme and respects the selection revision.
-        patch({ job: { ...job, state: themeJobActive(job) ? job.state : 'installing' } });
+        patch({ job: { automatic, ...job, state: themeJobActive(job) ? job.state : 'installing' } });
         void poll();
       } catch (error) {
         intent = null;
-        patch({ job: { state: 'failed' } });
-        report(error, true, entry.package?.url || entry.package?.path);
+        patch({ job: { id: entry.id, state: 'failed', automatic } });
+        report(error, true, entry.package?.url || entry.package?.path, automatic);
       }
     },
     async cancel() {

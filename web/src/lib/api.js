@@ -537,6 +537,7 @@ export function createApi(base = null) {
     logoutGrok:       ()             => request('DELETE', '/api/grok/auth', undefined, base),
     getUiPreferences: ()             => request('GET',    '/api/config/ui-preferences', undefined, base),
     getThemes: (refresh = false) => request('GET', `/api/themes${refresh ? '?refresh=1' : ''}`, undefined, base),
+    claimStartupTheme: () => request('POST', '/api/themes/first-run', {}, base),
     getTheme: (id) => request('GET', `/api/themes/${encodeURIComponent(id)}`, undefined, base),
     getThemeJob: () => request('GET', '/api/themes/job', undefined, base),
     installTheme: (id, consent) => request('POST', `/api/themes/${encodeURIComponent(id)}/install`, consent, base),

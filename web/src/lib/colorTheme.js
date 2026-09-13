@@ -1,6 +1,7 @@
 export const COLOR_THEME_STORAGE_KEY = 'ace.colorTheme';
 export const DEFAULT_COLOR_THEME = 'blue';
-export const COLOR_THEME_VALUES = Object.freeze(['blue', 'orange', 'eva-01']);
+export const NATIONAL_DAY_THEME_ID = 'national-day-2026';
+export const COLOR_THEME_VALUES = Object.freeze(['blue', 'orange', NATIONAL_DAY_THEME_ID, 'eva-01']);
 
 const ALLOWED_COLOR_THEMES = new Set(COLOR_THEME_VALUES);
 
@@ -9,7 +10,11 @@ export function isAiColorTheme(value) {
 }
 
 export function isInstalledColorTheme(value) {
-  return value === 'eva-01' || isAiColorTheme(value);
+  return isDownloadableColorTheme(value) || isAiColorTheme(value);
+}
+
+export function isDownloadableColorTheme(value) {
+  return value === 'eva-01' || value === NATIONAL_DAY_THEME_ID;
 }
 
 export function isValidColorTheme(value) {

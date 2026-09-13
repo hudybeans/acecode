@@ -9,7 +9,7 @@ export function useThemeDownloads({ enabled, prepare, apply, remove, forget }) {
   const controller = useMemo(() => createThemeDownloadController({
     api,
     prepare: (id, options) => callbacks.current.prepare(id, options),
-    apply: (id) => callbacks.current.apply(id),
+    apply: (id, options) => callbacks.current.apply(id, options),
     remove: (id) => callbacks.current.remove(id),
     forget: (id) => callbacks.current.forget(id),
     onChange: setState,

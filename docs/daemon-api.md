@@ -346,6 +346,7 @@ update their transcript presentation.
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
 | GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
+| POST | `/api/themes/first-run` | durably claim the one-time National Day startup attempt |
 | POST | `/api/themes/import/preview` | validate a raw theme ZIP and return a read-only preview |
 | POST | `/api/themes/import?sha256=<digest>` | import the same previewed ZIP after confirmation |
 | GET | `/api/themes/job` | current theme download progress |
@@ -2703,7 +2704,11 @@ updates. The application bundles only the small card thumbnail and three
 preview swatches; it does not bundle or automatically download the full EVA
 theme. See [theme packaging](themes.md) for the independent publish layout.
 
-`GET /api/themes?refresh=1` refreshes `upgrade.base_url + "themes/catalog.json"`.
+`GET /api/themes?refresh=1` refreshes `upgrade.base_url + "themes/catalog-v2.json"`,
+falling back to `themes/catalog.json` when the expanded catalogue returns HTTP
+404 or 410. The legacy EVA-only public catalogue remains available to old clients.
+The expanded catalogue supports `national-day-2026` and `eva-01`; entries are
+validated independently and installation resolves the requested ID.
 Each catalogue operation resolves the current update server, including changes
 made through `PUT /api/config/upgrade`, without a daemon restart. Cached metadata
 is scoped to its source server. Already started downloads retain the resource
@@ -2718,10 +2723,11 @@ The API also includes `package.url` and `thumbnail.url`, resolved against the
 configured update server. Error responses and failed jobs include
 `error_path` with the actual catalogue/archive URL or failing local path.
 An unavailable server falls back to its own cached catalogue with `offline:true`;
-without a cache for that server and without local AI themes it returns
+without a cache for that server and without any installed themes it returns
 `503/THEME_CATALOG_UNAVAILABLE`. If local AI themes exist, they remain visible:
 the response contains `offline:true`, a `catalog_error` object, an EVA descriptor
 with `available:false` and no remote package, followed by the local entries.
+Installed National Day resources are also reported and remain usable offline.
 Clients disable the unavailable download without hiding installed local themes.
 
 Local entries have `source:"local"`, `installed:true`, `name`, `mode`, `version`,
@@ -2747,7 +2753,7 @@ Dark themes with extension enabled use white right-side title-bar controls
 while the homepage wallpaper is visible. Full definitions and exported ZIPs
 preserve the optional object; the 28-member `colors` object is unchanged.
 
-`POST /api/themes/eva-01/install` requires the exact metadata displayed by the
+`POST /api/themes/<id>/install` requires the exact metadata displayed by the
 confirmation dialog:
 
 ```json
@@ -2756,7 +2762,7 @@ confirmation dialog:
 
 Missing or mismatched consent returns `409/THEME_CONFIRMATION_REQUIRED` and
 starts no download. The accepted response and `GET /api/themes/job` contain
-`id`, `version`, `state`, `bytes_downloaded`, and `bytes_total`. States are
+`id`, `version`, `state`, `bytes_downloaded`, `bytes_total`, and `automatic`. States are
 `idle`, `downloading`, `installing`, `completed`, `cancelled`, or `failed`;
 failure adds an `error` code. Only one installation runs per daemon; a second
 request returns `409/THEME_DOWNLOAD_BUSY`. `POST /api/themes/job/cancel`
@@ -2764,6 +2770,23 @@ requests cancellation, which is observed through job polling. The frontend
 shows this progress and any retry action inside the theme card, even after
 closing and reopening Settings. A later theme selection revokes automatic
 application of an earlier download.
+
+`POST /api/themes/first-run` is authenticated and blocked during configuration
+migration. It atomically creates `themes/.national-day-2026-attempted` and returns
+`{"id":"national-day-2026","claimed":true}` only to the first claimant; later
+requests return `claimed:false`. It neither downloads nor changes appearance.
+The marker persists across failures, process restarts and application upgrades.
+After restoring canonical appearance preferences, the first Web/Desktop client
+automatically installs the National Day package using the same exact integrity
+metadata with `automatic:true`, or reuses a valid installation. Automatic jobs
+retain that flag so every observing client suppresses their failure notifications.
+Application follows successful resource preparation. A later explicit theme
+choice wins, and persistence failures silently roll back the original appearance.
+The automatic `PUT /api/config/ui-preferences` includes `expected_appearance`
+containing the initial GET response. The server compares it under the configuration
+lock before writing; a changed snapshot returns `409/APPEARANCE_CHANGED` without
+modifying preferences. This also protects later choices made in another window.
+Manual downloads continue to require confirmation and display normal errors.
 
 The daemon verifies archive bytes, SHA-256, allowed ZIP entries, the fixed
 palette schema, and both images before publishing an installed version. An

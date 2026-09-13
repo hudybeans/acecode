@@ -3,10 +3,8 @@ import { Modal } from './Modal.jsx';
 import { toast } from './Toast.jsx';
 import { clsx } from '../lib/format.js';
 import { api } from '../lib/api.js';
-import { EVA_THEME_ID, themeDownloadPercent, themeJobActive, themePackageSize } from '../lib/themePackages.js';
+import { BUILTIN_THEME_CARDS, EVA_THEME_ID, NATIONAL_DAY_THEME_ID, themeDownloadPercent, themeJobActive, themePackageSize } from '../lib/themePackages.js';
 import { canManageTheme, createThemeExportController, EMPTY_THEME_EXPORT, themeExportBusy, themeExportProgress, themeManagementFailure } from '../lib/themeExports.js';
-
-const EVA_PREVIEW_SWATCHES = ['#E9DEFA', '#F9F5FE', '#B7EF65'];
 
 export function LocalThemeCard({ entry, selected, onSelect, onExport, onDelete, actionsDisabled, deleting, exporting }) {
   const [thumbnail, setThumbnail] = useState('');
@@ -69,18 +67,18 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
     } catch (error) { setDeleteError(themeManagementFailure(error, '删除主题失败，请重试')); }
     finally { setDeleting(false); }
   };
-  const entry = downloads?.entry;
   const job = downloads?.job;
   const busy = themeJobActive(job);
-  const canDownload = entry?.available !== false && (!entry?.installed || entry?.update_available) && !busy;
+  const entryFor = (id) => downloads?.entries?.find((entry) => entry.id === id)
+    || (id === EVA_THEME_ID ? downloads?.entry : null);
 
-  const selectEva = async () => {
-    let current = entry;
+  const selectBuiltin = async (id) => {
+    let current = entryFor(id);
     if (!current) {
-      current = await downloads?.controller.refresh({ notify: true });
+      current = await downloads?.controller.refresh({ notify: true, id });
     }
     if (!current || (current.available === false && !current.installed)) return;
-    if (current.installed && !current.update_available) void onSelect(EVA_THEME_ID);
+    if (current.installed && (!current.update_available || busy)) void onSelect(id);
     else setConfirmation(current);
   };
 
@@ -98,15 +96,19 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
             </button>
           </div>
         ))}
-        <div className={clsx('ace-theme-card ace-downloadable-theme', selected === EVA_THEME_ID && 'is-selected')}>
-          <img className="ace-theme-card-background" src="/themes/eva-01-thumbnail.png" alt="EVA 初号机背景缩略图" draggable="false" />
-          <button type="button" className={clsx('ace-theme-card-choice', canDownload && 'can-download')} aria-pressed={selected === EVA_THEME_ID}
-            aria-label="EVA 初号机" aria-busy={busy || downloads?.loading} onClick={selectEva} disabled={busy || downloads?.loading || (entry?.available === false && !entry?.installed)}>
+        {BUILTIN_THEME_CARDS.map((builtin) => {
+          const entry = entryFor(builtin.id);
+          const downloading = busy && job?.id === builtin.id;
+          const canDownload = entry?.available !== false && (!entry?.installed || entry?.update_available) && !busy;
+          return <div key={builtin.id} data-theme-id={builtin.id} className={clsx('ace-theme-card ace-downloadable-theme', selected === builtin.id && 'is-selected')}>
+          <img className="ace-theme-card-background" src={builtin.thumbnail} alt="" draggable="false" />
+          <button type="button" className={clsx('ace-theme-card-choice', canDownload && 'can-download')} aria-pressed={selected === builtin.id}
+            aria-label={builtin.name} aria-busy={downloading || downloads?.loading} onClick={() => selectBuiltin(builtin.id)} disabled={(busy && !entry?.installed) || downloads?.loading || (entry?.available === false && !entry?.installed)}>
             <div className="ace-theme-card-swatches" aria-hidden="true">
-              {EVA_PREVIEW_SWATCHES.map((fallback, index) => <span key={index} style={{ backgroundColor: /^#[0-9a-f]{6}$/i.test(entry?.swatches?.[index]) ? entry.swatches[index] : fallback }} />)}
+              {builtin.swatches.map((fallback, index) => <span key={index} style={{ backgroundColor: /^#[0-9a-f]{6}$/i.test(entry?.swatches?.[index]) ? entry.swatches[index] : fallback }} />)}
             </div>
-            <span className="ace-theme-card-name">EVA 初号机</span>
-            <span className="ace-theme-card-state">{entry?.update_available ? '可更新' : selected === EVA_THEME_ID && entry?.installed ? '使用中' : entry?.installed ? '已下载' : entry?.available === false ? '暂时无法下载' : '未下载'}</span>
+            <span className="ace-theme-card-name">{builtin.name}</span>
+            <span className="ace-theme-card-state">{entry?.update_available ? '可更新' : selected === builtin.id && entry?.installed ? '使用中' : entry?.installed ? '已下载' : entry?.available === false ? '暂时无法下载' : '未下载'}</span>
             {canDownload && (
               <span className="ace-theme-card-download-cover" aria-hidden="true">
                 <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -115,20 +117,21 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
               </span>
             )}
           </button>
-          {busy && (
+          {downloading && (
             <div className="ace-theme-card-download" aria-live="polite">
               <div className="flex items-center justify-between gap-2">
                 <span>{job.state === 'installing' ? '正在校验并安装…' : `下载中 ${themeDownloadPercent(job)}%`}</span>
                 <button type="button" onClick={() => downloads.controller.cancel()} className="opacity-80 hover:opacity-100 underline underline-offset-2">取消下载</button>
               </div>
-              <div className="ace-theme-progress" role="progressbar" aria-label="EVA 主题下载进度"
+              <div className="ace-theme-progress" role="progressbar" aria-label="主题下载进度"
                 aria-valuemin={0} aria-valuemax={100} aria-valuenow={themeDownloadPercent(job)}>
                 <span style={{ width: `${themeDownloadPercent(job)}%` }} />
               </div>
               <div>{themePackageSize(job.bytes_downloaded)} / {themePackageSize(job.bytes_total)}</div>
             </div>
           )}
-        </div>
+        </div>;
+        })}
         <div className="ace-theme-card ace-ai-theme-action">
           <button type="button" className="ace-theme-card-choice" onClick={onCreateAiTheme}>
             <svg className="ace-ai-theme-wand" width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -189,12 +192,12 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
       {confirmation && (
         <Modal width={400} layerClassName="z-[400]" labelledBy="theme-download-title" onClose={() => setConfirmation(null)}>
           <div className="p-5">
-            <h3 id="theme-download-title" className="text-base font-semibold">下载 EVA 初号机主题</h3>
+            <h3 id="theme-download-title" className="text-base font-semibold">{confirmation.id === NATIONAL_DAY_THEME_ID ? '下载国庆节主题' : '下载 EVA 初号机主题'}</h3>
             <p className="mt-3 text-sm text-fg-2">需要下载 {themePackageSize(confirmation.package.bytes)}，下载完成后自动应用。</p>
             {confirmation.installed && (
               <button type="button" className="mt-3 text-sm text-accent hover:underline" onClick={() => {
                 setConfirmation(null);
-                void onSelect(EVA_THEME_ID);
+                void onSelect(confirmation.id);
               }}>使用已下载版本</button>
             )}
             <div className="flex justify-end gap-2 mt-5">

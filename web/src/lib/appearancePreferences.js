@@ -146,7 +146,7 @@ export function createAppearancePersistenceController({
       return true;
     },
 
-    change(patch) {
+    change(patch, { silent = false, expectedAppearance } = {}) {
       const target = withoutDeletedTheme(mergeAppearancePreferences(visible, patch, scope));
       visible = target;
       revision += 1;
@@ -155,7 +155,9 @@ export function createAppearancePersistenceController({
 
       queue = queue
         .then(async () => {
-          const response = await save(appearancePreferencesToApi(withoutDeletedTheme(target), scope));
+          const payload = appearancePreferencesToApi(withoutDeletedTheme(target), scope);
+          if (expectedAppearance) payload.expected_appearance = expectedAppearance;
+          const response = await save(payload);
           const persisted = parseAppearancePreferences(response, scope);
           if (!persisted) {
             throw new Error('当前 daemon 不支持外观配置持久化');
@@ -170,7 +172,7 @@ export function createAppearancePersistenceController({
           if (changeRevision !== revision) return;
           visible = confirmed;
           applyIfActive(confirmed);
-          if (active) onError(error);
+          if (active && !silent) onError(error);
         });
       return queue;
     },

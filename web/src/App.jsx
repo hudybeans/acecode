@@ -336,13 +336,13 @@ export function App() {
       },
     });
   }
-  const changeAppearance = useCallback((patch) => (
-    appearanceControllerRef.current.change(patch)
+  const changeAppearance = useCallback((patch, options) => (
+    appearanceControllerRef.current.change(patch, options)
   ), []);
   const themeDownloads = useThemeDownloads({
     enabled: authState === 'ok' && showSettings,
     prepare: prepareTheme,
-    apply: (id) => changeAppearance({ colorTheme: id }),
+    apply: (id, options) => changeAppearance({ colorTheme: id }, options),
     remove: (id) => appearanceControllerRef.current.removeColorTheme(id, () => api.deleteTheme(id)),
     forget: forgetTheme,
   });
@@ -787,10 +787,12 @@ export function App() {
     });
     api.getUiPreferences().then((preferences) => {
       appearanceControllerRef.current.restore(preferences);
+      // The daemon owns the durable attempt marker, shared across windows and upgrades.
+      void themeDownloads.controller.applyStartupTheme(preferences);
     }).catch(() => {
       // Older/offline daemons keep the injected or cached appearance usable.
     });
-  }, [authState]);
+  }, [authState, themeDownloads.controller]);
 
   useEffect(() => {
     if (authState !== 'ok') {

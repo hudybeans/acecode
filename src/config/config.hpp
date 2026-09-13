@@ -179,7 +179,7 @@ struct WebUiPreferencesConfig {
     // Stable Desktop/WebUI appearance preferences. `system` is resolved by
     // the frontend so a legacy first launch keeps following the OS mode.
     std::string theme = "system";       // system | light | dark
-    std::string color_theme = "blue";   // blue | orange | eva-01 (downloaded)
+    std::string color_theme = "blue";   // Built-in colors, downloadable themes, or local ai-* themes.
     std::string font_size = "medium";   // small | medium | large
     // Sidebar session rows show a relative timestamp. Product default is on;
     // turning it off leaves the time visible only in the row hover card.

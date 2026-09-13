@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   createThemeDownloadController, THEME_COLOR_KEYS, themeCssProperties,
   themeDownloadConsent, themeDownloadPercent, themeFailure, validThemeDefinition, releaseThemeResource,
+  NATIONAL_DAY_THEME_ID,
 } from './themePackages.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
@@ -9,19 +10,103 @@ const entry = { id: 'eva-01', version: '1.0.0', installed: false, package: { byt
 const pending = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(themeEntry = entry) {
-  const completion = pending(), applies = [], prepared = [], preparations = [], requests = [];
-  let currentJob = { id: 'eva-01', version: themeEntry.version, state: 'downloading', bytes_total: 2000000, bytes_downloaded: 20 };
+  const completion = pending(), applies = [], applyOptions = [], prepared = [], preparations = [], requests = [];
+  let currentJob = { id: themeEntry.id, version: themeEntry.version, state: 'downloading', bytes_total: 2000000, bytes_downloaded: 20 };
+  let claims = 0;
   const api = {
+    claimStartupTheme: async () => ({ id: NATIONAL_DAY_THEME_ID, claimed: claims++ === 0 }),
     getThemes: async () => ({ themes: [themeEntry], job: { state: 'idle' } }),
     installTheme: async (id, consent) => { requests.push({ id, consent }); return currentJob; },
     getThemeJob: async () => { await completion.promise; return currentJob; },
-    cancelThemeInstall: async () => { currentJob = { id: 'eva-01', state: 'cancelled' }; completion.resolve(); },
+    cancelThemeInstall: async () => { currentJob = { id: themeEntry.id, state: 'cancelled' }; completion.resolve(); },
   };
-  const controller = createThemeDownloadController({ api, prepare: async (id, options) => { prepared.push(id); preparations.push(options); }, apply: async (id) => applies.push(id), wait: async () => {} });
-  return { controller, api, applies, prepared, preparations, requests, complete: (state = 'completed') => {
-    currentJob = { id: 'eva-01', version: themeEntry.version, state, error: 'THEME_INVALID_PACKAGE' }; completion.resolve();
+  const controller = createThemeDownloadController({ api, prepare: async (id, options) => { prepared.push(id); preparations.push(options); }, apply: async (id, options) => { applies.push(id); applyOptions.push(options); }, wait: async () => {} });
+  return { controller, api, applies, applyOptions, prepared, preparations, requests, complete: (state = 'completed') => {
+    currentJob = { id: themeEntry.id, version: themeEntry.version, state, error: 'THEME_INVALID_PACKAGE' }; completion.resolve();
   } };
 }
+
+await run('startup automatically installs National Day once and does not mark EVA as installed', async () => {
+  const f = fixture({ ...entry, id: NATIONAL_DAY_THEME_ID });
+  const expectedAppearance = { theme: 'dark', color_theme: 'orange', font_size: 'large' };
+  await Promise.all([f.controller.applyStartupTheme(expectedAppearance), f.controller.applyStartupTheme(expectedAppearance)]);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].consent.automatic, true);
+  assert.deepEqual(f.applies, []);
+  f.complete(); await tick();
+  assert.deepEqual(f.applies, [NATIONAL_DAY_THEME_ID]);
+  assert.deepEqual(f.applyOptions, [{ silent: true, expectedAppearance }]);
+  assert.equal(f.controller.state().entries[0].installed, true);
+  assert.equal(f.controller.state().entry, null);
+  f.controller.dispose();
+  const restarted = createThemeDownloadController({ api: f.api, prepare() {}, apply: () => assert.fail('startup repeated') });
+  await restarted.applyStartupTheme();
+  assert.equal(f.requests.length, 1);
+  restarted.dispose();
+});
+
+await run('an installed National Day theme applies without a download or update prompt', async () => {
+  const f = fixture({ ...entry, id: NATIONAL_DAY_THEME_ID, installed: true, update_available: true });
+  await f.controller.applyStartupTheme();
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.prepared, [NATIONAL_DAY_THEME_ID]);
+  assert.deepEqual(f.applies, [NATIONAL_DAY_THEME_ID]);
+  f.controller.dispose();
+});
+
+await run('automatic claim, discovery, download, polling, validation and preparation failures are silent', async () => {
+  for (const phase of ['claim', 'catalog', 'install', 'poll', 'validation', 'prepare', 'apply']) {
+    const national = { ...entry, id: NATIONAL_DAY_THEME_ID };
+    let applied = false;
+    const fail = () => { throw new Error(phase); };
+    const job = { id: national.id, version: national.version, automatic: true, state: 'downloading' };
+    const api = {
+      claimStartupTheme: async () => phase === 'claim' ? fail() : { id: national.id, claimed: true },
+      getThemes: async () => phase === 'catalog' ? fail() : { themes: [national] },
+      installTheme: async () => phase === 'install' ? fail() : job,
+      getThemeJob: async () => phase === 'poll' ? fail() : { ...job, state: phase === 'validation' ? 'failed' : 'completed', error: 'THEME_INVALID_PACKAGE' },
+    };
+    const controller = createThemeDownloadController({ api, wait: async () => {},
+      prepare: async () => { if (phase === 'prepare') fail(); },
+      apply: async (_, options) => { assert.equal(options.silent, true); if (phase === 'apply') fail(); applied = true; },
+    });
+    await controller.applyStartupTheme(); await tick();
+    assert.equal(applied, false, phase);
+    assert.equal(controller.state().failure, null, phase);
+    assert.equal(controller.state().error, '', phase);
+    controller.dispose();
+  }
+});
+
+await run('manual theme choices before discovery and during download supersede the startup theme', async () => {
+  for (const duringClaim of [true, false]) {
+    const f = fixture({ ...entry, id: NATIONAL_DAY_THEME_ID });
+    const claim = pending();
+    if (duringClaim) f.api.claimStartupTheme = () => claim.promise;
+    const startup = f.controller.applyStartupTheme();
+    if (!duringClaim) await startup;
+    await f.controller.select('orange');
+    claim.resolve({ id: NATIONAL_DAY_THEME_ID, claimed: true });
+    await startup;
+    f.complete(); await tick();
+    assert.deepEqual(f.applies, ['orange']);
+    if (duringClaim) assert.deepEqual(f.requests, []);
+    f.controller.dispose();
+  }
+});
+
+await run('automatic failure stays quiet in settings and a later manual retry reports errors', async () => {
+  const f = fixture({ ...entry, id: NATIONAL_DAY_THEME_ID });
+  await f.controller.applyStartupTheme();
+  f.complete('failed'); await tick();
+  f.api.getThemes = async () => { throw new Error('offline'); };
+  await f.controller.refresh();
+  assert.equal(f.controller.state().failure, null);
+  assert.equal(f.controller.state().error, '');
+  await f.controller.refresh({ notify: true, id: NATIONAL_DAY_THEME_ID });
+  assert.match(f.controller.state().failure.message, /offline/);
+  f.controller.dispose();
+});
 
 await run('theme palette only accepts registered hex tokens and safe application blob URLs', () => {
   const definition = { schema_version: 1, id: 'eva-01', version: '1.0.0', mode: 'light', colors: Object.fromEntries(THEME_COLOR_KEYS.map((key) => [key, '#ABCDEF'])) };

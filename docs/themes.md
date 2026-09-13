@@ -62,6 +62,39 @@ AI 主题使用 `ai-<slug>` 标识，允许小写 ASCII 字母、数字及短横
 
 草稿存放在 `themes/drafts`；安装后的文件位于 `themes/<id>/<version>/`，通过原子更新 `installed.json` 发布；新 ZIP 位于 `themes/exports/<id>/<version>.zip`。旧版平铺 ZIP 在验证包内主题 ID、版本和内容后仍可复用，删除也按实际归属核验，避免 ID 与版本拼接相似时误删其它主题。确认绑定配色及图片哈希，修改内容后必须重新确认。工具和列表字段详见 [Daemon API](daemon-api.md#ai-theme-workflow-tool)。
 
+## Built-in National Day theme
+
+The built-in `national-day-2026` theme is the approved ACECode-created
+Shengshi Huazhang 2026 artwork. Its card is labelled `国庆节` and appears before
+EVA Unit-01. The existing background, palette, logo colour and white titlebar
+controls are preserved, including the original definition's `mode: dark`.
+Only the 86,886-byte preview is bundled; the full package is downloaded from
+the configured aupdate server. The original local AI theme remains unchanged.
+
+The next application's first authenticated entry attempts this theme once,
+including for users upgrading from an earlier release. A durable atomic marker
+beside the installed themes coordinates multiple windows and survives restarts.
+The current skin stays active until resources are ready. Discovery, download,
+validation, image-loading and preference-save failures are silent; an attempted
+startup is never automatically retried. Users can still download manually, and
+a later manual theme choice takes priority over an unfinished automatic download.
+
+The approved definition is `assets/themes/national-day-2026/theme.json`. Repackage
+the matching artwork without modifying its PNG bytes:
+
+```powershell
+./scripts/package_builtin_theme.ps1 -Definition assets/themes/national-day-2026/theme.json -Background '<approved-background.png>' -Thumbnail '<approved-thumbnail.png>' -OutputDirectory build/national-day-theme-package
+```
+
+Publish `national-day-2026/1.0.0/{theme.zip,thumbnail.png}` under the aupdate
+`themes/` directory, then atomically publish `catalog-v2.json` with National Day
+before EVA. Verify public hashes before publishing the catalogue. Keep the
+existing `catalog.json` byte-identical: older clients reject a catalogue with
+more than one entry. New clients fall back to that legacy catalogue on HTTP
+404/410 from the expanded catalogue. Neither publication changes `aceupdate.json`
+nor an application release tag. Built-in themes cannot be deleted or exported
+through custom-theme management.
+
 ## Downloadable EVA theme
 
 EVA Unit-01 is an optional resource pack served independently from the ACECode

@@ -209,7 +209,7 @@ bool is_valid_web_ui_theme(const std::string& theme) {
 }
 
 bool is_valid_web_ui_color_theme(const std::string& color_theme) {
-    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01" ||
+    return color_theme == "blue" || color_theme == "orange" || themes::is_downloadable_theme(color_theme) ||
         themes::is_local_theme(color_theme);
 }
 
@@ -502,7 +502,7 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("web_ui.theme must be one of: system, light, dark");
     }
     if (!is_valid_web_ui_color_theme(cfg.web_ui.color_theme)) {
-        errors.push_back("web_ui.color_theme must be blue, orange, eva-01, or a valid ai- theme ID");
+        errors.push_back("web_ui.color_theme must be blue, orange, eva-01, national-day-2026, or a valid ai- theme ID");
     }
     if (!is_valid_web_ui_font_size(cfg.web_ui.font_size)) {
         errors.push_back("web_ui.font_size must be one of: small, medium, large");

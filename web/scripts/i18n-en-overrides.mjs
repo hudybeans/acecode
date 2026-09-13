@@ -1,6 +1,9 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '国庆节': 'National Day',
+  '下载国庆节主题': 'Download National Day theme',
+  '主题下载进度': 'Theme download progress',
   '自动模式': 'Auto',
   '显示沙盒状态，或切换本会话的沙盒开关': 'Show sandbox status or turn this session’s sandbox on or off',
   '自动编辑和运行沙盒内命令,危险操作与越界请求需确认': 'Automatically edit and run sandboxed commands; confirm dangerous operations and requests outside the sandbox',

@@ -44,6 +44,8 @@ void WebServer::Impl::register_themes() {
 
     CROW_ROUTE(app, "/api/themes").methods(crow::HTTPMethod::Options)
     ([this](const crow::request& req) { return cors_preflight(req); });
+    CROW_ROUTE(app, "/api/themes/first-run").methods(crow::HTTPMethod::Options)
+    ([this](const crow::request& req) { return cors_preflight(req); });
     CROW_ROUTE(app, "/api/themes/import/preview").methods(crow::HTTPMethod::Options)
     ([this](const crow::request& req) { return cors_preflight(req); });
     CROW_ROUTE(app, "/api/themes/import").methods(crow::HTTPMethod::Options)
@@ -92,6 +94,12 @@ void WebServer::Impl::register_themes() {
         if (auto rejected = require_auth(req)) return std::move(*rejected);
         if (auto rejected = reject_if_migrating(req)) return std::move(*rejected);
         return respond(req, [&] { return theme_store->start(id, json::parse(req.body)); });
+    });
+    CROW_ROUTE(app, "/api/themes/first-run").methods(crow::HTTPMethod::POST)
+    ([this, respond](const crow::request& req) {
+        if (auto rejected = require_auth(req)) return std::move(*rejected);
+        if (auto rejected = reject_if_migrating(req)) return std::move(*rejected);
+        return respond(req, [&] { return theme_store->claim_startup_theme(); });
     });
     CROW_ROUTE(app, "/api/themes/import/preview").methods(crow::HTTPMethod::POST)
     ([this, respond](const crow::request& req) {

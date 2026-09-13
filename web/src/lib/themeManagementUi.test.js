@@ -36,6 +36,19 @@ function descendants(element) {
   return [element, ...React.Children.toArray(element.props.children).flatMap(descendants)];
 }
 
+await run('built-in National Day precedes EVA with an offline preview and isolated progress', () => {
+  const { ThemeCards } = components();
+  const html = renderToStaticMarkup(React.createElement(ThemeCards, {
+    ...props, downloads: { entries: [], job: { id: packages.NATIONAL_DAY_THEME_ID, state: 'downloading', bytes_total: 100, bytes_downloaded: 25 } },
+  }));
+  const national = html.indexOf('data-theme-id="national-day-2026"');
+  const eva = html.indexOf('data-theme-id="eva-01"');
+  assert.ok(national >= 0 && eva > national);
+  assert.match(html.slice(national, eva), /national-day-2026-thumbnail\.png/);
+  assert.match(html.slice(national, eva), /role="progressbar"/);
+  assert.doesNotMatch(html.slice(eva), /role="progressbar"/);
+});
+
 await run('production theme cards render only two custom management links with no nested button or archive icon', () => {
   const { ThemeCards } = components();
   const html = renderToStaticMarkup(React.createElement(ThemeCards, props));
@@ -49,7 +62,7 @@ await run('production theme cards render only two custom management links with n
   assert.equal(buttons.length, 3);
   for (const button of buttons) assert.equal(descendants(button).filter((node) => node.type === 'button').length, 1);
   assert.equal(descendants(tree).some((node) => node.type === 'svg'), false);
-  for (const id of ['blue', 'orange', 'eva-01']) {
+  for (const id of ['blue', 'orange', 'eva-01', 'national-day-2026']) {
     const html = renderToStaticMarkup(React.createElement(LocalThemeCard, { entry: { ...local, id }, onSelect() {} }));
     assert.doesNotMatch(html, /导出主题|删除主题/);
   }

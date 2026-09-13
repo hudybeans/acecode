@@ -7808,6 +7808,46 @@ TEST(WebServerHttp, DesktopFeedbackEnforcesUnicodeCharacterLimitBeforePackaging)
     }
 }
 
+TEST(WebServerHttp, StartupThemeCannotOverwriteAppearanceChangedInAnotherWindow) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/ui-preferences")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const auto initial = json::parse(cpr::Get(url).text);
+    ASSERT_EQ(cpr::Put(url, headers, cpr::Body{json{{"color_theme", "orange"}}.dump()}).status_code, 200);
+    const auto stale = cpr::Put(url, headers,
+        cpr::Body{json{{"color_theme", "blue"}, {"expected_appearance", initial}}.dump()});
+    ASSERT_EQ(stale.status_code, 409) << stale.text;
+    EXPECT_EQ(json::parse(stale.text)["error"], "APPEARANCE_CHANGED");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "orange");
+    const auto current = json::parse(cpr::Get(url).text);
+    const auto matched = cpr::Put(url, headers,
+        cpr::Body{json{{"color_theme", "blue"}, {"expected_appearance", current}}.dump()});
+    EXPECT_EQ(matched.status_code, 200) << matched.text;
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+    const auto malformed = cpr::Put(url, headers,
+        cpr::Body{json{{"color_theme", "orange"}, {"expected_appearance", false}}.dump()});
+    EXPECT_EQ(malformed.status_code, 400);
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+}
+
+TEST(WebServerHttp, StartupThemeClaimRequiresAuthenticationAndNeverChangesAppearance) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/themes/first-run")};
+    const cpr::Header denied{{"Origin", "http://localhost:5173"}, {"Content-Type", "application/json"}};
+    EXPECT_EQ(cpr::Post(url, denied, cpr::Body{"{}"}).status_code, 401);
+    const cpr::Header authenticated{{"Origin", "http://localhost:5173"},
+        {"Content-Type", "application/json"}, {"X-ACECode-Token", "smoke-token"}};
+    const auto first = cpr::Post(url, authenticated, cpr::Body{"{}"});
+    ASSERT_EQ(first.status_code, 200) << first.text;
+    EXPECT_EQ(json::parse(first.text)["id"], "national-day-2026");
+    EXPECT_EQ(json::parse(first.text)["claimed"], true);
+    const auto second = cpr::Post(url, authenticated, cpr::Body{"{}"});
+    ASSERT_EQ(second.status_code, 200) << second.text;
+    EXPECT_EQ(json::parse(second.text)["claimed"], false);
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+    EXPECT_EQ(json::parse(cpr::Get(cpr::Url{fx.url("/api/themes/job")}).text)["state"], "idle");
+}
+
 TEST(WebServerHttp, CustomThemeImportPreviewsBeforeInstallingAndRequiresMatchingDigest) {
     WebServerFixture fx;
     const auto png = theme_test::png();
@@ -7839,7 +7879,7 @@ TEST(WebServerHttp, CustomThemeExportProtectsBuiltinsAndDownloadsAuthenticatedZi
     acecode::themes::ThemeStore store(fx.tmp_dir / "themes", "https://unused.invalid");
     store.install_local(definition, png, png);
     const cpr::Header json_headers{{"Content-Type", "application/json"}};
-    for (const auto* id : {"blue", "orange", "eva-01"}) {
+    for (const auto* id : {"blue", "orange", "eva-01", "national-day-2026"}) {
         const auto exported = cpr::Post(cpr::Url{fx.url(std::string("/api/themes/") + id + "/export")}, json_headers, cpr::Body{"{}"});
         EXPECT_EQ(exported.status_code, 403) << exported.text;
         EXPECT_EQ(json::parse(exported.text)["error"], "THEME_BUILTIN_PROTECTED");

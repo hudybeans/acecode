@@ -1,0 +1,50 @@
+{
+  "appearance": {
+    "extend_to_titlebar": true,
+    "home_title_color": "#A96500",
+    "logo_color": "#D9272E"
+  },
+  "background": {
+    "bytes": 3223819,
+    "sha256": "2e65e23fcd42db54ed2f18c40a42637b5720766073a53f690d1bf4cae0684511"
+  },
+  "colors": {
+    "accent": "#C91F28",
+    "accent-bg": "#F7CBC5",
+    "accent-soft": "#FDE6DF",
+    "bg": "#FFF8F2",
+    "border": "#D8A99A",
+    "border-soft": "#EDD9D2",
+    "code-bg": "#2B1314",
+    "code-fg": "#FFF3E6",
+    "code-line": "#9B5B5E",
+    "danger": "#BC1F2D",
+    "danger-bg": "#FDE2E4",
+    "fg": "#171717",
+    "fg-2": "#333333",
+    "fg-mute": "#606060",
+    "ok": "#147A4C",
+    "ok-bg": "#E4F6EB",
+    "ok-border": "#6FB68C",
+    "on-selection": "#FFFFFF",
+    "selection": "#D92D35",
+    "send-bg": "#D9272E",
+    "send-fg": "#FFFFFF",
+    "shell-bg": "#FFF8F5",
+    "shell-hi": "#F8E9E4",
+    "surface": "#FFFFFF",
+    "surface-alt": "#FFF1EB",
+    "surface-hi": "#FCE5DC",
+    "warn": "#8A5A00",
+    "warn-bg": "#FFF1C9"
+  },
+  "id": "national-day-2026",
+  "mode": "dark",
+  "name": "国庆节",
+  "schema_version": 1,
+  "thumbnail": {
+    "bytes": 86886,
+    "sha256": "adf8fd4e39f6eb2829889812bc827c145730658418d59379b4654f1b379d6cbe"
+  },
+  "version": "1.0.0"
+}

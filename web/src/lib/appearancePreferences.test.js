@@ -20,6 +20,26 @@ async function run(name, fn) {
   }
 }
 
+await run('failed automatic theme persistence silently restores the original new or upgraded appearance', async () => {
+  for (const colorTheme of ['blue', 'orange', 'ai-existing']) {
+    const initial = { theme: 'system', colorTheme, fontSize: 'large', sidebarSessionTime: false };
+    const applied = [], errors = [], saves = [];
+    const expected = appearancePreferencesToApi(initial);
+    const controller = createAppearancePersistenceController({ initial,
+      apply: (value) => applied.push(value), save: async (payload) => {
+        saves.push(payload);
+        throw new Error('disk full');
+      },
+      onError: (error) => errors.push(error),
+    });
+    await controller.change({ colorTheme: 'national-day-2026' }, { silent: true, expectedAppearance: expected });
+    assert.deepEqual(saves[0].expected_appearance, expected);
+    assert.deepEqual(controller.current(), initial);
+    assert.deepEqual(applied.at(-1), initial);
+    assert.deepEqual(errors, []);
+  }
+});
+
 await run('appearance defaults preserve system preference, blue, and medium', () => {
   const darkScope = { matchMedia: () => ({ matches: true }) };
   assert.equal(systemThemeFallback(darkScope), 'dark');

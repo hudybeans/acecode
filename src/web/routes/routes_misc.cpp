@@ -2264,7 +2264,7 @@ void WebServer::Impl::register_ui_preferences() {
                     !is_valid_web_ui_color_theme(
                         body["color_theme"].get<std::string>())) {
                     return json_err(400, "BAD_REQUEST",
-                                    "color_theme must be blue, orange, eva-01, or an installed ai-* theme");
+                                    "color_theme must be blue, orange, eva-01, national-day-2026, or an installed ai-* theme");
                 }
             }
             if (body.contains("font_size")) {
@@ -2289,6 +2289,12 @@ void WebServer::Impl::register_ui_preferences() {
             }
 
             std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
+            if (body.contains("expected_appearance")) {
+                if (!body["expected_appearance"].is_object())
+                    return json_err(400, "BAD_REQUEST", "expected_appearance must be a UI preferences object");
+                if (body["expected_appearance"] != ui_preferences_to_json(deps.app_config->web_ui))
+                    return json_err(409, "APPEARANCE_CHANGED", "Appearance was changed by a later user action");
+            }
             if (body.contains("color_theme")) {
                 const auto id = body["color_theme"].get<std::string>();
                 if ((themes::is_downloadable_theme(id) || themes::is_local_theme(id)) &&

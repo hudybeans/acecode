@@ -27,7 +27,6 @@ struct ThemeError : std::runtime_error {
     ThemeError(int status, std::string code, const std::string& message, std::string path = {});
 };
 
-bool is_downloadable_theme(const std::string& id);
 bool valid_theme_definition(const nlohmann::json& definition);
 bool valid_theme_colors(const nlohmann::json& colors);
 bool valid_theme_appearance(const nlohmann::json& appearance);
@@ -51,6 +50,7 @@ public:
                ThemeTransport transport = {});
     ~ThemeStore();
     nlohmann::json catalog(bool refresh = false);
+    nlohmann::json claim_startup_theme();
     nlohmann::json definition(const std::string& id) const;
     bool installed(const std::string& id) const;
     std::string image(const std::string& id, const std::string& kind);

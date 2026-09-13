@@ -292,8 +292,6 @@ std::map<std::string, std::string> unpack_import(const std::string& bytes) {
 ThemeError::ThemeError(int status, std::string code, const std::string& message, std::string path)
     : std::runtime_error(message), status(status), code(std::move(code)), path(std::move(path)) {}
 
-bool is_downloadable_theme(const std::string& id) { return id == "eva-01"; }
-
 bool valid_theme_colors(const json& colors) {
     try {
         if (!colors.is_object() || colors.size() != kColors.size()) return false;
@@ -320,12 +318,12 @@ bool valid_theme_definition(const json& d) {
         const bool local = is_local_theme(id);
         if (d.at("schema_version") != 1 || (!is_downloadable_theme(id) && !local) ||
             !version_ok(d.at("version")) ||
-            (d.at("mode") != "light" && (!local || d.at("mode") != "dark")) ||
+            (d.at("mode") != "light" && (id == "eva-01" || d.at("mode") != "dark")) ||
             !valid_theme_colors(d.at("colors")) ||
             (d.contains("appearance") && !valid_theme_appearance(d.at("appearance"))) ||
             !asset_ok(d.at("background"), kMaxPackageBytes) ||
             !asset_ok(d.at("thumbnail"), kMaxPreviewBytes)) return false;
-        if (local) {
+        if (local || id == kNationalDayThemeId) {
             const auto name = d.at("name").get<std::string>();
             if (name.empty() || name.size() > 256 ||
                 name.find_first_not_of(" \t\r\n") == std::string::npos ||
@@ -338,16 +336,19 @@ bool valid_theme_definition(const json& d) {
 bool valid_theme_catalog(const json& catalog) {
     try {
         if (catalog.at("schema_version") != 1 || !catalog.at("themes").is_array() ||
-            catalog.at("themes").size() != 1) return false;
-        const auto& e = catalog.at("themes")[0];
-        if (e.at("id") != "eva-01" || !version_ok(e.at("version")) ||
-            !asset_ok(e.at("package"), kMaxPackageBytes) ||
-            !asset_ok(e.at("thumbnail"), kMaxPreviewBytes) ||
-            !e.at("swatches").is_array() || e.at("swatches").size() != 3) return false;
-        const auto prefix = "eva-01/" + e.at("version").get<std::string>() + "/";
-        if (e.at("package").at("path") != prefix + "theme.zip" ||
-            e.at("thumbnail").at("path") != prefix + "thumbnail.png") return false;
-        for (const auto& color : e.at("swatches")) if (!hex(color, 7, true)) return false;
+            catalog.at("themes").empty() || catalog.at("themes").size() > 2) return false;
+        std::set<std::string> ids;
+        for (const auto& e : catalog.at("themes")) {
+            const auto id = e.at("id").get<std::string>();
+            if (!is_downloadable_theme(id) || !ids.insert(id).second || !version_ok(e.at("version")) ||
+                !asset_ok(e.at("package"), kMaxPackageBytes) ||
+                !asset_ok(e.at("thumbnail"), kMaxPreviewBytes) ||
+                !e.at("swatches").is_array() || e.at("swatches").size() != 3) return false;
+            const auto prefix = id + "/" + e.at("version").get<std::string>() + "/";
+            if (e.at("package").at("path") != prefix + "theme.zip" ||
+                e.at("thumbnail").at("path") != prefix + "thumbnail.png") return false;
+            for (const auto& color : e.at("swatches")) if (!hex(color, 7, true)) return false;
+        }
         return true;
     } catch (...) { return false; }
 }
@@ -365,7 +366,7 @@ ThemeStore::ThemeStore(fs::path root, UpdateBaseProvider update_base, ThemeTrans
         return upgrade::download_to_file(url, path, 120000, progress, cancel);
     };
     try {
-        auto cached = read_json(root_ / "catalog.json");
+        auto cached = read_json(root_ / "catalog-v2.json");
         if (cached.value("source_base_url", "") == base_ && valid_theme_catalog(cached.at("catalog"))) {
             catalog_ = std::move(cached["catalog"]);
         }
@@ -388,10 +389,15 @@ json ThemeStore::catalog(bool refresh) {
         catalog_ = nullptr;
     }
     bool offline = false;
+    auto catalog_url = base_ + "catalog-v2.json";
     std::string failure_message = "Could not load theme catalog";
     if (refresh || catalog_.is_null()) {
         try {
-            auto response = transport_.fetch(base_ + "catalog.json");
+            auto response = transport_.fetch(catalog_url);
+            if (response.status_code == 404 || response.status_code == 410) {
+                catalog_url = base_ + "catalog.json";
+                response = transport_.fetch(catalog_url);
+            }
             if (response.body.size() > 128 * 1024) {
                 throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", "Theme catalog is too large");
             }
@@ -402,20 +408,26 @@ json ThemeStore::catalog(bool refresh) {
             if (!valid_theme_catalog(parsed))
                 throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", "Invalid theme catalog response");
             catalog_ = std::move(parsed);
-            write_file(root_ / "catalog.json", json{{"source_base_url", base_}, {"catalog", catalog_}}.dump());
+            write_file(root_ / "catalog-v2.json", json{{"source_base_url", base_}, {"catalog", catalog_}}.dump());
         } catch (const std::exception& error) { offline = true; failure_message = error.what(); }
         catch (...) { offline = true; }
     }
     const auto local_themes = local_catalog();
-    if (catalog_.is_null() && local_themes.empty())
-        throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", failure_message, base_ + "catalog.json");
+    if (catalog_.is_null() && local_themes.empty() && !installed("eva-01") && !installed(kNationalDayThemeId))
+        throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", failure_message, catalog_url);
     auto result = catalog_.is_null() ? json{{"schema_version", 1}, {"themes", json::array()}} : catalog_;
-    if (catalog_.is_null()) {
-        json fallback = {{"id", "eva-01"}, {"name", "EVA 初号机"}, {"source", "remote"},
-            {"available", false}, {"installed", installed("eva-01")}, {"update_available", false},
-            {"swatches", {"#7762A8", "#E9ECF6", "#A9D46A"}}};
+    for (const auto* id : {kNationalDayThemeId, "eva-01"}) {
+        if (std::any_of(result["themes"].begin(), result["themes"].end(),
+                [id](const json& entry) { return entry.at("id") == id; })) continue;
+        const bool present = installed(id);
+        if (std::string(id) == kNationalDayThemeId && !present) continue;
+        if (!catalog_.is_null() && !present) continue;
+        const bool national_day = std::string(id) == kNationalDayThemeId;
+        json fallback = {{"id", id}, {"name", national_day ? "国庆节" : "EVA 初号机"}, {"source", "remote"},
+            {"available", false}, {"installed", present}, {"update_available", false},
+            {"swatches", national_day ? json{"#FFF8F2", "#FFFFFF", "#D9272E"} : json{"#7762A8", "#E9ECF6", "#A9D46A"}}};
         if (fallback["installed"] == true) {
-            const auto d = definition("eva-01");
+            const auto d = definition(id);
             fallback["version"] = fallback["installed_version"] = d["version"];
         }
         result["themes"].push_back(std::move(fallback));
@@ -438,17 +450,29 @@ json ThemeStore::catalog(bool refresh) {
     for (const auto& entry : local_themes) result["themes"].push_back(entry);
     result["offline"] = offline;
     if (offline) result["catalog_error"] = {{"error", "THEME_CATALOG_UNAVAILABLE"},
-        {"message", failure_message}, {"error_path", base_ + "catalog.json"}};
+        {"message", failure_message}, {"error_path", catalog_url}};
     result["job"] = job();
     return result;
 }
 
 json ThemeStore::descriptor(const std::string& id) {
     if (!is_downloadable_theme(id)) throw ThemeError(404, "THEME_NOT_FOUND", "Unknown theme");
-    const auto entry = catalog().at("themes").at(0);
-    if (!entry.contains("package")) throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE",
-        "Theme catalog is unavailable", base_ + "catalog.json");
-    return entry;
+    const auto entries = catalog().at("themes");
+    for (const auto& entry : entries) {
+        if (entry.at("id") == id && entry.contains("package")) return entry;
+    }
+    throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", "Theme catalog is unavailable", base_ + "catalog-v2.json");
+}
+
+json ThemeStore::claim_startup_theme() {
+    // Atomic directory creation arbitrates across windows, stores and processes.
+    // Retain the marker on failure or interruption: this is one attempt, not a retry policy.
+    std::error_code ec;
+    fs::create_directories(root_, ec);
+    if (ec) throw ThemeError(500, "THEME_SAVE_FAILED", "Could not save startup theme attempt");
+    const bool claimed = fs::create_directory(root_ / ".national-day-2026-attempted", ec);
+    if (ec) throw ThemeError(500, "THEME_SAVE_FAILED", "Could not save startup theme attempt");
+    return {{"id", kNationalDayThemeId}, {"claimed", claimed}};
 }
 
 fs::path ThemeStore::installed_directory(const std::string& id) const {
@@ -874,6 +898,7 @@ json ThemeStore::start(const std::string& id, const json& consent) {
     if (busy(job())) throw ThemeError(409, "THEME_DOWNLOAD_BUSY", "A theme is already downloading");
     const auto entry = descriptor(id);
     if (!consent.is_object() || consent.value("confirm_download", false) != true ||
+        (consent.contains("automatic") && !consent["automatic"].is_boolean()) ||
         !consent.contains("sha256") || consent["sha256"] != entry["package"]["sha256"] ||
         !consent.contains("bytes") || consent["bytes"] != entry["package"]["bytes"] ||
         !consent.contains("version") || consent["version"] != entry["version"]) {
@@ -884,7 +909,8 @@ json ThemeStore::start(const std::string& id, const json& consent) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         job_ = {{"id", id}, {"version", entry["version"]}, {"state", "downloading"},
-            {"bytes_downloaded", 0}, {"bytes_total", entry["package"]["bytes"]}};
+            {"bytes_downloaded", 0}, {"bytes_total", entry["package"]["bytes"]},
+            {"automatic", consent.value("automatic", false)}};
     }
     worker_ = std::thread([this, entry] { install(entry); });
     return job();
