@@ -41,6 +41,65 @@ acecode::ChatMessage tool_message(const std::string& id, const std::string& cont
 
 } // namespace
 
+TEST(ToolResultStorage, DeliveryPreparesLargeResultAndPreservesStructuredFields) {
+    const auto dir = temp_dir("delivery");
+    const std::string original(60000, 'x');
+    acecode::ToolResult result{original, false};
+    result.metadata = {{"detail", "kept"}};
+    result.summary = acecode::ToolSummary{"Read", "large.txt", {{"bytes", "60000"}}, ""};
+    acecode::DiffHunk hunk;
+    hunk.old_start = 3;
+    result.hunks = std::vector<acecode::DiffHunk>{hunk};
+
+    EXPECT_TRUE(acecode::prepare_tool_result_for_delivery(
+        result, "file_read", "call-delivery", dir.string()));
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.metadata["detail"], "kept");
+    ASSERT_TRUE(result.summary.has_value());
+    EXPECT_EQ(result.summary->object, "large.txt");
+    ASSERT_TRUE(result.hunks.has_value());
+    EXPECT_EQ(result.hunks->front().old_start, 3);
+    EXPECT_TRUE(acecode::is_persisted_output_message(result.output));
+    EXPECT_LT(result.output.size(), 4000u);
+    EXPECT_EQ(read_file(acecode::persisted_output_filepath(result.output)), original);
+
+    const std::string preview = result.output;
+    EXPECT_FALSE(acecode::prepare_tool_result_for_delivery(
+        result, "file_read", "call-delivery", dir.string()));
+    std::vector<acecode::ToolCall> calls = {{"call-delivery", "file_read", "{}"}};
+    std::vector<acecode::ToolResult> results = {result};
+    acecode::ToolResultReplacementState state;
+    const auto batch = acecode::enforce_tool_result_budget(
+        calls, results, {true}, dir.string(), state);
+    EXPECT_TRUE(batch.newly_replaced.empty());
+    EXPECT_EQ(state.replacements.at("call-delivery"), preview);
+    EXPECT_EQ(results[0].output, preview);
+    EXPECT_EQ(read_file(dir / "call-delivery.txt"), original);
+    fs::remove_all(dir);
+}
+
+TEST(ToolResultStorage, DeliveryUsesExistingToolThresholdsAndKeepsStorageFailureOutput) {
+    const auto dir = temp_dir("delivery_thresholds");
+    const std::string original(35000, 'x');
+    acecode::ToolResult generic{original, true};
+    acecode::ToolResult bash{original, true};
+    EXPECT_FALSE(acecode::prepare_tool_result_for_delivery(
+        generic, "file_read", "call-generic", dir.string()));
+    EXPECT_EQ(generic.output, original);
+    EXPECT_TRUE(acecode::prepare_tool_result_for_delivery(
+        bash, "bash", "call-bash", dir.string()));
+    EXPECT_TRUE(acecode::is_persisted_output_message(bash.output));
+
+    const auto blocked = dir / "not-a-directory";
+    { std::ofstream file(blocked); file << "occupied"; }
+    acecode::ToolResult failed{original, true};
+    EXPECT_FALSE(acecode::prepare_tool_result_for_delivery(
+        failed, "bash", "call-failed", blocked.string()));
+    EXPECT_EQ(failed.output, original);
+    EXPECT_TRUE(failed.success);
+    fs::remove_all(dir);
+}
+
 TEST(ToolResultStorage, PersistsLargestFreshResultUntilBatchUnderBudget) {
     auto dir = temp_dir("budget");
 

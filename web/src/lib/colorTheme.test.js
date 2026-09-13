@@ -27,10 +27,11 @@ run('color theme preference defaults to blue', () => {
   assert.equal(effectiveColorTheme(null), 'blue');
 });
 
-run('color theme preference accepts only blue and orange', () => {
-  assert.deepEqual(COLOR_THEME_VALUES, ['blue', 'orange']);
+run('color theme preference accepts built-in colors and the registered downloadable theme', () => {
+  assert.deepEqual(COLOR_THEME_VALUES, ['blue', 'orange', 'eva-01']);
   assert.equal(isValidColorTheme('blue'), true);
   assert.equal(isValidColorTheme('orange'), true);
+  assert.equal(isValidColorTheme('eva-01'), true);
 });
 
 run('color theme preference rejects and normalizes invalid values', () => {

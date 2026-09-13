@@ -47,6 +47,8 @@ std::mutex& state_file_mutex() {
     return mu;
 }
 
+bool state_writes_paused = false; // guarded by state_file_mutex()
+
 std::string state_file_path() {
     const auto& override_path = test_path_override();
     if (!override_path.empty()) return override_path;
@@ -56,6 +58,10 @@ std::string state_file_path() {
 class StateFileWriteLock {
 public:
     explicit StateFileWriteLock(const std::string& state_path) {
+        if (state_writes_paused) {
+            error_ = "state writes paused for data directory migration";
+            return;
+        }
         const fs::path lock_path = path_from_utf8(state_path + ".lock");
         std::error_code ec;
         if (!lock_path.parent_path().empty()) {
@@ -315,6 +321,11 @@ nlohmann::json load_state_or_empty(bool* is_corrupted = nullptr) {
 }
 
 } // namespace
+
+void set_state_file_writes_paused(bool paused) {
+    std::lock_guard<std::mutex> lock(state_file_mutex());
+    state_writes_paused = paused;
+}
 
 bool read_state_flag(const std::string& key) {
     std::lock_guard<std::mutex> lock(state_file_mutex());

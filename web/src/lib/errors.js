@@ -3,6 +3,9 @@
 // 未识别码退到原始 message。
 
 const TABLE = {
+  IMAGE_SETTINGS_UNSUPPORTED: '当前后台服务不支持图像生成，请更新 ACECode 并重启后重试',
+  IMAGE_SETTINGS_AUTH_REQUIRED: '后台连接认证已失效，请重新连接 ACECode 后重试',
+  IMAGE_SETTINGS_UNAVAILABLE: '后台服务暂不可用，请稍后重试',
   IMAGE_COST_CONFIRMATION_REQUIRED: '测试会消耗额度，请从生成测试图片按钮发起',
   IMAGE_TEST_BUSY: '已有测试图片正在生成，请稍候',
   IMAGE_NOT_CONFIGURED: '请先填写 API 地址和 Key，或选择可用的模型连接',
@@ -24,6 +27,7 @@ const TABLE = {
   PERSIST_FAILED:    '配置写盘失败',
   BAD_JSON:          '请求格式错误',
   BAD_REQUEST:       '请求参数错误',
+  FEEDBACK_TOO_LONG: '反馈内容不能超过 10000 字',
   DEVICE_CODE_FAILED: '无法获取 GitHub 验证码',
   COPILOT_AUTH_REQUIRED: '请先登录 Copilot',
   COPILOT_TOKEN_EXCHANGE_FAILED: 'Copilot 授权校验失败',

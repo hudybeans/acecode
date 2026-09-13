@@ -1285,7 +1285,7 @@ export const InputBar = forwardRef(function InputBar({
           onClick={submit}
           disabled={!actionState.canSubmit}
           className={clsx(
-            'px-2 h-7 rounded-md text-[11px] transition flex items-center gap-1',
+            'ace-composer-send px-2 h-7 rounded-md text-[11px] transition flex items-center gap-1',
             actionState.canSubmit
               ? 'bg-accent text-white hover:opacity-90'
               : 'bg-surface-hi text-fg-mute cursor-default',
@@ -1301,7 +1301,7 @@ export const InputBar = forwardRef(function InputBar({
           onClick={submit}
           disabled={!actionState.canSubmit}
           className={clsx(
-            'w-7 h-7 rounded-full flex items-center justify-center transition',
+            'ace-composer-send w-7 h-7 rounded-full flex items-center justify-center transition',
             actionState.canSubmit
               ? 'bg-accent text-white hover:opacity-90'
               : 'bg-surface-hi text-fg-mute cursor-default',

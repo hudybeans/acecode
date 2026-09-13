@@ -1,4 +1,4 @@
-// 浮动设置窗口:mask + 左栏导航 + 右栏内容(Codex 风格)。
+// 浮动设置窗口:mask + 贯通的左栏导航与右栏内容。
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
@@ -8,8 +8,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme.jsx';
+import { ThemeCards } from './ThemeCards.jsx';
+import { EVA_THEME_ID } from '../lib/themePackages.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { SettingsConfigSection } from './SettingsConfigSection.jsx';
+import { FeedbackForm } from './FeedbackForm.jsx';
+import { SettingsSearch } from './SettingsSearch.jsx';
+import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
 import {
@@ -45,19 +51,14 @@ import {
   allArchivedSessionsSelected,
   archivedSessionKey,
   archivedSessionTarget,
+  groupArchivedSessions,
   removeArchivedSessionsByKey,
+  retainArchivedSessionSelection,
   selectedArchivedSessions,
   shouldToggleArchivedSessionRow,
   toggleAllArchivedSessionSelection,
 } from '../lib/archivedSessions.js';
 import { formatUsageTokens, normalizeUsageStats, usageDataNote } from '../lib/usageStats.js';
-import {
-  NO_FEEDBACK_SESSION_KEY,
-  buildDesktopFeedbackPayload,
-  feedbackSessionKey,
-  normalizeDesktopFeedbackSessions,
-  selectedFeedbackSessionFromKey,
-} from '../lib/desktopFeedback.js';
 import {
   hookActionState,
   hookEmptyState,
@@ -96,7 +97,6 @@ import {
   waitForRemoteWebMode,
 } from '../lib/remoteWeb.js';
 
-const DEFAULT_UPGRADE_SERVICE_URL = 'http://2017studio.imwork.net:82/aupdate/';
 const FONT_SIZE_OPTIONS = [
   { key: 'small', label: '小' },
   { key: 'medium', label: '中' },
@@ -132,12 +132,16 @@ export function SettingsPage({
   onModelProfileUpdated,
   onPermissionModeChanged,
   onDesktopNotificationsChanged,
+  onCheckUpdates,
   onReplayGuidedTour,
   initialNavKey = 'general',
   fontSize = 'medium',
   onThemeChange,
   onColorThemeChange,
+  themeDownloads,
   onFontSizeChange = () => {},
+  sidebarSessionTime = true,
+  onSidebarSessionTimeChange = () => {},
 }) {
   const {
     theme,
@@ -152,8 +156,49 @@ export function SettingsPage({
   );
   const [show, setShow] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const { i18n } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [composing, setComposing] = useState(false);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchNavigation, setSearchNavigation] = useState(0);
+  const contentRef = useRef(null);
+  const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
+  const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
+  const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
   const closeTimerRef = useRef(null);
   const activeNavKey = SETTINGS_NAV_ITEMS[activeNav]?.key || 'general';
+
+  useEffect(() => {
+    if (composing) return undefined;
+    const timer = setTimeout(() => { setSearchTerm(searchQuery); setSearchIndex(0); }, 180);
+    return () => clearTimeout(timer);
+  }, [searchQuery, composing]);
+  useEffect(() => {
+    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section));
+  }, [selectedResult]);
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root || !selectedResult || selectedResult.section !== activeNavKey) return undefined;
+    let marked;
+    let scrolled = false;
+    const locate = () => {
+      const target = locateSetting(root, selectedResult);
+      if (!target || target === marked) return;
+      marked?.classList.remove('ace-settings-search-match');
+      marked = target;
+      target.classList.add('ace-settings-search-match');
+      if (!scrolled) {
+        const offset = target.getBoundingClientRect().top - root.getBoundingClientRect().top;
+        root.scrollTop += offset - 36;
+        scrolled = true;
+      }
+    };
+    locate();
+    const observer = new MutationObserver(locate);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => { observer.disconnect(); marked?.classList.remove('ace-settings-search-match'); };
+  }, [selectedResult, activeNavKey, searchNavigation]);
 
   useEffect(() => { requestAnimationFrame(() => setShow(true)); }, []);
   useEffect(() => {
@@ -189,15 +234,59 @@ export function SettingsPage({
         data-settings-window="true"
         data-expanded={expanded ? 'true' : 'false'}
         className={clsx(
-          'ace-settings-panel flex flex-col overflow-hidden',
+          'ace-settings-panel flex overflow-hidden',
           show ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-2 scale-[0.985]',
         )}
       >
-        <div className="h-10 px-3 flex items-center gap-2 bg-surface border-b border-border shrink-0 select-none">
-          <span id="settings-window-title" className="flex-1 min-w-0 text-[15px] font-semibold truncate">
-            设置
-          </span>
-          <div className="flex items-center gap-1 shrink-0">
+        <span id="settings-window-title" className="sr-only">设置</span>
+        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+          <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
+            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
+          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
+            const headingId = `settings-nav-group-${group.key}`;
+            return (
+              <div
+                key={group.key}
+                role="group"
+                aria-labelledby={headingId}
+              >
+                <div
+                  id={headingId}
+                  className={clsx(
+                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
+                    groupIndex === 0 ? 'pt-0' : 'pt-2',
+                  )}
+                >
+                  {group.label}
+                </div>
+                {group.items.map((item) => {
+                  const itemIndex = settingsNavIndexForKey(item.key);
+                  const active = activeNav === itemIndex;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      aria-current={active ? 'page' : undefined}
+                      aria-label={item.label}
+                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+                      className={clsx(
+                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
+                        active
+                          ? 'text-fg font-semibold'
+                          : 'text-fg-2',
+                      )}
+                    >
+                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
+        <div className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col">
+          <div className="ace-settings-window-actions flex items-center gap-1 select-none">
             <button
               type="button"
               title={expanded ? '还原' : '展开'}
@@ -218,53 +307,7 @@ export function SettingsPage({
               <VsIcon name="close" size={15} />
             </button>
           </div>
-        </div>
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-        <nav className="w-12 sm:w-[176px] bg-surface-alt border-r border-border py-2 overflow-y-auto shrink-0 select-none">
-          {SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
-            const headingId = `settings-nav-group-${group.key}`;
-            return (
-              <div
-                key={group.key}
-                role="group"
-                aria-labelledby={headingId}
-              >
-                <div
-                  id={headingId}
-                  className={clsx(
-                    'sr-only sm:not-sr-only sm:block sm:px-3 sm:pb-1 text-[11px] font-medium text-fg-mute opacity-75',
-                    groupIndex === 0 ? 'pt-0' : 'pt-2',
-                  )}
-                >
-                  {group.label}
-                </div>
-                {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key);
-                  const active = activeNav === itemIndex;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
-                      onClick={() => setActiveNav(itemIndex)}
-                      className={clsx(
-                        'w-full min-h-8 px-0 sm:px-3 py-1 text-[13px] transition border-l-[3px] flex items-center justify-center sm:justify-start gap-2 text-left',
-                        active
-                          ? 'text-accent font-semibold bg-accent-bg border-accent'
-                          : 'text-fg hover:bg-surface-hi border-transparent',
-                      )}
-                    >
-                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
-                      <span className="hidden sm:inline truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </nav>
-        <div className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
+        <div ref={contentRef} className="ace-settings-content flex-1 min-w-0 overflow-y-auto px-4 py-3 sm:px-6 sm:py-5">
           {activeNavKey === 'general' && (
             <SectionGeneral
               health={health}
@@ -280,11 +323,14 @@ export function SettingsPage({
               setTheme={setTheme}
               colorTheme={colorTheme}
               setColorTheme={setColorTheme}
+              themeDownloads={themeDownloads}
               fontSize={fontSize}
               onFontSizeChange={onFontSizeChange}
+              sidebarSessionTime={sidebarSessionTime}
+              onSidebarSessionTimeChange={onSidebarSessionTimeChange}
             />
           )}
-          {activeNavKey === 'config' && <SectionConfig />}
+          {activeNavKey === 'config' && <SettingsConfigSection />}
           {activeNavKey === 'personalization' && <SectionPersonalization />}
           {activeNavKey === 'skills' && <SectionSkills />}
           {activeNavKey === 'mcp' && <SectionMCP />}
@@ -292,11 +338,11 @@ export function SettingsPage({
           {activeNavKey === 'models' && (
             <SectionModel onModelProfileUpdated={onModelProfileUpdated} />
           )}
-          {activeNavKey === 'tools' && <SectionTools />}
+          {activeNavKey === 'tools' && <SectionTools onCheckUpdates={onCheckUpdates} />}
           {activeNavKey === 'hooks' && <SectionHooks />}
           {activeNavKey === 'archived' && <SectionArchived />}
           {activeNavKey === 'usage' && <SectionUsage />}
-          {activeNavKey === 'feedback' && <SectionFeedback />}
+          {activeNavKey === 'feedback' && <FeedbackForm />}
           {activeNavKey === 'about' && <SectionAbout health={health} />}
         </div>
         </div>
@@ -1160,8 +1206,11 @@ function SectionAppearance({
   setTheme,
   colorTheme,
   setColorTheme,
+  themeDownloads,
   fontSize,
   onFontSizeChange,
+  sidebarSessionTime,
+  onSidebarSessionTimeChange,
 }) {
   return (
     <>
@@ -1169,32 +1218,9 @@ function SectionAppearance({
 
       <div className="text-[14px] font-semibold mb-1">主题</div>
       <p className="text-[12px] text-fg-mute mb-3">选择界面的主色风格</p>
-      <div className="grid grid-cols-2 gap-3 max-w-md">
-        {COLOR_THEME_OPTIONS.map((opt) => {
-          const active = colorTheme === opt.key;
-          return (
-            <button
-              key={opt.key}
-              type="button"
-              aria-pressed={active}
-              onClick={() => setColorTheme(opt.key)}
-              className={clsx(
-                'relative p-3 rounded-lg border text-left transition',
-                active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
-              )}
-            >
-              <div className={clsx('flex gap-1 mb-2', `ace-theme-preview-${opt.key}`)}>
-                <span className="ace-theme-preview-bg w-6 h-6 rounded border border-border" />
-                <span className="ace-theme-preview-surface w-6 h-6 rounded border border-border" />
-                <span className="ace-theme-preview-accent w-6 h-6 rounded border border-border" />
-              </div>
-              <div className="text-[13px] font-semibold">{opt.label}</div>
-              {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
-            </button>
-          );
-        })}
-      </div>
+      <ThemeCards options={COLOR_THEME_OPTIONS} selected={colorTheme} onSelect={setColorTheme} downloads={themeDownloads} />
 
+      {colorTheme !== EVA_THEME_ID && <>
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
@@ -1206,6 +1232,7 @@ function SectionAppearance({
           onChange={(enabled) => setTheme(enabled ? 'dark' : 'light')}
         />
       </div>
+      </>}
 
       <div className="h-px bg-border my-5" />
       <div className="text-[14px] font-semibold mb-1">字体大小</div>
@@ -1229,6 +1256,18 @@ function SectionAppearance({
             </button>
           );
         })}
+      </div>
+      <div className="h-px bg-border my-5" />
+      <div className="text-[14px] font-semibold mb-1">侧边栏</div>
+      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div>
+          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
+        </div>
+        <Toggle
+          on={sidebarSessionTime}
+          onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
       </div>
     </>
   );
@@ -1289,226 +1328,6 @@ function SectionAbout({ health }) {
             </div>
           )}
         </div>
-      </div>
-    </>
-  );
-}
-
-function SectionConfig() {
-  const [upgradeUrl, setUpgradeUrl] = useState(DEFAULT_UPGRADE_SERVICE_URL);
-  const [upgradeLoading, setUpgradeLoading] = useState(true);
-  const [upgradeSaving, setUpgradeSaving] = useState(false);
-  const [upgradeSaved, setUpgradeSaved] = useState(false);
-  const [upgradeError, setUpgradeError] = useState('');
-  const lastSavedUpgradeUrlRef = useRef(DEFAULT_UPGRADE_SERVICE_URL);
-  const [depPython, setDepPython] = useState(true);
-  const [depNode, setDepNode] = useState(true);
-  const [depCsharp, setDepCsharp] = useState(false);
-  const [diagRunning, setDiagRunning] = useState(false);
-  const [resetRunning, setResetRunning] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setUpgradeLoading(true);
-    setUpgradeError('');
-    api.getUpgradeConfig()
-      .then((cfg) => {
-        if (!cancelled) {
-          const loadedUrl = cfg?.base_url || DEFAULT_UPGRADE_SERVICE_URL;
-          lastSavedUpgradeUrlRef.current = loadedUrl;
-          setUpgradeUrl(loadedUrl);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setUpgradeError(e?.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setUpgradeLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const saveUpgradeUrl = async (candidate = upgradeUrl) => {
-    if (upgradeSaving || upgradeLoading) return false;
-    const baseUrl = candidate.trim();
-    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-      setUpgradeError('升级服务 URL 必须使用 http 或 https');
-      return false;
-    }
-    if (baseUrl === lastSavedUpgradeUrlRef.current) {
-      setUpgradeUrl(baseUrl);
-      return true;
-    }
-    setUpgradeSaving(true);
-    setUpgradeSaved(false);
-    setUpgradeError('');
-    try {
-      const saved = await api.setUpgradeConfig({ base_url: baseUrl });
-      const savedUrl = saved?.base_url || baseUrl;
-      lastSavedUpgradeUrlRef.current = savedUrl;
-      setUpgradeUrl(savedUrl);
-      setUpgradeSaved(true);
-      setTimeout(() => setUpgradeSaved(false), 1500);
-      return true;
-    } catch (e) {
-      const message = e?.message || String(e);
-      setUpgradeError(message);
-      toast({ kind: 'err', text: message });
-      return false;
-    } finally {
-      setUpgradeSaving(false);
-    }
-  };
-
-  const runDiag = () => {
-    setDiagRunning(true);
-    setTimeout(() => {
-      setDiagRunning(false);
-      toast({ kind: 'ok', text: '诊断完成(占位)' });
-    }, 1600);
-  };
-  const runReset = () => {
-    setResetRunning(true);
-    setTimeout(() => {
-      setResetRunning(false);
-      toast({ kind: 'ok', text: '重置完成(占位)' });
-    }, 2400);
-  };
-
-  const dependencies = [
-    { key: 'python', label: 'Python 工具', desc: 'uv / ruff / mypy 等',     checked: depPython, toggle: () => setDepPython((v) => !v) },
-    { key: 'node',   label: 'Node.js 工具', desc: 'pnpm / npm / tsx 等',     checked: depNode,   toggle: () => setDepNode((v) => !v) },
-    { key: 'csharp', label: 'C# 工具',     desc: 'dotnet SDK / Roslyn 等',  checked: depCsharp, toggle: () => setDepCsharp((v) => !v) },
-  ];
-
-  return (
-    <>
-      <h2 className="text-xl font-bold mb-5">配置</h2>
-
-      <div className="text-[14px] font-semibold mb-1">升级服务</div>
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-5">
-        <label htmlFor="upgrade-service-url" className="text-[13px] font-medium mb-2 block">
-          升级服务 URL
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="upgrade-service-url"
-            type="url"
-            value={upgradeUrl}
-            onChange={(e) => {
-              setUpgradeUrl(e.target.value);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-            }}
-            onBlur={() => { void saveUpgradeUrl(); }}
-            disabled={upgradeLoading || upgradeSaving}
-            spellCheck={false}
-            className={clsx(
-              'flex-1 min-w-0 h-8 px-2.5 rounded-md border bg-bg text-fg text-[12px] outline-none transition',
-              upgradeError ? 'border-danger' : 'border-border focus:border-accent',
-            )}
-            placeholder={DEFAULT_UPGRADE_SERVICE_URL}
-          />
-          <button
-            type="button"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              setUpgradeUrl(DEFAULT_UPGRADE_SERVICE_URL);
-              setUpgradeSaved(false);
-              setUpgradeError('');
-              void saveUpgradeUrl(DEFAULT_UPGRADE_SERVICE_URL);
-            }}
-            disabled={upgradeLoading || upgradeSaving}
-            className="shrink-0 px-3 py-1.5 rounded-md text-[12px] border border-border text-fg-2 hover:bg-surface-hi disabled:opacity-50 transition"
-          >
-            默认
-          </button>
-        </div>
-        {upgradeError && <div className="mt-2 text-[12px] text-danger">{upgradeError}</div>}
-        {!upgradeError && (upgradeSaving || upgradeSaved) && (
-          <div className="mt-2 text-[12px] text-fg-mute" aria-live="polite">
-            {upgradeSaving ? '保存中...' : '已保存'}
-          </div>
-        )}
-      </div>
-
-      <div className="text-[14px] font-semibold mb-1">工作空间依赖项</div>
-      <p className="text-[12px] text-fg-mute mb-3">管理 ACECode 安装并提供给 Agent 使用的开发工具</p>
-
-      {/* 依赖项 checkbox 组 */}
-      <div className="rounded-md bg-surface border border-border px-3.5 py-3 mb-2">
-        <div className="text-[13px] font-medium mb-0.5">ACECode 依赖项</div>
-        <div className="text-[11px] text-fg-mute mb-2.5">选择捆绑安装的语言工具链</div>
-        <div className="space-y-0.5">
-          {dependencies.map((dep) => (
-            <button
-              key={dep.key}
-              type="button"
-              onClick={dep.toggle}
-              aria-checked={dep.checked}
-              role="checkbox"
-              className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded text-left hover:bg-surface-hi transition"
-            >
-              <span
-                className={clsx(
-                  'w-[18px] h-[18px] rounded flex items-center justify-center text-white text-[11px] font-bold leading-none transition shrink-0',
-                  dep.checked ? 'bg-accent border-2 border-accent' : 'border-2 border-border bg-transparent',
-                )}
-              >
-                {dep.checked && <span>✓</span>}
-              </span>
-              <span className="flex-1 min-w-0">
-                <span className="text-[13px] font-medium block">{dep.label}</span>
-                <span className="text-[11px] text-fg-mute block">{dep.desc}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="h-px bg-border my-5" />
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">诊断 ACECode 工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">检查当前捆绑包并记录诊断日志</div>
-        </div>
-        <button
-          type="button"
-          onClick={runDiag}
-          disabled={diagRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
-        >
-          {diagRunning ? (
-            <>
-              <span className="ace-spinner" style={{ width: 12, height: 12 }} />
-              诊断中…
-            </>
-          ) : '诊断'}
-        </button>
-      </div>
-
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-        <div className="min-w-0 pr-3">
-          <div className="text-[13px] font-medium">重置并重装工作空间</div>
-          <div className="text-[11px] text-fg-mute mt-0.5">删除本地捆绑包,重新下载后再加载工具</div>
-        </div>
-        <button
-          type="button"
-          onClick={runReset}
-          disabled={resetRunning}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 transition disabled:opacity-60"
-        >
-          {resetRunning ? (
-            <>
-              <span
-                className="inline-block w-3 h-3 rounded-full border-2 border-danger border-t-transparent"
-                style={{ animation: 'ace-spin 0.8s linear infinite' }}
-              />
-              重置中…
-            </>
-          ) : '重新安装'}
-        </button>
       </div>
     </>
   );
@@ -2361,7 +2180,7 @@ function SectionConnectors() {
               className="rounded-lg border border-border bg-surface px-4 py-3"
             >
               <div className="flex items-start gap-3">
-                <div className="h-9 w-9 rounded-md border border-border bg-surface-alt flex items-center justify-center text-fg-2 shrink-0">
+                <div data-settings-surface="true" className="h-9 w-9 rounded-md border border-border bg-surface-alt flex items-center justify-center text-fg-2 shrink-0">
                   <VsIcon name="extension" size={18} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -2400,7 +2219,7 @@ function SectionConnectors() {
 
 // ─── 工具 ──────────────────────────────────────────────────────────────────
 
-function SectionTools() {
+function SectionTools({ onCheckUpdates }) {
   const nativeBrowserAvailable = typeof globalThis?.aceDesktop_agentBrowserGetState === 'function';
 
   return (
@@ -2413,7 +2232,7 @@ function SectionTools() {
       </p>
 
       <div className="flex items-center gap-3 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
-        <div className="w-10 h-10 rounded-md bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
+        <div data-settings-surface="true" className="w-10 h-10 rounded-md bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
           <VsIcon name="globe" size={20} />
         </div>
         <div className="flex-1 min-w-0">
@@ -2427,7 +2246,7 @@ function SectionTools() {
         </span>
       </div>
 
-      <ImageGenerationSettings />
+      <ImageGenerationSettings onCheckUpdates={onCheckUpdates} />
     </>
   );
 }
@@ -2606,9 +2425,14 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
             {hook.timeoutSeconds > 0 && <span>超时: {hook.timeoutSeconds}s</span>}
           </div>
           {commandText && (
-            <div className="mt-2 rounded-md border border-border bg-code-bg px-2.5 py-1.5 font-mono text-[11px] text-code-fg break-all">
-              {commandText}
-            </div>
+            <details className="mt-2">
+              <summary className="w-fit cursor-pointer select-none text-[11px] text-fg-2 hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
+                钩子代码
+              </summary>
+              <pre tabIndex={0} className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-black px-3 py-2 font-mono text-[11px] leading-relaxed text-code-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent">
+                <code>{commandText}</code>
+              </pre>
+            </details>
           )}
           {hook.statusMessage && (
             <div className="mt-1 text-[11px] text-fg-mute">状态消息: {hook.statusMessage}</div>
@@ -2686,6 +2510,10 @@ function HookBadge({ hook }) {
 // ─── 已归档会话 ────────────────────────────────────────────────────────────
 function SectionArchived() {
   const [list, setList] = useState([]);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [search, setSearch] = useState('');
+  const [workspaceKey, setWorkspaceKey] = useState('');
+  const [sortOrder, setSortOrder] = useState('newest');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
@@ -2711,7 +2539,12 @@ function SectionArchived() {
             }));
           }
         }
-        if (!cancelled) setList(sessions);
+        if (!cancelled) {
+          setList(sessions);
+          setWorkspaces(groupArchivedSessions(sessions)
+            .map(({ key, name, path }) => ({ key, name, path }))
+            .sort((a, b) => a.name.localeCompare(b.name)));
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message || String(e));
@@ -2722,13 +2555,29 @@ function SectionArchived() {
     return () => { cancelled = true; };
   }, []);
 
+  const groups = useMemo(
+    () => groupArchivedSessions(list, { query: search, workspaceKey, sortOrder }),
+    [list, search, workspaceKey, sortOrder],
+  );
+  const visibleItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  const workspaceOptions = useMemo(() => workspaces.map((workspace) => ({
+    ...workspace,
+    label: workspaces.some((other) => other.key !== workspace.key && other.name === workspace.name)
+      ? `${workspace.name} · ${workspace.path || workspace.key}`
+      : workspace.name,
+  })), [workspaces]);
+
+  useEffect(() => {
+    setSelectedKeys((previous) => retainArchivedSessionSelection(visibleItems, previous));
+  }, [visibleItems]);
+
   const selectedItems = useMemo(
-    () => selectedArchivedSessions(list, selectedKeys),
-    [list, selectedKeys],
+    () => selectedArchivedSessions(visibleItems, selectedKeys),
+    [visibleItems, selectedKeys],
   );
   const allSelected = useMemo(
-    () => allArchivedSessionsSelected(list, selectedKeys),
-    [list, selectedKeys],
+    () => allArchivedSessionsSelected(visibleItems, selectedKeys),
+    [visibleItems, selectedKeys],
   );
   const operationBusy = unarchivingKeys.size > 0 || deletingKeys.size > 0;
 
@@ -2743,7 +2592,7 @@ function SectionArchived() {
   const toggleAllSelected = () => {
     if (operationBusy) return;
     setSelectedKeys((previous) => (
-      toggleAllArchivedSessionSelection(list, previous)
+      toggleAllArchivedSessionSelection(visibleItems, previous)
     ));
   };
 
@@ -2926,10 +2775,82 @@ function SectionArchived() {
 
   return (
     <>
-      <h2 className="text-xl font-bold mb-5">已归档会话</h2>
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold mb-2">已归档会话</h2>
+          <p className="text-[12px] text-fg-mute">已归档的会话不会出现在侧栏,可随时取消归档恢复</p>
+        </div>
+        <div data-archived-batch-actions className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={toggleAllSelected}
+            disabled={visibleItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {allSelected ? '全不选' : '全选'}
+          </button>
+          <button
+            type="button"
+            onClick={unarchiveSelected}
+            disabled={selectedItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            取消选中会话的归档
+          </button>
+          <button
+            type="button"
+            onClick={purgeSelected}
+            disabled={selectedItems.length === 0 || operationBusy}
+            className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            删除选中会话
+          </button>
+        </div>
+      </div>
 
-      <div className="text-[14px] font-semibold mb-1">归档列表</div>
-      <p className="text-[12px] text-fg-mute mb-3">已归档的会话不会出现在侧栏,可随时取消归档恢复</p>
+      <div data-archived-filters className="flex flex-wrap items-center gap-2.5 mb-6">
+        <label data-settings-control className="flex min-w-0 grow-[2] basis-60 items-center gap-2 rounded-md border border-border bg-surface px-3 focus-within:border-accent transition">
+          <VsIcon name="search" size={16} className="shrink-0 text-fg-mute" />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索已归档会话"
+            aria-label="搜索已归档会话"
+            className="h-9 w-full min-w-0 bg-transparent text-[13px] text-fg placeholder:text-fg-mute outline-none"
+          />
+        </label>
+        <div className="flex min-w-0 flex-1 basis-80 gap-2.5">
+          <label className="relative flex min-w-0 flex-1 items-center">
+            <VsIcon name="list" size={15} className="pointer-events-none absolute left-3 text-fg-mute" />
+            <select
+              value={sortOrder}
+              onChange={(event) => setSortOrder(event.target.value)}
+              aria-label="排序方式"
+              className="h-9 w-full min-w-0 appearance-none pl-9 pr-8 text-[12px] rounded-md border border-border bg-surface text-fg outline-none focus:border-accent transition"
+            >
+              <option value="newest">最近更新</option>
+              <option value="oldest">最早更新</option>
+            </select>
+            <VsIcon name="expandDown" size={12} className="pointer-events-none absolute right-3 text-fg-mute" />
+          </label>
+          <label className="relative flex min-w-0 flex-1 items-center">
+            <VsIcon name="folder" size={15} className="pointer-events-none absolute left-3 text-fg-mute" />
+            <select
+              value={workspaceKey}
+              onChange={(event) => setWorkspaceKey(event.target.value)}
+              aria-label="选择工作区"
+              className="h-9 w-full min-w-0 appearance-none truncate pl-9 pr-8 text-[12px] rounded-md border border-border bg-surface text-fg outline-none focus:border-accent transition"
+            >
+              <option value="">所有工作区</option>
+              {workspaceOptions.map((workspace) => (
+                <option key={workspace.key} value={workspace.key}>{workspace.label}</option>
+              ))}
+            </select>
+            <VsIcon name="expandDown" size={12} className="pointer-events-none absolute right-3 text-fg-mute" />
+          </label>
+        </div>
+      </div>
 
       {loading ? (
         <div className="px-3.5 py-8 rounded-md bg-surface border border-border text-[12px] text-fg-mute text-center">
@@ -2943,93 +2864,87 @@ function SectionArchived() {
         <div className="px-3.5 py-8 rounded-md bg-surface border border-border text-[12px] text-fg-mute text-center">
           暂无已归档会话
         </div>
+      ) : groups.length === 0 ? (
+        <div className="px-3.5 py-8 text-[12px] text-fg-mute text-center" role="status">
+          没有匹配的已归档会话
+        </div>
       ) : (
-        <>
-          {list.map((item) => {
-            const target = archivedSessionTarget(item);
-            const title = sessionDisplayTitle(item, item.name || '');
-            const selected = selectedKeys.has(target.key);
-            const unarchiving = unarchivingKeys.has(target.key);
-            const deleting = deletingKeys.has(target.key);
-            const busy = unarchiving || deleting;
-            return (
-              <div
-                key={target.key || item.id}
-                onClick={(event) => {
-                  if (shouldToggleArchivedSessionRow(event.target)) toggleSelected(item);
-                }}
-                className={clsx(
-                  'flex items-center gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 transition',
-                  busy
-                    ? 'cursor-wait opacity-60'
-                    : 'cursor-pointer hover:bg-surface-hi',
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  disabled={busy}
-                  onChange={() => toggleSelected(item)}
-                  aria-label={`选择会话 ${title || '未命名会话'}`}
-                  className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium truncate">{title}</div>
-                  <div className="text-[11px] text-fg-mute mt-0.5 truncate">
-                    {relativeTime(item.updated_at || item.created_at)} · {item.workspaceName || item.cwd || item.workspace_hash || 'workspace'}
-                  </div>
-                </div>
-                <div className="shrink-0 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => unarchive(item)}
-                    disabled={busy}
-                    className="px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
-                  >
-                    {unarchiving ? '取消中' : '取消归档'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => purgeOne(item)}
-                    disabled={busy}
-                    className="px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-60"
-                  >
-                    {deleting ? '删除中' : '彻底删除'}
-                  </button>
-                </div>
+        <div className="space-y-6">
+          {groups.map((group) => (
+            <section key={group.key} aria-label={group.name}>
+              <div className="mb-2.5 flex min-w-0 items-center gap-2">
+                <VsIcon name="folder" size={17} className="shrink-0 text-fg-2" />
+                <h3 className="min-w-0 truncate text-[14px] font-semibold" title={group.path || group.key}>
+                  {workspaceOptions.find((workspace) => workspace.key === group.key)?.label || group.name}
+                </h3>
+                <span className="ml-auto shrink-0 text-[12px] text-fg-mute">{formatCount(group.items.length, 'sessions')}</span>
               </div>
-            );
-          })}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleAllSelected}
-              disabled={operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {allSelected ? '全不选' : '全选'}
-            </button>
-            <button
-              type="button"
-              onClick={unarchiveSelected}
-              disabled={selectedItems.length === 0 || operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              取消选中会话的归档
-            </button>
-            <button
-              type="button"
-              onClick={purgeSelected}
-              disabled={selectedItems.length === 0 || operationBusy}
-              className="inline-flex w-fit items-center justify-center px-3 py-1 rounded-md text-[12px] text-danger bg-danger-bg hover:opacity-80 border border-danger/40 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              删除选中会话
-            </button>
-          </div>
-        </>
+              <ul className="overflow-hidden rounded-lg border border-border divide-y divide-border">
+                {group.items.map((item) => {
+                  const target = archivedSessionTarget(item);
+                  const title = sessionDisplayTitle(item, item.name || '');
+                  const selected = selectedKeys.has(target.key);
+                  const unarchiving = unarchivingKeys.has(target.key);
+                  const deleting = deletingKeys.has(target.key);
+                  const busy = unarchiving || deleting;
+                  return (
+                    <li
+                      key={target.key || item.id}
+                      onClick={(event) => {
+                        if (shouldToggleArchivedSessionRow(event.target)) toggleSelected(item);
+                      }}
+                      className={clsx(
+                        'flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-3 transition',
+                        selected ? 'bg-accent-bg' : 'bg-surface',
+                        busy
+                          ? 'cursor-wait opacity-60'
+                          : 'cursor-pointer hover:bg-surface-hi',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={busy}
+                        onChange={() => toggleSelected(item)}
+                        aria-label={`选择会话 ${title || '未命名会话'}`}
+                        className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
+                      />
+                      <div className="min-w-0 flex-1 basis-32">
+                        <div className="text-[13px] font-medium truncate" title={title}>{title}</div>
+                        <div className="text-[11px] text-fg-mute mt-0.5 truncate">
+                          {relativeTime(item.updated_at || item.created_at)}
+                        </div>
+                      </div>
+                      <div className="ml-auto shrink-0 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => purgeOne(item)}
+                          disabled={busy}
+                          title="彻底删除"
+                          aria-label={`彻底删除会话 ${title || '未命名会话'}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-mute hover:text-danger hover:bg-danger-bg transition disabled:opacity-60"
+                        >
+                          {deleting ? <span className="ace-spinner" /> : <VsIcon name="delete" size={16} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => unarchive(item)}
+                          disabled={busy}
+                          className="px-3 py-1 rounded-md text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border transition disabled:opacity-60"
+                        >
+                          {unarchiving ? '取消中' : '取消归档'}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
       )}
       {purgeConfirmation && (
-        <Modal onClose={() => setPurgeConfirmation(null)} width={440}>
+        <Modal onClose={() => setPurgeConfirmation(null)} width={440} layerClassName="z-[310]">
           {({ close }) => (
             <div className="p-4">
               <div className="text-[14px] font-semibold mb-2">
@@ -3295,190 +3210,6 @@ function SectionUsage() {
           </div>
         </>
       )}
-    </>
-  );
-}
-
-// ─── 问题反馈 ──────────────────────────────────────────────────────────────
-
-function feedbackSessionOptionLabel(item) {
-  const title = sessionDisplayTitle(item, item?.title || item?.summary || item?.id || '');
-  const when = relativeTime(item?.updated_at || item?.created_at);
-  const workspace = item?.workspaceName || item?.cwd || item?.workspace_hash || '';
-  return [title, when, workspace].filter(Boolean).join(' · ');
-}
-
-function SectionFeedback() {
-  const [feedbackText, setFeedbackText] = useState('');
-  const [sessionsRaw, setSessionsRaw] = useState(null);
-  const [selectedKey, setSelectedKey] = useState(NO_FEEDBACK_SESSION_KEY);
-  const [loadingSessions, setLoadingSessions] = useState(true);
-  const [sessionsError, setSessionsError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [status, setStatus] = useState(null);
-
-  const sessions = useMemo(
-    () => normalizeDesktopFeedbackSessions(sessionsRaw || {}),
-    [sessionsRaw],
-  );
-  const selectedSession = useMemo(
-    () => selectedFeedbackSessionFromKey(sessions, selectedKey),
-    [sessions, selectedKey],
-  );
-
-  const loadSessions = useCallback(() => {
-    let cancelled = false;
-    setLoadingSessions(true);
-    setSessionsError('');
-    api.listDesktopFeedbackSessions(20)
-      .then((data) => {
-        if (!cancelled) setSessionsRaw(data || {});
-      })
-      .catch((e) => {
-        if (!cancelled) setSessionsError(e?.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingSessions(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => loadSessions(), [loadSessions]);
-
-  const submit = async () => {
-    if (submitting) return;
-    setSubmitting(true);
-    setStatus(null);
-    try {
-      const payload = buildDesktopFeedbackPayload({
-        feedbackText,
-        selectedSession,
-      });
-      const result = await api.submitDesktopFeedback(payload);
-      const filename = result?.package_filename || 'feedback package';
-      setStatus({
-        kind: 'ok',
-        text: `反馈已上传:${filename}`,
-      });
-      toast({ kind: 'ok', text: '问题反馈已上传' });
-      setFeedbackText('');
-      setSelectedKey(NO_FEEDBACK_SESSION_KEY);
-    } catch (e) {
-      const body = e?.body && typeof e.body === 'object' ? e.body : {};
-      const message = lookupErrorMessage(e?.code, body.message || e?.message || String(e));
-      setStatus({
-        kind: 'err',
-        text: `上传失败:${message}`,
-        packagePath: body.package_path || '',
-      });
-      toast({ kind: 'err', text: '问题反馈上传失败' });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <>
-      <h2 className="text-xl font-bold mb-5">问题反馈</h2>
-
-      <div className="rounded-md bg-surface border border-border overflow-hidden">
-        <div className="px-4 py-3.5 border-b border-border">
-          <div className="text-[14px] font-semibold mb-1">提交反馈</div>
-          <p className="text-[12px] text-fg-mute">
-            默认附带最近的 desktop 与 daemon 日志。关联某个具体的会话记录将更有助于我们帮您排查问题。
-          </p>
-        </div>
-
-        <div className="px-4 py-4 space-y-4">
-          <label className="block">
-            <span className="block text-[12px] font-medium text-fg-2 mb-1.5">反馈内容</span>
-            <textarea
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-              rows={5}
-              placeholder="描述你遇到的问题"
-              className="w-full resize-y min-h-[112px] rounded-md bg-bg border border-border px-3 py-2 text-[13px] text-fg outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-            />
-          </label>
-
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[12px] font-medium text-fg-2">最近会话记录</span>
-              <button
-                type="button"
-                onClick={loadSessions}
-                disabled={loadingSessions || submitting}
-                className="h-6 px-2 rounded-md text-[11px] text-fg-2 bg-surface-hi hover:bg-surface-alt border border-border disabled:opacity-60 transition flex items-center gap-1"
-              >
-                {loadingSessions ? <span className="ace-spinner" /> : <RefreshIcon size={12} />}
-                刷新
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <select
-                value={selectedKey}
-                onChange={(e) => setSelectedKey(e.target.value)}
-                disabled={loadingSessions || submitting}
-                className="min-w-0 flex-1 h-8 rounded-md bg-bg border border-border px-2 text-[13px] text-fg outline-none focus:border-accent"
-              >
-                <option value={NO_FEEDBACK_SESSION_KEY}>不附带会话</option>
-                {sessions.map((item) => (
-                  <option key={feedbackSessionKey(item)} value={feedbackSessionKey(item)}>
-                    {feedbackSessionOptionLabel(item)}
-                  </option>
-                ))}
-              </select>
-              {selectedKey !== NO_FEEDBACK_SESSION_KEY && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedKey(NO_FEEDBACK_SESSION_KEY)}
-                  disabled={submitting}
-                  className="shrink-0 h-8 px-2.5 rounded-md text-[12px] border border-border bg-surface hover:bg-surface-hi disabled:opacity-60 transition"
-                >
-                  清除
-                </button>
-              )}
-            </div>
-            {sessionsError ? (
-              <div className="mt-2 text-[12px] text-danger">加载会话失败:{sessionsError}</div>
-            ) : (
-              <div className="mt-2 text-[12px] text-fg-mute">
-                {selectedSession
-                  ? `将附带:${feedbackSessionOptionLabel(selectedSession)}`
-                  : '不会附带会话数据库或会话记录。'}
-              </div>
-            )}
-          </div>
-
-          {status && (
-            <div
-              className={clsx(
-                'rounded-md border px-3 py-2 text-[12px]',
-                status.kind === 'ok'
-                  ? 'border-ok-border bg-ok-bg text-ok'
-                  : 'border-danger bg-surface text-danger',
-              )}
-            >
-              <div>{status.text}</div>
-              {status.packagePath && (
-                <div className="mt-1 text-[11px] break-all">{status.packagePath}</div>
-              )}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              onClick={submit}
-              disabled={submitting}
-              className="h-8 px-3 rounded-md text-[13px] font-medium bg-accent text-white hover:opacity-95 disabled:opacity-60 transition flex items-center gap-1.5"
-            >
-              {submitting ? <span className="ace-spinner" /> : <VsIcon name="send" size={13} />}
-              提交反馈
-            </button>
-          </div>
-        </div>
-      </div>
     </>
   );
 }

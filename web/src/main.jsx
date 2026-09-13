@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ThemeProvider } from './theme.jsx';
 import { App } from './App.jsx';
 import { MermaidPreviewHost } from './components/MermaidPreviewHost.jsx';
+import { FullscreenHeatWave } from './components/FullscreenHeatWave.jsx';
 import { installBrowserDefaultGuards } from './lib/browserDefaults.js';
 import { installMermaidRenderer } from './lib/mermaidRenderer.js';
 import { installWebappCompatFlag } from './lib/desktopShellMode.js';
@@ -33,6 +34,7 @@ createRoot(document.getElementById('root')).render(
     <ThemeProvider>
       <App />
       <MermaidPreviewHost />
+      <FullscreenHeatWave />
     </ThemeProvider>
   </StrictMode>,
 );

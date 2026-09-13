@@ -3,6 +3,7 @@
 #include "agent_loop_shell_guard.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
+#include "environment/prompt_environment.hpp"
 #include "gitinfo/git_context_collector.hpp"
 #include "utils/encoding.hpp"
 #include "utils/logger.hpp"
@@ -36,6 +37,8 @@
 #include "hooks/hook_payload.hpp"
 #include "headless/headless_mode.hpp"
 #include "pa/pa_context_budget.hpp"
+#include "pa/pa_overflow_rescue.hpp"
+#include "pa/pa_quirks.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <set>
@@ -483,6 +486,33 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     git_snapshot_cache_.reset();
 }
 
+std::string AgentLoop::write_root() const {
+    // worktree 优先:进了 worktree(自己进的,或 spawn_subagent 从父会话继承
+    // 的)边界就是 worktree;其次 LOOP 执行策略(边界 = cwd);最后父会话
+    // 透传的 write_root。三者都空 = 无边界,Yolo 维持旧的全放行语义。
+    if (session_manager_) {
+        const WorktreeSessionInfo worktree = session_manager_->active_worktree();
+        if (worktree.active()) return worktree.worktree_path;
+    }
+    if (loop_execution_policy_.active) return cwd_;
+    return inherited_write_root_;
+}
+
+std::string AgentLoop::last_turn_error() const {
+    std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+    return last_turn_error_;
+}
+
+void AgentLoop::record_turn_outcome(const std::string& turn_timing_status) {
+    int outcome = kTurnOutcomeCompleted;
+    if (turn_timing_status == "error") {
+        outcome = kTurnOutcomeError;
+    } else if (turn_timing_status == "aborted") {
+        outcome = kTurnOutcomeAborted;
+    }
+    last_turn_outcome_.store(outcome, std::memory_order_release);
+}
+
 std::set<std::string> AgentLoop::dormant_skill_names() const {
     std::set<std::string> out;
     if (!skill_usage_store_ || skill_idle_days_ <= 0 || !skill_registry_) {
@@ -519,6 +549,12 @@ void AgentLoop::dispatch_message(const std::string& role,
                                   bool is_tool,
                                   nlohmann::json metadata,
                                   nlohmann::json content_parts) {
+    if (role == "error") {
+        // 回合级错误文案的唯一收集点:provider 终止错误 / 压缩失败 / 空回复
+        // 耗尽 / hook 拦截都经这里派发,wait_subagent 报 ChildFailed 时带上。
+        std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+        last_turn_error_ = content;
+    }
     if (callbacks_.on_message) {
         callbacks_.on_message(role, content, is_tool);
     }
@@ -824,6 +860,11 @@ void AgentLoop::worker_main() {
             worker_task_kind_ = WorkerTask::Kind::Control;
         }
     }
+}
+
+bool AgentLoop::has_pending_work() {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    return busy_.load() || worker_task_active_ || !task_queue_.empty() || !priority_task_queue_.empty();
 }
 
 void AgentLoop::submit(const std::string& user_message) {
@@ -1207,13 +1248,17 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         worktree_state.worktree_path = info.worktree_path;
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
+        worktree_state.inherited = info.inherited;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -1380,6 +1425,10 @@ bool AgentLoop::run_mechanical_compact_fallback(
     // 强制至少丢掉一组:摘要已经失败了,原地不动地"成功"只会让调用方以为
     // 腾出了空间,下一轮继续撞同一堵墙。
     options.force_prune_one_group = true;
+    // 只剩当前回合时整组丢不掉,但本回合里堆着的旧工具输出还能清 —— 单回合
+    // 读了一堆大文件正是摘要请求本身也会被拒的那种场景。
+    options.clear_tool_outputs = true;
+    options.keep_recent_tool_outputs = 1;
 
     auto repair = apply_thread_repair(session_manager_, messages_, options);
     LOG_WARN("[compact-fallback] mechanical prune after summarization failure; "
@@ -1387,6 +1436,8 @@ bool AgentLoop::run_mechanical_compact_fallback(
              " pre_tokens=" + std::to_string(repair.pre_tokens) +
              " post_tokens=" + std::to_string(repair.post_tokens) +
              " pruned_groups=" + std::to_string(repair.pruned_groups) +
+             " cleared_tool_outputs=" +
+             std::to_string(repair.cleared_tool_outputs) +
              " target_tokens=" + std::to_string(options.target_tokens) +
              " reason=" + repair.reason);
     if (!repair.repaired()) {
@@ -1404,7 +1455,8 @@ bool AgentLoop::run_mechanical_compact_fallback(
     emit_transcript_system_message(
         "[智能压缩] 摘要压缩失败(" + log_truncate(summarization_error, 160) +
         "),已改为丢弃最旧的 " + std::to_string(repair.pruned_groups) +
-        " 组历史腾出空间,会话继续。",
+        " 组历史、清除 " + std::to_string(repair.cleared_tool_outputs) +
+        " 条旧工具输出腾出空间,会话继续。",
         make_compact_notice_metadata(compact_notice_id, "warning"));
     return true;
 }
@@ -2242,13 +2294,17 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         worktree_state.worktree_path = info.worktree_path;
         worktree_state.worktree_branch = info.worktree_branch;
         worktree_state.original_cwd = info.original_cwd;
+        worktree_state.inherited = info.inherited;
     }
+    const acecode::SystemPromptEnvironment prompt_environment =
+        acecode::environment::prompt_environment();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
-        active_model_can_read_images());
+        active_model_can_read_images(),
+        &prompt_environment);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -2824,6 +2880,8 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
     bool& emergency_request_profile) {
     if (!result.provider_error_seen) {
         note_pa_context_accepted(messages_with_system);
+        // 服务端收下了这次请求:PA 兜底的这一轮到此结束,后面再被拒是新一轮。
+        pa_rescue_state_ = pa::RescueState{};
         return HandleErrorResult::Proceed;
     }
 
@@ -2851,7 +2909,18 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
              " context_overflow=" +
              (context_overflow ? "true" : "false"));
 
-    if (context_overflow && !model_output_seen) {
+    bool pa_rescue_exhausted = false;
+    if (context_overflow && !model_output_seen &&
+        pa::is_context_overflow(result.provider_error_info)) {
+        // PA 特征报文走专用兜底(src/pa/pa_overflow_rescue):不设修复次数
+        // 上限,缩到底还被拒就等。下面的通用三级恢复链只服务其它 provider。
+        const HandleErrorResult rescue = run_pa_overflow_rescue(
+            result.provider_error_info, request_tokens,
+            emergency_request_profile);
+        if (rescue == HandleErrorResult::Continue) return rescue;
+        if (abort_requested_) return HandleErrorResult::Break;
+        pa_rescue_exhausted = true;
+    } else if (context_overflow && !model_output_seen) {
         // 先记账再恢复:这一轮已经撞墙了救不回来,但下一轮可以不撞。
         note_pa_context_rejection(request_tokens);
         if (recovery_stage == ContextRecoveryStage::Normal) {
@@ -2922,14 +2991,21 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
     metadata["provider_error"] = provider_error_to_json(result.provider_error_info);
     if (context_overflow) {
         metadata["thread_repair_exhausted"] =
+            pa_rescue_exhausted ||
             recovery_stage == ContextRecoveryStage::EmergencyProfile;
         metadata["partial_model_output"] = model_output_seen;
     }
+    if (pa_rescue_exhausted) metadata["pa_rescue_exhausted"] = true;
     turn_timing_status = "error";
     std::string display_message = result.provider_error_info.display_message;
-    if (context_overflow &&
-        recovery_stage == ContextRecoveryStage::EmergencyProfile &&
-        !model_output_seen) {
+    if (pa_rescue_exhausted) {
+        display_message +=
+            " 服务端在 " + std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
+            " 次等待重试后仍拒收已缩到最小的请求，本回合放弃；稍后重新发送即可"
+            "继续。";
+    } else if (context_overflow &&
+               recovery_stage == ContextRecoveryStage::EmergencyProfile &&
+               !model_output_seen) {
         display_message +=
             " Automatic thread repair and the emergency request profile were "
             "both exhausted; the fixed context or current input may exceed the "
@@ -2943,12 +3019,192 @@ AgentLoop::HandleErrorResult AgentLoop::handle_provider_error(
     return HandleErrorResult::Break;
 }
 
+bool AgentLoop::wait_for_pa_rescue_delay(int wait_ms) {
+    const int scaled = pa::scaled_rescue_wait_ms(wait_ms);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(scaled);
+    while (!abort_requested_.load()) {
+        if (std::chrono::steady_clock::now() >= deadline) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+void AgentLoop::emit_pa_rescue_wait_progress(const ProviderErrorInfo& error,
+                                             const pa::RescuePlan& plan,
+                                             int attempt,
+                                             int max_attempts,
+                                             bool waiting) {
+    // 复用 provider 层重试的展示通道:TUI 走 on_model_retry 的等待短语,Web 走
+    // model_retry 进度事件的倒计时。文案换成兜底自己的,别让用户以为是断网。
+    ProviderErrorInfo info = error;
+    info.retry_attempt = attempt;
+    info.retry_max_attempts = max_attempts;
+    info.retry_delay_ms = waiting ? pa::scaled_rescue_wait_ms(plan.wait_ms) : 0;
+    if (waiting) {
+        if (callbacks_.on_model_retry) callbacks_.on_model_retry(info);
+    } else if (callbacks_.on_model_retry_resume) {
+        callbacks_.on_model_retry_resume();
+    }
+
+    const std::int64_t now_ms = now_epoch_ms();
+    nlohmann::json payload{
+        {"phase", waiting ? "model_retry" : "model_waiting"},
+        {"label", waiting ? plan.label : std::string("正在重新发送请求")},
+        {"detail",
+         waiting ? std::string("服务端报「请求上下文过大」，按 PA 兜底策略等待后重发")
+                 : std::string{}},
+        {"started_at_ms", now_ms},
+        {"retry_attempt", attempt},
+        {"retry_delay_ms", info.retry_delay_ms},
+        {"retry_at_ms", now_ms + info.retry_delay_ms},
+        {"retry_max_attempts", max_attempts},
+    };
+    EventDispatcher::EmitOptions opts;
+    opts.buffered = true;
+    opts.coalesce_key = "agent_progress";
+    events_.emit(SessionEventKind::AgentProgress, std::move(payload), opts);
+}
+
+AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
+    const ProviderErrorInfo& error,
+    int request_tokens,
+    bool& emergency_request_profile) {
+    pa::RescueState& state = pa_rescue_state_;
+    if (!state.active) state = pa::RescueState{};
+    const int history_tokens = estimate_message_tokens(
+        recovered_provider_messages(messages_, "pa-rescue-estimate"));
+
+    // 一次调用可能连走几步:收缩腾不出空间时不重发,立刻换下一招。
+    for (;;) {
+        pa::RescueInputs inputs;
+        inputs.request_tokens = request_tokens;
+        inputs.history_tokens = history_tokens;
+        inputs.emergency_profile = emergency_request_profile;
+        const pa::RescuePlan plan = pa::next_rescue_step(state, inputs);
+        pa::advance_rescue_state(state, plan);
+        LOG_WARN("[pa-rescue] action=" + std::string(pa::to_string(plan.action)) +
+                 " request_estimated_tokens=" + std::to_string(request_tokens) +
+                 " history_estimated_tokens=" + std::to_string(history_tokens) +
+                 " same_request_retries=" +
+                 std::to_string(state.same_request_retries) +
+                 " shrink_rounds=" + std::to_string(state.shrink_rounds) +
+                 " wait_retries=" + std::to_string(state.wait_retries) +
+                 " emergency_profile=" +
+                 (emergency_request_profile ? "true" : "false") +
+                 " target_history_tokens=" +
+                 std::to_string(plan.target_history_tokens) +
+                 " wait_ms=" + std::to_string(plan.wait_ms) +
+                 " label=" + plan.label);
+        if (plan.record_rejection) note_pa_context_rejection(request_tokens);
+
+        switch (plan.action) {
+            case pa::RescueAction::RetrySameRequest:
+            case pa::RescueAction::WaitAndRetry: {
+                const bool waiting_for_recovery =
+                    plan.action == pa::RescueAction::WaitAndRetry;
+                const int attempt = waiting_for_recovery
+                    ? state.wait_retries : state.same_request_retries;
+                const int max_attempts = waiting_for_recovery
+                    ? pa::PA_RESCUE_MAX_WAIT_RETRIES
+                    : pa::PA_RESCUE_SAME_REQUEST_RETRIES;
+                if (!waiting_for_recovery && state.same_request_retries == 1) {
+                    emit_transcript_system_message(
+                        "[智能压缩] 服务端报「请求上下文过大」，先原样重发确认"
+                        "是否为瞬时故障；确认拒收后才会收缩历史。");
+                } else if (waiting_for_recovery && state.wait_retries == 1) {
+                    emit_transcript_system_message(
+                        "[智能压缩] 请求已缩到最小仍被服务端拒收；将按 5 秒起、"
+                        "最长 60 秒的间隔反复重试（最多 " +
+                        std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
+                        " 次），可随时停止。");
+                }
+                emit_pa_rescue_wait_progress(
+                    error, plan, attempt, max_attempts, true);
+                if (!wait_for_pa_rescue_delay(plan.wait_ms)) {
+                    dispatch_message("system", abort_notice_text(), false,
+                                     abort_notice_metadata());
+                    return HandleErrorResult::Break;
+                }
+                emit_pa_rescue_wait_progress(
+                    error, plan, attempt, max_attempts, false);
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::ShrinkHistory: {
+                ThreadRepairOptions options;
+                options.trigger = "repair-pa-overflow";
+                options.target_tokens = plan.target_history_tokens;
+                options.force_prune_one_group = true;
+                options.clear_tool_outputs = true;
+                options.keep_recent_tool_outputs = 1;
+                auto repair = apply_thread_repair(
+                    session_manager_, messages_, options);
+                LOG_WARN("[pa-rescue] shrink status=" +
+                         std::string(to_string(repair.status)) +
+                         " pre_tokens=" + std::to_string(repair.pre_tokens) +
+                         " post_tokens=" + std::to_string(repair.post_tokens) +
+                         " pruned_groups=" +
+                         std::to_string(repair.pruned_groups) +
+                         " cleared_tool_outputs=" +
+                         std::to_string(repair.cleared_tool_outputs) +
+                         " reason=" + repair.reason);
+                if (!repair.repaired()) {
+                    // 一点空间都没腾出来:这一轮不再提议收缩,立刻换下一招。
+                    state.shrink_exhausted = true;
+                    continue;
+                }
+                compact_generation_.fetch_add(1, std::memory_order_relaxed);
+                last_api_total_tokens_.store(0, std::memory_order_relaxed);
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                events_.emit(SessionEventKind::AgentProgress, nlohmann::json{
+                    {"phase", "context_repair"},
+                    {"label", plan.label},
+                    {"detail", repair.reason},
+                });
+                emit_transcript_system_message(
+                    "[智能压缩] 服务端拒收请求（第 " +
+                    std::to_string(state.shrink_rounds) +
+                    " 次收缩）：已丢弃最旧的 " +
+                    std::to_string(repair.pruned_groups) + " 组历史、清除 " +
+                    std::to_string(repair.cleared_tool_outputs) +
+                    " 条旧工具输出后重试。");
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::EmergencyProfile: {
+                emergency_request_profile = true;
+                if (callbacks_.on_stream_retry_reset) {
+                    callbacks_.on_stream_retry_reset();
+                }
+                events_.emit(SessionEventKind::AgentProgress, nlohmann::json{
+                    {"phase", "context_repair"},
+                    {"label", plan.label},
+                    {"detail", "去掉工具定义与注入上下文，仅保留核心工具"},
+                });
+                emit_transcript_system_message("[智能压缩] " + plan.label + "。");
+                skip_auto_compact_once_ = true;
+                return HandleErrorResult::Continue;
+            }
+            case pa::RescueAction::GiveUp:
+                LOG_WARN("[pa-rescue] giving up: " + plan.label);
+                return HandleErrorResult::Break;
+        }
+    }
+}
+
 ToolContext AgentLoop::build_tool_context(
     const ProgressEmitter& emit_progress,
     AgentLoopDoomGuard& doom_guard,
     std::mutex& doom_guard_mu) {
     ToolContext tool_ctx;
     tool_ctx.cwd = cwd_;
+    tool_ctx.write_root = write_root();
     tool_ctx.abort_flag = &abort_requested_;
     tool_ctx.session_manager = session_manager_;
     tool_ctx.skill_registry = skill_registry_;
@@ -3107,6 +3363,10 @@ bool AgentLoop::execute_tool_calls(
     // Results array indexed by original position
     std::vector<ToolResult> results(accumulated.tool_calls.size());
     std::vector<bool> result_ready(accumulated.tool_calls.size(), false);
+    // Each parallel tool writes only its own slot. Collect after joining so
+    // early delivery replacements keep the existing durable replacement audit.
+    std::vector<ToolResultReplacementRecord> delivery_replacements(
+        accumulated.tool_calls.size());
     struct DeferredTaskCompleteEnd {
         std::int64_t started_at_ms = 0;
         std::int64_t completed_at_ms = 0;
@@ -3134,14 +3394,21 @@ bool AgentLoop::execute_tool_calls(
         } catch (...) {}
     };
 
+    // boundary_root = write_root():非空即"有写边界"(worktree / LOOP / 从父
+    // 会话继承)。有边界的 Yolo 会话只豁免只读工具,写工具必须过边界校验;
+    // 无边界的 Yolo 会话维持旧行为(全部豁免)。曾经只有 LOOP 主会话有这条
+    // 边界,spawn_subagent 派生的子会话继承 Yolo 却不继承 LOOP 身份,于是在
+    // worktree 里起的子代理可以随手把改动写进主 checkout。
     auto is_cwd_validation_exempt = [this](const std::string& tool_name,
-                                           const std::string& path) {
+                                           const std::string& path,
+                                           const std::string& boundary_root) {
+        const bool bounded = !boundary_root.empty();
         if (tool_name == "file_read" || tool_name == "create_workspace" ||
-            (loop_execution_policy_.active &&
+            (bounded &&
              permissions_.mode() == PermissionMode::Yolo &&
              tools_.is_read_only(tool_name))) return true;
         if (permissions_.mode() == PermissionMode::Yolo &&
-            !permissions_.is_dangerous() && !loop_execution_policy_.active) {
+            !permissions_.is_dangerous() && !bounded) {
             return true;
         }
         if (!session_manager_) return false;
@@ -3152,16 +3419,22 @@ bool AgentLoop::execute_tool_calls(
                                      const std::string& tool_name,
                                      const std::string& path) -> std::string {
         if (path.empty() || tool_name == "bash") return {};
-        if (loop_execution_policy_.active &&
+        const std::string boundary_root = write_root();
+        if (!boundary_root.empty() &&
             permissions_.mode() == PermissionMode::Yolo &&
+            !permissions_.is_dangerous() &&
             !tools_.is_read_only(tool_name) &&
             tool_name != "create_workspace") {
-            const std::string boundary_error = PathValidator(cwd_, false).validate(path);
+            const std::string boundary_error =
+                PathValidator(boundary_root, false).validate(path);
             if (!boundary_error.empty()) {
-                return "LOOP Yolo external write blocked: " + path;
+                return "Write boundary blocked: " + path +
+                       " is outside the session write root " + boundary_root +
+                       ". Reads may go anywhere, but every write must stay inside "
+                       "the worktree / execution root.";
             }
         }
-        return is_cwd_validation_exempt(tool_name, path)
+        return is_cwd_validation_exempt(tool_name, path, boundary_root)
             ? std::string{}
             : path_validator_.validate(path);
     };
@@ -3498,6 +3771,17 @@ bool AgentLoop::execute_tool_calls(
         }
         materialize_result_attachments(result);
         mark_workspace_scratch_change(result, tool_ctx);
+        if (session_manager_) {
+            // Both ToolEnd and the following tool_result Message are sent live.
+            // Persist before either can retain a full output in replay/UI state.
+            // PostToolUse has already seen its original input; preserve hunks
+            // and other structured fields for specialized file-diff rendering.
+            if (prepare_tool_result_for_delivery(
+                    result, tc.function_name, tc.id,
+                    session_manager_->ensure_tool_results_dir()) && !tc.id.empty()) {
+                delivery_replacements[tool_index] = {tc.id, result.output};
+            }
+        }
         ensure_tool_summary(
             tc.function_name, tc.function_arguments, result);
 
@@ -3552,9 +3836,9 @@ bool AgentLoop::execute_tool_calls(
 
     // 展示层的结果行派发(tool_result 伪行 + on_tool_result 补挂 summary/
     // hunks)。从 Phase 3 前移到各执行点,让「调用行 → 结果行」成对相邻出现
-    // 而不是先挤一排调用再挤一排结果。注意:这里显示的是工具原始输出
-    // (渲染端有 3 行折叠 / 2000 行展开上限兜底);canonical 落盘仍在
-    // Phase 3 统一进行,超大输出的 budget 替换只影响落盘与模型上下文。
+    // 而不是先挤一排调用再挤一排结果。单个大结果已在 lifecycle 内落盘并
+    // 替换为文件引用,避免 live 事件与 TUI 再保留全文;结构化 hunks 保留。
+    // canonical 落盘与跨结果的 aggregate budget 仍在 Phase 3 统一进行。
     auto dispatch_tool_result_display =
         [this](const ToolCall& tc, const ToolResult& result) {
         std::string display_output = result.output;
@@ -3724,12 +4008,14 @@ bool AgentLoop::execute_tool_calls(
                 }
 
                 if (effective_tc.function_name == "bash" && command_looks_like_file_write(ctx_command)) {
-                    if (loop_execution_policy_.active &&
-                        permissions_.mode() == PermissionMode::Yolo) {
-                        const std::string loop_rejection =
-                            loop_shell_write_escape_reason(ctx_command, cwd_);
-                        if (!loop_rejection.empty()) {
-                            return ToolResult{"[Error] " + loop_rejection, false};
+                    const std::string boundary_root = write_root();
+                    if (!boundary_root.empty() &&
+                        permissions_.mode() == PermissionMode::Yolo &&
+                        !permissions_.is_dangerous()) {
+                        const std::string boundary_rejection =
+                            loop_shell_write_escape_reason(ctx_command, boundary_root);
+                        if (!boundary_rejection.empty()) {
+                            return ToolResult{"[Error] " + boundary_rejection, false};
                         }
                     }
                     const auto now = std::chrono::steady_clock::now();
@@ -3950,6 +4236,11 @@ bool AgentLoop::execute_tool_calls(
     }
 
     std::vector<ToolResultReplacementRecord> replacement_records;
+    for (size_t i = 0; i < delivery_replacements.size(); ++i) {
+        if (result_ready[i] && !delivery_replacements[i].tool_call_id.empty()) {
+            replacement_records.push_back(std::move(delivery_replacements[i]));
+        }
+    }
     if (session_manager_) {
         const std::string tool_results_dir = session_manager_->ensure_tool_results_dir();
         if (!tool_results_dir.empty()) {
@@ -3960,7 +4251,9 @@ bool AgentLoop::execute_tool_calls(
                 result_ready,
                 tool_results_dir,
                 replacement_state);
-            replacement_records = std::move(budget_result.newly_replaced);
+            for (auto& record : budget_result.newly_replaced) {
+                replacement_records.push_back(std::move(record));
+            }
         }
     }
 
@@ -4113,6 +4406,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     abort_requested_ = false;
     turn_interrupt_requested_ = false;
     busy_ = true;
+    last_turn_outcome_.store(kTurnOutcomeNone, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+        last_turn_error_.clear();
+    }
     terminate_session_after_turn_ = false;
     post_turn_actions_.clear();
     restore_goal_runtime();
@@ -4141,6 +4439,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                 {{"busy", false}, {"outcome", "error"}},
                 {{"outcome", "error"}});
             if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
+            record_turn_outcome("error");
             busy_ = false;
             events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
                 {"busy", false}, {"outcome", "error"}});
@@ -4183,6 +4482,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     ContextRecoveryStage context_recovery_stage =
         ContextRecoveryStage::Normal;
     bool emergency_request_profile = false;
+    pa_rescue_state_ = pa::RescueState{};
+    skip_auto_compact_once_ = false;
 
     const int max_iter = loop_cfg_.max_iterations;
     const bool has_max_iterations = max_iter > 0;
@@ -4407,7 +4708,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // The top of every sampling iteration covers both pre-turn and
         // post-tool follow-up compaction. A failed compact aborts this sampling
         // path without silently deleting unsummarized history.
-        if (total_iterations > 1 &&
+        // PA 兜底刚做完一步的那次重发不压缩(见 skip_auto_compact_once_);
+        // 这个标记只管紧接着的一次采样,重发成功后的下一次采样照常压缩。
+        const bool skip_auto_compact_after_rescue = skip_auto_compact_once_;
+        skip_auto_compact_once_ = false;
+        if (total_iterations > 1 && !skip_auto_compact_after_rescue &&
             context_recovery_stage == ContextRecoveryStage::Normal &&
             active_estimate_exceeds_auto_threshold()) {
             if (!maybe_run_auto_compact()) {
@@ -4672,6 +4977,12 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         LOG_WARN(stop_msg);
         turn_timing_status = "error";
         dispatch_message("system", stop_msg, false);
+        {
+            // 走的是 system 角色,dispatch_message 的 error 收集点抓不到;
+            // 子会话被 cap 截断时父会话同样要拿到原因。
+            std::lock_guard<std::mutex> lk(last_turn_error_mu_);
+            last_turn_error_ = stop_msg;
+        }
     }
 
     const bool interrupted_for_new_turn =
@@ -4728,6 +5039,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                  " uncommitted input(s) while closing turn " +
                  turn_info.active_turn_id);
     }
+    record_turn_outcome(turn_timing_status);
     busy_ = false;
     events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
         {"busy", false},
@@ -4902,6 +5214,7 @@ void AgentLoop::run_shell(std::string command) {
 
         ToolContext tool_ctx;
         tool_ctx.cwd = cwd_;
+        tool_ctx.write_root = write_root();
         tool_ctx.abort_flag = &abort_requested_;
         tool_ctx.session_manager = session_manager_;
         tool_ctx.scratch_dir = build_session_scratch_dir(cwd_, session_manager_);

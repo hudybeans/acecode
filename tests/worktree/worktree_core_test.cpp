@@ -224,3 +224,28 @@ TEST(WorktreeIncludePlan, ExpandsCollapsedDirsOnlyWhenPatternTargetsInside) {
         {"node_modules/", "dist/"}, {"*.key"});
     EXPECT_TRUE(plan_d.dirs_to_expand.empty());
 }
+
+// ---- git status 快照差(写边界事后检测)-----------------------------------
+
+// 场景:两次 `git status --porcelain` 快照,after 多出一个未跟踪文件、一个由
+// " M" 变成 "MM" 的文件、一个 rename,以及 before 里就有的脏文件。
+// 期望:只报新出现的三条,rename 取新路径,基线里已有的不报;顺序按 after。
+TEST(WorktreeStatusDiff, ReportsOnlyLinesAbsentFromBaseline) {
+    const std::vector<std::string> before = {" M src/a.cpp", "?? notes.txt"};
+    const std::vector<std::string> after = {
+        "MM src/a.cpp", "?? notes.txt", "?? electron/src/im/chat.js",
+        "R  old.txt -> new.txt"};
+    EXPECT_EQ(newly_changed_paths(before, after),
+              (std::vector<std::string>{"src/a.cpp", "electron/src/im/chat.js", "new.txt"}));
+}
+
+// 场景:快照没变 / 同一路径两条不同状态行 / 畸形短行。
+// 期望:没变返回空;同一路径只报一次;不足 "XY " + 路径 的行丢弃。
+TEST(WorktreeStatusDiff, UnchangedSnapshotIsEmptyAndPathsDedupe) {
+    const std::vector<std::string> snapshot = {" M a.txt", "?? b.txt"};
+    EXPECT_TRUE(newly_changed_paths(snapshot, snapshot).empty());
+    EXPECT_EQ(newly_changed_paths({}, {" M a.txt", "MM a.txt", "??"}),
+              (std::vector<std::string>{"a.txt"}));
+    EXPECT_EQ(porcelain_status_path("R  old.txt -> new.txt"), "new.txt");
+    EXPECT_EQ(porcelain_status_path("??"), "");
+}

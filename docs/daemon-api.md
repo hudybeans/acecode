@@ -299,6 +299,8 @@ when known.
 | GET | `/api/files/content` | read text file |
 | GET | `/api/files/blob` | read previewable binary file |
 | GET / PUT | `/api/files/editable` | read or safely save a Desktop workspace text file |
+| GET | `/api/fs/roots` | browsable roots for the Web path picker |
+| GET | `/api/fs/list` | list any absolute directory for the Web path picker |
 | GET | `/api/git/info` | git repo info for a workspace |
 | POST | `/api/git/checkout` | switch branch (stash-aware) |
 | GET | `/api/git/changes` | working tree changes vs base |
@@ -335,6 +337,12 @@ when known.
 | POST | `/api/ui/onboarding/desktop/dismiss` | dismiss the current Desktop guided-tour version |
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
+| GET | `/api/themes` | downloadable theme catalogue and local installation status |
+| GET | `/api/themes/job` | current theme download progress |
+| POST | `/api/themes/job/cancel` | cancel the current theme download |
+| GET | `/api/themes/<id>` | verified locally installed theme definition |
+| POST | `/api/themes/<id>/install` | download a theme after size/hash confirmation |
+| GET | `/api/themes/<id>/images/<kind>` | theme thumbnail or installed background |
 | GET | `/api/config/ui-locale` | read Desktop/WebUI locale preference |
 | PUT | `/api/config/ui-locale` | write Desktop/WebUI locale preference |
 | GET | `/api/config/custom-instructions` | read custom instructions |
@@ -350,6 +358,16 @@ when known.
 | PUT | `/api/config/remote-web` | enable or disable remote Web mode |
 | GET | `/api/config/upgrade` | read update service config |
 | PUT | `/api/config/upgrade` | write update service config |
+| GET / PUT | `/api/config/toolchains` | read or save Python, Node.js and C# directories |
+| POST | `/api/config/toolchains/detect` | detect installed toolchain directories again |
+| GET | `/api/console/config` | terminal configuration and launch-probe results |
+| POST | `/api/console/config/detect` | probe and save the default terminal again |
+| GET | `/api/config/data-dir` | current data directory, migration and backup status |
+| POST | `/api/config/data-dir/migrate` | copy data to an empty directory; restart required |
+| GET | `/api/config/data-dir/migration` | poll the background migration |
+| POST | `/api/config/data-dir/cleanup` | keep or delete the previous data directory |
+| POST | `/api/dialog/pick-folder` | select a folder without registering a project |
+| POST | `/api/dialog/pick-file` | select a terminal program |
 | GET | `/api/update/status` | check update availability |
 | POST | `/api/update/start` | start explicit WebUI update job |
 | GET | `/api/update/job` | read latest WebUI update job |
@@ -1443,8 +1461,12 @@ shape as `GET`.
 
 ### `POST /api/sessions/:id/fork`
 
-Copies the source session prefix through `at_message_id` into a new session and
-resumes it into the current daemon. It does not start a new turn.
+Copies a source session prefix into a new session and resumes it into the current
+daemon. For a user message, the prefix ends before `at_message_id`; its plain text
+is returned in `restored_prompt` for editing in the new session. For an assistant
+message, the prefix includes the selected message and no prompt is returned.
+It does not start a new turn. `fork_anchor_role` identifies the selected message's
+role. Empty prompt text omits `restored_prompt`; attachments are not restored.
 
 Body:
 
@@ -1460,6 +1482,8 @@ Response:
   "title": "Fork title",
   "forked_from": "source-sid",
   "fork_message_id": "msg-123",
+  "fork_anchor_role": "user",
+  "restored_prompt": "Original prompt to edit",
   "workspace_hash": "abc123",
   "cwd": "C:/repo",
   "no_workspace": false
@@ -1706,6 +1730,87 @@ encoding, BOM, and dominant line-ending style, uses the common safe-write
 path, invalidates Git snapshots, and clears the Agent file-read baseline so a
 later Agent edit must read the human-authored version first. This route is not
 registered on standalone Web daemons.
+
+### `GET /api/fs/roots`
+
+Browsable roots for the Web path picker (openspec `add-web-path-picker`). The
+picker is the browser-side replacement for the native folder and file dialogs
+that only a Desktop-launched daemon can show. It browses the daemon host's own
+filesystem, so every path below is a path on the machine running the daemon.
+
+```json
+{
+  "host": "DESKTOP-SHAO",
+  "os": "windows",
+  "home": "C:/Users/shao",
+  "roots": [
+    {"path": "C:/", "label": "Windows", "drive_type": "fixed",
+     "total_bytes": 511000000000, "free_bytes": 195000000000}
+  ],
+  "quick": [
+    {"kind": "home", "path": "C:/Users/shao"},
+    {"kind": "desktop", "path": "C:/Users/shao/Desktop"},
+    {"kind": "projects", "path": "C:/Users/shao/.acecode/workspaces"}
+  ],
+  "workspaces": [
+    {"hash": "0123456789abcdef", "name": "acecode", "path": "N:/Users/shao/acecode"}
+  ]
+}
+```
+
+`roots` lists every logical drive on Windows (`drive_type` is `fixed`,
+`removable`, `remote`, `cdrom`, or `ramdisk`; remote drives carry no label or
+capacity because probing a disconnected mapped drive can block), `/` on POSIX
+(`drive_type: "root"`), plus the direct children of `/Volumes` on macOS
+(`drive_type: "volume"`). `label`, `total_bytes`, and `free_bytes` are omitted
+when unavailable. `quick` entries of kind `desktop` and `projects` appear only
+when those directories exist. `os` is `windows`, `macos`, or `linux`. All
+paths use forward slashes; drive roots keep their trailing slash (`C:/`).
+
+### `GET /api/fs/list?path=<abs>&show_hidden=1`
+
+Lists the direct children of any absolute directory readable by the daemon
+process. Unlike `/api/files`, there is no workspace whitelist: any
+authenticated client (loopback without a token, or a remote client with a valid
+token) may browse the whole filesystem. The route is read-only and logs every
+listing with its path.
+
+```json
+{
+  "path": "C:/Users",
+  "parent": "C:/",
+  "truncated": false,
+  "entries": [
+    {"name": "shao", "path": "C:/Users/shao", "kind": "dir",
+     "modified_ms": 1783152000000, "hidden": false, "link_target": "N:/Users/shao"},
+    {"name": "desktop.ini", "path": "C:/Users/desktop.ini", "kind": "file",
+     "size": 174, "modified_ms": 1783152000000, "hidden": true}
+  ]
+}
+```
+
+- `path` is the request path after lexical normalization only (`\` becomes
+  `/`, `..` segments fold, the drive letter is upper-cased, a trailing slash is
+  dropped except on a root). Junctions and symlinks are **not** resolved:
+  browsing `C:/Users/shao` on a machine where that directory is a junction to
+  `N:/Users/shao` keeps returning `C:/Users/shao/...` paths, matching what the
+  native dialog returns so the same directory registers the same workspace
+  hash.
+- `parent` is empty when `path` is a drive or filesystem root.
+- Entries are sorted directories first, then case-insensitively by name.
+  Directory entries never carry `size`. `link_target` is present for junction
+  or symlink directories whose target can be read. Noise directories such as
+  `node_modules` or `build` are **not** filtered.
+- Hidden entries (dot-prefixed, or carrying the Windows HIDDEN or SYSTEM
+  attribute) are omitted unless `show_hidden=1`; when included they carry
+  `hidden: true`.
+- At most 5000 entries are returned; `truncated: true` marks a longer
+  directory.
+
+Errors: `400 {"error":"path must be absolute"}` for an empty or relative
+`path`; `404 {"error":"not found"}` and `404 {"error":"not a directory"}`;
+`403 {"error":"permission denied"}` when the daemon cannot read the directory;
+`500 {"error":"io error"}` otherwise. Error bodies may add a `detail` string.
 
 ### `GET /api/git/info?cwd=<abs>`
 
@@ -2469,8 +2574,8 @@ Returns:
 }
 ```
 
-`theme` accepts `system`, `light`, or `dark`; `color_theme` accepts `blue` or
-`orange`; and `font_size` accepts `small`, `medium`, or `large`. These values
+`theme` accepts `system`, `light`, or `dark`; `color_theme` accepts `blue`,
+`orange`, or `eva-01`; and `font_size` accepts `small`, `medium`, or `large`. These values
 are stored in `~/.acecode/config.json`, so Desktop restores them even when its
 managed daemon uses a different loopback port. The avatar preference is kept
 for compatibility and is always normalized to `false`.
@@ -2489,6 +2594,67 @@ validated before mutation; omitted fields keep their current values. Legacy
 persists the configuration and echoes the complete normalized response shown
 above; a write failure returns `500` with `error:"PERSIST_FAILED"` and restores
 the in-memory values.
+
+Selecting `eva-01` requires verified local resources. Otherwise the request
+returns `409` with `error:"THEME_NOT_INSTALLED"` without changing any preference.
+EVA uses its package's fixed light palette. The stored `theme` preference is
+preserved for switching back to an ordinary theme; OS color-scheme changes
+cannot override EVA. Its background image is used only on the new-task home.
+
+### Downloadable themes
+
+All theme endpoints require the normal daemon authentication. Theme files live
+in `themes/` beside the daemon configuration, independently of application
+updates. The application bundles only the small card thumbnail and three
+preview swatches; it does not bundle or automatically download the full EVA
+theme. See [theme packaging](themes.md) for the independent publish layout.
+
+`GET /api/themes?refresh=1` refreshes `upgrade.base_url + "themes/catalog.json"`.
+Each catalogue operation resolves the current update server, including changes
+made through `PUT /api/config/upgrade`, without a daemon restart. Cached metadata
+is scoped to its source server. Already started downloads retain the resource
+URL and integrity metadata captured when they were confirmed.
+Without `refresh`, the daemon uses the cached catalogue when available. The
+response contains `schema_version:1`, `themes`, `offline`, and `job`. Each entry
+has `id`, `version`, three `swatches`, `installed`, `installed_version` (empty
+when no valid installation exists), `update_available` (a newer semantic
+version is available), and `package`/`thumbnail`
+descriptors containing a relative `path`, exact `bytes`, and lowercase `sha256`.
+The API also includes `package.url` and `thumbnail.url`, resolved against the
+configured update server. Error responses and failed jobs include
+`error_path` with the actual catalogue/archive URL or failing local path.
+An unavailable server falls back to its own cached catalogue with `offline:true`;
+without a cache for that server it returns `503/THEME_CATALOG_UNAVAILABLE`.
+
+`POST /api/themes/eva-01/install` requires the exact metadata displayed by the
+confirmation dialog:
+
+```json
+{"confirm_download":true,"version":"1.0.0","bytes":2220741,"sha256":"<catalogue SHA-256>"}
+```
+
+Missing or mismatched consent returns `409/THEME_CONFIRMATION_REQUIRED` and
+starts no download. The accepted response and `GET /api/themes/job` contain
+`id`, `version`, `state`, `bytes_downloaded`, and `bytes_total`. States are
+`idle`, `downloading`, `installing`, `completed`, `cancelled`, or `failed`;
+failure adds an `error` code. Only one installation runs per daemon; a second
+request returns `409/THEME_DOWNLOAD_BUSY`. `POST /api/themes/job/cancel`
+requests cancellation, which is observed through job polling. The frontend
+shows this progress and any retry action inside the theme card, even after
+closing and reopening Settings. A later theme selection revokes automatic
+application of an earlier download.
+
+The daemon verifies archive bytes, SHA-256, allowed ZIP entries, the fixed
+palette schema, and both images before publishing an installed version. An
+interrupted download does not alter the active preference; a damaged local
+installation can be repaired by confirming and downloading it again.
+`GET /api/themes/eva-01` returns the validated installed `theme.json` without
+network access, or `404/THEME_NOT_INSTALLED`. `GET
+/api/themes/eva-01/images/thumbnail` remains available for clients needing a
+server preview; Appearance uses its bundled thumbnail without calling it.
+`.../images/background` is available only after installation.
+Both image responses are PNGs. Applying an installed theme requires no
+redownload, including after an offline restart.
 
 ### `GET /api/config/ui-locale`
 
@@ -2844,6 +3010,17 @@ with diagnostic `message` and failed `job`.
 Returns `409 UPDATE_IN_PROGRESS` when another job is pending or running. The
 response includes that job under `job`, so another WebUI tab can attach to it.
 
+When the daemon already holds a successful job with `restart_required: true`,
+returns `202` with that same job and `started: false`, without fetching or
+installing another package. This remains true while the old daemon still
+reports its previous version. Failed and cancelled jobs remain retryable.
+
+Package installation verifies the staged backend's `--version` output against
+the selected release with a bounded direct child process. Flat Windows/Linux
+packages also verify the installed backend before reporting success; a failed
+post-copy verification rolls back the installation. Version mismatch, timeout,
+invalid output and unsuccessful probe exit fail the job with an actionable error.
+
 On macOS, a daemon running from either the current-user
 `~/Applications/ACECode.app/Contents/MacOS/acecode-daemon` location or the
 supported system `/Applications/ACECode.app/Contents/MacOS/acecode-daemon`
@@ -2890,6 +3067,11 @@ In the native desktop shell, a successful job asks whether to restart now. The
 restart-now action uses the in-process desktop bridge to bypass close-to-tray,
 stop the shell's managed daemon processes and tray resources, release the
 single-instance guard, and launch the newly installed desktop executable.
+Upgrade restart always stops and waits for the managed backend, including when
+background continuation is enabled; it does not change that saved preference.
+A failed backend shutdown prevents replacement launch. On startup, Desktop
+reuses an owned backend only if its application version and executable
+installation match, recovering old backends preserved by earlier releases.
 Choosing restart later leaves the current process running. Normal browser and
 Edge-app compatibility clients do not own the desktop lifecycle, so they show
 manual full-exit-and-relaunch guidance instead of an automatic restart action.
@@ -2993,7 +3175,11 @@ Success:
 source, including the ones that were unavailable. The same array is mirrored
 into the archive's `feedback.json` under `logs`.
 
-Errors include `SESSION_NOT_FOUND`, `PACKAGE_FAILED`, and `UPLOAD_FAILED`.
+`feedback_text` accepts at most 10,000 Unicode code points, including spaces and
+line breaks. Oversized text returns HTTP 400 with `FEEDBACK_TOO_LONG` before any
+logs are collected, package is created, or upload is attempted.
+
+Other errors include `SESSION_NOT_FOUND`, `PACKAGE_FAILED`, and `UPLOAD_FAILED`.
 
 ---
 
@@ -3010,23 +3196,99 @@ Returns detected shell choices and the configured default:
 ```json
 {
   "shells": [
-    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false}
+    {"id":"powershell","label":"PowerShell","available":true,"needs_path":false,"path":"C:/Program Files/PowerShell/7/pwsh.exe","configured_path":"","probed":true,"usable":true,"probe_error":""}
   ],
   "default": "powershell"
 }
 ```
+
+The response also includes `resolved: {id,family,program,console_command,usable,fallback_reason}`.
+`available` describes file discovery; `usable` reflects an actual launch probe when
+`probed` is true. Unprobed choices are checked when selected. The default and new
+PTY sessions use the same resolved terminal as the Agent's command tool.
 
 ### `PUT /api/console/config`
 
 Body:
 
 ```json
-{"default_shell":"powershell","git_bash_path":"C:/Program Files/Git/bin/bash.exe"}
+{"default_shell":"powershell","shell_path":"C:/mytool/pwsh.exe"}
 ```
 
-Both fields are optional. `git_bash_path` is trimmed, dequoted, checked for WSL
-System32 bash, and validated if non-empty. Returns the same payload as
-`GET /api/pty/shells`.
+Both fields are optional. `shell_path` applies to the selected `default_shell`;
+an empty path restores automatic discovery. Non-empty paths must be absolute
+regular files and pass a launch probe. Unknown types, wrong JSON types, missing
+files, WSL bash for the Git Bash type, and failed probes return `400` without
+changing either the saved config or runtime. Persistence failures return `500`.
+The legacy `git_bash_path` field remains accepted. Returns the same payload as
+`GET /api/pty/shells`; running terminals retain their original process.
+
+### Settings environment endpoints
+
+These endpoints use the normal authenticated API access policy.
+
+- `GET /api/config/toolchains` returns `{toolchains:[{id,label,dir,exists,anchor,applied}]}`,
+  where `id` is `python`, `node` or `csharp`. `PUT` accepts a partial object of
+  those directory strings. Empty clears a directory; non-empty values must be
+  existing absolute directories. Validation errors return `400` with
+  `INVALID_FIELD`, `DIRECTORY_NOT_ABSOLUTE` or `DIRECTORY_NOT_FOUND` and leave
+  the complete previous configuration unchanged. Successful saves update the
+  process PATH for subsequently launched tools, hooks, MCP servers and terminals.
+- `POST /api/config/toolchains/detect` searches the original process PATH, skipping
+  Windows Store aliases. Found directories replace those fields; missing tools
+  preserve existing choices. It returns the same list plus `detected:{python,node,csharp}`.
+- `GET /api/console/config` returns `{default_shell,shell_paths,resolved,candidates}`.
+  Each candidate includes `id,label,family,available,needs_path,probed,usable,program,
+  detected_path,configured_path,probe_error`. `POST /api/console/config/detect`
+  reruns launch probes, persists a usable resolution and returns the same shape.
+  Candidates depend on the host platform. Windows tries PowerShell 7, Windows
+  PowerShell, Git Bash and cmd; POSIX uses the login shell and available alternatives.
+- `POST /api/dialog/pick-folder` and `POST /api/dialog/pick-file` return `{path}`,
+  or JSON `null` when cancelled. Native picker support must be enabled by the host;
+  otherwise the response is `501 {error:"PICKER_UNAVAILABLE",message}` and the UI
+  accepts a manually entered path.
+
+### Data directory migration
+
+`GET /api/config/data-dir` returns `effective_dir`, `default_dir`, `redirect_active`,
+`redirect_target`, `migrated_at_ms`, `cleanup_pending` and `migration` (null or the
+job below). Existing backups add `previous_dir` and `previous_size_bytes`. After
+restart, a pending backup larger than 100 MiB also adds
+`cleanup:{previous_dir,size_bytes}`.
+
+`POST /api/config/data-dir/migrate` accepts `{target:"<absolute path>"}` and returns
+`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`, `error`,
+`restart_required`, `started_at_ms` and `finished_at_ms`. Poll
+`GET /api/config/data-dir/migration`; states are `running`, `done` or `failed`.
+Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
+
+Target validation returns `400` with `TARGET_REQUIRED`, `TARGET_NOT_ABSOLUTE`,
+`TARGET_SAME_AS_CURRENT`, `TARGET_INSIDE_CURRENT`, `TARGET_CONTAINS_CURRENT`,
+`TARGET_NOT_A_DIRECTORY`, `TARGET_NOT_EMPTY` or `TARGET_NOT_WRITABLE`. Paths are
+compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY`, another
+live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals return
+`409 CONSOLES_ACTIVE`.
+
+The job pauses the scheduler and copies through a private staging directory,
+excluding top-level `run/`, `tmp/`, the redirect pointer and lock files. SQLite
+databases use online backups, including committed WAL transactions. Symlinks are
+preserved (internal targets follow the new root); inability to preserve them fails
+the copy. Source changes and a newly occupied target abort publication. Failure
+removes only private staging, preserves the source and existing target files,
+and re-enables writes. A pointer-write failure retains the copied target for recovery.
+
+Success atomically publishes the copied directory, writes `data-dir.redirect.json`
+in the platform default data directory, and sets `restart_required:true`. The
+current process continues reading the old root; new turns and authenticated
+mutations are rejected with `409 DATA_DIR_MIGRATION_ACTIVE` until restart.
+
+`POST /api/config/data-dir/cleanup` accepts `{action:"keep"}` or `{action:"delete"}`.
+Both acknowledge the cleanup prompt and return updated directory status. Delete
+requires a restart into the new root, verifies the recorded old directory is not
+the active root or its ancestor, and refuses a still-running old daemon. When the
+backup is the default directory, its redirect pointer is preserved. Failures
+return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
+`500 PERSIST_FAILED`; invalid actions return `400 INVALID_ACTION`.
 
 ### `POST /api/pty`
 
@@ -3125,6 +3387,13 @@ cursor. Clients should de-duplicate both interaction types by
 `payload.request_id` and retain resolved tombstones until the owning turn is
 terminal so a delayed snapshot cannot reopen a closed request.
 
+Each active session retains at most 1024 replay events and an estimated 8 MiB
+of event payload/container storage. The oldest retained events are evicted when
+either limit is reached. A single event larger than the byte budget is delivered
+live but is not retained for replay. `since` only replays retained events; it does
+not guarantee recovery of older or oversized frames. Load the session history
+through REST when a complete persisted transcript is needed.
+
 Session event `type` values from `SessionEventKind`:
 
 - `token`
@@ -3153,6 +3422,15 @@ For a successful `task_complete` call, the `tool_end` payload also includes
 trajectory/replay records use the same id so clients can attach copy, fork, and
 other message actions to the completion summary without relying on its
 synthetic display id.
+
+Completed tool text above the per-result limit (30,000 bytes for Bash, 50,000
+bytes for other tools) is saved under the session's `tool-results` directory
+before `tool_end` or the result message is broadcast. Their output contains the
+existing `<persisted-output>` file reference and a 2,000-byte preview. Structured
+file-diff hunks, metadata and attachments remain available. The aggregate
+model-context budget still applies later. As with the existing result budget,
+if storage fails the original completed result is retained rather than discarded;
+the preview reduction is therefore not guaranteed during storage failures.
 
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable
@@ -3475,6 +3753,19 @@ but keeps AskUserQuestion interactive. LOOP Yolo may read outside the active wor
 root, but direct file writes and statically detectable shell writes outside that
 root are rejected by the execution boundary without opening a permission prompt.
 
+Sub-agents spawned from a LOOP session inherit the same execution boundary and
+`loop_execution` provenance. Sub-agents spawned from any worktree session share
+the parent's worktree (`worktree_session.inherited=true` in their metadata) and
+use it as their write root; `EnterWorktree` / `ExitWorktree` refuse inside them.
+Run history objects carry `workspace_touched`: paths that appeared as new or
+changed in the main checkout, outside the run's worktree, between run start and
+run end (detected with `git status --porcelain`). It is empty when no worktree
+was created, when git could not be queried, or when nothing outside the worktree
+changed. A non-empty list means some write bypassed the tool-level boundary (for
+example through a shell script); the run still completes and the UI shows a
+warning. `spawn_subagent` / `wait_subagent` tool results append the same
+detection for one sub-agent as `metadata.workspace_touched`.
+
 Error codes include `LOOP_UNAVAILABLE` (`501`), validation codes such as
 `INVALID_MODEL` / `INVALID_WORKSPACE` (`400`), `SCHEDULE_CONFLICT` (`409`), and
 SQLite subsystem failures (`503`).
@@ -3516,6 +3807,24 @@ The daemon also serves the built frontend:
 | 503 | Required daemon subsystem unavailable |
 
 ---
+
+## Windows desktop taskbar badge bridge
+
+The embedded Windows desktop exposes `window.aceDesktop_setTaskbarBadge(payload)`
+as a native bridge, separate from the daemon HTTP/WS API. It resolves to JSON
+with an `ok` boolean. Browser, Edge app, and non-Windows hosts do not expose it.
+
+For a visible badge, pass an integer `count` greater than zero and `background`,
+`foreground`, and `outline` colors in `#RRGGBB` format. Counts above 99 display
+`99+`. Passing `{ "count": 0 }` restores the original ACECode window icons.
+Malformed input leaves the current icons unchanged and returns `ok: false`.
+
+The frontend counts distinct unread main tasks from full workspace status
+snapshots and workspace-free session lists. Windows subscribes status for all
+registered workspaces, including collapsed projects, while task lists remain
+lazy-loaded. Read acknowledgements and authoritative list refreshes remove read,
+archived, and deleted tasks; running and child tasks do not contribute. Badge
+colors come from the resolved theme tokens and update with theme changes.
 
 ## 17. Process Exit Codes
 

@@ -113,6 +113,8 @@ bool probe_loopback_port(int port);
 // identity (fail closed). Process start time is Unix epoch milliseconds when
 // the platform can expose it.
 DaemonProcessIdentity inspect_daemon_process_identity(std::int64_t pid);
+// Absolute UTF-8 image path from the operating system, not the runtime manifest.
+std::optional<std::string> process_executable_path(std::int64_t pid);
 std::optional<std::int64_t> process_start_time_ms(std::int64_t pid);
 
 // A mismatch proves that the recorded daemon PID now names another

@@ -1,5 +1,7 @@
 #include "bash_tool.hpp"
 #include "tool_icons.hpp"
+#include "environment/shell_command_line.hpp"
+#include "environment/terminal_runtime.hpp"
 #include "utils/logger.hpp"
 #include "utils/encoding.hpp"
 #include "utils/stream_processing.hpp"
@@ -251,6 +253,12 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         }
     }
 
+    const auto terminal_snapshot = acecode::environment::terminal().last();
+    if (terminal_snapshot && !terminal_snapshot->resolved.usable) {
+        return ToolResult{"[Error] No usable terminal. Check Settings > Configuration: " +
+                          terminal_snapshot->resolved.fallback_reason, false};
+    }
+
     // Shared streaming state across both OS branches.
     std::string full_output;
     std::string current_line;
@@ -315,7 +323,15 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     PROCESS_INFORMATION pi = {};
 
-    std::wstring full_cmd = L"cmd.exe /c " + utf8_to_wide(command);
+    // 默认终端(openspec: agent-default-terminal):运行时已解析出可用终端就按其家族
+    // 构造命令行(cmd / PowerShell EncodedCommand / Git Bash -c);未 bootstrap 或
+    // 全部候选不可用时维持改动前的 `cmd.exe /c`。
+    std::string windows_command_line = "cmd.exe /c " + command;
+    if (terminal_snapshot) {
+        windows_command_line = acecode::environment::build_shell_command_line(
+            terminal_snapshot->resolved, command).windows_command_line;
+    }
+    std::wstring full_cmd = utf8_to_wide(windows_command_line);
     std::vector<wchar_t> full_cmd_buffer(full_cmd.begin(), full_cmd.end());
     full_cmd_buffer.push_back(L'\0');
 
@@ -439,6 +455,21 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         return ToolResult{"[Error] Failed to create stdin pipe.", false};
     }
 
+    // 默认终端(openspec: agent-default-terminal):argv 在 fork **之前**准备好 ——
+    // daemon 是多线程进程,子进程里不能再分配内存(malloc 锁可能被别的线程持有)。
+    // 运行时没有可用终端时维持改动前的 /bin/sh -c。
+    std::string shell_program = "/bin/sh";
+    std::vector<std::string> shell_argv = {"/bin/sh", "-c", command};
+    if (terminal_snapshot) {
+        auto line = acecode::environment::build_shell_command_line(terminal_snapshot->resolved, command);
+        shell_program = line.program;
+        shell_argv = line.argv;
+    }
+    std::vector<char*> shell_argv_c;
+    shell_argv_c.reserve(shell_argv.size() + 1);
+    for (auto& arg : shell_argv) shell_argv_c.push_back(const_cast<char*>(arg.c_str()));
+    shell_argv_c.push_back(nullptr);
+
     pid_t pid = fork();
     if (pid == -1) {
         close(pipefd[0]); close(pipefd[1]);
@@ -469,7 +500,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
             setenv("ACECODE_TMPDIR", scratch_dir.c_str(), 1);
         }
 
-        execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
+        execvp(shell_program.c_str(), shell_argv_c.data());
         _exit(127);
     }
 

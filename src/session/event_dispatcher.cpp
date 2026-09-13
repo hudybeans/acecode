@@ -7,8 +7,49 @@
 
 namespace acecode {
 
-EventDispatcher::EventDispatcher(std::size_t buffer_capacity)
-    : buffer_capacity_(buffer_capacity == 0 ? 1 : buffer_capacity) {}
+namespace {
+
+bool charge_bytes(std::size_t bytes, std::size_t& remaining) {
+    if (bytes > remaining) return false;
+    remaining -= bytes;
+    return true;
+}
+
+// Account strings and JSON container nodes without serializing a second full
+// payload. Stop traversing as soon as the replay budget is exceeded. This is a
+// retained-memory estimate, not an allocator-specific resident-set measurement.
+bool charge_json(const nlohmann::json& value, std::size_t& remaining) {
+    if (!charge_bytes(sizeof(nlohmann::json), remaining)) return false;
+    if (value.is_string()) {
+        return charge_bytes(sizeof(std::string), remaining) &&
+            charge_bytes(value.get_ref<const std::string&>().size(), remaining);
+    }
+    if (value.is_binary()) {
+        return charge_bytes(sizeof(nlohmann::json::binary_t), remaining) &&
+            charge_bytes(value.get_binary().size(), remaining);
+    }
+    if (value.is_array()) {
+        if (!charge_bytes(sizeof(nlohmann::json::array_t), remaining)) return false;
+        for (const auto& child : value) {
+            if (!charge_json(child, remaining)) return false;
+        }
+    } else if (value.is_object()) {
+        if (!charge_bytes(sizeof(nlohmann::json::object_t), remaining)) return false;
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (!charge_bytes(sizeof(std::string) + 3 * sizeof(void*), remaining) ||
+                !charge_bytes(it.key().size(), remaining) ||
+                !charge_json(it.value(), remaining)) return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+EventDispatcher::EventDispatcher(std::size_t buffer_capacity,
+                                 std::size_t buffer_byte_capacity)
+    : buffer_capacity_(buffer_capacity == 0 ? 1 : buffer_capacity)
+    , buffer_byte_capacity_(buffer_byte_capacity) {}
 
 std::uint64_t EventDispatcher::emit(SessionEventKind kind, nlohmann::json payload) {
     return emit(kind, std::move(payload), EmitOptions{});
@@ -83,12 +124,26 @@ void EventDispatcher::drain_subscription(
             sub->pending.pop_front();
             listener = sub->listener;
         }
-        if (listener) listener(evt);
+        deliver_to_listener(id, listener, evt);
+    }
+}
+
+void EventDispatcher::deliver_to_listener(
+    SubscriptionId id, const EventListener& listener, const SessionEvent& evt) const {
+    if (!listener) return;
+    try {
+        listener(evt);
+    } catch (...) {
+        // A bad frame or callback must not strand delivering/catching_up and
+        // leave this subscription accumulating every future event. Keep the
+        // subscription alive so transient serialization failures can recover.
+        LOG_WARN("[event_dispatcher] listener failed id=" + std::to_string(id));
     }
 }
 
 EventDispatcher::SubscriptionId
 EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
+    if (!listener) return 0;
     SubscriptionId id = next_sub_id_.fetch_add(1);
 
     auto sub = std::make_shared<Subscription>();
@@ -101,8 +156,8 @@ EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (since_seq > 0) {
-            for (const auto& evt : buffer_) {
-                if (evt.seq > since_seq) to_replay.push_back(evt);
+            for (const auto& buffered : buffer_) {
+                if (buffered.event.seq > since_seq) to_replay.push_back(buffered.event);
             }
         }
         subscriptions_[id] = sub;
@@ -110,7 +165,7 @@ EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
 
     // 第二步(锁外): 按 seq 顺序回放历史事件。期间产生的实时事件都进了 pending。
     if (listener) {
-        for (const auto& evt : to_replay) listener(evt);
+        for (const auto& evt : to_replay) deliver_to_listener(id, listener, evt);
     }
 
     // 第三步:按序 flush catch-up 期间累积的实时事件;在 pending 清空的同一把锁内
@@ -131,7 +186,7 @@ EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
             it->second->pending.pop_front();
             have_event = true;
         }
-        if (have_event && listener) listener(evt);
+        if (have_event) deliver_to_listener(id, listener, evt);
         if (have_event) ++live_buffered;
     }
 
@@ -151,6 +206,8 @@ EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
 
 void EventDispatcher::unsubscribe(SubscriptionId id) {
     std::lock_guard<std::mutex> lk(mu_);
+    const auto it = subscriptions_.find(id);
+    if (it != subscriptions_.end()) it->second->pending.clear();
     subscriptions_.erase(id);
     if (observer_subscription_id_ == id) observer_subscription_id_ = 0;
 }
@@ -172,23 +229,38 @@ void EventDispatcher::push_to_buffer(const SessionEvent& evt, const std::string&
         if (it != coalesced_seq_by_key_.end()) {
             const std::uint64_t old_seq = it->second;
             for (auto bit = buffer_.begin(); bit != buffer_.end(); ++bit) {
-                if (bit->seq == old_seq) {
-                    buffer_.erase(bit);
+                if (bit->event.seq == old_seq) {
+                    erase_buffered_event(bit);
                     break;
                 }
             }
         }
-        coalesced_seq_by_key_[coalesce_key] = evt.seq;
     }
-    buffer_.push_back(evt);
-    while (buffer_.size() > buffer_capacity_) {
-        const auto evicted_seq = buffer_.front().seq;
-        for (auto it = coalesced_seq_by_key_.begin(); it != coalesced_seq_by_key_.end();) {
-            if (it->second == evicted_seq) it = coalesced_seq_by_key_.erase(it);
-            else ++it;
-        }
-        buffer_.pop_front();
+
+    std::size_t remaining = buffer_byte_capacity_;
+    if (!charge_bytes(sizeof(BufferedEvent), remaining) ||
+        !charge_bytes(coalesce_key.size(), remaining) ||
+        (!coalesce_key.empty() &&
+         (!charge_bytes(sizeof(std::string) + sizeof(std::uint64_t) +
+                            2 * sizeof(void*), remaining) ||
+          !charge_bytes(coalesce_key.size(), remaining))) ||
+        !charge_json(evt.payload, remaining)) return;
+    const std::size_t bytes = buffer_byte_capacity_ - remaining;
+    // Evict before copying the new payload, keeping the ring bounded even at
+    // insertion time. A single oversized event never displaces useful history.
+    while (!buffer_.empty() &&
+           (buffer_.size() >= buffer_capacity_ || buffered_bytes_ > remaining)) {
+        erase_buffered_event(buffer_.begin());
     }
+    buffer_.push_back(BufferedEvent{evt, bytes, coalesce_key});
+    buffered_bytes_ += bytes;
+    if (!coalesce_key.empty()) coalesced_seq_by_key_[coalesce_key] = evt.seq;
+}
+
+void EventDispatcher::erase_buffered_event(std::deque<BufferedEvent>::iterator it) {
+    buffered_bytes_ -= it->bytes;
+    if (!it->coalesce_key.empty()) coalesced_seq_by_key_.erase(it->coalesce_key);
+    buffer_.erase(it);
 }
 
 } // namespace acecode

@@ -48,6 +48,17 @@ enum class ExistingDaemonAction {
     Unsafe,
 };
 
+enum class DaemonShutdownReason {
+    ApplicationExit,
+    UpgradeRestart,
+};
+
+// Call only after managed ownership and live PID/GUID/protocol are verified.
+ExistingDaemonAction managed_daemon_installation_action(
+    const std::string& expected_version, const std::string& live_version,
+    const std::string& expected_executable, const std::string& live_executable,
+    std::string* reason = nullptr);
+
 struct ExistingDaemonProbeResult {
     ExistingDaemonAction action = ExistingDaemonAction::None;
     std::int64_t pid = 0;
@@ -109,7 +120,8 @@ public:
     // 关闭所有 slot 的 supervisor。返回失败列表(hash + 错误描述);best-effort,
     // 一个 stop 异常不阻塞下一个。
     std::vector<std::pair<std::string, std::string>> stop_all();
-    std::vector<std::pair<std::string, std::string>> shutdown_all();
+    std::vector<std::pair<std::string, std::string>> shutdown_all(
+        DaemonShutdownReason reason = DaemonShutdownReason::ApplicationExit);
     void set_keep_alive_on_exit(bool keep_alive);
     bool keep_alive_on_exit() const;
 

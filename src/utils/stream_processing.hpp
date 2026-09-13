@@ -3,6 +3,8 @@
 #include <string>
 #include <deque>
 #include <cstddef>
+#include <string_view>
+#include <limits>
 
 namespace acecode {
 
@@ -90,6 +92,31 @@ inline size_t utf8_safe_boundary(const std::string& bytes) {
     return 0;
 }
 
+// Keep a bounded suffix without splitting its first UTF-8 codepoint. The input
+// chunk must end at a complete codepoint, as guaranteed by the shell decoder.
+inline void append_bounded_utf8_tail(std::string& output,
+                                    std::string_view chunk,
+                                    size_t max_bytes) {
+    if (max_bytes == 0) {
+        output.clear();
+        return;
+    }
+    if (chunk.size() >= max_bytes) {
+        output.assign(chunk.data() + chunk.size() - max_bytes, max_bytes);
+    } else {
+        if (output.size() > max_bytes - chunk.size()) {
+            output.erase(0, output.size() - (max_bytes - chunk.size()));
+        }
+        output.append(chunk.data(), chunk.size());
+    }
+    size_t start = 0;
+    while (start < output.size() &&
+           (static_cast<unsigned char>(output[start]) & 0xC0) == 0x80) ++start;
+    if (start != 0) output.erase(0, start);
+}
+
+inline constexpr size_t kToolProgressLineMaxBytes = 4 * 1024;
+
 // Feed a cleaned chunk (ANSI stripped, UTF-8 safe) through a line state machine.
 // Updates `current_line`, `tail_lines` (sliding window of the last `max_tail` lines),
 // and increments `total_lines` for every complete line seen.
@@ -102,18 +129,25 @@ inline void feed_line_state(const std::string& chunk,
                             std::string& current_line,
                             std::deque<std::string>& tail_lines,
                             int& total_lines,
-                            size_t max_tail = 5) {
-    for (char c : chunk) {
+                            size_t max_tail = 5,
+                            size_t max_line_bytes = kToolProgressLineMaxBytes) {
+    size_t offset = 0;
+    while (offset < chunk.size()) {
+        size_t end = chunk.find_first_of("\r\n", offset);
+        if (end == std::string::npos) end = chunk.size();
+        append_bounded_utf8_tail(current_line,
+            std::string_view(chunk).substr(offset, end - offset), max_line_bytes);
+        if (end == chunk.size()) break;
+        const char c = chunk[end];
         if (c == '\r') {
             current_line.clear();
         } else if (c == '\n') {
             tail_lines.push_back(current_line);
             while (tail_lines.size() > max_tail) tail_lines.pop_front();
-            total_lines++;
+            if (total_lines < (std::numeric_limits<int>::max)()) ++total_lines;
             current_line.clear();
-        } else {
-            current_line.push_back(c);
         }
+        offset = end + 1;
     }
 }
 

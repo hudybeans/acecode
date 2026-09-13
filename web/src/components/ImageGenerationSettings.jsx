@@ -9,7 +9,7 @@ import { toast } from './Toast.jsx';
 const fieldClass = 'w-full h-8 px-2 text-[12px] border border-border bg-surface-alt text-fg outline-none focus:border-accent disabled:opacity-50';
 const buttonClass = 'px-3 py-1.5 text-[12px] border border-border bg-surface-alt hover:bg-surface-hi disabled:opacity-50';
 
-export function ImageGenerationSettings() {
+export function ImageGenerationSettings({ onCheckUpdates }) {
   const store = imageGenerationSettingsStore(api);
   const { snapshot, draft, loading, saving, error: saveError } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -68,8 +68,8 @@ export function ImageGenerationSettings() {
 
   return (
     <div className="bg-surface border border-border mb-2" aria-busy={loading || saving}>
-      <div className="flex items-center gap-3 px-3.5 py-3">
-        <div className="w-10 h-10 bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
+      <div className="flex items-center gap-3 px-3.5 py-3 border border-border">
+        <div data-settings-surface="true" className="w-10 h-10 rounded-md bg-surface-alt border border-border flex items-center justify-center shrink-0 text-fg">
           <VsIcon name="Image" size={20} />
         </div>
         <div className="flex-1 min-w-0">
@@ -86,6 +86,8 @@ export function ImageGenerationSettings() {
 
       {error && <div role="alert" className="px-3.5 pb-3 text-[12px] text-danger">
         {errorMessage}
+        {error.code === 'IMAGE_SETTINGS_UNSUPPORTED' && onCheckUpdates &&
+          <button type="button" onClick={onCheckUpdates} className="ml-2 text-accent hover:underline">检查更新</button>}
         <button type="button" onClick={() => error.action === 'load' ? store.load() : error.action === 'save' ? store.flush() : test()}
           disabled={loading || saving || testing} className="ml-2 hover:underline">重试</button>
       </div>}

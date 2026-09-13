@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <random>
 #include <regex>
+#include <set>
 #include <sstream>
 
 namespace acecode::worktree {
@@ -317,6 +318,30 @@ WorktreeIncludePlan plan_worktree_include_copy(
         if (expand) plan.dirs_to_expand.push_back(dir);
     }
     return plan;
+}
+
+std::string porcelain_status_path(const std::string& line) {
+    if (line.size() < 4) return {};
+    std::string path = line.substr(3);
+    const std::size_t arrow = path.find(" -> ");
+    if (arrow != std::string::npos) path = path.substr(arrow + 4);
+    // 含空格的路径会被 git 加引号;这里只用于展示与去重,保留原样。
+    return path;
+}
+
+std::vector<std::string> newly_changed_paths(const std::vector<std::string>& before,
+                                             const std::vector<std::string>& after) {
+    const std::set<std::string> seen_before(before.begin(), before.end());
+    std::set<std::string> emitted;
+    std::vector<std::string> out;
+    for (const auto& line : after) {
+        if (line.empty() || seen_before.count(line)) continue;
+        std::string path = porcelain_status_path(line);
+        if (path.empty() || emitted.count(path)) continue;
+        emitted.insert(path);
+        out.push_back(std::move(path));
+    }
+    return out;
 }
 
 } // namespace acecode::worktree

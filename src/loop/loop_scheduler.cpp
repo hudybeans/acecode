@@ -5,6 +5,7 @@
 #include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
 #include "../utils/uuid.hpp"
+#include "../worktree/worktree_core.hpp"
 #include "../worktree/worktree_manager.hpp"
 
 #include <algorithm>
@@ -75,6 +76,13 @@ std::string build_loop_system_context(const LoopDefinition& loop,
 
 bool should_create_loop_worktree(const LoopDefinition& loop, bool git_workspace) {
     return loop.use_worktree && !loop.workspace_cwd.empty() && git_workspace;
+}
+
+std::vector<std::string> detect_workspace_touched(const std::string& workspace_cwd,
+                                                  const std::vector<std::string>& baseline) {
+    auto after = worktree::list_status_lines(workspace_cwd);
+    if (!after) return {};
+    return worktree::newly_changed_paths(baseline, *after);
 }
 
 std::optional<RunStatus> apply_loop_session_event(const SessionEvent& event,
@@ -250,6 +258,13 @@ void LoopScheduler::launch(const LoopDefinition& loop, const LoopRun& run) {
         }
     }
 
+    // 写边界事后检测的基线:只有真的建了 worktree 才有"worktree 之外"可言;
+    // 读不到(git 缺失 / 非仓库)就不检测,空基线会把整仓脏文件都算成本次写入。
+    std::optional<std::vector<std::string>> workspace_baseline;
+    if (!worktree_path.empty()) {
+        workspace_baseline = worktree::list_status_lines(loop.workspace_cwd);
+    }
+
     StoreError error;
     if (!store_.update_run_state(run.id, RunStatus::Running, clock_(), {}, session_id,
                                  worktree_path, worktree_branch, &error)) {
@@ -259,7 +274,8 @@ void LoopScheduler::launch(const LoopDefinition& loop, const LoopRun& run) {
 
     const auto state = callbacks_;
     auto subscription = client_.subscribe(session_id,
-        [state, session_id, run_id = run.id](const SessionEvent& event) {
+        [state, session_id, run_id = run.id, workspace_cwd = loop.workspace_cwd,
+         workspace_baseline](const SessionEvent& event) {
             SessionClient::SubscriptionId unsubscribe_id = 0;
             RunStatus status = RunStatus::Running;
             std::string reason;
@@ -287,6 +303,19 @@ void LoopScheduler::launch(const LoopDefinition& loop, const LoopRun& run) {
                 StoreError ignored;
                 state->store->update_run_state(run_id, status, state->clock(), reason,
                                                session_id, {}, {}, &ignored);
+            }
+            if (terminal && workspace_baseline) {
+                // 在发射 Done 的 agent 线程上同步跑一次 git status(有超时),
+                // 只延迟这个会话的空闲通知,不另起线程与 store 生命周期赛跑。
+                const auto touched =
+                    detect_workspace_touched(workspace_cwd, *workspace_baseline);
+                if (!touched.empty()) {
+                    LOG_WARN("[loop] run " + run_id + " left " +
+                             std::to_string(touched.size()) +
+                             " changed path(s) in the main checkout outside its worktree");
+                    StoreError ignored;
+                    state->store->set_run_workspace_touched(run_id, touched, &ignored);
+                }
             }
             if (terminal && unsubscribe_id != 0) {
                 state->client->unsubscribe(session_id, unsubscribe_id);

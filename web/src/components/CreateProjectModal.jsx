@@ -59,8 +59,8 @@ export function CreateProjectModal({ api, onClose, onCreated }) {
   return (
     <Modal onClose={onClose} width={520} dismissOnBackdrop={!creating}>
       {({ close }) => (
-        <form onSubmit={(event) => createProject(event, close)}>
-          <div className="px-5 py-4 border-b border-border flex items-start gap-3">
+        <form onSubmit={(event) => createProject(event, close)} className="ace-modal-form">
+          <div className="shrink-0 px-5 py-4 border-b border-border flex items-start gap-3">
             <div className="w-9 h-9 rounded-lg bg-accent/10 text-accent flex items-center justify-center shrink-0">
               <VsIcon name="folderAdd" size={19} />
             </div>
@@ -72,7 +72,7 @@ export function CreateProjectModal({ api, onClose, onCreated }) {
             </div>
           </div>
 
-          <div className="px-5 py-4 space-y-4">
+          <div className="min-h-0 overflow-y-auto ace-scrollbar px-5 py-4 space-y-4">
             <label className="block">
               <span className="block mb-1.5 text-[12px] font-medium text-fg">项目名称</span>
               <input
@@ -127,7 +127,7 @@ export function CreateProjectModal({ api, onClose, onCreated }) {
             )}
           </div>
 
-          <div className="px-5 py-3 border-t border-border bg-surface-alt flex items-center justify-end gap-2">
+          <div className="shrink-0 px-5 py-3 border-t border-border bg-surface-alt flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={close}

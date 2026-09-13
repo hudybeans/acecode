@@ -67,10 +67,11 @@ test('home logo effect permanently latches off after the first real session', ()
   assert.match(chatView, /homeLogoEffectEnabled = true/);
   assert.match(chatView, /<InteractiveHomeLogo enabled=\{homeLogoEffectEnabled\}\s*\/>/);
   assert.match(logo, /function InteractiveHomeLogo\(\{ className = '', enabled = true \}\)/);
-  assert.match(logo, /setReady\(false\);\s*if \(!enabled\) return undefined;/);
-  assert.match(logo, /data-dynamic-logo-ready=\{enabled && ready \? 'true' : 'false'\}/);
-  assert.match(logo, /data-dynamic-logo-fallback=\{enabled \? undefined : 'session-visited'\}/);
-  assert.match(logo, /\{enabled && \(\s*<canvas/);
+  assert.match(logo, /const animated = enabled && !isEvaTheme;/);
+  assert.match(logo, /setReady\(false\);\s*if \(!animated\) return undefined;/);
+  assert.match(logo, /data-dynamic-logo-ready=\{animated && ready \? 'true' : 'false'\}/);
+  assert.match(logo, /data-dynamic-logo-fallback=\{isEvaTheme \? 'theme' : enabled \? undefined : 'session-visited'\}/);
+  assert.match(logo, /\{animated && \(\s*<canvas/);
   assert.doesNotMatch(logo, /fps|frameRate|framesPerSecond|lowFps/i);
   assert.doesNotMatch(performance, /fps|frameRate|framesPerSecond|lowFps/i);
 });
@@ -280,7 +281,7 @@ test('reduced motion disables idle wandering but keeps direct pointer lighting a
   assert.match(logo, /src="\/acecode-logo\.png"/);
   assert.match(
     logo,
-    /data-dynamic-logo-ready=\{enabled && ready \? 'true' : 'false'\}/,
+    /data-dynamic-logo-ready=\{animated && ready \? 'true' : 'false'\}/,
   );
   assert.match(logo, /new MutationObserver\(scheduleFrame\)/);
   assert.match(logo, /attributeFilter: \['data-theme'\]/);

@@ -150,6 +150,23 @@ std::string build_large_tool_result_message(const PersistedToolResult& result,
     return message;
 }
 
+bool prepare_tool_result_for_delivery(
+    ToolResult& result,
+    const std::string& tool_name,
+    const std::string& tool_call_id,
+    const std::string& tool_results_dir,
+    const ToolResultBudgetOptions& options) {
+    if (is_persisted_output_message(result.output) ||
+        result.output.size() <= per_result_threshold_for_tool(tool_name, options)) {
+        return false;
+    }
+    const auto persisted = persist_tool_result(
+        result.output, tool_call_id, tool_results_dir, options.preview_bytes);
+    if (persisted.filepath.empty()) return false;
+    result.output = build_large_tool_result_message(persisted, options.preview_bytes);
+    return true;
+}
+
 ToolResultBudgetResult enforce_tool_result_budget(
     const std::vector<ToolCall>& tool_calls,
     std::vector<ToolResult>& results,

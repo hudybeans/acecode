@@ -28,7 +28,8 @@ ContextPickOutcome pick_context_items(void* parent_hwnd,
                                       const std::string& default_folder = {});
 
 // Opens a native picker that accepts exactly one existing file. The dialog
-// starts in default_folder when that path can be resolved by the platform.
+// uses the system's starting location when default_folder is empty. A supplied
+// folder must be selected successfully before the dialog is shown.
 SingleFilePickOutcome pick_single_file(void* parent_hwnd,
                                        const std::string& default_folder = {});
 

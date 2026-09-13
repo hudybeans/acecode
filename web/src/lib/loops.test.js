@@ -50,9 +50,19 @@ assert.equal(loopScheduleLabel({ kind: 'period', period: 'workdays', hour: 9, mi
 assert.match(loopScheduleLabel({ kind: 'interval', interval_value: 2, interval_unit: 'hours' }), /每 2 小时/);
 assert.match(loopRunPresentation({ status: 'missed', reason: 'workspace_busy' }).reason, /不会补跑/);
 assert.deepEqual(loopRunPresentation({ status: 'running' }), {
-  label: '执行中', reason: '', tone: 'active',
+  label: '执行中', reason: '', tone: 'active', workspaceTouched: [], workspaceTouchedSummary: '',
 });
 assert.equal(loopRunPresentation({ status: 'waiting_user' }).label, '等待用户');
+// 写边界事后检测:run 记录了 worktree 之外的改动时,给出可显示的警告摘要;
+// 字段缺失 / 非数组 / 含非字符串项时不炸,过滤后为空。
+const touched = loopRunPresentation({
+  status: 'completed',
+  workspace_touched: ['electron/src/im/chat.js', '', 7, 'docs/notes.md'],
+});
+assert.deepEqual(touched.workspaceTouched, ['electron/src/im/chat.js', 'docs/notes.md']);
+assert.match(touched.workspaceTouchedSummary, /2 处 worktree 之外的改动/);
+assert.equal(touched.tone, 'ok');
+assert.equal(loopRunPresentation({ status: 'completed', workspace_touched: 'nope' }).workspaceTouchedSummary, '');
 const weekly = loopFormForTemplate(LOOP_TEMPLATES[2], 'model-a', Date.UTC(2026, 6, 13));
 assert.equal(weekly.period, 'weekly');
 assert.deepEqual(weekly.weekdays, [5]);

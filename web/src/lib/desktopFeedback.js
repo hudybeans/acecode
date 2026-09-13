@@ -1,4 +1,9 @@
 export const NO_FEEDBACK_SESSION_KEY = '';
+export const DESKTOP_FEEDBACK_MAX_CHARACTERS = 10000;
+
+export function desktopFeedbackTextLength(text) {
+  return Array.from(String(text ?? '')).length;
+}
 
 function sessionIdOf(session) {
   return String(session?.id || session?.session_id || session?.sessionId || '').trim();

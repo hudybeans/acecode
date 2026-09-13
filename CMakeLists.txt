@@ -7,7 +7,7 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.12 LANGUAGES C CXX)
+project(acecode VERSION 0.9.14 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
 
@@ -188,6 +188,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_navigation_state.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/context_items.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/context_picker.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/folder_picker_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/locale.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/notifications.cpp
@@ -205,7 +206,6 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
 )
 
 set(ACECODE_DESKTOP_SUPPORT_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/desktop/context_picker.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_supervisor.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/desktop_about.cpp
@@ -216,6 +216,8 @@ set(ACECODE_DESKTOP_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/pick_active.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/single_instance_posix.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/single_instance_win.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/taskbar_badge.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/taskbar_badge_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/tray_icon_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/url_builder.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/webview2_runtime_probe.cpp
@@ -363,7 +365,7 @@ if(WIN32)
     # bcrypt: desktop/daemon_supervisor.cpp generates daemon auth tokens.
     # ws2_32: readiness probes; shell/user/gdi: Edge/tray/window helpers.
     target_link_libraries(acecode_desktop_support PUBLIC
-        bcrypt ws2_32 ole32 shell32 user32 gdi32 comctl32
+        bcrypt ws2_32 ole32 shell32 user32 gdi32 gdiplus comctl32
     )
 endif()
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { imageGenerationCanTest, imageGenerationDraft, imageGenerationPayload, imageGenerationSettingsStore } from './imageGenerationSettings.js';
-import { createApi } from './api.js';
+import { ApiError, createApi } from './api.js';
+import { lookupErrorMessage } from './errors.js';
 
 const snapshot = {
   enabled: true, source: 'inline', base_url: 'https://example.invalid/v1',
@@ -94,6 +95,54 @@ retrySettings.update('timeout_ms', '');
 assert.equal(await retrySettings.flush(), false);
 assert.equal(retryCount, 2, 'invalid timeout is never silently clamped or persisted');
 assert.equal(settings.getSnapshot().draft.apiKey, 'latest-edit', 'separate connections never share keys');
+
+// A newer UI can connect to an older daemon whose image settings route does
+// not exist. Preserve that distinction and never save a made-up empty config.
+for (const [status, body, expectedCode] of [
+  [404, 'Not Found', 'IMAGE_SETTINGS_UNSUPPORTED'],
+  [405, { error: 'METHOD_NOT_ALLOWED' }, 'IMAGE_SETTINGS_UNSUPPORTED'],
+  [401, { error: 'UNAUTHORIZED' }, 'IMAGE_SETTINGS_AUTH_REQUIRED'],
+  [403, '', 'IMAGE_SETTINGS_AUTH_REQUIRED'],
+  [500, '', 'IMAGE_SETTINGS_UNAVAILABLE'],
+  [503, { error: 'UNAVAILABLE' }, 'IMAGE_SETTINGS_UNAVAILABLE'],
+  [408, { error: 'TIMEOUT' }, 'TIMEOUT'],
+]) {
+  let readFailure = true;
+  let writesAfterFailure = 0;
+  const failedSettings = imageGenerationSettingsStore({
+    getImageGeneration: async () => {
+      if (readFailure) throw new ApiError(status, body);
+      return copy(snapshot);
+    },
+    setImageGeneration: async () => { writesAfterFailure += 1; return copy(snapshot); },
+  });
+  await failedSettings.load();
+  assert.deepEqual(failedSettings.getSnapshot().error, { code: expectedCode, status, action: 'load' });
+  assert.equal(failedSettings.getSnapshot().snapshot, null);
+  assert.equal(failedSettings.getSnapshot().draft, null);
+  assert.notEqual(lookupErrorMessage(expectedCode, 'generic failure'), 'generic failure');
+  await failedSettings.flush();
+  assert.equal(writesAfterFailure, 0, 'blur/unmount after failed load never writes defaults');
+  readFailure = false;
+  await failedSettings.load();
+  assert.equal(failedSettings.getSnapshot().error, null, 'retry recovers after the daemon is updated');
+  assert.equal(failedSettings.getSnapshot().draft.apiKey, snapshot.api_key);
+  readFailure = true;
+  await failedSettings.load();
+  assert.deepEqual(failedSettings.getSnapshot().snapshot, snapshot, 'failed refresh retains the saved config');
+  assert.equal(failedSettings.getSnapshot().draft.apiKey, snapshot.api_key);
+}
+
+const unsupportedSave = imageGenerationSettingsStore({
+  getImageGeneration: async () => copy(snapshot),
+  setImageGeneration: async () => { throw new ApiError(404, 'Not Found'); },
+});
+await unsupportedSave.load();
+unsupportedSave.update('apiKey', 'unsaved-key');
+assert.equal(await unsupportedSave.flush(), false);
+assert.deepEqual(unsupportedSave.getSnapshot().error, { code: 'IMAGE_SETTINGS_UNSUPPORTED', status: 404, action: 'save' });
+assert.equal(unsupportedSave.getSnapshot().draft.apiKey, 'unsaved-key');
+assert.equal(unsupportedSave.getSnapshot().snapshot.api_key, snapshot.api_key);
 
 // Prove the test action uses the explicit cost flag and a timeout long enough
 // for the maximum configured image request; reads/saves never invoke it.

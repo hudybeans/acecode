@@ -14,6 +14,7 @@
 #include "../config/request_headers.hpp"
 #include "../desktop/workspace_registry.hpp"
 #include "../hooks/hook_manager.hpp"
+#include "../environment/data_dir_migration.hpp"
 #include "../loop/loop_store.hpp"
 #include "../provider/auth/github_auth.hpp"
 #include "../provider/auth/xai_auth.hpp"
@@ -41,6 +42,7 @@
 #include "../tool/tool_executor.hpp"
 #include "../upgrade/apply.hpp"
 #include "../upgrade/check.hpp"
+#include "../themes/theme_store.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/base64.hpp"
 #include "../utils/cwd_hash.hpp"
@@ -303,6 +305,12 @@ struct WebServer::Impl {
 
     std::shared_ptr<UpdateJobRuntime> update_job_runtime =
         std::make_shared<UpdateJobRuntime>();
+    std::unique_ptr<acecode::themes::ThemeStore> theme_store;
+
+    // 数据目录迁移任务(openspec: data-directory-relocation):同一 daemon 内只允许
+    // 一个;跑的期间消息发送路由返回 409(reject_if_migrating)。
+    std::shared_ptr<acecode::environment::DataDirMigrationJob> data_dir_migration =
+        std::make_shared<acecode::environment::DataDirMigrationJob>();
 
     // Daemon-lifetime global search state. The catalog prewarms independently
     // of HTTP requests; content jobs are short, request-scoped batches.
@@ -527,8 +535,10 @@ struct WebServer::Impl {
     void register_experts();
     void register_loops();
     void register_ui_preferences();
+    void register_themes();
     void register_history();
     void register_files();
+    void register_fs();
     void register_git();
     void register_lsp();
     void register_skills();
@@ -537,8 +547,16 @@ struct WebServer::Impl {
     void register_hooks();
     void register_feedback();
     void register_pty();
+    void register_environment();
     void register_websocket();
     void register_static();
+
+    // Settings → 配置 环境端点的辅助(定义在 routes/routes_environment.cpp)。
+    // *_locked 版本要求调用方已持有 app_config_mu(共享或独占)。
+    nlohmann::json toolchains_payload_locked();
+    nlohmann::json console_config_payload_locked();
+    // 数据目录迁移进行中 → 409,消息发送路由在入队前调用。
+    std::optional<crow::response> reject_if_migrating(const crow::request& req);
 
     // PTY helpers (defined in routes/routes_pty.cpp)
     std::optional<crow::response> require_pty_access(const crow::request& req);

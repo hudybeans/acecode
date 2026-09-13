@@ -12,6 +12,9 @@
 #include <vector>
 
 #include "utils/path_validator.hpp"
+#include "utils/utf8_path.hpp"
+
+#include <filesystem>
 
 namespace acecode {
 
@@ -159,12 +162,8 @@ inline std::string normalize_windows_absolute_for_compare(std::string value) {
     return normalized;
 }
 
-inline bool windows_absolute_is_inside(const std::string& target,
-                                       const std::string& working_dir) {
-    if (!shell_target_is_windows_absolute(target) ||
-        !shell_target_is_windows_absolute(working_dir)) {
-        return false;
-    }
+inline bool windows_absolute_is_inside_lexically(const std::string& target,
+                                                 const std::string& working_dir) {
     const std::string normalized_target =
         normalize_windows_absolute_for_compare(target);
     std::string normalized_root =
@@ -178,8 +177,36 @@ inline bool windows_absolute_is_inside(const std::string& target,
             normalized_target[normalized_root.size()] == '/');
 }
 
-// LOOP Yolo is not a process sandbox, but explicit shell write targets must
-// remain inside the active workspace/worktree root. This helper extracts the
+inline bool windows_absolute_is_inside(const std::string& target,
+                                       const std::string& working_dir) {
+    if (!shell_target_is_windows_absolute(target) ||
+        !shell_target_is_windows_absolute(working_dir)) {
+        return false;
+    }
+#ifdef _WIN32
+    // 本机上先把两侧都 weakly_canonical 再比:用户目录是 junction(C:\Users\x
+    // → N:\Users\x)时,模型写的盘符形态和写边界根的盘符形态可能不同,纯字面
+    // 比较会把 worktree 内部的写入误拦成外部写入。规范化失败退回字面比较,
+    // 非 Windows 宿主保持字面比较(std::filesystem 会把 C:/x 当相对路径)。
+    try {
+        const std::string canonical_target = path_to_utf8(
+            std::filesystem::weakly_canonical(path_from_utf8(target)));
+        const std::string canonical_root = path_to_utf8(
+            std::filesystem::weakly_canonical(path_from_utf8(working_dir)));
+        if (shell_target_is_windows_absolute(canonical_target) &&
+            shell_target_is_windows_absolute(canonical_root) &&
+            windows_absolute_is_inside_lexically(canonical_target, canonical_root)) {
+            return true;
+        }
+    } catch (...) {
+    }
+#endif
+    return windows_absolute_is_inside_lexically(target, working_dir);
+}
+
+// The Yolo write boundary (LOOP execution root / session worktree / a root
+// inherited from the parent session) is not a process sandbox, but explicit
+// shell write targets must remain inside it. This helper extracts the
 // common redirection/cmdlet/copy destinations that command_looks_like_file_write
 // recognizes. Empty result means the command is allowed; otherwise it is a
 // fail-closed reason returned before process execution.
@@ -285,17 +312,17 @@ inline std::string loop_shell_write_escape_reason(const std::string& command,
         })) {
         // Script-level APIs can compute their target dynamically. Without a
         // full language parser the only safe unattended policy is rejection.
-        return "LOOP Yolo blocked a shell write whose target cannot be proven inside the work root";
+        return "Write boundary blocked a shell write whose target cannot be proven inside the write root";
     }
     if (requires_provable_target && targets.empty()) {
-        return "LOOP Yolo blocked a shell write with no provable destination";
+        return "Write boundary blocked a shell write with no provable destination";
     }
 
     PathValidator validator(working_dir, false);
     for (auto target : targets) {
         target = trim_shell_target(std::move(target));
         if (shell_target_is_dynamic(target)) {
-            return "LOOP Yolo blocked a dynamic shell write destination: " + target;
+            return "Write boundary blocked a dynamic shell write destination: " + target;
         }
         // std::filesystem follows the host OS. On Linux, a Windows absolute
         // path such as C:/outside is otherwise treated as relative and may be
@@ -303,13 +330,13 @@ inline std::string loop_shell_write_escape_reason(const std::string& command,
         // lexically so PowerShell/pwsh commands remain guarded on every host.
         if (shell_target_is_windows_absolute(target)) {
             if (!windows_absolute_is_inside(target, working_dir)) {
-                return "LOOP Yolo blocked an external shell write: " + target;
+                return "Write boundary blocked an external shell write: " + target;
             }
             continue;
         }
         const std::string rejection = validator.validate(target);
         if (!rejection.empty()) {
-            return "LOOP Yolo blocked an external shell write: " + target;
+            return "Write boundary blocked an external shell write: " + target;
         }
     }
     return {};

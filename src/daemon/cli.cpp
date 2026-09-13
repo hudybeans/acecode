@@ -1,3 +1,4 @@
+#include "../environment/bootstrap.hpp"
 #include "cli.hpp"
 
 #include "platform.hpp"
@@ -267,6 +268,7 @@ static int do_foreground(const Args& a, const std::string& exe_path) {
 
     append_startup_diagnostic("[daemon] stage=config_load_begin");
     AppConfig cfg = load_config();
+    acecode::environment::bootstrap(cfg, {});
     append_startup_diagnostic("[daemon] stage=config_load_end");
     append_startup_diagnostic("[daemon] stage=default_skills_sync_begin");
     reconcile_default_skills_on_startup(exe_path);

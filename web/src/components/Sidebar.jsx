@@ -19,6 +19,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { SidebarQuickMenu } from './SidebarQuickMenu.jsx';
 import { api } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -46,6 +47,7 @@ import {
 } from '../lib/pinnedSessions.js';
 import { sessionDisplayTitle, withNewSessionDisplayTitles } from '../lib/sessionTitle.js';
 import { pushTrayMenu } from '../lib/desktopTrayMenu.js';
+import { desktopTaskbarBadge, desktopTaskbarBadgeAvailable } from '../lib/desktopTaskbarBadge.js';
 import { usePreference } from '../lib/usePreference.js';
 import {
   SESSION_LIST_CHANGED_EVENT,
@@ -153,6 +155,10 @@ const SessionHoverLifecycleContext = createContext({
   activeOwner: '',
   dispatch: () => {},
 });
+
+// 侧栏显示偏好只有一个消费点在 SessionRow 深处,用 context 而不是逐层透传。
+// 默认 true:漏接线时维持现状(显示时间),不会让这一列凭空消失。
+const SidebarSessionTimeContext = createContext(true);
 
 function sidebarSessionDragKey(workspaceHash, sessionId) {
   const ws = String(workspaceHash || '');
@@ -342,6 +348,7 @@ function startSidebarSessionPointerDrag({
   event,
   session,
   title,
+  showSessionTime = true,
   dragRef,
   conflictingDragRef,
   finishDrag,
@@ -436,7 +443,9 @@ function startSidebarSessionPointerDrag({
     offsetY: event.clientY - rect.top,
     rect,
     title,
-    timeText: relativeTime(session.updated_at || session.created_at),
+    timeText: showSessionTime
+      ? relativeTime(session.updated_at || session.created_at)
+      : '',
     dragging: false,
     cleanup,
   };
@@ -681,6 +690,7 @@ function SessionHoverCard({
   anchorRef,
   cardId,
   session,
+  title,
 }) {
   const cardRef = useRef(null);
   const baseDetails = sessionHoverDetails(session);
@@ -748,7 +758,7 @@ function SessionHoverCard({
       window.removeEventListener('resize', updatePosition);
       document.removeEventListener('scroll', updatePosition, true);
     };
-  }, [anchorRef, details?.branch]);
+  }, [anchorRef, details?.branch, details?.hasWorkspace, details?.updatedAt, title]);
 
   if (!details || typeof document === 'undefined') return null;
 
@@ -768,14 +778,25 @@ function SessionHoverCard({
         visibility: position ? 'visible' : 'hidden',
       }}
     >
+      <div className="ace-session-hover-title">{title}</div>
       <div className="ace-session-hover-detail-row">
         <span className="ace-session-hover-detail-label">工作目录</span>
-        <span className="ace-session-hover-detail-value">{details.cwd}</span>
+        <span className="ace-session-hover-detail-value">
+          {details.hasWorkspace ? details.cwd : '无工作区'}
+        </span>
       </div>
       {details.isGitRepository && (
         <div className="ace-session-hover-detail-row">
           <span className="ace-session-hover-detail-label">Git 分支</span>
           <span className="ace-session-hover-detail-value">{details.branch}</span>
+        </div>
+      )}
+      {details.updatedAt && (
+        <div className="ace-session-hover-detail-row">
+          <span className="ace-session-hover-detail-label">最近活动</span>
+          <span className="ace-session-hover-detail-value">
+            {relativeTime(details.updatedAt)}
+          </span>
         </div>
       )}
     </div>,
@@ -840,7 +861,6 @@ function SidebarSessionTitle({ title, marqueeReady = true }) {
       )}
       data-sidebar-session-title-overflow={metrics.overflowing ? 'true' : 'false'}
       data-sidebar-session-title-complete={marqueeReady ? 'true' : 'false'}
-      title={metrics.overflowing && marqueeReady ? title : undefined}
       style={marqueeStyle}
     >
       <span ref={contentRef} className="ace-sidebar-session-title-content">
@@ -904,6 +924,7 @@ function SessionRow({
   const pointerFocusRef = useRef(false);
   const pointerFocusResetTimerRef = useRef(null);
   const sessionHoverLifecycle = useContext(SessionHoverLifecycleContext);
+  const showSessionTime = useContext(SidebarSessionTimeContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const [remoteControlSurging, setRemoteControlSurging] = useState(false);
@@ -1238,19 +1259,24 @@ function SessionRow({
         {!editing && pendingPermission ? (
           <span
             data-sidebar-permission-prompt="true"
-            className="shrink-0 rounded-full border border-ok-border bg-ok-bg px-2 py-[1px] text-[11px] font-medium leading-[18px] text-ok"
+            className="ace-sidebar-row-idle-slot shrink-0 rounded-full border border-ok-border bg-ok-bg px-2 py-[1px] text-[11px] font-medium leading-[18px] text-ok"
             title="等待用户处理权限请求"
           >
             权限请求
           </span>
         ) : !editing && pendingQuestion ? (
           <span
-            className="shrink-0 rounded-full border border-ok-border bg-ok-bg px-2 py-[1px] text-[11px] font-medium leading-[18px] text-ok"
+            className="ace-sidebar-row-idle-slot shrink-0 rounded-full border border-ok-border bg-ok-bg px-2 py-[1px] text-[11px] font-medium leading-[18px] text-ok"
             title="等待用户回复 AskUserQuestion"
           >
             等待回复
           </span>
         ) : null}
+        {showSessionTime && !editing && !pendingPermission && !pendingQuestion && (
+          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text text-[13px] text-fg-mute shrink-0">
+            {relativeTime(s.updated_at || s.created_at)}
+          </span>
+        )}
         {pinEnabled && (
           <button
             type="button"
@@ -1261,10 +1287,10 @@ function SessionRow({
               onTogglePin?.(s, !pinned);
             }}
             className={clsx(
-              'ace-session-pin-btn w-5 h-7 rounded flex items-center justify-center shrink-0 transition',
+              'ace-session-pin-btn ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 transition',
               pinned
-                ? 'text-accent opacity-100'
-                : 'text-fg-mute hover:text-fg hover:bg-surface-hi opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+                ? 'flex text-accent'
+                : 'hidden group-hover:flex group-focus-within:flex text-fg-mute hover:text-fg hover:bg-surface-hi',
             )}
             title={pinned ? '取消置顶' : '置顶'}
             aria-label={pinned ? '取消置顶' : '置顶'}
@@ -1281,10 +1307,10 @@ function SessionRow({
             onArchive?.(s);
           }}
           className={clsx(
-            'w-5 h-7 rounded flex items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
+            'ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
             sessionMarker
-              ? 'opacity-100'
-              : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+              ? 'flex'
+              : 'hidden group-hover:flex group-focus-within:flex',
           )}
           title="归档"
           aria-label={sessionMarker === 'loop'
@@ -1316,6 +1342,7 @@ function SessionRow({
           anchorRef={rowRef}
           cardId={hoverCardId}
           session={s}
+          title={marqueeTitle}
         />
       )}
     </div>
@@ -1777,8 +1804,15 @@ export function Sidebar({
   workspaceActivationRequest = null,
   onOpenSettingsSection,
   onOpenExpertComponents,
+  onOpenFeedback,
+  onOpenSearch,
+  onAbout,
+  onCheckUpdates,
+  onExit,
+  updateChecking = false,
   pendingPermissionSessionIds = new Set(),
   pendingQuestionSessionIds = new Set(),
+  showSessionTime = true,
 }) {
   const [sessionHoverState, dispatchSessionHover] = useReducer(
     reduceSessionHoverLifecycle,
@@ -2144,6 +2178,7 @@ export function Sidebar({
 
   const handlePinnedPointerDown = useCallback((event, session, title) => {
     startSidebarSessionPointerDrag({
+      showSessionTime,
       event,
       session,
       title,
@@ -2155,7 +2190,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updatePinnedDragTarget,
     });
-  }, [finishPinnedDrag, updatePinnedDragTarget, updateSessionDragScroll]);
+  }, [finishPinnedDrag, showSessionTime, updatePinnedDragTarget, updateSessionDragScroll]);
 
   const updateWorkspaceDragTarget = useCallback((clientY) => {
     const drag = workspaceDragRef.current;
@@ -2200,6 +2235,7 @@ export function Sidebar({
 
   const handleWorkspacePointerDown = useCallback((event, session, title) => {
     startSidebarSessionPointerDrag({
+      showSessionTime,
       event,
       session,
       title,
@@ -2211,7 +2247,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updateWorkspaceDragTarget,
     });
-  }, [finishWorkspaceDrag, updateSessionDragScroll, updateWorkspaceDragTarget]);
+  }, [finishWorkspaceDrag, showSessionTime, updateSessionDragScroll, updateWorkspaceDragTarget]);
 
   useEffect(() => () => {
     pinnedDragRef.current?.cleanup?.();
@@ -2523,8 +2559,9 @@ export function Sidebar({
         }
         return next;
       });
+      desktopTaskbarBadge.retainWorkspaces(withActive.map((w) => w.hash));
       withActive
-        .filter((w) => w.active || w.hash === '__local__' || expandedHashes.has(w.hash) || pinnedWorkspaceHashes.has(w.hash) || w.hash === revealWorkspaceHash)
+        .filter((w) => desktopTaskbarBadgeAvailable() || w.active || w.hash === '__local__' || expandedHashes.has(w.hash) || pinnedWorkspaceHashes.has(w.hash) || w.hash === revealWorkspaceHash)
         .forEach((w) => connection.subscribeWorkspaceStatus(w.hash));
 
       const visibleWorkspaces = withActive.filter((w) => w.active || w.hash === '__local__' || expandedHashes.has(w.hash) || pinnedWorkspaceHashes.has(w.hash) || w.hash === revealWorkspaceHash);
@@ -2536,7 +2573,7 @@ export function Sidebar({
       setSessionWorkspaceLoading(hiddenWorkspaceHashes, false);
       setSessionWorkspaceLoading(visibleWorkspaceHashes, true);
       try {
-        const noWorkspaceListPromise = api.listSessions().catch(() => []);
+        const noWorkspaceListPromise = api.listSessions().catch(() => null);
         const perWorkspace = await Promise.all(visibleWorkspaces.map(async (w) => {
           if (w.hash === '__local__') {
             const list = await api.listSessions();
@@ -2555,6 +2592,7 @@ export function Sidebar({
         const noWorkspaceIncoming = (Array.isArray(noWorkspaceRaw) ? noWorkspaceRaw : [])
           .filter(isNoWorkspaceSession)
           .map(normalizeNoWorkspaceSession);
+        if (Array.isArray(noWorkspaceRaw)) desktopTaskbarBadge.replaceScope('', noWorkspaceIncoming);
         const incomingWorkspaceSessions = perWorkspace.flatMap((item) => (
           (Array.isArray(item.sessions) ? item.sessions : [])
             .filter((session) => !isNoWorkspaceSession(session))
@@ -2636,6 +2674,7 @@ export function Sidebar({
         }
       }
 
+      desktopTaskbarBadge.removeSession(id);
       setSessions((prev) => prev.filter((item) => (item.id || item.session_id || item.sessionId) !== id));
       if (id === activeId) {
         onOpenHome?.(noWorkspace
@@ -2934,9 +2973,13 @@ export function Sidebar({
           };
         }));
       }
+      desktopTaskbarBadge.handleMessage(msg);
     };
     connection.addEventListener('message', handler);
-    return () => connection.removeEventListener('message', handler);
+    return () => {
+      connection.removeEventListener('message', handler);
+      desktopTaskbarBadge.dispose();
+    };
   }, []);
 
   const markSessionRead = useCallback((session) => {
@@ -2949,6 +2992,7 @@ export function Sidebar({
       cursor,
     });
     const optimistic = optimisticReadStatus(merged);
+    if (optimistic) desktopTaskbarBadge.updateStatus(optimistic);
     if (optimistic) setStatusBySession((prev) => applyStatusUpdate(prev, optimistic));
   }, [statusBySession]);
 
@@ -3374,11 +3418,7 @@ export function Sidebar({
       await refresh(ws.hash);
       await onActivate(ws);
     } catch (e) {
-      if (!hasDesktopBridge() && (e.status === 404 || e.status === 501)) {
-        toast({ kind: 'info', text: '需在 desktop webapp 中使用' });
-      } else {
-        toast({ kind: 'err', text: '添加工作区失败:' + (e.message || '') });
-      }
+      toast({ kind: 'err', text: '添加工作区失败:' + (e.message || '') });
     }
   };
 
@@ -3420,6 +3460,7 @@ export function Sidebar({
   return (
     <>
       <SessionHoverLifecycleContext.Provider value={sessionHoverContextValue}>
+      <SidebarSessionTimeContext.Provider value={showSessionTime}>
       <aside
         data-tour-target="sidebar"
         data-collapsed={collapsed ? 'true' : 'false'}
@@ -3431,7 +3472,7 @@ export function Sidebar({
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
         <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 px-[18px] py-3 select-none">
-          <img src="/acecode-logo.png" alt="" width="20" height="20" className="block shrink-0" draggable="false" />
+          <img src="/acecode-logo.png" alt="" width="20" height="20" className="ace-brand-logo block shrink-0" draggable="false" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
             <span className="truncate text-[11px] font-medium leading-none text-fg-mute opacity-75 tabular-nums">
@@ -3622,18 +3663,22 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-footer shrink-0 px-1.5 py-2 flex items-center gap-1">
-          <button
-            data-tour-target="sidebar-settings"
-            type="button"
-            onClick={() => {
-              cancelSessionSelection();
-              onOpenSettingsSection?.('general');
-            }}
-            className="flex-1 min-w-0 flex items-center gap-[7px] px-3 py-1.5 rounded-md text-[12px] text-fg-mute hover:text-fg hover:bg-surface-hi transition text-left"
-          >
-            <span className="w-6 h-6 flex items-center justify-center shrink-0"><VsIcon name="settings" size={20} /></span>
-            <span>设置</span>
-          </button>
+          {!collapsed && (
+            <SidebarQuickMenu
+              data-tour-target="sidebar-settings"
+              sidebarWidth={width}
+              updateChecking={updateChecking}
+              onBeforeOpen={cancelSessionSelection}
+              onNewSession={onNewTask}
+              onOpenLoop={onNewLoop}
+              onOpenSearch={onOpenSearch}
+              onSettings={() => onOpenSettingsSection?.('general')}
+              onAppearance={() => onOpenSettingsSection?.('appearance')}
+              onAbout={onAbout}
+              onCheckUpdates={onCheckUpdates}
+              onExit={onExit}
+            />
+          )}
           <button
             data-tour-target="sidebar-feedback"
             type="button"
@@ -3641,15 +3686,16 @@ export function Sidebar({
             aria-label="问题反馈"
             onClick={() => {
               cancelSessionSelection();
-              onOpenSettingsSection?.('feedback');
+              onOpenFeedback?.();
             }}
-            className="w-8 h-8 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+            className="ml-auto w-8 h-8 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition"
           >
             <VsIcon name="bug" size={18} />
           </button>
         </div>
       </div>
       </aside>
+      </SidebarSessionTimeContext.Provider>
       </SessionHoverLifecycleContext.Provider>
       <OpencodeImportDialog
         dialog={opencodeImportDialog}

@@ -493,4 +493,14 @@ std::vector<std::string> list_worktree_paths(const std::string& cwd) {
     return out;
 }
 
+std::optional<std::vector<std::string>> list_status_lines(const std::string& repo_cwd,
+                                                          int timeout_ms) {
+    if (repo_cwd.empty()) return std::nullopt;
+    auto res = run_git({"--no-optional-locks", "status", "--porcelain",
+                        "--untracked-files=all"},
+                       repo_cwd, timeout_ms);
+    if (!res.ok()) return std::nullopt;
+    return split_lines(res.out);
+}
+
 } // namespace acecode::worktree

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "utils/stream_processing.hpp"
+#include "utils/encoding.hpp"
 
 #include <deque>
 #include <string>
@@ -81,4 +82,37 @@ TEST(FeedLineState, CarriageReturnClearsCurrentLine) {
     EXPECT_EQ(total, 1);
     ASSERT_EQ(tail.size(), 1u);
     EXPECT_EQ(tail.back(), "100%");
+}
+
+TEST(FeedLineState, RepeatedUnterminatedOutputKeepsBoundedLatestPreview) {
+    std::string current;
+    std::deque<std::string> tail;
+    int total = 0;
+    const std::string chunk(65536, 'x');
+    for (int i = 0; i < 1024; ++i) {
+        feed_line_state(chunk, current, tail, total);
+        ASSERT_LE(current.size(), acecode::kToolProgressLineMaxBytes);
+    }
+    feed_line_state("LATEST\n", current, tail, total);
+    EXPECT_TRUE(current.empty());
+    EXPECT_EQ(total, 1);
+    ASSERT_EQ(tail.size(), 1u);
+    EXPECT_EQ(tail.front().substr(tail.front().size() - 6), "LATEST");
+    EXPECT_LE(tail.front().size(), acecode::kToolProgressLineMaxBytes);
+}
+
+TEST(FeedLineState, BoundsCompletedLinesWithoutSplittingUtf8) {
+    std::string current;
+    std::deque<std::string> tail;
+    int total = 0;
+    std::string line;
+    for (int i = 0; i < 10000; ++i) line += "\xe4\xb8\xad";
+    line += '\n';
+    for (int i = 0; i < 12; ++i) feed_line_state(line, current, tail, total);
+    EXPECT_EQ(total, 12);
+    ASSERT_EQ(tail.size(), 5u);
+    for (const auto& preview : tail) {
+        EXPECT_LE(preview.size(), acecode::kToolProgressLineMaxBytes);
+        EXPECT_TRUE(acecode::is_valid_utf8(preview));
+    }
 }

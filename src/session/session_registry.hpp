@@ -84,6 +84,12 @@ struct SessionEntry {
     bool loop_execution = false;
     std::string loop_id;
     std::string loop_run_id;
+    // spawn_subagent 的主 checkout 监视:父会话在 worktree 里时记下派生时刻
+    // 主 checkout 的 git status 行,子会话结束后比对,把绕过 worktree 的写入
+    // 附进 wait 结果(见 spawn_subagent_tool.cpp::append_workspace_watch_report)。
+    // 只在父会话的工具线程上读写。
+    std::string workspace_watch_cwd;
+    std::vector<std::string> workspace_watch_baseline;
     std::shared_ptr<SessionModelBinding> model_binding;
     std::shared_ptr<SkillRegistry>       skill_registry;
     // Inputs required to re-apply a changed global Skill policy without
@@ -303,6 +309,10 @@ public:
     // workspace cwd 下是否有会话正在跑回合。checkout 安全门:agent 写文件
     // 写一半被切分支是数据灾难,保守到整个 workspace 粒度。
     bool any_busy_in_cwd(const std::string& cwd) const;
+
+    // 本 daemon 里是否有任何会话正在跑回合(数据目录迁移的前置门:复制期间
+    // 有会话落盘会让新目录少数据)。
+    bool any_busy() const;
 
     // checkout 成功后标记该 workspace 全部会话的 gitStatus 快照过期
     // (AgentLoop::invalidate_git_snapshot,线程安全)。

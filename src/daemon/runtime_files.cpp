@@ -148,19 +148,25 @@ std::optional<DesktopOwnerRecord> read_desktop_owner_record_path(
 }
 
 #ifdef _WIN32
-DaemonProcessIdentity inspect_daemon_process_identity_impl(std::int64_t pid) {
+std::optional<std::string> process_executable_path_impl(std::int64_t pid) {
+    if (pid <= 0 || pid > static_cast<std::int64_t>(MAXDWORD)) return std::nullopt;
     HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
                              FALSE,
                              static_cast<DWORD>(pid));
-    if (!h) return DaemonProcessIdentity::Unknown;
+    if (!h) return std::nullopt;
 
     std::vector<wchar_t> buffer(32768);
     DWORD size = static_cast<DWORD>(buffer.size());
     BOOL ok = ::QueryFullProcessImageNameW(h, 0, buffer.data(), &size);
     ::CloseHandle(h);
-    if (!ok || size == 0) return DaemonProcessIdentity::Unknown;
+    if (!ok || size == 0) return std::nullopt;
+    return fs::path(std::wstring(buffer.data(), size)).u8string();
+}
 
-    fs::path image(std::wstring(buffer.data(), size));
+DaemonProcessIdentity inspect_daemon_process_identity_impl(std::int64_t pid) {
+    const auto path = process_executable_path_impl(pid);
+    if (!path) return DaemonProcessIdentity::Unknown;
+    fs::path image = fs::u8path(*path);
     std::wstring name = image.filename().wstring();
     std::transform(name.begin(), name.end(), name.begin(),
                    [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
@@ -204,25 +210,32 @@ struct WsaInit {
 
 WsaInit g_wsa_init;
 #else
-DaemonProcessIdentity inspect_daemon_process_identity_impl(std::int64_t pid) {
-    if (pid <= 0) return DaemonProcessIdentity::Unknown;
+std::optional<std::string> process_executable_path_impl(std::int64_t pid) {
+    if (pid <= 0) return std::nullopt;
     fs::path image;
 #ifdef __APPLE__
     std::vector<char> buffer(PROC_PIDPATHINFO_MAXSIZE);
     const int length = ::proc_pidpath(
         static_cast<int>(pid), buffer.data(), static_cast<uint32_t>(buffer.size()));
-    if (length <= 0) return DaemonProcessIdentity::Unknown;
+    if (length <= 0) return std::nullopt;
     image = fs::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
 #elif defined(__linux__)
     std::vector<char> buffer(4096);
     const std::string proc_path = "/proc/" + std::to_string(pid) + "/exe";
     const ssize_t length = ::readlink(proc_path.c_str(), buffer.data(), buffer.size() - 1);
-    if (length <= 0) return DaemonProcessIdentity::Unknown;
+    if (length <= 0) return std::nullopt;
     buffer[static_cast<std::size_t>(length)] = '\0';
     image = fs::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
 #else
-    return DaemonProcessIdentity::Unknown;
+    return std::nullopt;
 #endif
+    return image.u8string();
+}
+
+DaemonProcessIdentity inspect_daemon_process_identity_impl(std::int64_t pid) {
+    const auto path = process_executable_path_impl(pid);
+    if (!path) return DaemonProcessIdentity::Unknown;
+    const fs::path image = fs::u8path(*path);
     std::string name = image.filename().string();
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -308,6 +321,10 @@ std::string port_desc(int port) {
 
 DaemonProcessIdentity inspect_daemon_process_identity(std::int64_t pid) {
     return inspect_daemon_process_identity_impl(pid);
+}
+
+std::optional<std::string> process_executable_path(std::int64_t pid) {
+    return process_executable_path_impl(pid);
 }
 
 std::optional<std::int64_t> process_start_time_ms(std::int64_t pid) {

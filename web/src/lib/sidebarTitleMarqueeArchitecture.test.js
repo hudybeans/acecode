@@ -39,7 +39,7 @@ test('SessionRow measures only its non-editing title viewport', () => {
   assert.match(titleComponent, /metrics\.overflowing && 'is-overflowing'/);
   assert.match(titleComponent, /metrics\.overflowing && marqueeReady && 'is-marquee-ready'/);
   assert.match(titleComponent, /data-sidebar-session-title-complete=\{marqueeReady \? 'true' : 'false'\}/);
-  assert.match(titleComponent, /title=\{metrics\.overflowing && marqueeReady \? title : undefined\}/);
+  assert.doesNotMatch(titleComponent, /\btitle=\{/);
   assert.match(row, /sidebarTitleHydrationState\(s, title\)/);
   assert.match(
     row,

@@ -34,6 +34,14 @@ export const TOPBAR_QUICK_ACTIONS = Object.freeze([
     group: 'application',
   }),
   Object.freeze({
+    id: 'appearance',
+    label: '外观',
+    icon: 'palette',
+    iconSize: 16,
+    callback: 'onAppearance',
+    group: 'application',
+  }),
+  Object.freeze({
     id: 'about',
     label: '关于 ACECode',
     icon: 'info',

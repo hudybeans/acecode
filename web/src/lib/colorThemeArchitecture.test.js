@@ -29,7 +29,7 @@ function cssRuleBody(styles, selector) {
   return styles.slice(bodyStart, end);
 }
 
-run('ThemeProvider adds color theme without changing the dark-mode contract', () => {
+run('ThemeProvider preserves the ordinary mode independently of installed themes', () => {
   const theme = source('theme.jsx');
 
   assert.match(theme, /const STORAGE_KEY = 'ace\.theme';/);
@@ -39,15 +39,15 @@ run('ThemeProvider adds color theme without changing the dark-mode contract', ()
   );
   assert.match(
     theme,
-    /usePreference\(\s*STORAGE_KEY,\s*effectiveAppearanceTheme\(initialAppearance\.theme\),\s*isValidTheme,?\s*\)/,
+    /usePreference\(\s*STORAGE_KEY,\s*initialAppearance\.theme,\s*isValidTheme,?\s*\)/,
   );
   assert.match(
     theme,
-    /setTheme\(\(t\) => \(t === 'dark' \? 'light' : 'dark'\)\)/,
+    /setTheme\(theme === 'dark' \? 'light' : 'dark'\)/,
   );
   assert.match(
     theme,
-    /setTheme\(t === 'dark' \? 'dark' : 'light'\)/,
+    /setTheme\(isValidTheme\(t\) \? t : 'system'\)/,
   );
   assert.match(theme, /COLOR_THEME_STORAGE_KEY,[\s\S]*DEFAULT_COLOR_THEME,[\s\S]*isValidColorTheme/);
   assert.match(
@@ -56,7 +56,7 @@ run('ThemeProvider adds color theme without changing the dark-mode contract', ()
   );
   assert.match(
     theme,
-    /value=\{\{ theme, colorTheme, toggle, set, setColorTheme \}\}/,
+    /value=\{\{ theme, themeMode, colorTheme, toggle, set, setColorTheme, prepareTheme \}\}/,
   );
 });
 
@@ -69,7 +69,7 @@ run('ThemeProvider applies both root attributes before native background sync', 
   assert.ok(modeAttribute >= 0);
   assert.ok(colorAttribute > modeAttribute);
   assert.ok(nativeSync > colorAttribute);
-  assert.match(theme, /\}, \[colorTheme, theme\]\);/);
+  assert.match(theme, /\}, \[colorTheme, theme, installedTheme\]\);/);
 });
 
 run('Appearance settings separate color cards from the dark-mode toggle', () => {
@@ -79,8 +79,9 @@ run('Appearance settings separate color cards from the dark-mode toggle', () => 
     settings,
     /const COLOR_THEME_OPTIONS = \[\s*\{ key: 'blue', label: '蓝色' \},\s*\{ key: 'orange', label: '橙色' \},\s*\];/,
   );
-  assert.match(settings, /const active = colorTheme === opt\.key;/);
-  assert.match(settings, /onClick=\{\(\) => setColorTheme\(opt\.key\)\}/);
+  assert.match(settings, /<ThemeCards options=\{COLOR_THEME_OPTIONS\} selected=\{colorTheme\}/);
+  assert.match(settings, /onSelect=\{setColorTheme\} downloads=\{themeDownloads\}/);
+  assert.match(settings, /colorTheme !== EVA_THEME_ID/);
   assert.match(settings, /<div className="text-\[13px\] font-medium">暗黑模式<\/div>/);
   assert.match(
     settings,
@@ -134,11 +135,11 @@ run('global tokens define unchanged blue and complete orange light-dark pairs', 
 });
 
 run('theme previews and primary consumers use CSS-owned theme colors', () => {
-  const settings = source('components/SettingsPage.jsx');
+  const settings = source('components/ThemeCards.jsx');
   const styles = source('styles/globals.css');
   const guidedTour = source('components/DesktopGuidedTour.jsx');
 
-  assert.match(settings, /`ace-theme-preview-\$\{opt\.key\}`/);
+  assert.match(settings, /`ace-theme-preview-\$\{option\.key\}`/);
   assert.match(settings, /ace-theme-preview-bg/);
   assert.match(settings, /ace-theme-preview-surface/);
   assert.match(settings, /ace-theme-preview-accent/);

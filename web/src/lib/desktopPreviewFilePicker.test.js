@@ -3,6 +3,7 @@ import {
   hasNativePreviewFilePicker,
   parseNativePreviewFilePickerResult,
   pickNativePreviewFile,
+  pickPreviewFile,
 } from './desktopPreviewFilePicker.js';
 
 async function run(name, fn) {
@@ -88,4 +89,40 @@ await run('preview file picker refuses to run without the native bridge', async 
     () => pickNativePreviewFile('N:\\work\\acecode', {}),
     /原生选择器不可用/,
   );
+});
+
+// 场景:没有 Desktop bridge 的页面点「打开文件」。期望:走 web 路径选择器的文件模式,
+// 起始目录 = 会话 cwd,透传 api;选中后与原生路径同形状返回,取消同样按 cancelled 处理。
+await run('preview file picker falls back to the web picker without the native bridge', async () => {
+  const calls = [];
+  const api = { fsList() {} };
+  const picked = await pickPreviewFile('N:\\work\\acecode', {
+    win: {},
+    api,
+    webPicker: async (options) => {
+      calls.push(options);
+      return { path: 'N:/work/acecode/README.md', kind: 'file' };
+    },
+  });
+  assert.deepEqual(calls, [{ mode: 'file', initialPath: 'N:\\work\\acecode', purpose: 'preview', api }]);
+  assert.deepEqual(picked, { cancelled: false, path: 'N:/work/acecode/README.md' });
+
+  const cancelled = await pickPreviewFile('N:\\work\\acecode', {
+    win: {},
+    webPicker: async () => null,
+  });
+  assert.deepEqual(cancelled, { cancelled: true, path: '' });
+});
+
+// 场景:有专用原生文件选择器。期望:优先原生,web 选择器不被调用。
+await run('preview file picker prefers the native bridge when present', async () => {
+  const picked = await pickPreviewFile('N:\\work\\acecode', {
+    win: {
+      async aceDesktop_pickPreviewFile() {
+        return JSON.stringify({ ok: true, cancelled: false, path: 'N:\\work\\acecode\\CLAUDE.md' });
+      },
+    },
+    webPicker: async () => { throw new Error('unexpected web picker'); },
+  });
+  assert.deepEqual(picked, { cancelled: false, path: 'N:\\work\\acecode\\CLAUDE.md' });
 });

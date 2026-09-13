@@ -180,7 +180,8 @@ test('all real composers host the picker in place and opening prompts use atomic
   const sidebar = source('components/Sidebar.jsx');
   const app = source('App.jsx');
 
-  assert.equal((chat.match(/<ExpertPickerDialog/g) || []).length, 2);
+  // Home and session composers now share the outer workspace layout and picker.
+  assert.equal((chat.match(/<ExpertPickerDialog/g) || []).length, 1);
   assert.match(chat, /setExpertPickerOpen\(true\)/);
   assert.match(chat, /selectComposerExpert\(expert, \{ draftText: String\(prompt \|\| ''\) \}\)/);
   assert.match(chat, /api\.setSessionExpert\(targetSessionId, expertId, requestOptions\)/);

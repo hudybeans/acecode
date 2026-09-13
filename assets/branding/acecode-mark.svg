@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="512"
+  height="512"
+  viewBox="0 0 512 512"
+  fill="none"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">ACECode mark</title>
+  <desc id="description">The original white A and cyan terminal prompt with a thin blue-gray outline and a crisp shadow cast toward the lower right, on a transparent background.</desc>
+
+  <defs>
+    <linearGradient id="letter" x1="92" y1="126" x2="314" y2="388" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white"/>
+      <stop offset="1" stop-color="#E0F2FE"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="345" y1="199" x2="432" y2="313" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CFFAFE"/>
+      <stop offset="1" stop-color="#67E8F9"/>
+    </linearGradient>
+    <filter id="mark-shadow" x="32" y="88" width="488" height="368" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow id="shadow-projection" dx="12" dy="12" stdDeviation="0" flood-color="#263343" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <g transform="translate(-16 -6)" filter="url(#mark-shadow)">
+    <path
+      id="letter-shape"
+      fill="url(#letter)"
+      stroke="#486879"
+      stroke-width="4"
+      stroke-linejoin="miter"
+      paint-order="stroke fill"
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M73 384L164.5 139.5C169.1 127.2 178.3 121 192 121H210C223.7 121 232.9 127.2 237.5 139.5L329 384H265L245.7 326H154.3L135 384H73ZM174.7 266H225.3L200.3 190.8L174.7 266Z"
+    />
+    <path
+      id="prompt-outline"
+      d="M348 203L431 256L348 309"
+      stroke="#486879"
+      stroke-width="42"
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+    />
+    <path
+      id="prompt-shape"
+      d="M348 203L431 256L348 309"
+      stroke="url(#prompt)"
+      stroke-width="38"
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+    />
+  </g>
+</svg>

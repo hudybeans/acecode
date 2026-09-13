@@ -19,6 +19,32 @@ ACECode ships one main executable with terminal TUI and daemon subcommands, plus
 
 ## Build And Verification Notes
 
+Settings environment configuration is implemented in `src/environment/` and
+`src/web/routes/routes_environment.cpp`. `bootstrap.cpp` runs after config loading
+in TUI, daemon (including Windows service) and headless startup; headless does not
+persist automatic detection. Terminal launch probes feed one runtime snapshot for
+the Agent command tool, prompt guidance and new console terminals. Validate and
+save a complete console draft before publishing that snapshot.
+
+`toolchains.cpp` preserves the original process PATH and rebuilds its configured
+prefix on each save, so clearing a directory restores original system entries.
+First-launch detection is recorded in `state.json`; explicit re-detection uses the
+original PATH and skips Windows Store Python aliases.
+
+`paths.cpp` reads `data-dir.redirect.json` from the platform default root and caches
+the effective root until restart. Migration copies to private staging, snapshots
+SQLite with its backup API, validates the source/target again and then writes the
+pointer. It refuses busy sessions, open PTYs and other live daemons. The shared
+write gate remains closed after success until restart; failure reopens it and
+resumes the scheduler. Never delete a failed validation target or the live root.
+Backup deletion verifies the pointer and preserves it when cleaning the default root.
+
+The Settings shell uses open groups in `globals.css`; user-provided Claude-style
+references supersede the older boxed-card guidance for this surface.
+`settingsSearch.js` indexes bilingual labels and aliases; SettingsPage locates the
+rendered label and applies an accent-colored wavy underline without rewriting React
+text nodes. The new path row is mounted only after Change is activated.
+
 Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important local facts:
 
 - `acecode_testable` is the shared object library for headless logic and unit tests.
@@ -136,7 +162,9 @@ worktree 落在**主仓根**的 `.acecode/worktrees/<slug>`,分支 `worktree-<fl
 
 工具 `EnterWorktree` / `ExitWorktree`([src/tool/worktree_tool.cpp](src/tool/worktree_tool.cpp))经 `builtin_tool_registry` 双端注册;工具描述写死"仅用户明确提到 worktree 才可调用"。会话切换 = `AgentLoop::set_cwd`(经 `ToolContext::switch_session_cwd` 回调注入,重建 PathValidator;**会话存储位置不动** —— worktree 是同一项目的临时工作区)。状态 `WorktreeSessionInfo` 挂在 `SessionManager` 并持久化到 meta 的 `worktree_session` 字段(inactive 省略,老 meta 兼容);TUI/daemon resume 都会恢复进 worktree(目录已被外部删除则清状态)。system prompt 的 `# Environment` 会标出当前是否在会话 worktree 里;合回 master/main 或"回到主干"必须再调 `ExitWorktree`,git merge/checkout 不算退出,Desktop 图标也不会消失。`ExitWorktree remove` 的安全门 fail-closed:`count_worktree_changes` 数不清(git 失败/缺基线)或有未提交文件/新提交时拒绝,必须 `discard_changes:true`。
 
-CLI `--worktree [name]` / `-w`(TUI):启动即建 worktree,name 可为 PR 引用(`#123` / GitHub PR URL → fetch `pull/N/head`,slug=`pr-N`);此时 worktree 就是项目根(日志/workspace/会话存储都在里面),与工具中途进入的 throwaway 语义不同。TUI 退出时:无变更静默删除,有变更(或数不清)保留并提示,`--resume` 恢复进去。新建 worktree 的后处理:`core.hooksPath` 指回主仓(.husky 优先)、`config.worktree.symlink_directories` symlink、`.worktreeinclude`(gitignore 语法)声明的 gitignored 文件拷贝(`ls-files --directory` 折叠目录 + 按需展开,防大仓库全量遍历)。`config.worktree.sparse_paths` 走 sparse-checkout cone 模式。**未复刻**(有意偏离):tmux 集成(POSIX-only)、WorktreeCreate/Remove hook 替换 VCS、交互式退出对话框(现为"有变更即保留"的安全默认)、spawn_subagent 的 worktree 隔离。测试:[tests/worktree/](tests/worktree/)(core 纯逻辑 + 真实 git 集成 + 工具端到端)。
+CLI `--worktree [name]` / `-w`(TUI):启动即建 worktree,name 可为 PR 引用(`#123` / GitHub PR URL → fetch `pull/N/head`,slug=`pr-N`);此时 worktree 就是项目根(日志/workspace/会话存储都在里面),与工具中途进入的 throwaway 语义不同。TUI 退出时:无变更静默删除,有变更(或数不清)保留并提示,`--resume` 恢复进去。新建 worktree 的后处理:`core.hooksPath` 指回主仓(.husky 优先)、`config.worktree.symlink_directories` symlink、`.worktreeinclude`(gitignore 语法)声明的 gitignored 文件拷贝(`ls-files --directory` 折叠目录 + 按需展开,防大仓库全量遍历)。`config.worktree.sparse_paths` 走 sparse-checkout cone 模式。**未复刻**(有意偏离):tmux 集成(POSIX-only)、WorktreeCreate/Remove hook 替换 VCS、交互式退出对话框(现为"有变更即保留"的安全默认)。spawn_subagent 也不复刻 Claude Code 的 `isolation: worktree`(子代理各建 worktree),子会话**共享父会话的 worktree 并继承写边界**,见下段。测试:[tests/worktree/](tests/worktree/)(core 纯逻辑 + 真实 git 集成 + 工具端到端)。
+
+**写边界与子代理继承(fix-subagent-write-boundary)。** 起因是一次线上排障:同事的 LOOP 在 worktree 里派了 5 个子代理,IM 模块那个把改动写进了主 checkout。根因有三条,都是"隔离只罩住一个会话对象、不随会话树传递":(1) `spawn_subagent` 只把 `ctx.cwd`(worktree 路径)当普通 cwd 交给子会话,`loop_execution` / WorktreeSessionInfo 都不传,子会话的系统提示说自己 "Session worktree: inactive";(2) `is_cwd_validation_exempt` 让 Yolo 会话跳过全部路径校验,只有 LOOP 主会话被补回一道 `PathValidator(cwd_)` 边界,子会话继承了 Yolo 却不是 LOOP 会话,两头都不沾;(3) 项目指令加载器从 worktree 一路向上走到 HOME,把主 checkout 的 AGENTS.md 再加载一遍并带上绝对路径 Source 头,等于把主仓路径喂给模型。现在:`AgentLoop::write_root()`(会话 worktree > LOOP 策略 > 继承的 `inherited_write_root_`)非空即有写边界,Yolo 不再免除,只有 dangerous 整体放行;文件工具报 `Write boundary blocked`,bash 走 `agent_loop_shell_guard.hpp` 的可证明写目标守卫(Windows 上两侧先 weakly_canonical,junction 形态不同不误拦)。`spawn_subagent` 让子会话共享父会话的 worktree(`SessionOptions::inherited_worktree`,meta `worktree_session.inherited=true`,`entry->cwd` 取 `original_cwd` 与父会话同 project dir,AgentLoop cwd 切进 worktree)、继承 LOOP 策略与 `ToolContext::write_root`;`EnterWorktree` / `ExitWorktree` 对继承者拒绝;`wait_subagent` 用 `AgentLoop::last_turn_failed()` 把夭折的子会话报成 ChildFailed 而不是 completed;指令加载器在 linked worktree 根(`.git` 指针含 `/.git/worktrees/`)止步。事后兜底:spawn 在父会话处于 worktree 时记主 checkout 的 `git status --porcelain` 快照,wait 结束比对并把 worktree 之外新出现的路径附进结果(`metadata.workspace_touched`);LOOP 调度器对建了 worktree 的 run 做同样的事,结果进 `loop_runs.workspace_touched`(schema v3),Web 循环页显示警告。**守卫不是沙箱**:`cd 主仓 && node fix.js` 这类动态写入只能靠事后检测发现;进程级沙箱落地后 bash 守卫可退役,但文件工具那道边界要留 —— 它们在 daemon 进程内执行,沙箱管不到(Codex 的 apply_patch 绕过 `--add-dir` 就是同一个洞)。回归测试见 [docs/subagents.md](docs/subagents.md) 的测试地图。
 
 ## Skills, Memory, And Project Instructions
 
@@ -233,7 +261,7 @@ revision stale so a later send retries.
 失效」的兼容代码。通用路径只留一个兜底调用点,判定逻辑全在这里,便于上游修好
 之后整块删掉。**不硬编码服务地址、模型名、业务名词,只按报文特征判定。**
 
-当前两条,都围绕同一个症状(内网模型的最大上下文声明值不准,会提前报 400):
+当前三条,前两条围绕同一个症状(内网模型的最大上下文声明值不准,会提前报 400),第三条是它们的兜底:
 
 1. **上下文超限错误认不出**(`pa_quirks`)。实测报文
    `{"object":"error","message":"请求上下文过大","type":"BadRequestError","code":400}`
@@ -249,6 +277,14 @@ revision stale so a later send retries.
    `ceil(bytes/4)` 估算在中文上系统性偏低约 25% 的偏差)。撞过墙才生效,进程级
    不落盘。观测点是 `note_pa_context_rejection` / `note_pa_context_accepted`,
    两个都收在 `handle_provider_error` 里。
+3. **随机拒收绝不终止回合**(`pa_overflow_rescue`)。服务端实际能收的规模随
+   负载浮动,同一规模的请求时过时不过。PA 特征的整体拒收不走通用三级恢复链,
+   改走 `AgentLoop::run_pa_overflow_rescue`:原样重发 2 次 → 每次被拒缩到
+   上一次的 85%(先丢老回合,再清本回合旧工具输出 / 大参数,
+   `ThreadRepairOptions::clear_tool_outputs`)无上限 → 紧急档 → 5s 起封顶
+   60s 的退避等待最多 12 次,只有等待耗尽才报错。兜底后的那次重发跳过自动
+   压缩(`skip_auto_compact_once_`);请求被收下即清零 episode,同回合再被拒
+   重新开始。学习器只记每个 episode 最初确认拒收的规模,紧急档请求永远不记。
 
 **改这块前必读 README 里那三条坑**:观测「要么可信要么整条丢弃」没有中间态
 (第一版拿可信下限当收敛下界用,一次 2726 token 的拒绝把 128000 的窗口砍到
@@ -384,6 +420,7 @@ SidePanel 折叠 UI:`ChatView` 把 `SidePanel` 包到 `<div class="ace-side-pane
 | `GET /api/commands?workspace=<hash>` → `{builtins:[{name,description}][, skills:[{name,description}]]}` | InputBar 斜杠下拉的命令清单。builtins **硬编码白名单 = init + compact**(描述与 TUI `register_builtin_commands` / `register_init_command` 对齐)。**`workspace` 参数(由 `expand-webui-skill-commands` 引入)**:缺省 → 不返回 `skills` 字段(向后兼容旧客户端);提供 → handler 用 `acecode::initialize_skill_registry(tmp, *cfg, workspace_cwd)` 临时构造一个 SkillRegistry 扫该 workspace 的项目链(`.agent/skills`、`.acecode/skills` + 全局 + external_dirs),与 daemon 全局 SkillRegistry 合并(workspace local 优先,first-wins by name),按字典序输出 skills 字段。`/init` `/compact` 在 web 端选中后只插入输入框 + chip 高亮,daemon 端**不**做特殊执行(原 add-webui-slash-commands 决策);`/<skill-name> args` 由下面新加的 expander 真展开。实现:`src/web/handlers/commands_handler.{hpp,cpp}`(纯函数 `build_commands_payload` + gtest case)|
 | `POST /api/sessions/:id/messages`(行为扩展) | `expand-webui-skill-commands` 引入:在 `send_input` 之前调 `try_expand_skill_command(text, registry)`(`src/web/handlers/skill_command_expander.{hpp,cpp}`)。命中已知 skill 名(按 session 的 workspace cwd 临时 scan)→ text 被替换为 `build_skill_invocation_hint(meta, args)` 的**轻量提示**:`[SYSTEM: User invoked /<name> skill] + Description + Use skill_view(name=...) to load full SKILL.md + User's request: <args>`。**不**注入 SKILL.md body / supporting_files,LLM 第一次看到提示后主动 invoke `skill_view` tool 把 SKILL.md 拉一次进 context,后续重复同名 `/skill` 调用不再注入(避免 context 膨胀)。TUI `src/skills/skill_commands.cpp::cmd.execute` 也走同一个 `build_skill_invocation_hint`,跨端行为统一。Builtin (`/init`/`/compact`) 不在 SkillRegistry 中 → 透传走普通 user message;未知命令 (`/foobar`) 同样透传。**不**新增执行端点,**不**改 AgentLoop API |
 | `POST /api/open-in-explorer` body `{path}` → `{ok:true}` / 400 `{ok:false,error}` / 501 | webapp 兼容模式(Edge --app,无 webview bridge)右键菜单「在资源管理器中打开」的 REST 通路。门控 = `WebServerDeps.open_in_explorer` 回调是否注入(worker.cpp 仅在 `native_folder_picker_enabled` 时填,复用 `desktop::open_path_in_file_manager`:接受任意现存本地绝对普通文件或目录,不做 workspace/managed-root 边界判断)。Windows 文件用 Explorer `/select` 选中,目录保持直接打开。前端 `DesktopContextMenu::openTargetInExplorer` bridge 优先、REST 兜底 |
+| `GET /api/fs/roots` → `{host, os, home, roots[{path,label,drive_type,total_bytes?,free_bytes?}], quick[{kind,path}], workspaces[{hash,name,path}]}` / `GET /api/fs/list?path=<abs>&show_hidden=1` → `{path, parent, truncated, entries[{name,path,kind,hidden,size?,modified_ms?,link_target?}]}` | Web「选择文件 / 文件夹」弹窗(`add-web-path-picker`)的服务端目录浏览器:**已鉴权即可只读浏览 daemon 全盘**,不走 `/api/files` 的 workspace 白名单,噪音目录不过滤,junction 照常列出并附 `link_target`;路径只做词法归一**不 canonical**(经 `C:\Users\shao` junction 进入返回的仍是 `C:/...`,与原生对话框一致,否则同一目录会注册出两个 workspace hash);5000 条上限置 `truncated`;`ec.message()` 在中文 Windows 是 GBK,入 JSON 前必须 `ensure_utf8`,否则 dump 抛异常整个请求变裸 500。触发策略:有 Desktop bridge 走原生对话框,没有(普通浏览器 / Edge --app 兼容模式 / 远程 Web)一律 web 弹窗,不再调用 daemon 的原生 REST 对话框(那会在 daemon 所在机器桌面弹框并把请求挂死)。实现:`src/web/handlers/fs_browser_handler.{hpp,cpp}` 纯函数 + `routes_fs.cpp`;前端 `lib/pathPicker.js`(纯逻辑)+ `lib/pathPickerHost.js`(Promise 形态的单实例请求)+ `components/PathPickerModal.jsx` / `PathPickerHost.jsx`(App 顶层挂载),三处接入点 `lib/workspacePicker.js` / `lib/environmentSettings.js::pickEnvironmentPath` / `lib/desktopPreviewFilePicker.js::pickPreviewFile` |
 
 `SessionMeta` 增加 `forked_from` / `fork_message_id` 字段(空时省略,老 meta 文件向后兼容)。Web 上每条消息 hover 浮出 `[复制] [分叉]` actions(codex 风格);分叉成功后立刻切到新 session(同 sidebar)。
 

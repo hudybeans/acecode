@@ -578,6 +578,67 @@ TEST(DaemonPool, PolicyAwareShutdownReleasesWhenKeepAliveEnabled) {
     EXPECT_EQ(state->stop_calls.load(), 0);
 }
 
+TEST(DaemonPool, UpgradeRestartStopsInsteadOfReleasingAndPreservesPreference) {
+    auto state = std::make_shared<MockSupervisor::SharedState>();
+    DaemonPool pool;
+    pool.set_keep_alive_on_exit(true);
+    pool.set_supervisor_factory_for_test([&] {
+        return std::unique_ptr<IDaemonSupervisor>(new MockSupervisor(state));
+    });
+    ASSERT_TRUE(pool.activate(make_request("upgrade")).ok);
+    const auto failures = pool.shutdown_all(acecode::desktop::DaemonShutdownReason::UpgradeRestart);
+    EXPECT_TRUE(failures.empty());
+    EXPECT_EQ(state->release_calls.load(), 0);
+    EXPECT_EQ(state->stop_calls.load(), 1);
+    EXPECT_TRUE(pool.keep_alive_on_exit());
+    EXPECT_TRUE(state->last_keep_alive.load());
+}
+
+TEST(DaemonPool, UpgradeRestartReportsBackendThatSurvivesStop) {
+    auto state = std::make_shared<MockSupervisor::SharedState>();
+    DaemonPool pool;
+    pool.set_keep_alive_on_exit(true);
+    pool.set_supervisor_factory_for_test([&] {
+        return std::unique_ptr<IDaemonSupervisor>(new MockSupervisor(state));
+    });
+    ASSERT_TRUE(pool.activate(make_request("surviving")).ok);
+    state->running_should_succeed.store(true);
+    const auto failures = pool.shutdown_all(acecode::desktop::DaemonShutdownReason::UpgradeRestart);
+    ASSERT_EQ(failures.size(), 1u);
+    EXPECT_NE(failures.front().second.find("did not exit"), std::string::npos);
+    EXPECT_EQ(pool.lookup("surviving").state, DaemonState::Running);
+    EXPECT_EQ(state->release_calls.load(), 0);
+    state->running_should_succeed.store(false);
+}
+
+TEST(DaemonPool, InstallationCompatibilityRequiresSameVersionAndExecutable) {
+    TempRunDir temp("acecode-installation-compatibility");
+    const auto first = temp.path() / "acecode.exe";
+    const auto second = temp.path() / "other-acecode.exe";
+    write_runtime_text(first, "first");
+    write_runtime_text(second, "second");
+    using acecode::desktop::managed_daemon_installation_action;
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "0.9.14", first.u8string(), first.u8string()),
+              ExistingDaemonAction::Reuse);
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "0.9.13", first.u8string(), first.u8string()),
+              ExistingDaemonAction::Replace);
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "", first.u8string(), first.u8string()),
+              ExistingDaemonAction::Replace);
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "0.9.14", first.u8string(), second.u8string()),
+              ExistingDaemonAction::Replace);
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "0.9.14", first.u8string(), ""),
+              ExistingDaemonAction::Unsafe);
+    EXPECT_EQ(managed_daemon_installation_action("0.9.14", "0.9.14", first.u8string(),
+              (temp.path() / "missing.exe").u8string()), ExistingDaemonAction::Unsafe);
+}
+
+TEST(DaemonPool, ProcessExecutablePathComesFromLiveOperatingSystemIdentity) {
+    const auto path = acecode::daemon::process_executable_path(acecode::daemon::current_pid());
+    ASSERT_TRUE(path.has_value());
+    EXPECT_TRUE(fs::is_regular_file(fs::u8path(*path)));
+    EXPECT_FALSE(acecode::daemon::process_executable_path(0).has_value());
+}
+
 TEST(DaemonPool, DisablingKeepAliveDoesNotStopUntilShutdown) {
     auto state = std::make_shared<MockSupervisor::SharedState>();
     DaemonPool pool;

@@ -38,7 +38,8 @@ run('Settings uses a blocking mask and an accessible expandable dialog', () => {
   assert.match(settings, /aria-labelledby="settings-window-title"/);
   assert.match(settings, /data-expanded=\{expanded \? 'true' : 'false'\}/);
   assert.match(settings, /name=\{expanded \? 'screenNormal' : 'screenFull'\}/);
-  assert.match(settings, /border-b border-border shrink-0 select-none/);
+  assert.match(settings, /id="settings-window-title" className="sr-only"/);
+  assert.doesNotMatch(settings, /ace-settings-titlebar/);
   assert.match(settings, /<nav className="[^"]*shrink-0 select-none"/);
   assert.doesNotMatch(settings, /<WindowControls/);
 });
@@ -62,7 +63,7 @@ run('Settings panel keeps normal caps and an exact 13px expanded inset', () => {
 
 run('upgrade URL and personalization editors save on blur without save buttons', () => {
   const settings = source('components/SettingsPage.jsx');
-  const config = between(settings, 'function SectionConfig()', '// ─── 个性化');
+  const config = source('components/SettingsConfigSection.jsx');
   const personalization = between(settings, 'function SectionPersonalization()', '// ─── 技能');
 
   assert.match(config, /onBlur=\{\(\) => \{ void saveUpgradeUrl\(\); \}\}/);

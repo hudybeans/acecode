@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTheme } from '../theme.jsx';
+import { EVA_THEME_ID } from '../lib/themePackages.js';
 import {
   IDLE_LOGO_LIGHT_RADIUS_PX,
   MAX_LIGHT_DISTANCE_PX,
@@ -489,13 +491,16 @@ function compileShader(gl, type, source) {
 }
 
 export default function InteractiveHomeLogo({ className = '', enabled = true }) {
+  const { colorTheme } = useTheme();
+  const isEvaTheme = colorTheme === EVA_THEME_ID;
+  const animated = enabled && !isEvaTheme;
   const canvasRef = useRef(null);
   const [rendererRevision, setRendererRevision] = useState(0);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     setReady(false);
-    if (!enabled) return undefined;
+    if (!animated) return undefined;
 
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -828,15 +833,15 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
         gl.deleteShader(vertexShader);
       }
     };
-  }, [enabled, rendererRevision]);
+  }, [animated, rendererRevision]);
 
   return (
     <div
-      className={`ace-home-logo ${className}`.trim()}
+      className={`ace-home-logo ace-brand-logo ${className}`.trim()}
       role="img"
       aria-label="ACECode"
-      data-dynamic-logo-ready={enabled && ready ? 'true' : 'false'}
-      data-dynamic-logo-fallback={enabled ? undefined : 'session-visited'}
+      data-dynamic-logo-ready={animated && ready ? 'true' : 'false'}
+      data-dynamic-logo-fallback={isEvaTheme ? 'theme' : enabled ? undefined : 'session-visited'}
     >
       <img
         src="/acecode-logo.png"
@@ -847,7 +852,7 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
         draggable="false"
         aria-hidden="true"
       />
-      {enabled && (
+      {animated && (
         <canvas
           ref={canvasRef}
           width={CANVAS_SIZE}

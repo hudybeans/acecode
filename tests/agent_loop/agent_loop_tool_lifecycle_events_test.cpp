@@ -11,6 +11,7 @@
 #include "session/event_dispatcher.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_storage.hpp"
+#include "session/tool_result_storage.hpp"
 #include "session/turn_net_diff.hpp"
 #include "stub_provider.hpp"
 #include "tool/file_edit_tool.hpp"
@@ -146,6 +147,21 @@ public:
         session_manager_.start_session(cwd_, "stub", "stub-model");
         loop_->set_session_manager(&session_manager_);
     }
+    // 写边界测试用:把会话置入 worktree(SessionManager 记状态 + AgentLoop 切
+    // cwd),与 EnterWorktree / enter_worktree_for_web / spawn 继承同一形态。
+    void enter_worktree(const std::string& worktree_path, const std::string& original_cwd) {
+        acecode::WorktreeSessionInfo info;
+        info.original_cwd = original_cwd;
+        info.worktree_path = worktree_path;
+        info.worktree_name = "wt";
+        info.worktree_branch = "worktree-wt";
+        session_manager_.set_active_worktree(info);
+        loop_->set_cwd(worktree_path);
+    }
+    void set_inherited_write_root(std::string root) {
+        loop_->set_inherited_write_root(std::move(root));
+    }
+    std::string write_root() const { return loop_->write_root(); }
     std::vector<acecode::ChatMessage> persisted_session_messages() const {
         return session_manager_.load_active_messages();
     }
@@ -488,6 +504,70 @@ TEST(AgentLoopModelStepEvents, ProviderFailureStillClosesActiveStep) {
     }
     EXPECT_TRUE(saw_concrete_error);
 
+    fs::remove_all(cwd);
+}
+
+TEST(AgentLoopToolLifecycleEvents, LargeResultIsPersistedBeforeEveryLiveOutputEvent) {
+    const auto cwd = make_temp_dir("acecode_large_live_tool_result");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    const std::string original(100000, 'x');
+    {
+        ToolLifecycleHarness h(cwd.string());
+        auto tool = make_probe_tool("large_probe", true);
+        tool.execute = [&original](const std::string&, const ToolContext&) {
+            ToolResult result{original, true};
+            result.metadata = {{"source", "large-probe"}};
+            acecode::DiffHunk hunk;
+            hunk.old_start = 7;
+            acecode::DiffLine line;
+            line.kind = acecode::DiffLineKind::Added;
+            line.text = "preserved diff line";
+            hunk.lines.push_back(line);
+            result.hunks = std::vector<acecode::DiffHunk>{hunk};
+            return result;
+        };
+        h.tools().register_tool(std::move(tool));
+        h.enable_session_manager();
+        ScriptedResponse tools_turn;
+        tools_turn.tool_calls.push_back({"call-large-live", "large_probe", "{}"});
+        h.provider().push_response(std::move(tools_turn));
+        h.provider().push_text("done");
+        ASSERT_TRUE(h.submit_and_wait());
+        h.shutdown();
+
+        const auto ends = h.events_of(SessionEventKind::ToolEnd);
+        ASSERT_EQ(ends.size(), 1u);
+        const std::string preview = ends.front().payload.value("output", "");
+        EXPECT_TRUE(acecode::is_persisted_output_message(preview));
+        EXPECT_LT(preview.size(), 4000u);
+        EXPECT_EQ(ends.front().payload["metadata"]["source"], "large-probe");
+        ASSERT_EQ(ends.front().payload["hunks"].size(), 1u);
+        EXPECT_EQ(ends.front().payload["hunks"][0]["old_start"], 7);
+        EXPECT_EQ(ends.front().payload["hunks"][0]["lines"][0]["text"],
+                  "preserved diff line");
+
+        std::ifstream file(acecode::path_from_utf8(
+            acecode::persisted_output_filepath(preview)), std::ios::binary);
+        ASSERT_TRUE(file.good());
+        const std::string persisted{std::istreambuf_iterator<char>(file),
+                                    std::istreambuf_iterator<char>()};
+        EXPECT_EQ(persisted, original);
+        file.close();
+
+        int result_messages = 0;
+        for (const auto& event : h.events_of(SessionEventKind::Message)) {
+            if (event.payload.value("role", "") != "tool_result") continue;
+            ++result_messages;
+            EXPECT_EQ(event.payload.value("content", ""), preview);
+        }
+        EXPECT_EQ(result_messages, 1);
+        for (const auto& message : h.persisted_session_messages()) {
+            if (message.role == "tool" && message.tool_call_id == "call-large-live") {
+                EXPECT_EQ(message.content, preview);
+            }
+        }
+    }
+    fs::remove_all(project_dir);
     fs::remove_all(cwd);
 }
 
@@ -978,5 +1058,114 @@ TEST(AgentLoopToolLifecycleEvents, ShellWriteAfterSafeEditFailureIsBlocked) {
     }
     EXPECT_TRUE(saw_block);
 
+    fs::remove_all(cwd);
+}
+
+// 场景: Yolo 会话进了 worktree(手动 EnterWorktree / Web pill / LOOP / 子代理
+// 继承都是这一形态),模型用写工具指向 worktree 之外的路径。
+// 期望: 写被拒("Write boundary blocked"),工具没执行;指向 worktree 内部的写
+// 照常执行;只读工具读 worktree 之外仍然放行,且全程不弹权限确认。
+// 回归表现(修复前): Yolo 免除全部路径校验,worktree 会话与其子代理都能把改动
+// 写进主 checkout —— "起了 worktree 但子代理在非 worktree 里改东西"。
+TEST(AgentLoopToolLifecycleEvents, YoloWorktreeSessionConfinesWritesToWorktree) {
+    auto cwd = make_temp_dir("acecode_yolo_worktree_boundary");
+    const auto worktree = cwd / ".acecode" / "worktrees" / "wt";
+    fs::create_directories(worktree);
+    std::atomic<int> write_calls{0};
+    std::atomic<int> read_calls{0};
+    ToolLifecycleHarness h(cwd.string(), PermissionMode::Yolo);
+    h.enable_session_manager();
+    h.enter_worktree(worktree.string(), cwd.string());
+    ASSERT_EQ(h.write_root(), worktree.string());
+    h.tools().register_tool(make_probe_tool("write_path_probe", false, &write_calls));
+    h.tools().register_tool(make_probe_tool("ro_path_probe", true, &read_calls));
+
+    const auto outside = cwd / "main_checkout_file.txt";
+    const auto inside = worktree / "inside.txt";
+    ScriptedResponse tools_turn;
+    tools_turn.tool_calls.push_back({"call-write-outside", "write_path_probe",
+        nlohmann::json{{"file_path", outside.string()}}.dump()});
+    tools_turn.tool_calls.push_back({"call-write-inside", "write_path_probe",
+        nlohmann::json{{"file_path", inside.string()}}.dump()});
+    tools_turn.tool_calls.push_back({"call-read-outside", "ro_path_probe",
+        nlohmann::json{{"file_path", outside.string()}}.dump()});
+    h.provider().push_response(std::move(tools_turn));
+    h.provider().push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait());
+    EXPECT_EQ(write_calls.load(), 1);
+    EXPECT_EQ(read_calls.load(), 1);
+    EXPECT_EQ(h.confirm_count().load(), 0);
+
+    bool saw_outside_block = false;
+    for (const auto& end : h.events_of(SessionEventKind::ToolEnd)) {
+        const std::string id = end.payload.value("tool_call_id", std::string{});
+        if (id == "call-write-outside") {
+            saw_outside_block = true;
+            EXPECT_FALSE(end.payload.value("success", true));
+            EXPECT_NE(end.payload.value("output", std::string{}).find("Write boundary blocked"),
+                      std::string::npos);
+        } else if (id == "call-write-inside" || id == "call-read-outside") {
+            EXPECT_TRUE(end.payload.value("success", false)) << id;
+        }
+    }
+    EXPECT_TRUE(saw_outside_block);
+    fs::remove_all(cwd);
+}
+
+// 场景: 会话本身没有 worktree 也不是 LOOP,只带着 spawn_subagent 透传来的
+// 父会话 write_root(父会话是无 worktree 的 LOOP 时的形态),Yolo 模式。
+// 期望: 写 write_root 之外被拒;边界不依赖 LOOP 身份本身。
+TEST(AgentLoopToolLifecycleEvents, YoloInheritedWriteRootBlocksOutsideWrites) {
+    auto cwd = make_temp_dir("acecode_yolo_inherited_root");
+    std::atomic<int> write_calls{0};
+    ToolLifecycleHarness h(cwd.string(), PermissionMode::Yolo);
+    h.set_inherited_write_root(cwd.string());
+    ASSERT_EQ(h.write_root(), cwd.string());
+    h.tools().register_tool(make_probe_tool("write_path_probe", false, &write_calls));
+
+    const auto outside = cwd.parent_path() / (cwd.filename().string() + "_outside.txt");
+    ScriptedResponse tools_turn;
+    tools_turn.tool_calls.push_back({"call-write-outside", "write_path_probe",
+        nlohmann::json{{"file_path", outside.string()}}.dump()});
+    h.provider().push_response(std::move(tools_turn));
+    h.provider().push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait());
+    EXPECT_EQ(write_calls.load(), 0);
+    auto ends = h.events_of(SessionEventKind::ToolEnd);
+    ASSERT_EQ(ends.size(), 1u);
+    EXPECT_FALSE(ends[0].payload.value("success", true));
+    EXPECT_NE(ends[0].payload.value("output", std::string{}).find("Write boundary blocked"),
+              std::string::npos);
+    fs::remove_all(cwd);
+}
+
+// 场景: Yolo worktree 会话里,模型用 bash 把输出重定向到 worktree 之外的文件。
+// 期望: 与 LOOP 主会话同一道 shell 写守卫生效("Write boundary blocked an
+// external shell write"),bash 没执行。
+TEST(AgentLoopToolLifecycleEvents, YoloWorktreeSessionBlocksShellWriteOutside) {
+    auto cwd = make_temp_dir("acecode_yolo_worktree_shell");
+    const auto worktree = cwd / ".acecode" / "worktrees" / "wt";
+    fs::create_directories(worktree);
+    std::atomic<int> bash_calls{0};
+    ToolLifecycleHarness h(cwd.string(), PermissionMode::Yolo);
+    h.enable_session_manager();
+    h.enter_worktree(worktree.string(), cwd.string());
+    h.tools().register_tool(make_fake_bash_tool(&bash_calls));
+
+    const auto outside = cwd / "escaped.txt";
+    h.provider().push_tool_call("bash", nlohmann::json{
+        {"command", "type nul > \"" + outside.string() + "\""}
+    }.dump(), "bash-escape");
+    h.provider().push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait());
+    EXPECT_EQ(bash_calls.load(), 0);
+    auto ends = h.events_of(SessionEventKind::ToolEnd);
+    ASSERT_EQ(ends.size(), 1u);
+    EXPECT_FALSE(ends[0].payload.value("success", true));
+    EXPECT_NE(ends[0].payload.value("output", std::string{}).find("Write boundary blocked"),
+              std::string::npos);
     fs::remove_all(cwd);
 }

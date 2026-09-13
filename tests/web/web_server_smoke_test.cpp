@@ -21,6 +21,9 @@
 #include "provider/auth/github_auth.hpp"
 #include "provider/auth/xai_auth.hpp"
 #include "config/config.hpp"
+#include "environment/data_dir_migration.hpp"
+#include "environment/terminal_runtime.hpp"
+#include "environment/toolchains.hpp"
 #include "config/config_recovery.hpp"
 #include "config/saved_models.hpp"
 #include "config/saved_models_revision.hpp"
@@ -52,7 +55,9 @@
 #include "utils/state_file.hpp"
 #include "utils/text_file_buffer.hpp"
 #include "utils/utf8_path.hpp"
+#include "web/handlers/fs_browser_handler.hpp"
 #include "web/remote_web_proxy.hpp"
+#include "web/message_payload.hpp"
 #include "web/server.hpp"
 #include "worktree/worktree_manager.hpp"
 
@@ -805,6 +810,111 @@ struct ScopedEnvOverride {
         set_env_value(name.c_str(), old_value);
     }
 };
+
+struct EnvironmentRuntimeRestore {
+    std::string path = acecode::environment::current_process_path();
+    ~EnvironmentRuntimeRestore() {
+        acecode::environment::set_process_path(path);
+        acecode::environment::reset_toolchain_runtime_for_test();
+        acecode::environment::terminal().reset_for_test();
+        acecode::environment::reset_data_dir_write_gate_for_test();
+        acecode::reset_data_dir_cache_for_test();
+    }
+};
+
+TEST(SettingsEnvironmentSmoke, SavesToolDirectoriesAndRejectsInvalidDraftsAtomically) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    auto put = [&](const std::string& path, const json& body) {
+        return cpr::Put(cpr::Url{fx.url(path)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    };
+    auto good = put("/api/config/toolchains", {{"node", fx.cwd}});
+    ASSERT_EQ(good.status_code, 200) << good.text;
+    EXPECT_EQ(fx.cfg.toolchains.node, fx.cwd);
+    const auto disk = read_text(fx.tmp_dir / "config.json");
+    auto bad = put("/api/config/toolchains", {{"node", "missing-relative-dir"}, {"python", fx.cwd}});
+    EXPECT_EQ(bad.status_code, 400);
+    EXPECT_EQ(fx.cfg.toolchains.node, fx.cwd);
+    EXPECT_TRUE(fx.cfg.toolchains.python.empty());
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), disk);
+    auto terminal = put("/api/console/config", {{"default_shell", "not-a-shell"}, {"shell_path", fx.cwd}});
+    EXPECT_EQ(terminal.status_code, 400) << terminal.text;
+    EXPECT_TRUE(fx.cfg.console.default_shell.empty());
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), disk);
+    auto picker = cpr::Post(cpr::Url{fx.url("/api/dialog/pick-folder")});
+    EXPECT_EQ(picker.status_code, 501);
+    auto file_picker = cpr::Post(cpr::Url{fx.url("/api/dialog/pick-file")});
+    EXPECT_EQ(file_picker.status_code, 501);
+}
+
+TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurtherWrites) {
+    EnvironmentRuntimeRestore restore;
+    RemoveTreeOnExit temp{std::filesystem::temp_directory_path() / ("ace-settings-http-" + std::to_string(std::random_device{}()))};
+    ScopedHomeOverride home(temp.path / "home");
+    acecode::reset_data_dir_cache_for_test();
+    const auto source = acecode::path_from_utf8(acecode::get_acecode_dir());
+    write_text(source / "config.json", "{}");
+    write_text(source / "memory/MEMORY.md", "keep this memory");
+    WebServerFixture fx;
+    const auto target = temp.path / "moved";
+    auto started = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{json{{"target", acecode::path_to_utf8(target)}}.dump()});
+    ASSERT_EQ(started.status_code, 202) << started.text;
+    json progress;
+    for (int i = 0; i < 150; ++i) {
+        auto response = cpr::Get(cpr::Url{fx.url("/api/config/data-dir/migration")});
+        ASSERT_EQ(response.status_code, 200) << response.text;
+        progress = json::parse(response.text);
+        if (progress["state"] != "running") break;
+        std::this_thread::sleep_for(20ms);
+    }
+    ASSERT_EQ(progress["state"], "done") << progress;
+    EXPECT_EQ(read_text(target / "memory/MEMORY.md"), "keep this memory");
+    EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
+    auto blocked = cpr::Put(cpr::Url{fx.url("/api/config/toolchains")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"node":""})"});
+    EXPECT_EQ(blocked.status_code, 409);
+    auto before_restart = json::parse(cpr::Get(cpr::Url{fx.url("/api/config/data-dir")}).text);
+    EXPECT_FALSE(before_restart["redirect_active"].get<bool>());
+    auto premature_delete = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/cleanup")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"action":"delete"})"});
+    EXPECT_EQ(premature_delete.status_code, 409);
+    EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
+    acecode::reset_data_dir_cache_for_test();
+    auto after_restart = json::parse(cpr::Get(cpr::Url{fx.url("/api/config/data-dir")}).text);
+    EXPECT_TRUE(after_restart["redirect_active"].get<bool>());
+    auto keep = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/cleanup")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"action":"keep"})"});
+    ASSERT_EQ(keep.status_code, 200) << keep.text;
+    EXPECT_FALSE(json::parse(keep.text)["cleanup_pending"].get<bool>());
+}
+
+TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    auto response = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(response.status_code, 201) << response.text;
+    auto entry = fx.registry->acquire(json::parse(response.text).at("id").get<std::string>());
+    ASSERT_TRUE(entry);
+    std::mutex mu;
+    std::condition_variable cv;
+    bool released = false;
+    entry->loop->enqueue_control([&] {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [&] { return released; });
+        return true;
+    });
+    EXPECT_TRUE(fx.registry->any_busy());
+    auto migration = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"target", (fx.tmp_dir / "moved").string()}}.dump()});
+    EXPECT_EQ(migration.status_code, 409) << migration.text;
+    { std::lock_guard<std::mutex> lock(mu); released = true; }
+    cv.notify_all();
+    // Join the callback before destroying its synchronization state.
+    entry->loop->shutdown();
+}
 
 std::string lower_ascii(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -3814,6 +3924,106 @@ TEST(WebServerHttp, ForkWorkspaceSessionResumesInSourceWorkspace) {
     EXPECT_TRUE(resumed->skill_registry->find("fork-skill").has_value());
     ASSERT_TRUE(resumed->tool_capability_policy.builtin_tools.has_value());
     EXPECT_TRUE(resumed->tool_capability_policy.builtin_tools->empty());
+}
+
+namespace {
+
+// 建一个 workspace + session,返回 session id。
+std::string create_workspace_session(WebServerFixture& fx, const std::string& cwd) {
+    const std::string hash = acecode::compute_cwd_hash(cwd);
+    auto post_ws = cpr::Post(cpr::Url{fx.url("/api/workspaces")},
+                             cpr::Header{{"Content-Type", "application/json"}},
+                             cpr::Body{json{{"cwd", cwd}}.dump()});
+    if (post_ws.status_code != 201) return {};
+
+    auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+                            cpr::Header{{"Content-Type", "application/json"}},
+                            cpr::Body{R"({})"});
+    if (create.status_code != 201) return {};
+    return json::parse(create.text)["session_id"].get<std::string>();
+}
+
+void append_message(acecode::SessionEntry* entry,
+                    const std::string& role,
+                    const std::string& content,
+                    const std::string& uuid) {
+    acecode::ChatMessage msg;
+    msg.role = role;
+    msg.content = content;
+    msg.uuid = uuid;
+    entry->loop->push_message(msg);
+    entry->sm->on_message(msg);
+}
+
+} // namespace
+
+// 场景: 在 user 提示词上分叉时,分叉点回退到该提示词之前,提示词本身不进
+// 新会话历史,而是随响应返回供前端回填输入框。
+TEST(WebServerHttp, ForkOnUserPromptRestoresPromptAndDropsItFromHistory) {
+    WebServerFixture fx;
+
+    const std::string cwd = (fx.tmp_dir / "fork-prompt-cwd").string();
+    std::filesystem::create_directories(cwd);
+    const std::string sid = create_workspace_session(fx, cwd);
+    ASSERT_FALSE(sid.empty());
+
+    auto* entry = fx.registry->lookup(sid);
+    ASSERT_NE(entry, nullptr);
+    append_message(entry, "user", "first prompt", "u1");
+    append_message(entry, "assistant", "summary", "a1");
+    append_message(entry, "user", "reword me", "u2");
+
+    auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+                          cpr::Header{{"Content-Type", "application/json"}},
+                          cpr::Body{json{{"at_message_id", "u2"}}.dump()});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    auto body = json::parse(fork.text);
+
+    EXPECT_EQ(body["restored_prompt"], "reword me");
+    EXPECT_EQ(body["fork_anchor_role"], "user");
+
+    auto* forked = fx.registry->lookup(body["session_id"].get<std::string>());
+    ASSERT_NE(forked, nullptr);
+    const auto msgs = forked->sm->load_active_messages();
+    ASSERT_EQ(msgs.size(), 2u);
+    EXPECT_EQ(msgs[0].content, "first prompt");
+    EXPECT_EQ(msgs[1].content, "summary");
+}
+
+// 场景: 在 assistant 消息上分叉保持原行为(含该条),且不返回待回填提示词。
+TEST(WebServerHttp, ForkOnAssistantMessageKeepsItWithoutRestoredPrompt) {
+    WebServerFixture fx;
+
+    const std::string cwd = (fx.tmp_dir / "fork-assistant-cwd").string();
+    std::filesystem::create_directories(cwd);
+    const std::string sid = create_workspace_session(fx, cwd);
+    ASSERT_FALSE(sid.empty());
+
+    auto* entry = fx.registry->lookup(sid);
+    ASSERT_NE(entry, nullptr);
+    append_message(entry, "user", "first prompt", "u1");
+    append_message(entry, "assistant", "summary", "a1");
+
+    // assistant 消息的 id 是 sha1(role+content+timestamp),不是传入的 uuid,
+    // 必须从存储读回后按真实 id 分叉。
+    const auto source_msgs = entry->sm->load_active_messages();
+    ASSERT_EQ(source_msgs.size(), 2u);
+    const std::string assistant_id = acecode::web::compute_message_id(source_msgs[1]);
+
+    auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+                          cpr::Header{{"Content-Type", "application/json"}},
+                          cpr::Body{json{{"at_message_id", assistant_id}}.dump()});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    auto body = json::parse(fork.text);
+
+    EXPECT_FALSE(body.contains("restored_prompt"));
+    EXPECT_EQ(body["fork_anchor_role"], "assistant");
+
+    auto* forked = fx.registry->lookup(body["session_id"].get<std::string>());
+    ASSERT_NE(forked, nullptr);
+    const auto msgs = forked->sm->load_active_messages();
+    ASSERT_EQ(msgs.size(), 2u);
+    EXPECT_EQ(msgs[1].content, "summary");
 }
 
 // 场景: registry 里留着一个已删除/不可访问的 workspace 时,列表仍可返回,
@@ -7126,6 +7336,44 @@ TEST(WebServerHttp, PutUiPreferencesPersistsCompleteAppearance) {
     EXPECT_EQ(saved.web_ui.font_size, "large");
 }
 
+// 场景:侧栏任务时间开关经 ui-preferences 往返。期望:GET 默认返回 true;
+// PUT false 时内存与磁盘同步落到 false,且不碰其它外观字段;非布尔值 400 拒绝。
+// 该字段对旧前端是纯增量,所以只做类型校验、不引入枚举白名单。
+TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRoundTrips) {
+    WebServerFixture fx;
+    {
+        auto get = cpr::Get(cpr::Url{fx.url("/api/config/ui-preferences")});
+        ASSERT_EQ(get.status_code, 200) << get.text;
+        EXPECT_EQ(json::parse(get.text)["sidebar_session_time"], true);
+    }
+
+    json req = {{"sidebar_session_time", false}};
+    auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+                        cpr::Header{{"Content-Type", "application/json"}},
+                        cpr::Body{req.dump()});
+    ASSERT_EQ(put.status_code, 200) << put.text;
+    EXPECT_EQ(json::parse(put.text)["sidebar_session_time"], false);
+    EXPECT_FALSE(fx.cfg.web_ui.sidebar_session_time);
+    // 单字段 PUT 不能顺手把其它外观字段冲回默认。
+    EXPECT_EQ(fx.cfg.web_ui.theme, "system");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+    EXPECT_EQ(fx.cfg.web_ui.font_size, "medium");
+
+    const auto saved = acecode::load_config_from_path(
+        (fx.tmp_dir / "config.json").string());
+    EXPECT_FALSE(saved.web_ui.sidebar_session_time);
+}
+
+TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRejectsNonBoolean) {
+    WebServerFixture fx;
+    json req = {{"sidebar_session_time", "no"}};
+    auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+                        cpr::Header{{"Content-Type", "application/json"}},
+                        cpr::Body{req.dump()});
+    EXPECT_EQ(put.status_code, 400) << put.text;
+    EXPECT_TRUE(fx.cfg.web_ui.sidebar_session_time);
+}
+
 TEST(WebServerHttp, PutUiPreferencesPartialUpdatePreservesOtherAppearanceFields) {
     WebServerFixture fx;
     fx.server->with_app_config_lock([&] {
@@ -7370,6 +7618,101 @@ TEST(WebServerHttp, DesktopFeedbackRecentSessionsReturnsNewestFirst) {
     ASSERT_TRUE(body["sessions"].is_array());
     ASSERT_EQ(body["sessions"].size(), 1u);
     EXPECT_EQ(body["sessions"][0]["id"], newer_id);
+}
+
+TEST(WebServerHttp, DesktopFeedbackEnforcesUnicodeCharacterLimitBeforePackaging) {
+    std::atomic<int> upload_count{0};
+    LocalUpdateServer upload_server([&](httplib::Server& s) {
+        s.Post("/", [&](const httplib::Request&, httplib::Response& res) {
+            ++upload_count;
+            res.set_content(R"({"success":true})", "application/json");
+        });
+    });
+    WebServerFixture fx;
+    fx.cfg.upgrade.base_url = upload_server.base_url();
+    for (const std::string character : {std::string("a"), std::string(u8"\u4e2d"),
+                                        std::string("\xF0\x9F\x98\x80")}) {
+        std::string text;
+        for (int i = 0; i < 10000; ++i) text += character;
+        const int before = upload_count.load();
+        const auto accepted = cpr::Post(
+            cpr::Url{fx.url("/api/feedback/desktop")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"feedback_text", text}}.dump()});
+        ASSERT_EQ(accepted.status_code, 200) << accepted.text;
+        EXPECT_EQ(upload_count.load(), before + 1);
+        EXPECT_TRUE(std::filesystem::is_empty(fx.feedback_dir));
+
+        const auto rejected = cpr::Post(
+            cpr::Url{fx.url("/api/feedback/desktop")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"feedback_text", text + character}}.dump()});
+        ASSERT_EQ(rejected.status_code, 400) << rejected.text;
+        EXPECT_EQ(json::parse(rejected.text)["error"], "FEEDBACK_TOO_LONG");
+        EXPECT_EQ(upload_count.load(), before + 1);
+        EXPECT_TRUE(std::filesystem::is_empty(fx.feedback_dir));
+    }
+}
+
+TEST(WebServerHttp, UiPreferencesCannotSelectMissingThemeResources) {
+    WebServerFixture fx;
+    const auto missing = cpr::Get(cpr::Url{fx.url("/api/themes/eva-01")});
+    EXPECT_EQ(missing.status_code, 404);
+    const auto image = cpr::Get(cpr::Url{fx.url("/api/themes/eva-01/images/background")});
+    EXPECT_EQ(image.status_code, 404);
+    const auto job = cpr::Get(cpr::Url{fx.url("/api/themes/job")});
+    ASSERT_EQ(job.status_code, 200) << job.text;
+    EXPECT_EQ(json::parse(job.text)["state"], "idle");
+    const auto put = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"theme", "dark"}, {"color_theme", "eva-01"}}.dump()});
+    EXPECT_EQ(put.status_code, 409) << put.text;
+    EXPECT_EQ(json::parse(put.text)["error"], "THEME_NOT_INSTALLED");
+    EXPECT_EQ(fx.cfg.web_ui.theme, "system");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+}
+
+TEST(WebServerHttp, ThemeCatalogUsesChangedUpgradeServerWithoutRestart) {
+    LocalUpdateServer unavailable([](httplib::Server& s) {
+        s.Get("/themes/catalog.json", [](const httplib::Request&, httplib::Response& res) {
+            res.status = 503;
+        });
+    });
+    std::atomic<int> catalog_requests{0};
+    const json catalog = {{"schema_version", 1}, {"themes", json::array({{
+        {"id", "eva-01"}, {"version", "1.0.0"}, {"swatches", {"#ABCDEF", "#FFFFFF", "#ABCDEF"}},
+        {"package", {{"path", "eva-01/1.0.0/theme.zip"}, {"bytes", 64u}, {"sha256", std::string(64, 'a')}}},
+        {"thumbnail", {{"path", "eva-01/1.0.0/thumbnail.png"}, {"bytes", 32u}, {"sha256", std::string(64, 'b')}}}
+    }})}};
+    LocalUpdateServer available([&](httplib::Server& s) {
+        s.Get("/themes/catalog.json", [&](const httplib::Request&, httplib::Response& res) {
+            ++catalog_requests;
+            res.set_content(catalog.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx;
+    const auto change_server = [&](const std::string& base) {
+        return cpr::Put(cpr::Url{fx.url("/api/config/upgrade")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"base_url", base}}.dump()});
+    };
+    ASSERT_EQ(change_server(unavailable.base_url()).status_code, 200);
+    const auto failed = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    ASSERT_EQ(failed.status_code, 503) << failed.text;
+    EXPECT_EQ(json::parse(failed.text)["error_path"], unavailable.base_url() + "themes/catalog.json");
+
+    ASSERT_EQ(change_server(available.base_url()).status_code, 200);
+    const auto loaded = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    ASSERT_EQ(loaded.status_code, 200) << loaded.text;
+    EXPECT_EQ(json::parse(loaded.text)["themes"][0]["package"]["url"],
+              available.base_url() + "themes/eva-01/1.0.0/theme.zip");
+    EXPECT_EQ(catalog_requests.load(), 1);
+
+    ASSERT_EQ(change_server(unavailable.base_url()).status_code, 200);
+    const auto changed_again = cpr::Get(cpr::Url{fx.url("/api/themes")});
+    EXPECT_EQ(changed_again.status_code, 503) << changed_again.text;
+    EXPECT_EQ(json::parse(changed_again.text)["error_path"], unavailable.base_url() + "themes/catalog.json");
+    EXPECT_EQ(json::parse(cpr::Get(cpr::Url{fx.url("/api/themes/job")}).text)["state"], "idle");
 }
 
 TEST(WebServerHttp, DesktopFeedbackUploadsLogOnlyWithoutSession) {
@@ -7715,7 +8058,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
             res.set_content(update_manifest_for("9.9.9"), "application/json");
         });
     });
-    std::atomic<bool> called{false};
+    std::atomic<int> calls{0};
     WebServerFixture fx(
         true,
         false,
@@ -7725,7 +8068,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
             acecode::upgrade::UpgradeProgressCallback publish,
             acecode::upgrade::UpgradeCancelCheck,
             std::string*) {
-            called.store(true);
+            calls.fetch_add(1);
             acecode::upgrade::UpgradeProgress downloading;
             downloading.phase = acecode::upgrade::UpgradePhase::Downloading;
             downloading.current_version = "0.0.0-test";
@@ -7761,7 +8104,7 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
         if (status["state"] == "succeeded") break;
         std::this_thread::sleep_for(10ms);
     }
-    EXPECT_TRUE(called.load());
+    EXPECT_EQ(calls.load(), 1);
     EXPECT_EQ(status["state"], "succeeded");
     EXPECT_EQ(status["phase"], "complete");
     EXPECT_EQ(status["restart_required"], true);
@@ -7771,6 +8114,17 @@ TEST(WebServerHttp, PostUpdateStartPublishesSuccessfulGuiJob) {
     auto latest = cpr::Get(cpr::Url{fx.url("/api/update/job")});
     ASSERT_EQ(latest.status_code, 200) << latest.text;
     EXPECT_EQ(json::parse(latest.text)["job_id"], job_id);
+
+    // Even if the old daemon still reports its previous version, a completed
+    // installation must never be downloaded/applied again before restart.
+    auto repeated = cpr::Post(cpr::Url{fx.url("/api/update/start")});
+    ASSERT_EQ(repeated.status_code, 202) << repeated.text;
+    const auto repeated_body = json::parse(repeated.text);
+    EXPECT_EQ(repeated_body["job_id"], job_id);
+    EXPECT_EQ(repeated_body["started"], false);
+    EXPECT_EQ(repeated_body["state"], "succeeded");
+    EXPECT_EQ(repeated_body["restart_required"], true);
+    EXPECT_EQ(calls.load(), 1);
 }
 
 // 场景:两个页面同时点更新,后端只允许第一个任务运行。
@@ -9083,4 +9437,129 @@ TEST(WebServerHttp, DeleteBusyActiveSessionModelReturnsConflict) {
                            }),
               fx.cfg.saved_models.end());
     EXPECT_EQ(fx.cfg.default_model_name, "busy-fast");
+}
+
+// ---------------------------------------------------------------------
+// /api/fs — Web 路径选择器的服务端目录浏览(openspec add-web-path-picker)
+// ---------------------------------------------------------------------
+
+// 场景:弹窗打开时请求根节点。期望:200;含 host / os / home;roots 非空且都是正斜杠
+// 绝对路径并带 drive_type;quick 里有主目录;fixture 注册的默认 workspace 以归一后的
+// 路径出现在 workspaces 里(fixture 的 cwd 是 Windows 反斜杠原样字符串,接口必须归一)。
+TEST(WebServerHttp, FsRootsListDrivesHomeAndWorkspaces) {
+    WebServerFixture fx;
+
+    auto r = cpr::Get(cpr::Url{fx.url("/api/fs/roots")});
+    ASSERT_EQ(r.status_code, 200) << r.text;
+    auto j = json::parse(r.text);
+    EXPECT_TRUE(j["host"].is_string());
+    EXPECT_TRUE(j["os"].is_string());
+    ASSERT_TRUE(j["home"].is_string());
+    EXPECT_FALSE(j["home"].get<std::string>().empty());
+
+    ASSERT_TRUE(j["roots"].is_array());
+    ASSERT_FALSE(j["roots"].empty());
+    for (const auto& root : j["roots"]) {
+        const auto path = root.value("path", std::string{});
+        EXPECT_EQ(path.find('\\'), std::string::npos) << path;
+        EXPECT_TRUE(acecode::path_from_utf8(path).is_absolute()) << path;
+        EXPECT_FALSE(root.value("drive_type", std::string{}).empty()) << path;
+    }
+
+    ASSERT_TRUE(j["quick"].is_array());
+    bool saw_home = false;
+    for (const auto& q : j["quick"]) {
+        if (q.value("kind", std::string{}) == "home") {
+            saw_home = true;
+            EXPECT_EQ(q["path"], j["home"]);
+        }
+    }
+    EXPECT_TRUE(saw_home) << r.text;
+
+    ASSERT_TRUE(j["workspaces"].is_array());
+    const auto expected_cwd = acecode::web::normalize_browse_path(fx.cwd).value();
+    bool saw_default_workspace = false;
+    for (const auto& ws : j["workspaces"]) {
+        if (ws.value("path", std::string{}) == expected_cwd) {
+            saw_default_workspace = true;
+            EXPECT_FALSE(ws.value("hash", std::string{}).empty());
+            EXPECT_FALSE(ws.value("name", std::string{}).empty());
+        }
+    }
+    EXPECT_TRUE(saw_default_workspace) << r.text;
+}
+
+// 场景:列一个不在任何 workspace 白名单里的临时目录。期望:/api/files 因白名单拒绝(400),
+// /api/fs/list 却正常列出(已鉴权即全盘只读);条目目录优先、path 为完整正斜杠路径、
+// parent 指向上一级;隐藏项只在 show_hidden=1 时出现并标 hidden。
+TEST(WebServerHttp, FsListBrowsesOutsideWorkspaceAndTogglesHidden) {
+    WebServerFixture fx;
+
+    const auto outside = fx.tmp_dir / "fs-browse";
+    write_text(outside / "src" / "main.cpp", "int main() {}\n");
+    write_text(outside / "README.md", "# readme\n");
+    write_text(outside / ".env", "SECRET=1\n");
+    const std::string outside_utf8 = acecode::path_to_utf8(outside);
+
+    auto tree = cpr::Get(cpr::Url{fx.url("/api/files")},
+                         cpr::Parameters{{"cwd", outside_utf8}, {"path", ""}});
+    EXPECT_EQ(tree.status_code, 400) << tree.text;
+
+    auto plain = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                          cpr::Parameters{{"path", outside_utf8}});
+    ASSERT_EQ(plain.status_code, 200) << plain.text;
+    auto j = json::parse(plain.text);
+    const auto expected_dir = acecode::web::normalize_browse_path(outside_utf8).value();
+    EXPECT_EQ(j["path"], expected_dir);
+    EXPECT_EQ(j["parent"], acecode::web::browse_parent_path(expected_dir));
+    EXPECT_FALSE(j["truncated"].get<bool>());
+    ASSERT_EQ(j["entries"].size(), 2u) << plain.text;
+    EXPECT_EQ(j["entries"][0]["name"], "src");
+    EXPECT_EQ(j["entries"][0]["kind"], "dir");
+    EXPECT_EQ(j["entries"][0]["path"], expected_dir + "/src");
+    EXPECT_FALSE(j["entries"][0].contains("size"));
+    EXPECT_EQ(j["entries"][1]["name"], "README.md");
+    EXPECT_EQ(j["entries"][1]["kind"], "file");
+    EXPECT_EQ(j["entries"][1]["size"], 9);
+    EXPECT_FALSE(j["entries"][1]["hidden"].get<bool>());
+
+    auto hidden = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                           cpr::Parameters{{"path", outside_utf8}, {"show_hidden", "1"}});
+    ASSERT_EQ(hidden.status_code, 200) << hidden.text;
+    auto h = json::parse(hidden.text);
+    bool saw_env = false;
+    for (const auto& e : h["entries"]) {
+        if (e.value("name", std::string{}) == ".env") {
+            saw_env = true;
+            EXPECT_TRUE(e["hidden"].get<bool>());
+            EXPECT_EQ(e["path"], expected_dir + "/.env");
+        }
+    }
+    EXPECT_TRUE(saw_env) << hidden.text;
+}
+
+// 场景:三类坏请求。期望:缺 path / 相对路径 → 400;不存在 → 404 "not found";
+// 指向文件 → 404 "not a directory"。前端按状态码在弹窗内给内联提示,不整体报错。
+TEST(WebServerHttp, FsListRejectsRelativeMissingAndFilePaths) {
+    WebServerFixture fx;
+    const auto dir = fx.tmp_dir / "fs-errors";
+    write_text(dir / "file.txt", "x");
+
+    auto missing_param = cpr::Get(cpr::Url{fx.url("/api/fs/list")});
+    EXPECT_EQ(missing_param.status_code, 400) << missing_param.text;
+
+    auto relative = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                             cpr::Parameters{{"path", "relative/dir"}});
+    ASSERT_EQ(relative.status_code, 400) << relative.text;
+    EXPECT_EQ(json::parse(relative.text)["error"], "path must be absolute");
+
+    auto missing = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                            cpr::Parameters{{"path", acecode::path_to_utf8(dir / "nope")}});
+    ASSERT_EQ(missing.status_code, 404) << missing.text;
+    EXPECT_EQ(json::parse(missing.text)["error"], "not found");
+
+    auto file = cpr::Get(cpr::Url{fx.url("/api/fs/list")},
+                         cpr::Parameters{{"path", acecode::path_to_utf8(dir / "file.txt")}});
+    ASSERT_EQ(file.status_code, 404) << file.text;
+    EXPECT_EQ(json::parse(file.text)["error"], "not a directory");
 }

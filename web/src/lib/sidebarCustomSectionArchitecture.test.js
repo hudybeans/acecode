@@ -82,13 +82,25 @@ test('extension disclosure supports accessible buttons and a stable hover icon s
   assert.match(css, /\.ace-sidebar-fixed-nav\s*\{\s*max-height: 55%;/);
 });
 
-test('compact title bar shares its height with click targets and quick menu anchoring', () => {
+test('compact title bar keeps its click targets while the footer owns the anchored menu', () => {
   const topbar = source('components/TopBar.jsx');
+  const menu = source('components/SidebarQuickMenu.jsx');
   const css = source('styles/globals.css');
   assert.match(css, /--ace-topbar-height: 30px;/);
   assert.match(css, /--ace-topbar-control-size: calc\(var\(--ace-topbar-height\) - 6px\);/);
   assert.match(css, /\.ace-topbar-action\s*\{\s*width: var\(--ace-topbar-control-size\);\s*height: var\(--ace-topbar-control-size\);/);
   assert.match(css, /\.ace-topbar \.ace-window-control\s*\{[^}]*height: var\(--ace-topbar-control-size\);/);
-  assert.match(topbar, /top: 'var\(--ace-topbar-height\)'/);
+  assert.doesNotMatch(topbar, /topbar-quick-actions-menu|aria-haspopup="menu"/);
+  assert.match(menu, /<AnchoredMenu\s+anchorRef=\{anchorRef\}/);
   assert.match(topbar, /<VsIcon name="search" size=\{16\}/);
+});
+
+test('macOS fullscreen eases the top-bar actions out of the traffic-light inset', () => {
+  const topbar = source('components/TopBar.jsx');
+  const css = source('styles/globals.css');
+  assert.match(topbar, /shouldInsetMacTopBar\(isFullscreen\) && 'ace-desktop-macos-topbar'/);
+  assert.match(
+    css,
+    /\.ace-desktop-frameless-topbar\s*\{[^}]*padding-left 160ms cubic-bezier\(0\.2, 0, 0, 1\)/s,
+  );
 });

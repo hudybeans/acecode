@@ -4,8 +4,8 @@ export const FONT_SIZE_VALUES = ['small', 'medium', 'large'];
 
 export const DEFAULT_UI_PREFS = {
   view: 'single',
-  // 整个右侧工作区(列表 + 详情)的总折叠开关。
-  sidePanelCollapsed: false,
+  // 整个右侧工作区(列表 + 详情)的总折叠开关。首屏默认收起。
+  sidePanelCollapsed: true,
   // 最右侧导航列表的独立折叠开关。缺省为 false,兼容旧版 v1 偏好。
   sidePanelListCollapsed: false,
   sidebarCollapsed: false,
@@ -15,6 +15,9 @@ export const DEFAULT_UI_PREFS = {
   sidePanelMaximized: false,
   showAceCodeAvatar: false,
   fontSize: DEFAULT_FONT_SIZE,
+  // 侧栏会话行是否显示相对时间。产品默认开;关掉之后时间只在行的
+  // hover 卡片里出现,不会彻底消失。
+  sidebarSessionTime: true,
 };
 
 const ALLOWED_VIEWS = new Set(['single', 'grid4', 'grid9']);
@@ -28,7 +31,8 @@ export function validateUiPrefs(v) {
     && (v.sidebarCollapsed == null || typeof v.sidebarCollapsed === 'boolean')
     && (v.sidePanelMaximized == null || typeof v.sidePanelMaximized === 'boolean')
     && (v.showAceCodeAvatar == null || typeof v.showAceCodeAvatar === 'boolean')
-    && (v.fontSize == null || ALLOWED_FONT_SIZES.has(v.fontSize));
+    && (v.fontSize == null || ALLOWED_FONT_SIZES.has(v.fontSize))
+    && (v.sidebarSessionTime == null || typeof v.sidebarSessionTime === 'boolean');
 }
 
 export function effectiveShowAceCodeAvatar(uiPrefs) {
@@ -39,8 +43,23 @@ export function effectiveSidePanelListCollapsed(uiPrefs) {
   return uiPrefs?.sidePanelListCollapsed === true;
 }
 
+export function rightPanelHidden(uiPrefs, previewPanelVisible = false) {
+  return uiPrefs?.sidePanelCollapsed === true
+    || (effectiveSidePanelListCollapsed(uiPrefs) && !previewPanelVisible);
+}
+
+export function toggleRightPanel(uiPrefs, previewPanelVisible = false) {
+  return rightPanelHidden(uiPrefs, previewPanelVisible)
+    ? { ...uiPrefs, sidePanelCollapsed: false, sidePanelListCollapsed: false }
+    : { ...uiPrefs, sidePanelCollapsed: true };
+}
+
 export function effectiveFontSize(uiPrefs) {
   return ALLOWED_FONT_SIZES.has(uiPrefs?.fontSize)
     ? uiPrefs.fontSize
     : DEFAULT_FONT_SIZE;
+}
+
+export function effectiveSidebarSessionTime(uiPrefs) {
+  return uiPrefs?.sidebarSessionTime !== false;
 }

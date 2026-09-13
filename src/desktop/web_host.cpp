@@ -1,6 +1,7 @@
 #include "web_host.hpp"
 
 #include "external_url.hpp"
+#include "taskbar_badge_win.hpp"
 #include "web_host_close_policy.hpp"
 #include "webview2_runtime_probe.hpp"
 #include "window_background.hpp"
@@ -64,6 +65,8 @@ std::function<void()> g_existing_instance_focus_handler;
 #ifdef __APPLE__
 std::function<void(bool)> g_mac_window_state_handler;
 bool g_mac_last_known_maximized = false;
+std::function<void(bool)> g_mac_window_fullscreen_handler;
+bool g_mac_last_known_fullscreen = false;
 NSWindow* g_mac_reopen_window = nil;
 webview::webview* g_mac_quit_webview = nullptr;
 using MacApplicationReopenImp = BOOL (*)(id, SEL, NSApplication*, BOOL);
@@ -87,25 +90,38 @@ void notify_mac_window_state_if_changed(NSWindow* window) {
     }
 }
 
-void hide_mac_standard_button(NSWindow* window, NSWindowButton button) {
-    NSButton* button_view = [window standardWindowButton:button];
-    if (!button_view) return;
-    [button_view setHidden:YES];
+bool mac_window_is_fullscreen(NSWindow* window) {
+    return window &&
+           (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
 }
 
-void hide_mac_titlebar_container(NSWindow* window) {
-    NSView* content_view = [window contentView];
-    NSView* frame_view = [content_view superview];
-    if (!content_view || !frame_view) return;
-
-    [content_view setFrame:[frame_view bounds]];
-    [content_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-
-    for (NSView* subview in [frame_view subviews]) {
-        if (subview == content_view) continue;
-        [subview setHidden:YES];
+void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
+    if (!window) return;
+    const bool fullscreen = mac_window_is_fullscreen(window);
+    if (fullscreen == g_mac_last_known_fullscreen) return;
+    g_mac_last_known_fullscreen = fullscreen;
+    if (g_mac_window_fullscreen_handler) {
+        g_mac_window_fullscreen_handler(fullscreen);
     }
-    [frame_view setNeedsLayout:YES];
+}
+
+id install_mac_window_fullscreen_observer(webview::webview& w,
+                                          NSNotificationName name) {
+    NSWindow* window = mac_window_from_host(w);
+    if (!window) return nil;
+    return [[NSNotificationCenter defaultCenter]
+        addObserverForName:name
+                    object:window
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(__unused NSNotification* note) {
+                    notify_mac_window_fullscreen_if_changed(window);
+                }];
+}
+
+void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
+    NSButton* button_view = [window standardWindowButton:button];
+    if (!button_view) return;
+    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -132,12 +148,14 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    hide_mac_standard_button(window, NSWindowCloseButton);
-    hide_mac_standard_button(window, NSWindowMiniaturizeButton);
-    hide_mac_standard_button(window, NSWindowZoomButton);
-    hide_mac_titlebar_container(window);
+    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
+    // retain their standard layout, actions, and full-screen behavior.
+    show_mac_standard_button(window, NSWindowCloseButton);
+    show_mac_standard_button(window, NSWindowMiniaturizeButton);
+    show_mac_standard_button(window, NSWindowZoomButton);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
+    g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
 }
 
 void show_mac_window(NSWindow* window) {
@@ -529,6 +547,55 @@ constexpr wchar_t kHostWindowClassName[] = L"ACECodeDesktopHostWindow";
 constexpr wchar_t kHostWindowPreviousProcProperty[] = L"ACECodeDesktopHostPreviousProc";
 constexpr wchar_t kHostWindowStartupMonitorProperty[] = L"ACECodeDesktopStartupMonitor";
 constexpr int kFramelessDragHeightDip = 44;
+
+HICON load_host_window_icon(int width, int height) {
+    HINSTANCE instance = ::GetModuleHandleW(nullptr);
+    // acecode.rc.in uses numeric ID 1; older resources used the name IDI_ICON1.
+    if (HICON icon = static_cast<HICON>(::LoadImageW(
+            instance, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height,
+            LR_DEFAULTCOLOR))) {
+        return icon;
+    }
+    if (HICON icon = static_cast<HICON>(::LoadImageW(
+            instance, L"IDI_ICON1", IMAGE_ICON, width, height, LR_DEFAULTCOLOR))) {
+        return icon;
+    }
+    LOG_WARN("[desktop] failed to load window icon, last_error=" +
+             std::to_string(::GetLastError()));
+    return nullptr;
+}
+
+struct HostWindowIcons {
+    // Own distinct sizes: LR_SHARED can return a cached frame of the wrong size.
+    HICON large_icon = load_host_window_icon(
+        ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON));
+    HICON small_icon = load_host_window_icon(
+        ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON));
+
+    ~HostWindowIcons() {
+        if (large_icon) ::DestroyIcon(large_icon);
+        if (small_icon) ::DestroyIcon(small_icon);
+    }
+};
+
+const HostWindowIcons& host_window_icons() {
+    // Window classes and all host windows share these until process shutdown.
+    static const HostWindowIcons icons;
+    return icons;
+}
+
+void apply_host_window_icons(HWND hwnd) {
+    if (!hwnd) return;
+    const auto& icons = host_window_icons();
+    if (icons.large_icon) {
+        ::SendMessageW(hwnd, WM_SETICON, ICON_BIG,
+                       reinterpret_cast<LPARAM>(icons.large_icon));
+    }
+    if (icons.small_icon) {
+        ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
+                       reinterpret_cast<LPARAM>(icons.small_icon));
+    }
+}
 
 // WM_USER 区私有消息:绕过 close_request_handler 直接走 DestroyWindow。
 // 选 0x10 偏移留出 0..0xF 给未来扩展;远离 webview/Common Controls 常用的
@@ -1218,6 +1285,8 @@ bool register_host_window_class(HINSTANCE instance) {
     wc.lpszClassName = kHostWindowClassName;
     wc.lpfnWndProc = host_window_proc;
     wc.hCursor = ::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW
+    wc.hIcon = host_window_icons().large_icon;
+    wc.hIconSm = host_window_icons().small_icon;
     // 快速 resize 时新暴露区域由类背景刷打底;不设(NULL)= 不擦除 = 黑闪。
     // 默认取前端浅色 body 底色,主题切换后由 apply_class_background_brush 换刷。
     wc.hbrBackground = ::CreateSolidBrush(background_colorref(kDefaultWindowBackground));
@@ -1790,6 +1859,9 @@ struct WebHost::Impl {
             install_host_window_proc(owned_window);
         }
         if (w) {
+            // Also cover the WebView-owned fallback window, whose class has no icon.
+            apply_host_window_icons(hwnd());
+            taskbar_badge = std::make_unique<WindowsTaskbarBadge>(hwnd());
             configure_browser_defaults(*w);
             // 三层打底(host 类刷 / widget 类刷 / WebView2 合成器)统一走默认色。
             // offscreen 路径的 host 类注册时已带刷,这里等价换新;降级路径
@@ -1805,6 +1877,10 @@ struct WebHost::Impl {
         configure_mac_window_chrome(*w);
         install_mac_edit_menu(*w);
         mac_focus_observer = install_mac_focus_existing_observer(*w);
+        mac_enter_fullscreen_observer = install_mac_window_fullscreen_observer(
+            *w, NSWindowDidEnterFullScreenNotification);
+        mac_exit_fullscreen_observer = install_mac_window_fullscreen_observer(
+            *w, NSWindowDidExitFullScreenNotification);
         install_mac_close_handler(*w);
         install_mac_application_reopen_handler(mac_window_from_host(*w));
 #else
@@ -1818,6 +1894,7 @@ struct WebHost::Impl {
 
     ~Impl() {
 #ifdef _WIN32
+        taskbar_badge.reset();
         HWND hwnd = custom_window;
 #endif
         // Destroy webview first; for m_owns_window=false it removes only the child widget.
@@ -1833,6 +1910,16 @@ struct WebHost::Impl {
             [[NSDistributedNotificationCenter defaultCenter] removeObserver:mac_focus_observer];
             mac_focus_observer = nil;
         }
+        if (mac_enter_fullscreen_observer) {
+            [[NSNotificationCenter defaultCenter]
+                removeObserver:mac_enter_fullscreen_observer];
+            mac_enter_fullscreen_observer = nil;
+        }
+        if (mac_exit_fullscreen_observer) {
+            [[NSNotificationCenter defaultCenter]
+                removeObserver:mac_exit_fullscreen_observer];
+            mac_exit_fullscreen_observer = nil;
+        }
 #endif
         w.reset();
 #ifdef _WIN32
@@ -1847,6 +1934,7 @@ struct WebHost::Impl {
     HWND custom_window = nullptr;
     bool center_on_first_show = false;
     ComApartment com{false};
+    std::unique_ptr<WindowsTaskbarBadge> taskbar_badge;
 
     HWND hwnd() const {
         if (custom_window) return custom_window;
@@ -1858,6 +1946,8 @@ struct WebHost::Impl {
     std::unique_ptr<webview::webview> w;
 #ifdef __APPLE__
     id mac_focus_observer = nil;
+    id mac_enter_fullscreen_observer = nil;
+    id mac_exit_fullscreen_observer = nil;
 #endif
 };
 
@@ -1990,6 +2080,16 @@ bool WebHost::open_dev_tools() {
     return false;
 #endif
 }
+
+bool WebHost::set_taskbar_badge(const TaskbarBadge& badge) {
+#ifdef _WIN32
+    return impl_->taskbar_badge && impl_->taskbar_badge->set(badge);
+#else
+    (void)badge;
+    return false;
+#endif
+}
+
 bool WebHost::set_background_color(const std::string& color_text) {
 #ifdef _WIN32
     auto color = parse_window_background_color(color_text);
@@ -2152,6 +2252,13 @@ bool WebHost::is_window_maximized() const {
 #endif
 #endif
 }
+bool WebHost::is_window_fullscreen() const {
+#ifdef __APPLE__
+    return mac_window_is_fullscreen(mac_window_from_host(*impl_->w));
+#else
+    return false;
+#endif
+}
 WebHost::WebCoreInfo WebHost::web_core_info() const {
     (void)impl_;
     return detect_platform_web_core_info();
@@ -2165,6 +2272,14 @@ void WebHost::set_window_state_change_handler(WindowStateHandler handler) {
 #else
     g_mac_window_state_handler = std::move(handler);
 #endif
+#endif
+}
+void WebHost::set_window_fullscreen_change_handler(
+    WindowFullscreenHandler handler) {
+#ifdef __APPLE__
+    g_mac_window_fullscreen_handler = std::move(handler);
+#else
+    (void)handler;
 #endif
 }
 void WebHost::set_window_visibility_handler(WindowVisibilityHandler handler) {

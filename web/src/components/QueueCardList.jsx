@@ -38,14 +38,13 @@ function QueueCardEditDialog({ card, onClose, onSave }) {
       width={520}
       labelledBy="queue-card-edit-title"
     >
-      <form onSubmit={submit}>
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3.5">
+      <form onSubmit={submit} className="ace-modal-form">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3.5">
           <VsIcon name="edit" size={16} className="shrink-0 text-fg-mute" />
           <h2 id="queue-card-edit-title" className="text-[14px] font-semibold text-fg">编辑排队消息</h2>
         </div>
-        <div className="px-4 py-4">
+        <div className="min-h-0 overflow-y-auto ace-scrollbar px-4 py-4">
           <textarea
-            autoFocus
             rows={7}
             value={draft}
             aria-label="排队消息内容"
@@ -60,7 +59,7 @@ function QueueCardEditDialog({ card, onClose, onSave }) {
           />
           <div className="mt-1.5 text-[11px] text-fg-mute">Ctrl+Enter 保存</div>
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
           <button
             type="button"
             onClick={onClose}

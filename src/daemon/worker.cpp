@@ -1,6 +1,8 @@
 #include "worker.hpp"
 
 #include "../desktop/folder_picker.hpp"
+#include "../desktop/context_picker.hpp"
+#include "../environment/terminal_runtime.hpp"
 #include "../desktop/daemon_protocol.hpp"
 #include "../desktop/open_in_explorer.hpp"
 #include "version.hpp"
@@ -588,11 +590,9 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     // 析构时 stop_all 杀掉全部 shell(栈对象,server.run() 返回后回收)。
     // 默认 shell:+ 旁下拉框选中的 default_shell(探测可用)→ 平台默认 → legacy
     // console.shell。per-create 覆盖由 REST /api/pty 的 shell 参数注入。
-    std::string default_shell_id = acecode::default_console_shell_id(
-        cfg_mut.console.default_shell, cfg_mut.console.git_bash_path);
-    std::string default_shell_cmd =
-        acecode::resolve_shell_command_by_id(default_shell_id, cfg_mut.console.git_bash_path)
-            .value_or(acecode::resolve_console_shell(cfg_mut.console.shell));
+    const auto resolved_terminal = acecode::environment::terminal().current();
+    const std::string default_shell_cmd = resolved_terminal
+        ? resolved_terminal->console_command : acecode::resolve_console_shell(cfg_mut.console.shell);
     acecode::PtySessionRegistry pty_registry(
         acecode::detect_pty_backend(), cwd, default_shell_cmd);
     LOG_INFO(std::string("[daemon] console backend=") +
@@ -615,6 +615,8 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     web_deps.desktop_protocol_version = opts.desktop_protocol_version;
     web_deps.session_client     = &client;
     web_deps.session_registry   = &registry;
+    web_deps.before_data_dir_copy = [&] { loop_scheduler.stop(); };
+    web_deps.on_data_dir_copy_failure = [&] { if (loop_store_ready) loop_scheduler.start(); };
     web_deps.expert_registry    = &expert_registry;
     web_deps.hook_manager       = &hook_manager;
     web_deps.tools              = &tools;
@@ -624,6 +626,10 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     if (opts.native_folder_picker_enabled) {
         web_deps.native_folder_picker = [] {
             return acecode::desktop::pick_folder(nullptr);
+        };
+        web_deps.native_open_file_picker = [] {
+            const auto picked = acecode::desktop::pick_single_file(nullptr);
+            return acecode::web::NativeSaveFilePickResult{picked.file_path, picked.error};
         };
         web_deps.native_save_file_picker = [](const std::string& suggested_filename) {
             const auto outcome = acecode::desktop::pick_save_file_outcome(

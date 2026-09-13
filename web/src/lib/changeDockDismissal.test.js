@@ -3,10 +3,20 @@ import {
   dismissChangeDockSignature,
   dismissedDockSignatureFor,
   dockDismissalKey,
+  hasCompletedTurnResult,
   isTodoDockSuppressed,
   todoDockSignature,
   validateDockDismissals,
 } from './changeDockDismissal.js';
+import { buildAssistantRunDirectives } from './assistantRunDirectives.js';
+import { projectCollapsedTranscriptItems } from './transcriptProjection.js';
+import { createTranscriptState, reduceTranscriptEvent } from './sessionTranscript.js';
+
+function completedResult(items, busy = false) {
+  const rendered = projectCollapsedTranscriptItems(items, { deferTrailingToolSummary: busy });
+  const directives = buildAssistantRunDirectives(rendered, { deferLastFooter: busy });
+  return hasCompletedTurnResult(rendered, directives, { busy });
+}
 
 function run(name, fn) {
   try {
@@ -77,4 +87,68 @@ run('isTodoDockSuppressed 只在同会话同签名时抑制', () => {
   assert.equal(isTodoDockSuppressed(state, 's1', 'other'), false);
   assert.equal(isTodoDockSuppressed(null, 's1', sig), false);
   assert.equal(isTodoDockSuppressed(state, '', sig), false);
+});
+
+run('dock completion follows live final result and stays hidden through late todo updates', () => {
+  let state = createTranscriptState();
+  const apply = (type, payload) => {
+    state = reduceTranscriptEvent(state, { type, payload }).state;
+    return completedResult(state.items, state.busy);
+  };
+  assert.equal(apply('message', { id: 'u1', role: 'user', content: 'Make a file' }), false);
+  assert.equal(apply('busy_changed', { busy: true }), false);
+  assert.equal(apply('todo_updated', {
+    todos: [{ id: '1', content: 'Write file', status: 'in_progress' }],
+  }), false);
+  assert.equal(apply('message', { id: 'a1', role: 'assistant', content: 'Created [file](out.txt)' }), false);
+  assert.equal(apply('busy_changed', { busy: false, outcome: 'completed' }), true);
+  assert.equal(apply('done', { outcome: 'completed' }), true);
+  assert.equal(apply('todo_updated', {
+    todos: [{ id: '1', content: 'Write file', status: 'completed' }],
+  }), true);
+  assert.equal(state.todos.length, 1, 'hiding the dock preserves todo data');
+
+  const signature = todoDockSignature(state.todos, state.todoSummary);
+  const suppression = { sessionKey: 's1', signature };
+  assert.equal(apply('message', { id: 'u2', role: 'user', content: 'Continue' }), false);
+  assert.equal(apply('busy_changed', { busy: true }), false);
+  assert.equal(isTodoDockSuppressed(suppression, 's1', todoDockSignature(state.todos, state.todoSummary)), true);
+  assert.equal(apply('todo_updated', {
+    todos: [{ id: '2', content: 'Next file', status: 'in_progress' }],
+  }), false);
+  assert.equal(isTodoDockSuppressed(suppression, 's1', todoDockSignature(state.todos, state.todoSummary)), false);
+});
+
+run('restored results dismiss the dock without observing a busy transition', () => {
+  const history = [
+    { kind: 'msg', id: 1, role: 'user', content: 'Make a file' },
+    { kind: 'msg', id: 2, role: 'assistant', content: 'Created [file](out.txt)' },
+  ];
+  assert.equal(completedResult(history), true);
+  assert.equal(completedResult(history, true), false);
+  assert.equal(completedResult([...history, { kind: 'msg', id: 3, role: 'user', content: 'Next' }]), false);
+  assert.equal(completedResult([{ ...history[1], streaming: true }]), false);
+  assert.equal(completedResult([{ ...history[1], content: '  ' }]), false);
+  assert.equal(completedResult([]), false);
+});
+
+run('only successful settled completion summaries dismiss the dock', () => {
+  const task = {
+    kind: 'tool', id: 1,
+    tool: { tool: 'task_complete', isDone: true, success: true, summary: { object: 'Created file' } },
+  };
+  assert.equal(completedResult([task]), true);
+  assert.equal(completedResult([task], true), false);
+  assert.equal(completedResult([{ ...task, tool: { ...task.tool, isDone: false } }]), false);
+  assert.equal(completedResult([{ ...task, tool: { ...task.tool, success: false } }]), false);
+});
+
+run('errors and interruptions keep progress available despite earlier assistant output', () => {
+  const assistant = { kind: 'msg', id: 1, role: 'assistant', content: 'Working on the file' };
+  for (const terminal of [
+    { kind: 'msg', id: 2, role: 'error', content: 'Request failed' },
+    { kind: 'termination_notice', id: 2, content: 'Stopped' },
+  ]) {
+    assert.equal(completedResult([assistant, terminal]), false);
+  }
 });

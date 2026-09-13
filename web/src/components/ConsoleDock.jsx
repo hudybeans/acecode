@@ -9,8 +9,7 @@
 // 字节原样 ws.send。断线(非 1000)按 nextReconnectDelay 退避,携带本地
 // cursor 续传,刷新页面后 listPty 恢复 running 会话并从 cursor=0 回放。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -23,6 +22,7 @@ import {
   addTab,
   clampDockHeight,
   createDockTabs,
+  fitDockHeight,
   markTabExited,
   nextReconnectDelay,
   parsePtyFrame,
@@ -38,6 +38,7 @@ import { normalizeShells, buildShellMenuItems } from '../lib/consoleShells.js';
 import { useTheme } from '../theme.jsx';
 import { VsIcon } from './Icon.jsx';
 import { Modal } from './Modal.jsx';
+import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { toast } from './Toast.jsx';
 
 const api = createApi();
@@ -89,8 +90,21 @@ function transferHasFiles(dataTransfer) {
 const HOST_OS = detectHostOs();
 const NATIVE_DROP = nativeFileDropEnabled();
 
-export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInfo, preferredCwd = '' }) {
+export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onToggle, consoleInfo, preferredCwd = '' }) {
   const { theme: mode } = useTheme();
+  const dockRef = useRef(null);
+  const [availableHeight, setAvailableHeight] = useState(null);
+  const height = fitDockHeight(preferredHeight, availableHeight);
+
+  useLayoutEffect(() => {
+    const container = dockRef.current?.parentElement;
+    if (!container) return undefined;
+    const measure = () => setAvailableHeight(container.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
   const [tabsState, setTabsState] = useState(createDockTabs);
   const [creating, setCreating] = useState(false);
   // + 旁 shell 下拉框(控制台 Shell 选择器):可用 shell 列表 / 默认 id / 菜单开合 /
@@ -98,7 +112,6 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
   const [shells, setShells] = useState([]);
   const [defaultShellId, setDefaultShellId] = useState('');
   const [shellMenuOpen, setShellMenuOpen] = useState(false);
-  const [shellMenuPos, setShellMenuPos] = useState(null); // {top,left}:fixed 定位坐标
   const shellGroupRef = useRef(null);
   const [bashPrompt, setBashPrompt] = useState(null); // null 或 {} 表示模态打开
   const [bashPathInput, setBashPathInput] = useState('');
@@ -110,6 +123,16 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
   useEffect(() => { tabsStateRef.current = tabsState; }, [tabsState]);
 
   const backend = consoleInfo?.backend || '';
+
+  useEffect(() => {
+    const refresh = () => api.listPtyShells().then((data) => {
+      const normalized = normalizeShells(data);
+      setShells(normalized.shells);
+      setDefaultShellId(normalized.defaultId);
+    }).catch(() => {});
+    window.addEventListener('ace-console-config-changed', refresh);
+    return () => window.removeEventListener('ace-console-config-changed', refresh);
+  }, []);
 
   // ── xterm 实例生命周期 ─────────────────────────────────────────────
 
@@ -322,14 +345,10 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
     } catch { /* 列表拉取失败:下拉留空,+ 仍用默认 shell */ }
   }, []);
 
-  // 开合下拉:打开时按按钮 rect 计算 fixed 坐标(向下弹,逃出 tabbar overflow 裁剪)。
+  // Placement follows the trigger while the dock or viewport changes size.
   const toggleShellMenu = useCallback(() => {
-    if (!shellMenuOpen && shellGroupRef.current) {
-      const r = shellGroupRef.current.getBoundingClientRect();
-      setShellMenuPos({ top: Math.round(r.bottom + 4), left: Math.round(r.left) });
-    }
     setShellMenuOpen((v) => !v);
-  }, [shellMenuOpen]);
+  }, []);
 
   // 下拉选 shell:可用 → 新建 + 持久化为默认;需指定路径(git-bash)→ 弹模态。
   const pickShell = useCallback(async (item) => {
@@ -408,20 +427,9 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
     if (open) loadShells();
   }, [open, loadShells]);
 
-  // shell 下拉菜单:点菜单外关闭。
   useEffect(() => {
-    if (!shellMenuOpen) return undefined;
-    const onDown = (e) => {
-      // 菜单经 portal 渲染到 body(已脱离 .ace-console-newgroup),需同时放行菜单本身。
-      if (e.target instanceof Element &&
-          (e.target.closest('.ace-console-newgroup') || e.target.closest('.ace-console-shell-menu'))) {
-        return;
-      }
-      setShellMenuOpen(false);
-    };
-    window.addEventListener('mousedown', onDown, true);
-    return () => window.removeEventListener('mousedown', onDown, true);
-  }, [shellMenuOpen]);
+    if (!open) setShellMenuOpen(false);
+  }, [open]);
 
   // ── 顶边拖拽(startSidebarResize 模式改纵向,只动 dock 高度) ─────────
 
@@ -580,6 +588,7 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
 
   return (
     <div
+      ref={dockRef}
       className="ace-console-dock"
       data-ace-focus-region="terminal"
       data-collapsed={!open}
@@ -641,14 +650,15 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
             >
               <VsIcon name="expandDown" size={12} />
             </button>
-            {shellMenuOpen && shellMenuPos && createPortal(
-              <div
+            {open && shellMenuOpen && (
+              <AnchoredMenu
+                anchorRef={shellGroupRef}
+                onClose={() => setShellMenuOpen(false)}
+                width={184}
                 className="ace-console-shell-menu"
-                data-ace-native-overlay="overlap"
                 data-ace-focus-region="terminal"
                 data-collapsed={!open}
                 role="menu"
-                style={{ top: shellMenuPos.top, left: shellMenuPos.left }}
               >
                 {buildShellMenuItems(shells, defaultShellId).map((item) => (
                   <button
@@ -671,8 +681,7 @@ export function ConsoleDock({ open, height, onHeightChange, onToggle, consoleInf
                 {buildShellMenuItems(shells, defaultShellId).length === 0 && (
                   <div className="ace-console-shell-empty">无可用 shell</div>
                 )}
-              </div>,
-              document.body,
+              </AnchoredMenu>
             )}
           </div>
         </div>

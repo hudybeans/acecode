@@ -144,7 +144,7 @@ run('Git branch selector changes only the shared list and detail comparison base
   assert.match(sidePanel, /onBaseChange=\{onGitBaseChange\}/);
   assert.match(
     chatView,
-    /updateGitChangesTab\(prev, \{ sessionId: sid, base: gitBase \|\| '' \}\)/,
+    /updateGitChangesTab\(prev, \{ \.\.\.previewContext, base: gitBase \|\| '' \}\)/,
   );
   assert.match(
     previewDetails,
@@ -187,7 +187,7 @@ run('Top bar keeps direct task search while new-conversation and loop stay in qu
     topBar,
     /<QuickBtn title="前进"[\s\S]*?<\/QuickBtn>\s*<QuickBtn title="搜索任务" onClick=\{onOpenSearch\}>/,
   );
-  assert.match(topBar, /invokeTopBarQuickAction/);
+  assert.match(source('SidebarQuickMenu.jsx'), /invokeTopBarQuickAction/);
 });
 
 run('Top bar left and right panel buttons share pressed toggle state', () => {

@@ -21,35 +21,70 @@ async function test(name, fn) {
   }
 }
 
+// 场景:git 工作区的会话行悬停。期望:目录、分支、最近活动三样齐全,
+// hasWorkspace 为真让卡片走目录分支而不是「无工作区」文案。
 await test('workspace session exposes cwd and confirmed Git branch', () => {
   assert.deepEqual(
     sessionHoverDetails(
-      { cwd: 'C:\\repo', workspace_hash: 'workspace-a' },
+      { cwd: 'C:\repo', workspace_hash: 'workspace-a', updated_at: 1700000000000 },
       { is_repo: true, branch: 'feature/hover-details' },
     ),
     {
-      cwd: 'C:\\repo',
+      cwd: 'C:\repo',
+      hasWorkspace: true,
       branch: 'feature/hover-details',
       isGitRepository: true,
+      updatedAt: 1700000000000,
     },
   );
 });
 
+// 场景:工作区不是 git 仓库,或者 git 探测还没回来。期望:仍然出卡片,只是没有
+// 分支行 —— 非 git 工作区曾经整张卡片都不显示,这是回归点。
 await test('non-Git and failed lookup states keep directory-only details', () => {
   assert.deepEqual(
-    sessionHoverDetails({ cwd: '/work/project' }, { is_repo: false }),
-    { cwd: '/work/project', branch: '', isGitRepository: false },
+    sessionHoverDetails({ cwd: '/work/project', updated_at: 5 }, { is_repo: false }),
+    {
+      cwd: '/work/project',
+      hasWorkspace: true,
+      branch: '',
+      isGitRepository: false,
+      updatedAt: 5,
+    },
   );
   assert.deepEqual(
-    sessionHoverDetails({ cwd: '/work/project' }),
-    { cwd: '/work/project', branch: '', isGitRepository: false },
+    sessionHoverDetails({ cwd: '/work/project', updated_at: 5 }),
+    {
+      cwd: '/work/project',
+      hasWorkspace: true,
+      branch: '',
+      isGitRepository: false,
+      updatedAt: 5,
+    },
   );
 });
 
-await test('no-workspace marker is authoritative even when malformed input has cwd', () => {
-  assert.equal(sessionHoverDetails({ no_workspace: true, cwd: 'C:\\private' }), null);
-  assert.equal(sessionHoverDetails({ noWorkspace: true, cwd: '/private' }), null);
-  assert.equal(sessionHoverDetails({ cwd: '   ' }), null);
+// 场景:无工作区会话。期望:标记优先于任何残留 cwd(不能把私有路径漏出去),
+// hasWorkspace 为假让卡片改出「无工作区」,时间行仍在。整张卡片不再消失。
+await test('no-workspace sessions keep a card without leaking any stray cwd', () => {
+  assert.deepEqual(
+    sessionHoverDetails({ no_workspace: true, cwd: 'C:\private', updated_at: 9 }),
+    { cwd: '', hasWorkspace: false, branch: '', isGitRepository: false, updatedAt: 9 },
+  );
+  assert.deepEqual(
+    sessionHoverDetails({ noWorkspace: true, cwd: '/private', created_at: 3 }),
+    { cwd: '', hasWorkspace: false, branch: '', isGitRepository: false, updatedAt: 3 },
+  );
+  // 只有空白字符的 cwd 同样按无工作区处理,但不该因此丢掉整张卡片。
+  assert.deepEqual(
+    sessionHoverDetails({ cwd: '   ' }),
+    { cwd: '', hasWorkspace: false, branch: '', isGitRepository: false, updatedAt: null },
+  );
+  // 无工作区会话即使 git 探测意外返回仓库,也不能出分支行。
+  assert.equal(
+    sessionHoverDetails({ no_workspace: true }, { is_repo: true, branch: 'main' }).isGitRepository,
+    false,
+  );
   assert.equal(sessionHoverDetails(null), null);
 });
 

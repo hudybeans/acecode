@@ -1,3 +1,4 @@
+#include "environment/bootstrap.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -3535,6 +3536,7 @@ static AppConfig load_tui_config_and_runtime(HookManager& hook_manager,
                                              const std::string& working_dir,
                                              const std::string& argv0_dir) {
     AppConfig config = load_config();
+    acecode::environment::bootstrap(config, {});
     reconcile_default_skills_on_startup(argv0_dir);
     {
         std::string trust_error;
@@ -4194,7 +4196,7 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 // ---- Diff 视图:summary 行 + 彩色 diff 块 ----
                 Elements rows;
                 if (msg.summary.has_value()) {
-                    const auto& s = *msg.summary;
+                    const auto& s = *msg.summary; 
                     const Color row_color =
                         acecode::tui::tool_result_text_color(tui::theme());
                     std::string metric_str;

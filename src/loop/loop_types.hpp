@@ -69,6 +69,9 @@ struct LoopRun {
     std::string worktree_path;
     std::string worktree_branch;
     std::string owner_id;
+    // 运行结束时主 checkout 里新出现的改动路径(只有真的建了 worktree 的 run
+    // 才记录):worktree 之外的写入说明有东西绕过了写边界,UI 据此显示警告。
+    std::vector<std::string> workspace_touched;
 };
 
 struct ValidationError {

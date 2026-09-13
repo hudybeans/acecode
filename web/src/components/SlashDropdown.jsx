@@ -258,7 +258,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
               aria-label={`${presentation.label} ${it.name}${it.description ? ' ' + it.description : ''}`}
               data-command-kind={it.kind}
               onMouseEnter={() => setSelectedIndex(idx)}
-              onMouseDown={(e) => { e.preventDefault(); onSelect?.(it); }}
+              onClick={() => onSelect?.(it)}
               className={clsx(
                 'flex items-center gap-2 px-3 cursor-pointer text-[13px] tracking-normal',
                 selected ? 'bg-surface-hi text-fg' : 'text-fg hover:bg-surface-hi/60',

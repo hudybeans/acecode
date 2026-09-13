@@ -100,6 +100,20 @@ bool same_path_for_boundary(const fs::path& a, const fs::path& b) {
 // resulting vector starts with the outermost ancestor and ends with cwd so
 // merged output reads outer→inner. Stops at HOME (HOME itself excluded because
 // ~/.acecode/ is handled separately as the global layer).
+// linked worktree 的根:.git 是指向 <主仓>/.git/worktrees/<name> 的指针文件。
+// 子模块的 .git 指针指向 /.git/modules/,不算(外层仓库的指令仍然适用)。
+bool is_linked_worktree_root(const fs::path& dir) {
+    std::error_code ec;
+    const fs::path marker = dir / ".git";
+    if (!fs::is_regular_file(marker, ec) || ec) return false;
+    std::ifstream in(marker, std::ios::binary);
+    std::string line;
+    if (!std::getline(in, line)) return false;
+    if (line.rfind("gitdir:", 0) != 0) return false;
+    std::replace(line.begin(), line.end(), '\\', '/');
+    return line.find("/.git/worktrees/") != std::string::npos;
+}
+
 std::vector<fs::path> walk_cwd_chain(const fs::path& cwd, int max_depth) {
     std::vector<fs::path> chain;
 
@@ -125,6 +139,11 @@ std::vector<fs::path> walk_cwd_chain(const fs::path& cwd, int max_depth) {
         if (visited.count(key)) break; // symlink loop guard
         visited.insert(std::move(key));
         descending.push_back(cur);
+        // 到 linked worktree 根为止,不再向上:上面就是主 checkout,它的
+        // AGENTS.md 与 worktree 里的是同一份,再加载一遍只会重复内容,还把
+        // 主 checkout 的绝对路径(Source 头)喂给模型 —— worktree 会话和它派生
+        // 的子代理就是拿着这条路径把改动写进主仓的。
+        if (is_linked_worktree_root(cur)) break;
         fs::path parent = cur.parent_path();
         if (parent == cur) break;
         cur = canonicalish_path(parent);

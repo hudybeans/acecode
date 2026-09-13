@@ -516,7 +516,7 @@ if ($DryRun) {
     } else {
         @('acecode', 'acecode-desktop', 'acecode_unit_tests')
     }
-    $dryRunBuildCommand = "cmake --build `"$dryRunBuildRoot`" --config $Configuration --target $($dryRunTargetList -join ' ') -- -j $dryRunJobs"
+    $dryRunBuildCommand = "cmake --build `"$dryRunBuildRoot`" --config $Configuration --target $($dryRunTargetList -join ' ') --parallel $dryRunJobs"
     Write-Host 'DRY RUN: no files, builds, Git state, package, or update server will be changed.'
     Write-Host "BuildDir:  $dryRunBuildRoot"
     Write-Host "BuildJobs: $dryRunJobs"
@@ -610,9 +610,9 @@ try {
         [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     if (-not $SkipBuild) {
         if ($QuickValidation) {
-            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop -- -j $jobs
+            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop --parallel $jobs
         } else {
-            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop acecode_unit_tests -- -j $jobs
+            Invoke-Native cmake --build $buildRoot --config $Configuration --target acecode acecode-desktop acecode_unit_tests --parallel $jobs
         }
     } else {
         Write-Host 'Skipping build because -SkipBuild was supplied.'

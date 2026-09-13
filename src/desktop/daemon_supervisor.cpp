@@ -483,12 +483,18 @@ bool DaemonSupervisor::wait_until_ready(int port, std::chrono::milliseconds time
 void DaemonSupervisor::stop() {
     if (impl_->job) {
         ::TerminateJobObject(impl_->job, 0);
+    } else if (impl_->attached && impl_->process) {
+        ::TerminateProcess(impl_->process, 0);
+    }
+    // Keep the process handle on failure so callers can detect a surviving
+    // daemon. In particular, never relaunch an update before termination ends.
+    if (impl_->process &&
+        ::WaitForSingleObject(impl_->process, 5000) != WAIT_OBJECT_0) {
+        return;
+    }
+    if (impl_->job) {
         ::CloseHandle(impl_->job);
         impl_->job = nullptr;
-    }
-    if (!impl_->job && impl_->attached && impl_->process) {
-        ::TerminateProcess(impl_->process, 0);
-        ::WaitForSingleObject(impl_->process, 2000);
     }
     if (impl_->thread) {
         ::CloseHandle(impl_->thread);
@@ -688,21 +694,13 @@ void DaemonSupervisor::stop() {
     }
     if (!impl_->exited) {
         signal_process_group(impl_->pid, SIGKILL);
-        if (impl_->is_child) {
-            int status = 0;
-            const pid_t rc = ::waitpid(impl_->pid, &status, 0);
-            if (rc == impl_->pid) {
-                impl_->exit_status = status;
-            }
-        } else {
-            const auto kill_deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            while (std::chrono::steady_clock::now() < kill_deadline &&
-                   ::kill(impl_->pid, 0) == 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(25));
-            }
+        const auto kill_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < kill_deadline) {
+            if (impl_->poll_exited()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }
-        impl_->exited = true;
+        if (!impl_->exited) return;
     }
     impl_->pid = -1;
     impl_->is_child = false;

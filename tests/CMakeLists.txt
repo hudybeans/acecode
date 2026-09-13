@@ -17,6 +17,12 @@ if(Python3_Interpreter_FOUND)
         dev_desktop_script_unit
         PROPERTIES LABELS "unit"
     )
+    add_test(
+        NAME macos_portable_package_unit
+        COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/macos_portable_package_test.py
+    )
+    set_tests_properties(macos_portable_package_unit PROPERTIES LABELS "unit")
 endif()
 
 if(UNIX)
@@ -56,6 +62,26 @@ file(GLOB_RECURSE ACECODE_TEST_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(acecode_unit_tests ${ACECODE_TEST_SOURCES})
+
+add_executable(acecode_upgrade_version_fixture
+    ${CMAKE_CURRENT_SOURCE_DIR}/upgrade/helpers/version_fixture.cpp)
+if(MSVC)
+    set_target_properties(acecode_upgrade_version_fixture PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+add_dependencies(acecode_unit_tests acecode_upgrade_version_fixture)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/upgrade/executable_version_test.cpp
+    PROPERTIES COMPILE_DEFINITIONS
+    "ACECODE_UPGRADE_VERSION_FIXTURE=\"$<TARGET_FILE:acecode_upgrade_version_fixture>\"")
+
+add_executable(acecode_upgrade_restart_smoke EXCLUDE_FROM_ALL
+    ${CMAKE_CURRENT_SOURCE_DIR}/desktop/helpers/upgrade_restart_smoke.cpp)
+target_link_libraries(acecode_upgrade_restart_smoke PRIVATE
+    acecode_desktop_support acecode_native_bridge_support cpr::cpr nlohmann_json::nlohmann_json)
+if(MSVC)
+    set_target_properties(acecode_upgrade_restart_smoke PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 target_link_libraries(acecode_unit_tests PRIVATE
     acecode_testable

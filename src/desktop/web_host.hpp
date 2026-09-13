@@ -17,6 +17,8 @@
 
 namespace acecode::desktop {
 
+struct TaskbarBadge;
+
 inline constexpr int kDefaultDesktopWindowWidth = 1280;
 inline constexpr int kDefaultDesktopWindowHeight = 820;
 inline constexpr int kMinimumDesktopWindowWidth = 1170;
@@ -83,6 +85,8 @@ public:
     // (bind 回调天然满足)。
     bool set_background_color(const std::string& color_text);
 
+    bool set_taskbar_badge(const TaskbarBadge& badge);
+
     // Frameless desktop chrome helpers. Windows uses native non-client messages,
     // Linux uses GTK move/resize/window-state APIs, and macOS uses Cocoa window
     // operations.
@@ -101,6 +105,8 @@ public:
     // 前端 TopBar 在 mount 时调一次拿初始态,之后靠 set_window_state_change_handler
     // 推送的变更事件维护。
     bool is_window_maximized() const;
+    // macOS 原生全屏与 zoom/maximize 是两个独立状态。其它平台当前返回 false。
+    bool is_window_fullscreen() const;
 
     struct WebCoreInfo {
         std::string backend;
@@ -121,6 +127,11 @@ public:
     // 重复抛事件。非 Windows 平台为 stub。
     using WindowStateHandler = std::function<void(bool maximized)>;
     void set_window_state_change_handler(WindowStateHandler handler);
+
+    // macOS 进入/退出原生全屏时通知前端,用于移除/恢复 traffic-light 避让区。
+    // 非 macOS 平台为 stub。
+    using WindowFullscreenHandler = std::function<void(bool fullscreen)>;
+    void set_window_fullscreen_change_handler(WindowFullscreenHandler handler);
 
     // Windows host visibility changes include minimize/restore and native
     // hide/show transitions that do not change the maximized state.

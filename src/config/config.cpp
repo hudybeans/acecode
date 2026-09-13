@@ -206,7 +206,7 @@ bool is_valid_web_ui_theme(const std::string& theme) {
 }
 
 bool is_valid_web_ui_color_theme(const std::string& color_theme) {
-    return color_theme == "blue" || color_theme == "orange";
+    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01";
 }
 
 bool is_valid_web_ui_font_size(const std::string& font_size) {
@@ -498,7 +498,7 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("web_ui.theme must be one of: system, light, dark");
     }
     if (!is_valid_web_ui_color_theme(cfg.web_ui.color_theme)) {
-        errors.push_back("web_ui.color_theme must be one of: blue, orange");
+        errors.push_back("web_ui.color_theme must be one of: blue, orange, eva-01");
     }
     if (!is_valid_web_ui_font_size(cfg.web_ui.font_size)) {
         errors.push_back("web_ui.font_size must be one of: small, medium, large");
@@ -996,6 +996,14 @@ static AppConfig load_config_from_path_once(
                             LOG_WARN("[config] invalid 'web_ui.font_size', using 'medium'");
                         }
                     }
+                    if (uij.contains("sidebar_session_time")) {
+                        if (uij["sidebar_session_time"].is_boolean()) {
+                            cfg.web_ui.sidebar_session_time =
+                                uij["sidebar_session_time"].get<bool>();
+                        } else {
+                            LOG_WARN("[config] invalid 'web_ui.sidebar_session_time', using true");
+                        }
+                    }
                 }
             }
             if (j.contains("models_dev") && j["models_dev"].is_object()) {
@@ -1489,9 +1497,53 @@ static AppConfig load_config_from_path_once(
                     if (cj.contains("default_shell") && cj["default_shell"].is_string()) {
                         cfg.console.default_shell = cj["default_shell"].get<std::string>();
                     }
-                    if (cj.contains("git_bash_path") && cj["git_bash_path"].is_string()) {
-                        cfg.console.git_bash_path = cj["git_bash_path"].get<std::string>();
+                    if (cj.contains("shell_paths")) {
+                        if (!cj["shell_paths"].is_object()) {
+                            LOG_WARN("[config] 'console.shell_paths' must be an object, ignoring");
+                        } else {
+                            for (auto it = cj["shell_paths"].begin();
+                                 it != cj["shell_paths"].end(); ++it) {
+                                if (!it.value().is_string()) {
+                                    LOG_WARN("[config] 'console.shell_paths." + it.key() +
+                                             "' must be a string, ignoring");
+                                    continue;
+                                }
+                                const std::string value = it.value().get<std::string>();
+                                if (it.key().empty() || value.empty()) continue;
+                                cfg.console.shell_paths[it.key()] = value;
+                            }
+                        }
                     }
+                    // legacy:console.git_bash_path 并入 shell_paths["git-bash"];
+                    // 已有显式 git-bash 项时以新字段为准。
+                    if (cj.contains("git_bash_path") && cj["git_bash_path"].is_string()) {
+                        const std::string legacy = cj["git_bash_path"].get<std::string>();
+                        if (!legacy.empty() &&
+                            cfg.console.shell_paths.find("git-bash") ==
+                                cfg.console.shell_paths.end()) {
+                            cfg.console.shell_paths["git-bash"] = legacy;
+                        }
+                    }
+                }
+            }
+
+            if (j.contains("toolchains")) {
+                if (!j["toolchains"].is_object()) {
+                    LOG_WARN("[config] 'toolchains' must be an object, ignoring");
+                } else {
+                    const auto& tj = j["toolchains"];
+                    auto read_dir = [&](const char* key, std::string& out) {
+                        if (!tj.contains(key)) return;
+                        if (!tj[key].is_string()) {
+                            LOG_WARN(std::string("[config] 'toolchains.") + key +
+                                     "' must be a string, ignoring");
+                            return;
+                        }
+                        out = tj[key].get<std::string>();
+                    };
+                    read_dir("python", cfg.toolchains.python);
+                    read_dir("node", cfg.toolchains.node);
+                    read_dir("csharp", cfg.toolchains.csharp);
                 }
             }
 
@@ -2177,6 +2229,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             web_uij["color_theme"] = cfg.web_ui.color_theme;
         if (cfg.web_ui.font_size != web_ui_d.font_size)
             web_uij["font_size"] = cfg.web_ui.font_size;
+        if (cfg.web_ui.sidebar_session_time != web_ui_d.sidebar_session_time)
+            web_uij["sidebar_session_time"] = cfg.web_ui.sidebar_session_time;
         if (!web_uij.empty()) j["web_ui"] = std::move(web_uij);
 
         MemoryConfig mem_d;
@@ -2299,13 +2353,26 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         if (!dnj.empty()) {
             deskj["notifications"] = dnj;
         }
-        // console:schema sparse — 只有非空字段才落盘。
+        // console:schema sparse — 只有非空字段才落盘。legacy git_bash_path 不再写出,
+        // 它已在加载时并入 shell_paths["git-bash"]。
         {
             nlohmann::json cj = nlohmann::json::object();
             if (!cfg.console.shell.empty()) cj["shell"] = cfg.console.shell;
             if (!cfg.console.default_shell.empty()) cj["default_shell"] = cfg.console.default_shell;
-            if (!cfg.console.git_bash_path.empty()) cj["git_bash_path"] = cfg.console.git_bash_path;
+            nlohmann::json spj = nlohmann::json::object();
+            for (const auto& [id, path] : cfg.console.shell_paths) {
+                if (!id.empty() && !path.empty()) spj[id] = path;
+            }
+            if (!spj.empty()) cj["shell_paths"] = std::move(spj);
             if (!cj.empty()) j["console"] = std::move(cj);
+        }
+        // toolchains:同样 sparse,空目录不落盘。
+        {
+            nlohmann::json tj = nlohmann::json::object();
+            if (!cfg.toolchains.python.empty()) tj["python"] = cfg.toolchains.python;
+            if (!cfg.toolchains.node.empty()) tj["node"] = cfg.toolchains.node;
+            if (!cfg.toolchains.csharp.empty()) tj["csharp"] = cfg.toolchains.csharp;
+            if (!tj.empty()) j["toolchains"] = std::move(tj);
         }
         if (!deskj.empty()) {
             j["desktop"] = deskj;

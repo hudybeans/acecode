@@ -3,7 +3,10 @@ import {
   allArchivedSessionsSelected,
   archivedSessionKey,
   archivedSessionTarget,
+  archivedSessionWorkspace,
+  groupArchivedSessions,
   removeArchivedSessionsByKey,
+  retainArchivedSessionSelection,
   selectableArchivedSessionKeys,
   selectedArchivedSessions,
   shouldToggleArchivedSessionRow,
@@ -96,4 +99,79 @@ test('archived row toggles outside interactive controls', () => {
   assert.equal(shouldToggleArchivedSessionRow(target({ tagName: 'BUTTON' })), false);
   assert.equal(shouldToggleArchivedSessionRow(target({ tagName: 'INPUT' })), false);
   assert.equal(shouldToggleArchivedSessionRow(null), true);
+});
+
+const archive = [
+  { id: 'same', workspace_hash: 'one', workspaceName: 'Project', cwd: 'C:\\one', title: 'First draft', updated_at: '2026-09-01T12:00:00Z' },
+  { id: 'same', workspace_hash: 'two', workspaceName: 'Project', cwd: 'C:\\two', title: 'Latest draft', updated_at: '2026-09-09T12:00:00Z' },
+  { id: 'middle', workspace_hash: 'one', workspaceName: 'Project', cwd: 'C:\\one', title: '修复归档搜索', updated_at: '2026-09-05T12:00:00Z' },
+  { id: 'task', no_workspace: true, title: 'Task draft', created_at: '2026-09-03T12:00:00Z' },
+];
+
+test('archive groups keep same-name workspaces and no-workspace tasks separate', () => {
+  const groups = groupArchivedSessions(archive);
+  assert.deepEqual(groups.map(({ key }) => key), ['two', 'one', '__no_workspace__']);
+  assert.deepEqual(groups[1].items.map(({ id }) => id), ['middle', 'same']);
+  assert.deepEqual(groups.map(({ items }) => items.length), [1, 2, 1]);
+  assert.equal(groups[0].name, groups[1].name);
+  assert.notEqual(groups[0].path, groups[1].path);
+  assert.equal(groups[2].name, '无工作区');
+});
+
+test('archive workspace labels support paths, legacy local rows, and explicit no-workspace flags', () => {
+  assert.deepEqual(archivedSessionWorkspace({ workspaceHash: 'hash', cwd: 'C:\\work\\demo\\' }), {
+    key: 'hash', name: 'demo', path: 'C:\\work\\demo\\',
+  });
+  assert.deepEqual(archivedSessionWorkspace({}), { key: '__local__', name: '当前会话', path: '' });
+  assert.deepEqual(archivedSessionWorkspace({ noWorkspace: true, workspace_hash: 'stale', cwd: '/stale' }), {
+    key: '__no_workspace__', name: '无工作区', path: '',
+  });
+  assert.deepEqual(groupArchivedSessions([{ id: 'local' }, { id: 'task', no_workspace: true }])
+    .map(({ key }) => key), ['__local__', '__no_workspace__']);
+});
+
+test('archive search combines trimmed case-insensitive titles, workspace names, paths, and workspace filter', () => {
+  assert.deepEqual(groupArchivedSessions(archive, { query: '  DRAFT  ', workspaceKey: 'one' })[0].items, [archive[0]]);
+  assert.equal(groupArchivedSessions(archive, { query: 'project' }).length, 2);
+  assert.deepEqual(groupArchivedSessions(archive, { query: 'c:\\two' })[0].items, [archive[1]]);
+  assert.deepEqual(groupArchivedSessions(archive, { query: '归档搜索' })[0].items, [archive[2]]);
+  assert.deepEqual(groupArchivedSessions(archive, { workspaceKey: '__no_workspace__' })[0].items, [archive[3]]);
+  assert.deepEqual(groupArchivedSessions(archive, { query: 'missing' }), []);
+  assert.deepEqual(groupArchivedSessions(archive, { query: 'draft', workspaceKey: 'missing' }), []);
+  assert.deepEqual(groupArchivedSessions(null), []);
+});
+
+test('archive search uses the same fallback title displayed in the list', () => {
+  const items = [{ id: 'summary', summary: 'Search fallback summary' }, { id: 'display', displayTitle: 'Local name' }];
+  assert.deepEqual(groupArchivedSessions(items, { query: 'fallback' })[0].items, [items[0]]);
+  assert.deepEqual(groupArchivedSessions(items, { query: 'local name' })[0].items, [items[1]]);
+});
+
+test('archive sorting uses creation fallback, keeps undated rows last, and leaves input unchanged', () => {
+  const items = Object.freeze([
+    Object.freeze({ id: 'unknown', workspace_hash: 'one', updated_at: 'invalid' }),
+    Object.freeze({ id: 'fallback', workspace_hash: 'one', updated_at: 'invalid', created_at: '2026-09-04T12:00:00Z' }),
+    ...archive.map((item) => Object.freeze({ ...item })),
+  ]);
+  const newest = groupArchivedSessions(items);
+  const oldest = groupArchivedSessions(items, { sortOrder: 'oldest' });
+  assert.deepEqual(newest.map(({ key }) => key), ['two', 'one', '__no_workspace__']);
+  assert.deepEqual(oldest.map(({ key }) => key), ['one', '__no_workspace__', 'two']);
+  assert.deepEqual(newest[1].items.map(({ id }) => id), ['middle', 'fallback', 'same', 'unknown']);
+  assert.deepEqual(oldest[0].items.map(({ id }) => id), ['same', 'fallback', 'middle', 'unknown']);
+  assert.equal(items[0].id, 'unknown');
+});
+
+test('filtered selection excludes hidden sessions and preserves visible selection through sorting and failures', () => {
+  const selected = toggleAllArchivedSessionSelection(archive, new Set());
+  const filtered = groupArchivedSessions(archive, { workspaceKey: 'one' }).flatMap(({ items }) => items);
+  const retained = retainArchivedSessionSelection(filtered, selected);
+  assert.equal(retained.size, 2);
+  assert.deepEqual(selectedArchivedSessions(filtered, retained), [archive[2], archive[0]]);
+  assert.equal(retainArchivedSessionSelection([...filtered].reverse(), retained), retained);
+  const afterSuccess = removeArchivedSessionsByKey(filtered, [archivedSessionKey(archive[2])]);
+  assert.deepEqual([...retainArchivedSessionSelection(afterSuccess, retained)], [archivedSessionKey(archive[0])]);
+  assert.deepEqual([...retainArchivedSessionSelection([], retained)], []);
+  assert.equal(selected.size, archive.length);
+  assert.deepEqual([...toggleAllArchivedSessionSelection(filtered, new Set())], filtered.map(archivedSessionKey));
 });

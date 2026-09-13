@@ -109,4 +109,15 @@ WorktreeIncludePlan plan_worktree_include_copy(
     const std::vector<std::string>& gitignored_entries,
     const std::vector<std::string>& patterns);
 
+// `git status --porcelain` 一行的路径部分("XY path";短格式 rename 为
+// "XY old -> new",取 new)。不足 4 字符的畸形行返回空。
+std::string porcelain_status_path(const std::string& line);
+
+// 两次 `git status --porcelain` 快照之差:after 里有、before 里没有的行,按
+// after 顺序返回其路径(去重)。状态变化(" M" → "MM")也算新出现 —— 它同样
+// 意味着有人在两次快照之间动了这个文件。写边界的事后检测用它找出绕过
+// worktree 落到主 checkout 的写入。
+std::vector<std::string> newly_changed_paths(const std::vector<std::string>& before,
+                                             const std::vector<std::string>& after);
+
 } // namespace acecode::worktree

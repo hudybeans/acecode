@@ -1,5 +1,9 @@
-// resolve_console_shell / pty_backend_kind_name:平台无关纯逻辑,进
-// acecode_testable 供单测直接覆盖(spawn 实现在 pty_backend_{win,posix}.cpp)。
+// resolve_console_shell / pty_backend_kind_name / detect_console_shells:平台无关
+// 纯逻辑,进 acecode_testable 供单测直接覆盖(spawn 实现在 pty_backend_{win,posix}.cpp)。
+//
+// detect_console_shells 只做**目录层面**的探测(文件在不在、环境变量、注册表),
+// 并把每个类型的 program / detected_path / configured_path / fallback_programs
+// 交给 environment::resolve_terminal 做真正的启动探测与逐级回退。
 
 #include "pty_backend.hpp"
 
@@ -72,6 +76,11 @@ bool is_wsl_system32_bash(const std::string& path) {
     return lower.find("\\system32\\bash.exe") != std::string::npos;
 }
 
+std::string quote_shell_path_if_needed(const std::string& path) {
+    if (path.find(' ') == std::string::npos) return path;
+    return "\"" + path + "\"";
+}
+
 namespace {
 
 #ifdef _WIN32
@@ -100,10 +109,20 @@ std::string win_git_install_path_from_registry() {
 }
 #endif
 
-// 含空格的路径在命令行里加双引号(Windows CreateProcessW / winpty 都按命令行解析)。
-std::string quote_if_needed(const std::string& path) {
-    if (path.find(' ') == std::string::npos) return path;
-    return "\"" + path + "\"";
+std::string configured_path_for(const ShellPaths& paths, const std::string& id) {
+    auto it = paths.find(id);
+    return it == paths.end() ? std::string{} : it->second;
+}
+
+// 显式路径存在时优先当 program;返回是否采用了显式路径。显式路径不存在时只记在
+// configured_path 上(resolve_terminal 会把"配置路径不存在"报成回退原因)。
+bool apply_configured_program(ConsoleShellOption& opt, const ShellPaths& paths,
+                              const ShellProbe& probe) {
+    opt.configured_path = configured_path_for(paths, opt.id);
+    if (opt.configured_path.empty()) return false;
+    if (!probe.exists(opt.configured_path)) return false;
+    opt.program = opt.configured_path;
+    return true;
 }
 
 }  // namespace
@@ -127,15 +146,24 @@ ShellProbe default_shell_probe() {
 }
 
 std::vector<ConsoleShellOption> detect_console_shells(
-    const std::string& configured_git_bash_path, const ShellProbe& probe) {
+    const ShellPaths& shell_paths, const ShellProbe& probe) {
     std::vector<ConsoleShellOption> out;
 #ifdef _WIN32
-    // PowerShell:pwsh(7)优先,探测不到回退 powershell.exe(System32 必有)。
+    // PowerShell:显式路径 > pwsh(7)> powershell.exe(System32 必有)。
+    // 同类备选按 pwsh → powershell.exe 排,启动探测失败时逐个退。
     {
         ConsoleShellOption ps;
         ps.id = "powershell";
         ps.label = "PowerShell";
         std::vector<std::string> pwsh_candidates;
+        const auto search_path = probe.getenv("PATH");
+        for (std::size_t pos = 0; pos < search_path.size();) {
+            const auto end = search_path.find(';', pos);
+            const auto directory = search_path.substr(pos, end == std::string::npos ? end : end - pos);
+            if (!directory.empty()) pwsh_candidates.push_back(directory + "\\pwsh.exe");
+            if (end == std::string::npos) break;
+            pos = end + 1;
+        }
         const std::string program_files = probe.getenv("ProgramFiles");
         const std::string local_appdata = probe.getenv("LocalAppData");
         if (!program_files.empty())
@@ -146,23 +174,28 @@ std::vector<ConsoleShellOption> detect_console_shells(
         for (const auto& c : pwsh_candidates) {
             if (probe.exists(c)) { pwsh = c; break; }
         }
-        if (!pwsh.empty()) {
-            ps.command = quote_if_needed(pwsh);
-            ps.label = "PowerShell 7";
-        } else {
-            ps.command = "powershell.exe";
+        std::string windows_powershell = "powershell.exe";
+        const auto system_root = probe.getenv("SystemRoot");
+        const auto system_powershell = system_root + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+        if (!system_root.empty() && probe.exists(system_powershell)) windows_powershell = system_powershell;
+        ps.detected_path = pwsh.empty() ? windows_powershell : pwsh;
+        if (!apply_configured_program(ps, shell_paths, probe)) {
+            ps.program = ps.detected_path;
+            if (!pwsh.empty()) ps.label = "PowerShell 7";
         }
+        if (!pwsh.empty() && ps.program != pwsh) ps.fallback_programs.push_back(pwsh);
+        if (ps.program != windows_powershell) ps.fallback_programs.push_back(windows_powershell);
+        ps.command = quote_shell_path_if_needed(ps.program);
         ps.available = true;
         out.push_back(std::move(ps));
     }
-    // Git Bash:用户指定路径 → 常见安装位置 → 注册表 InstallPath。排除 WSL。
+    // Git Bash:显式路径 → 常见安装位置 → 注册表 InstallPath。排除 WSL。
     {
         ConsoleShellOption gb;
         gb.id = "git-bash";
         gb.label = "Git Bash";
+        gb.configured_path = configured_path_for(shell_paths, gb.id);
         std::vector<std::string> candidates;
-        if (!configured_git_bash_path.empty())
-            candidates.push_back(configured_git_bash_path);
         auto add_git_root = [&](const std::string& base) {
             if (!base.empty()) candidates.push_back(base + "\\Git\\bin\\bash.exe");
         };
@@ -175,13 +208,18 @@ std::vector<ConsoleShellOption> detect_console_shells(
             if (std::string gip = probe.git_install_path(); !gip.empty())
                 candidates.push_back(gip + "\\bin\\bash.exe");
         }
-        std::string found;
         for (const auto& c : candidates) {
             if (is_wsl_system32_bash(c)) continue;  // WSL 的 bash.exe 不是 Git Bash
-            if (probe.exists(c)) { found = c; break; }
+            if (probe.exists(c)) { gb.detected_path = c; break; }
         }
-        if (!found.empty()) {
-            gb.command = quote_if_needed(found) + " --login -i";
+        if (!gb.configured_path.empty() && !is_wsl_system32_bash(gb.configured_path) &&
+                probe.exists(gb.configured_path)) {
+            gb.program = gb.configured_path;
+        } else {
+            gb.program = gb.detected_path;
+        }
+        if (!gb.program.empty()) {
+            gb.command = quote_shell_path_if_needed(gb.program) + " --login -i";
             gb.available = true;
         } else {
             gb.available = false;
@@ -189,13 +227,15 @@ std::vector<ConsoleShellOption> detect_console_shells(
         }
         out.push_back(std::move(gb));
     }
-    // cmd(当前默认)。
+    // cmd:显式路径 > %COMSPEC% > cmd.exe。
     {
         ConsoleShellOption c;
         c.id = "cmd";
         c.label = "Command Prompt";
         const std::string comspec = probe.getenv("COMSPEC");
-        c.command = comspec.empty() ? "cmd.exe" : comspec;
+        c.detected_path = comspec.empty() ? std::string("cmd.exe") : comspec;
+        if (!apply_configured_program(c, shell_paths, probe)) c.program = c.detected_path;
+        c.command = quote_shell_path_if_needed(c.program);
         c.available = true;
         out.push_back(std::move(c));
     }
@@ -207,7 +247,10 @@ std::vector<ConsoleShellOption> detect_console_shells(
         def.label = "Default Shell";
         std::string sh = probe.getenv("SHELL");
         if (sh.empty() && probe.login_shell) sh = probe.login_shell();
-        def.command = sh.empty() ? "/bin/sh" : sh;
+        def.detected_path = sh.empty() ? std::string("/bin/sh") : sh;
+        if (def.detected_path != "/bin/sh") def.fallback_programs.push_back("/bin/sh");
+        if (!apply_configured_program(def, shell_paths, probe)) def.program = def.detected_path;
+        def.command = def.program;
         def.available = true;
         out.push_back(std::move(def));
     }
@@ -221,34 +264,49 @@ std::vector<ConsoleShellOption> detect_console_shells(
          {"/usr/bin/fish", "/usr/local/bin/fish", "/opt/homebrew/bin/fish"}},
     };
     for (const auto& cand : cands) {
-        std::string found;
+        ConsoleShellOption o;
+        o.id = cand.id;
+        o.label = cand.label;
         for (const auto& p : cand.paths) {
-            if (probe.exists(p)) { found = p; break; }
+            if (probe.exists(p)) { o.detected_path = p; break; }
         }
-        if (!found.empty()) {
-            ConsoleShellOption o;
-            o.id = cand.id;
-            o.label = cand.label;
-            o.command = found;
-            o.available = true;
-            out.push_back(std::move(o));
-        }
+        if (!apply_configured_program(o, shell_paths, probe)) o.program = o.detected_path;
+        o.command = o.program;
+        o.available = !o.program.empty();
+        o.needs_path = !o.available;
+        out.push_back(std::move(o));
     }
-    (void)configured_git_bash_path;
 #endif
     return out;
 }
 
+std::vector<ConsoleShellOption> detect_console_shells(const ShellPaths& shell_paths) {
+    return detect_console_shells(shell_paths, default_shell_probe());
+}
+
+namespace {
+ShellPaths legacy_shell_paths(const std::string& configured_git_bash_path) {
+    ShellPaths paths;
+    if (!configured_git_bash_path.empty()) paths["git-bash"] = configured_git_bash_path;
+    return paths;
+}
+}  // namespace
+
+std::vector<ConsoleShellOption> detect_console_shells(
+    const std::string& configured_git_bash_path, const ShellProbe& probe) {
+    return detect_console_shells(legacy_shell_paths(configured_git_bash_path), probe);
+}
+
 std::vector<ConsoleShellOption> detect_console_shells(
     const std::string& configured_git_bash_path) {
-    return detect_console_shells(configured_git_bash_path, default_shell_probe());
+    return detect_console_shells(legacy_shell_paths(configured_git_bash_path),
+                                 default_shell_probe());
 }
 
 std::optional<std::string> resolve_shell_command_by_id(
-    const std::string& id, const std::string& configured_git_bash_path,
-    const ShellProbe& probe) {
+    const std::string& id, const ShellPaths& shell_paths, const ShellProbe& probe) {
     if (id.empty()) return std::nullopt;
-    for (const auto& opt : detect_console_shells(configured_git_bash_path, probe)) {
+    for (const auto& opt : detect_console_shells(shell_paths, probe)) {
         if (opt.id == id) {
             if (opt.available && !opt.command.empty()) return opt.command;
             return std::nullopt;
@@ -258,15 +316,27 @@ std::optional<std::string> resolve_shell_command_by_id(
 }
 
 std::optional<std::string> resolve_shell_command_by_id(
+    const std::string& id, const ShellPaths& shell_paths) {
+    return resolve_shell_command_by_id(id, shell_paths, default_shell_probe());
+}
+
+std::optional<std::string> resolve_shell_command_by_id(
+    const std::string& id, const std::string& configured_git_bash_path,
+    const ShellProbe& probe) {
+    return resolve_shell_command_by_id(id, legacy_shell_paths(configured_git_bash_path), probe);
+}
+
+std::optional<std::string> resolve_shell_command_by_id(
     const std::string& id, const std::string& configured_git_bash_path) {
-    return resolve_shell_command_by_id(id, configured_git_bash_path, default_shell_probe());
+    return resolve_shell_command_by_id(id, legacy_shell_paths(configured_git_bash_path),
+                                       default_shell_probe());
 }
 
 std::string default_console_shell_id(
     const std::string& configured_default_shell,
-    const std::string& configured_git_bash_path, const ShellProbe& probe) {
+    const ShellPaths& shell_paths, const ShellProbe& probe) {
     if (!configured_default_shell.empty()) {
-        for (const auto& opt : detect_console_shells(configured_git_bash_path, probe)) {
+        for (const auto& opt : detect_console_shells(shell_paths, probe)) {
             if (opt.id == configured_default_shell && opt.available) {
                 return configured_default_shell;
             }
@@ -280,9 +350,23 @@ std::string default_console_shell_id(
 }
 
 std::string default_console_shell_id(
+    const std::string& configured_default_shell, const ShellPaths& shell_paths) {
+    return default_console_shell_id(configured_default_shell, shell_paths,
+                                    default_shell_probe());
+}
+
+std::string default_console_shell_id(
+    const std::string& configured_default_shell,
+    const std::string& configured_git_bash_path, const ShellProbe& probe) {
+    return default_console_shell_id(configured_default_shell,
+                                    legacy_shell_paths(configured_git_bash_path), probe);
+}
+
+std::string default_console_shell_id(
     const std::string& configured_default_shell,
     const std::string& configured_git_bash_path) {
-    return default_console_shell_id(configured_default_shell, configured_git_bash_path,
+    return default_console_shell_id(configured_default_shell,
+                                    legacy_shell_paths(configured_git_bash_path),
                                     default_shell_probe());
 }
 

@@ -55,7 +55,7 @@ run('preview plus button follows the last tab until measured overflow pins it', 
   );
 });
 
-run('preview file action uses a dedicated native single-file picker and existing preview tabs', () => {
+run('preview file action uses the native single-file picker when present and the web picker otherwise', () => {
   const picker = source('./desktopPreviewFilePicker.js');
   const chat = source('../components/ChatView.jsx');
   const desktop = source('../../../src/desktop/main.cpp');
@@ -67,10 +67,14 @@ run('preview file action uses a dedicated native single-file picker and existing
   );
 
   assert.match(picker, /aceDesktop_pickPreviewFile\(\{ cwd:/);
+  // add-web-path-picker:没有 bridge 时退到 web 路径选择器的文件模式,按钮不再随 bridge 隐藏。
+  assert.match(picker, /export async function pickPreviewFile\(/);
+  assert.match(picker, /webPicker\(\{ mode: 'file', initialPath: String\(cwd \|\| ''\), purpose: 'preview'/);
   assert.match(chat, /const openPreviewFilePicker = useCallback\(async/);
-  assert.match(chat, /pickNativePreviewFile\(sidePanelCwd\)/);
+  assert.match(chat, /pickPreviewFile\(sidePanelCwd, \{ api \}\)/);
   assert.match(chat, /openFilePreview\(picked\.path\)/);
-  assert.match(chat, /onOpenFile=\{sidePanelCwd && hasNativePreviewFilePicker\(\)/);
+  assert.match(chat, /onOpenFile=\{sidePanelCwd \? openPreviewFilePicker : null\}/);
+  assert.doesNotMatch(chat, /hasNativePreviewFilePicker\(\)/);
   assert.match(desktop, /host\.bind\("aceDesktop_pickPreviewFile"/);
   assert.match(desktop, /acecode::desktop::pick_single_file/);
   assert.match(singleFilePicker, /set_initial_folder\(dialog, default_folder, true\)/);

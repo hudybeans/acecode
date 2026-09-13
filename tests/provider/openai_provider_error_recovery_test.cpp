@@ -2,6 +2,7 @@
 
 #include "provider/openai_provider.hpp"
 #include "provider/llm_provider.hpp"
+#include "provider/stream_diagnostic_capture.hpp"
 
 #include <httplib.h>
 
@@ -178,6 +179,39 @@ TEST(OpenAiProviderErrorRecovery, HardQuotaRateLimitIsTerminal) {
     EXPECT_EQ(error->provider_error.status_code, 429);
     EXPECT_FALSE(error->provider_error.retryable);
     EXPECT_EQ(count_events(events, StreamEventType::Retry), 0);
+}
+
+TEST(OpenAiProviderErrorRecovery, LargeHardQuotaBodyRemainsTerminal) {
+    const std::string raw_body = nlohmann::json{
+        {"error", {
+            {"code", "insufficient_quota"},
+            {"message", std::string(128 * 1024, 'x')},
+        }},
+    }.dump();
+    std::atomic<int> hits{0};
+    LocalHttpServer server([&](httplib::Server& s) {
+        s.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            ++hits;
+            res.status = 429;
+            res.set_header("Retry-After", "0");
+            res.set_content(raw_body, "application/json");
+        });
+    });
+    OpenAiCompatProvider provider(
+        "http://127.0.0.1:" + std::to_string(server.port), "", "test-model");
+
+    // Abort an unexpected retry so a classification regression fails promptly.
+    const auto events = collect_events_until_retry(provider, 1);
+    const StreamEvent* error = last_error_event(events);
+    ASSERT_NE(error, nullptr);
+    EXPECT_EQ(error->provider_error.kind, ProviderErrorKind::Http);
+    EXPECT_EQ(error->provider_error.status_code, 429);
+    EXPECT_FALSE(error->provider_error.retryable);
+    EXPECT_TRUE(error->provider_error.body_is_json);
+    EXPECT_EQ(error->provider_error.raw_body, raw_body);
+    EXPECT_EQ(count_events(events, StreamEventType::Retry), 0);
+    EXPECT_EQ(count_events(events, StreamEventType::Done), 0);
+    EXPECT_EQ(hits.load(), 1);
 }
 
 TEST(OpenAiProviderErrorRecovery, NetworkFailureIsStructuredAndRetryable) {
@@ -613,6 +647,51 @@ TEST(OpenAiProviderErrorRecovery, RetriesTransientFailureBeforeAnyOutput) {
     EXPECT_EQ(count_events(events, StreamEventType::Retry), 1);
     EXPECT_EQ(count_events(events, StreamEventType::Error), 0);
     EXPECT_EQ(count_events(events, StreamEventType::Done), 1);
+}
+
+TEST(OpenAiProviderErrorRecovery, LargeStreamStillDeliversContentAndCompletion) {
+    std::string body;
+    const std::string heartbeat = ": " + std::string(1000, 'x') + "\n\n";
+    for (int i = 0; i < 256; ++i) body += heartbeat;
+    body += "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+            "data: [DONE]\n\n";
+    LocalHttpServer server([&](httplib::Server& s) {
+        s.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            res.set_content(body, "text/event-stream");
+        });
+    });
+    OpenAiCompatProvider provider(
+        "http://127.0.0.1:" + std::to_string(server.port), "", "test-model");
+    const auto events = collect_events(provider);
+    EXPECT_EQ(last_error_event(events), nullptr);
+    EXPECT_EQ(count_events(events, StreamEventType::Done), 1);
+    const auto* delta = last_event_of_type(events, StreamEventType::Delta);
+    ASSERT_NE(delta, nullptr);
+    EXPECT_EQ(delta->content, "ok");
+}
+
+TEST(OpenAiProviderErrorRecovery, LargeInterruptedStreamHasBoundedDiagnostics) {
+    std::string body = ": first-event\n\n";
+    const std::string heartbeat = ": " + std::string(1000, 'x') + "\n\n";
+    for (int i = 0; i < 256; ++i) body += heartbeat;
+    body += ": last-event\n\n";
+    LocalHttpServer server([&](httplib::Server& s) {
+        s.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            res.set_header("Retry-After", "0");
+            res.set_content(body, "text/event-stream");
+        });
+    });
+    OpenAiCompatProvider provider(
+        "http://127.0.0.1:" + std::to_string(server.port), "", "test-model");
+    const auto events = collect_events_until_retry(provider, 1);
+    const auto* retry = last_event_of_type(events, StreamEventType::Retry);
+    ASSERT_NE(retry, nullptr);
+    const auto& sample = retry->provider_error.raw_body;
+    EXPECT_LE(sample.size(), acecode::StreamDiagnosticCapture::kMaxBytes);
+    EXPECT_EQ(sample.find(": first-event"), 0u);
+    EXPECT_NE(sample.find(": last-event"), std::string::npos);
+    EXPECT_NE(sample.find(acecode::StreamDiagnosticCapture::kTruncationMarker),
+              std::string::npos);
 }
 
 TEST(OpenAiProviderErrorRecovery, UnboundedRetryKeepsLatestProviderBodyVisible) {

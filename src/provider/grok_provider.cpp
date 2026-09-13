@@ -1,4 +1,5 @@
 #include "grok_provider.hpp"
+#include "stream_diagnostic_capture.hpp"
 
 #include "grok_responses.hpp"
 #include "network/proxy_resolver.hpp"
@@ -326,7 +327,8 @@ void GrokProvider::chat_stream(
         const std::string request_id = generate_uuid();
         GrokResponsesStreamParser parser;
         std::string sse_buffer;
-        std::string raw_body;
+        StreamDiagnosticCapture raw_capture;
+        cpr::Session stream_session;
         bool parse_failed = false;
         std::string parse_error;
         std::atomic<std::int64_t> last_activity{steady_now_ms()};
@@ -337,7 +339,10 @@ void GrokProvider::chat_stream(
             [&](const std::string_view bytes, intptr_t) -> bool {
                 if (abort_flag && abort_flag->load()) return false;
                 if (!bytes.empty()) last_activity.store(steady_now_ms());
-                raw_body.append(bytes.data(), bytes.size());
+                long http_status = 0;
+                curl_easy_getinfo(stream_session.GetCurlHolder()->handle,
+                                  CURLINFO_RESPONSE_CODE, &http_status);
+                raw_capture.append(bytes, http_status);
                 sse_buffer.append(bytes.data(), bytes.size());
                 std::size_t position = 0;
                 std::size_t delimiter = 0;
@@ -376,18 +381,19 @@ void GrokProvider::chat_stream(
             }};
 
         auto proxy = network::proxy_options_for(url);
-        const cpr::Response upstream = cpr::Post(
-            cpr::Url{url},
-            grok_headers(auth_config_, access.tokens, model_, agent_id_,
-                         session_id_, request_id, true),
-            cpr::Body{body.dump()},
-            cpr::ConnectTimeout{
-                (std::min)(idle_timeout_ms, kStreamConnectTimeoutCapMs)},
-            network::build_ssl_options(proxy),
-            proxy.proxies,
-            proxy.auth,
-            write,
-            progress);
+        stream_session.SetOption(cpr::Url{url});
+        stream_session.SetOption(grok_headers(
+            auth_config_, access.tokens, model_, agent_id_,
+            session_id_, request_id, true));
+        stream_session.SetOption(cpr::Body{body.dump()});
+        stream_session.SetOption(cpr::ConnectTimeout{
+            (std::min)(idle_timeout_ms, kStreamConnectTimeoutCapMs)});
+        stream_session.SetOption(network::build_ssl_options(proxy));
+        stream_session.SetOption(proxy.proxies);
+        stream_session.SetOption(proxy.auth);
+        stream_session.SetOption(write);
+        stream_session.SetOption(progress);
+        const cpr::Response upstream = stream_session.Post();
 
         if (abort_flag && abort_flag->load()) {
             emit_grok_error(callback, grok_error_info(
@@ -395,6 +401,7 @@ void GrokProvider::chat_stream(
                 "Grok request cancelled", "", false));
             return;
         }
+        const std::string raw_body = raw_capture.str();
         if (upstream.status_code == 401 && physical_attempt == 0) {
             GrokAccessTokenResult refreshed = ensure_grok_access_token(
                 true, access.tokens.access_token, auth_config_);

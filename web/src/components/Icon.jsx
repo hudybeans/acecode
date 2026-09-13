@@ -53,6 +53,9 @@ const ICONS = {
   panelRight: 'PanelRight',
   panelLeftFilled: 'PanelLeftFilled',
   panelRightFilled: 'PanelRightFilled',
+  panelBottom: 'PanelBottom',
+  panelBottomFilled: 'PanelBottomFilled',
+  palette: 'Palette',
   pin: 'Pin',
   refresh: 'Refresh',
   rightBar: 'RightBar',
@@ -209,7 +212,7 @@ export function ToolSummaryIcon({ icon, ok, className = '' }) {
 }
 
 export function PanelToggleIcon({ side = 'left', expanded = false, size = 16, className = '', ...props }) {
-  const name = side === 'right' ? 'panelRight' : 'panelLeft';
+  const name = side === 'bottom' ? 'panelBottom' : side === 'right' ? 'panelRight' : 'panelLeft';
   return (
     <VsIcon
       name={expanded ? `${name}Filled` : name}

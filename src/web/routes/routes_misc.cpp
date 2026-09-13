@@ -8,6 +8,7 @@
 #include "../../utils/state_file.hpp"
 #include "../../upgrade/diagnostics.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <thread>
 
@@ -505,6 +506,15 @@ void WebServer::Impl::register_feedback() {
             if (!feedback_text || !session_id || !workspace_hash) {
                 return json_err(req, 400, "BAD_REQUEST",
                                 "expected string feedback_text, session_id, and workspace_hash fields");
+            }
+            // JSON parsing validates UTF-8, so each non-continuation byte starts
+            // one Unicode code point, matching the feedback form's counter.
+            const auto feedback_characters = std::count_if(
+                feedback_text->begin(), feedback_text->end(),
+                [](unsigned char ch) { return (ch & 0xc0) != 0x80; });
+            if (feedback_characters > 10000) {
+                return json_err(req, 400, "FEEDBACK_TOO_LONG",
+                                "feedback_text must not exceed 10000 Unicode characters");
             }
 
             UpgradeConfig upgrade_cfg;
@@ -1446,8 +1456,24 @@ void WebServer::Impl::register_ui_preferences() {
             if (auto rej = require_auth(req)) return std::move(*rej);
             if (!deps.app_config) return crow::response(503);
 
+            auto pending_restart = [&]() -> std::optional<crow::response> {
+                // Called with the job mutex held, both before checking the
+                // network and after it to close the completed-job race.
+                const auto& job = update_job_runtime->current;
+                if (!job || job->state != "succeeded" || !job->restart_required) return std::nullopt;
+                auto body = update_job_to_json(*job);
+                body["started"] = false;
+                body["latest_version"] = job->target_version;
+                body["message"] = "update is already installed; restart ACECode to finish";
+                crow::response response(202);
+                response.add_header("Content-Type", "application/json");
+                response.body = body.dump();
+                return with_cors(req, std::move(response));
+            };
+
             {
                 std::lock_guard<std::mutex> lock(update_job_runtime->mu);
+                if (auto response = pending_restart()) return std::move(*response);
                 if (update_job_runtime->current &&
                     update_job_is_active(*update_job_runtime->current)) {
                     crow::response r(409);
@@ -1495,6 +1521,7 @@ void WebServer::Impl::register_ui_preferences() {
             initial.log_error = diagnostics->error();
             {
                 std::lock_guard<std::mutex> lock(update_job_runtime->mu);
+                if (auto response = pending_restart()) return std::move(*response);
                 if (update_job_runtime->current &&
                     update_job_is_active(*update_job_runtime->current)) {
                     crow::response r(409);
@@ -2237,7 +2264,11 @@ void WebServer::Impl::register_ui_preferences() {
                     !is_valid_web_ui_color_theme(
                         body["color_theme"].get<std::string>())) {
                     return json_err(400, "BAD_REQUEST",
-                                    "color_theme must be blue or orange");
+                                    "color_theme must be blue, orange, or eva-01");
+                }
+                if (themes::is_downloadable_theme(body["color_theme"].get<std::string>()) &&
+                    (!theme_store || !theme_store->installed(body["color_theme"].get<std::string>()))) {
+                    return json_err(409, "THEME_NOT_INSTALLED", "Download the theme before applying it");
                 }
             }
             if (body.contains("font_size")) {
@@ -2247,6 +2278,13 @@ void WebServer::Impl::register_ui_preferences() {
                         body["font_size"].get<std::string>())) {
                     return json_err(400, "BAD_REQUEST",
                                     "font_size must be small, medium, or large");
+                }
+            }
+            if (body.contains("sidebar_session_time")) {
+                has_supported_field = true;
+                if (!body["sidebar_session_time"].is_boolean()) {
+                    return json_err(400, "BAD_REQUEST",
+                                    "sidebar_session_time must be a boolean");
                 }
             }
             if (!has_supported_field) {
@@ -2268,6 +2306,10 @@ void WebServer::Impl::register_ui_preferences() {
             if (body.contains("font_size")) {
                 deps.app_config->web_ui.font_size =
                     body["font_size"].get<std::string>();
+            }
+            if (body.contains("sidebar_session_time")) {
+                deps.app_config->web_ui.sidebar_session_time =
+                    body["sidebar_session_time"].get<bool>();
             }
             try {
                 if (!deps.config_path.empty()) {

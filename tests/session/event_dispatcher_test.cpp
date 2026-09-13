@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -87,6 +88,110 @@ TEST(EventDispatcher, BufferEvictsOldEventsBeyondCapacity) {
     ASSERT_EQ(got2.size(), 3u);
     EXPECT_EQ(got2[0].seq, 3u);
     EXPECT_EQ(got2[2].seq, 5u);
+}
+
+TEST(EventDispatcher, ByteBudgetEvictsOldestBeforeCountLimit) {
+    EventDispatcher d(1024, 4096);
+    d.emit(SessionEventKind::Done, {});
+    for (int i = 0; i < 3; ++i) {
+        d.emit(SessionEventKind::ToolEnd, {{"output", std::string(1500, 'x')}});
+    }
+    std::vector<std::uint64_t> replay;
+    d.subscribe([&](const SessionEvent& e) { replay.push_back(e.seq); }, 1);
+    EXPECT_EQ(replay, (std::vector<std::uint64_t>{3, 4}));
+}
+
+TEST(EventDispatcher, OversizedEventIsLiveOnlyAndDoesNotEvictOtherHistory) {
+    EventDispatcher d(1024, 4096);
+    d.emit(SessionEventKind::Done, {});
+    d.emit(SessionEventKind::Message, {{"text", "retained"}});
+    std::vector<std::uint64_t> live;
+    d.subscribe([&](const SessionEvent& e) { live.push_back(e.seq); });
+    d.emit(SessionEventKind::ToolEnd, {{"output", std::string(8192, 'x')}});
+    d.emit(SessionEventKind::Done, {});
+    EXPECT_EQ(live, (std::vector<std::uint64_t>{3, 4}));
+    std::vector<std::uint64_t> replay;
+    d.subscribe([&](const SessionEvent& e) { replay.push_back(e.seq); }, 1);
+    EXPECT_EQ(replay, (std::vector<std::uint64_t>{2, 4}));
+}
+
+TEST(EventDispatcher, ByteBudgetAccountsJsonStructureAndObjectKeys) {
+    EventDispatcher d(1024, 4096);
+    d.emit(SessionEventKind::Done, {});
+    auto array = nlohmann::json::array();
+    for (int i = 0; i < 1000; ++i) array.push_back(false);
+    d.emit(SessionEventKind::Message, std::move(array));
+    d.emit(SessionEventKind::Message, {{std::string(8192, 'k'), 1}});
+    d.emit(SessionEventKind::Done, {});
+    std::vector<std::uint64_t> replay;
+    d.subscribe([&](const SessionEvent& e) { replay.push_back(e.seq); }, 1);
+    EXPECT_EQ(replay, (std::vector<std::uint64_t>{4}));
+}
+
+TEST(EventDispatcher, CoalescingReleasesAccountedBytesAndOversizedStaleState) {
+    EventDispatcher d(1024, 4096);
+    d.emit(SessionEventKind::Done, {});
+    EventDispatcher::EmitOptions opts;
+    opts.coalesce_key = "tool:progress";
+    for (int i = 0; i < 10; ++i) {
+        d.emit(SessionEventKind::ToolUpdate, {{"text", std::string(1500, 'x')}}, opts);
+    }
+    d.emit(SessionEventKind::Message, {{"text", std::string(1500, 'y')}});
+    std::vector<std::uint64_t> replay;
+    const auto sub = d.subscribe(
+        [&](const SessionEvent& e) { replay.push_back(e.seq); }, 1);
+    EXPECT_EQ(replay, (std::vector<std::uint64_t>{11, 12}));
+    d.unsubscribe(sub);
+
+    d.emit(SessionEventKind::ToolUpdate, {{"text", std::string(8192, 'z')}}, opts);
+    replay.clear();
+    d.subscribe([&](const SessionEvent& e) { replay.push_back(e.seq); }, 1);
+    EXPECT_EQ(replay, (std::vector<std::uint64_t>{12}));
+}
+
+TEST(EventDispatcher, ThrowingLiveCallbackStillDrainsQueuedAndFutureEvents) {
+    EventDispatcher d;
+    std::vector<std::uint64_t> failing;
+    std::vector<std::uint64_t> healthy;
+    d.subscribe([&](const SessionEvent& e) {
+        failing.push_back(e.seq);
+        if (e.seq == 1) {
+            d.emit(SessionEventKind::Token, {{"text", "queued"}});
+            throw std::runtime_error("transient listener failure");
+        }
+    });
+    d.subscribe([&](const SessionEvent& e) { healthy.push_back(e.seq); });
+    EXPECT_NO_THROW(d.emit(SessionEventKind::Token, {{"text", "first"}}));
+    d.emit(SessionEventKind::Done, {});
+    EXPECT_EQ(failing, (std::vector<std::uint64_t>{1, 2, 3}));
+    EXPECT_EQ(healthy, failing);
+}
+
+TEST(EventDispatcher, ThrowingReplayCallbackReturnsSubscriptionAndFlushesCatchup) {
+    EventDispatcher d;
+    for (int i = 0; i < 3; ++i) d.emit(SessionEventKind::Token, {{"i", i}});
+    std::vector<std::uint64_t> got;
+    EventDispatcher::SubscriptionId sub = 0;
+    EXPECT_NO_THROW(sub = d.subscribe([&](const SessionEvent& e) {
+        got.push_back(e.seq);
+        if (e.seq == 2) {
+            d.emit(SessionEventKind::Token, {{"text", "queued"}});
+            throw std::runtime_error("replay failure");
+        }
+        if (e.seq == 4) throw std::runtime_error("catchup failure");
+    }, 1));
+    ASSERT_NE(sub, 0u);
+    d.emit(SessionEventKind::Done, {});
+    EXPECT_EQ(got, (std::vector<std::uint64_t>{2, 3, 4, 5}));
+    d.unsubscribe(sub);
+    EXPECT_EQ(d.listener_count(), 0u);
+}
+
+TEST(EventDispatcher, EmptyCallbackDoesNotCreateUnreachableQueue) {
+    EventDispatcher d;
+    EXPECT_EQ(d.subscribe({}), 0u);
+    for (int i = 0; i < 10; ++i) d.emit(SessionEventKind::Token, {{"i", i}});
+    EXPECT_EQ(d.listener_count(), 0u);
 }
 
 // 场景: 非 durable progress 事件应分配 seq 并投递给 live listener,但不进 replay buffer。

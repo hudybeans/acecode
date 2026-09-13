@@ -17,6 +17,8 @@ import {
   installWebappCompatFlag,
   isWebappCompat,
   isDesktopShell,
+  isMacDesktopShell,
+  shouldInsetMacTopBar,
   desktopUiMode,
 } from './desktopShellMode.js';
 
@@ -124,4 +126,35 @@ run('desktopUiMode:shell 优先于 webapp,两者皆无 → browser', () => {
   const compat = makeWin({ search: '?ace_webapp=1' });
   assert.equal(desktopUiMode(compat), 'webapp');
   assert.equal(desktopUiMode(makeWin({})), 'browser');
+});
+
+run('native macOS chrome follows the shell host OS, not the browser platform', () => {
+  for (const os of ['macos', 'windows', 'linux', undefined]) {
+    const win = makeWin({ shell: true });
+    win.__ACECODE_OS__ = os;
+    win.navigator = { platform: 'MacIntel', userAgent: 'Macintosh' };
+    assert.equal(isMacDesktopShell(win), os === 'macos');
+  }
+
+  const browser = makeWin();
+  browser.navigator = { platform: 'MacIntel', userAgent: 'Macintosh' };
+  assert.equal(isMacDesktopShell(browser), false);
+  browser.__ACECODE_OS__ = 'macos';
+  assert.equal(isMacDesktopShell(browser), false);
+  browser.__ACECODE_WEBAPP_COMPAT__ = true;
+  assert.equal(isMacDesktopShell(browser), false);
+  assert.equal(isMacDesktopShell(null), false);
+  assert.equal(isMacDesktopShell(undefined), false);
+});
+
+run('macOS top bar reserves traffic-light space only outside native fullscreen', () => {
+  const mac = makeWin({ shell: true });
+  mac.__ACECODE_OS__ = 'macos';
+  assert.equal(shouldInsetMacTopBar(false, mac), true);
+  assert.equal(shouldInsetMacTopBar(true, mac), false);
+
+  const windows = makeWin({ shell: true });
+  windows.__ACECODE_OS__ = 'windows';
+  assert.equal(shouldInsetMacTopBar(false, windows), false);
+  assert.equal(shouldInsetMacTopBar(true, windows), false);
 });

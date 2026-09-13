@@ -267,6 +267,7 @@ async function request(method, path, body, base, options = {}) {
         ? { signal: controller.signal }
         : (externalSignal ? { signal: externalSignal } : {})),
     });
+    if (resp.ok && options.responseType === 'blob') return await resp.blob();
     const ctype = resp.headers.get('Content-Type') || '';
     let parsed = null;
     if (resp.status !== 204 && ctype.includes('application/json')) {
@@ -307,7 +308,7 @@ export function createApi(base = null) {
       request('POST', `/api/pty/${encodeURIComponent(id)}/title`, { title }, base),
     // + 旁 shell 下拉框(控制台 Shell 选择器):列出可用 shell / 持久化默认与 git bash 路径。
     listPtyShells:    ()             => request('GET',    '/api/pty/shells', undefined, base),
-    setConsoleShellConfig: (patch={}) => request('PUT',   '/api/console/config', patch, base),
+    setConsoleShellConfig: (patch={}) => request('PUT',   '/api/console/config', patch, base, { timeoutMs: 60000 }),
     getUsageStats:    (opts={})      => request('GET',    usagePath(opts), undefined, base),
     listWorkspaces:   (options={})   => request(
       'GET', '/api/workspaces', undefined, base, { signal: options.signal },
@@ -533,6 +534,12 @@ export function createApi(base = null) {
     pollGrokAuth:     (deviceCode)   => request('POST',   '/api/grok/auth/device/poll', { device_code: deviceCode }, base),
     logoutGrok:       ()             => request('DELETE', '/api/grok/auth', undefined, base),
     getUiPreferences: ()             => request('GET',    '/api/config/ui-preferences', undefined, base),
+    getThemes: (refresh = false) => request('GET', `/api/themes${refresh ? '?refresh=1' : ''}`, undefined, base),
+    getTheme: (id) => request('GET', `/api/themes/${encodeURIComponent(id)}`, undefined, base),
+    getThemeJob: () => request('GET', '/api/themes/job', undefined, base),
+    installTheme: (id, consent) => request('POST', `/api/themes/${encodeURIComponent(id)}/install`, consent, base),
+    cancelThemeInstall: () => request('POST', '/api/themes/job/cancel', {}, base),
+    readThemeImage: (id, kind, version = '') => request('GET', `/api/themes/${encodeURIComponent(id)}/images/${encodeURIComponent(kind)}${version ? `?version=${encodeURIComponent(version)}` : ''}`, undefined, base, { responseType: 'blob' }),
     setUiPreferences: (prefs)        => request('PUT',    '/api/config/ui-preferences', prefs, base),
     getUiLocale: ()                  => request('GET',    '/api/config/ui-locale', undefined, base),
     setUiLocale: (locale)            => request('PUT',    '/api/config/ui-locale', { locale }, base),
@@ -551,6 +558,17 @@ export function createApi(base = null) {
     setConnectors: (cfg)             => request('PUT',    '/api/config/connectors', cfg, base),
     getUpgradeConfig: ()             => request('GET',    '/api/config/upgrade', undefined, base),
     setUpgradeConfig: (cfg)          => request('PUT',    '/api/config/upgrade', cfg, base),
+    getToolchainConfig: () => request('GET', '/api/config/toolchains', undefined, base),
+    setToolchainConfig: (patch) => request('PUT', '/api/config/toolchains', patch, base),
+    detectToolchains: () => request('POST', '/api/config/toolchains/detect', undefined, base),
+    getTerminalConfig: () => request('GET', '/api/console/config', undefined, base),
+    detectTerminal: () => request('POST', '/api/console/config/detect', undefined, base, { timeoutMs: 60000 }),
+    getDataDirectory: () => request('GET', '/api/config/data-dir', undefined, base),
+    migrateDataDirectory: (target) => request('POST', '/api/config/data-dir/migrate', { target }, base),
+    getDataDirectoryMigration: () => request('GET', '/api/config/data-dir/migration', undefined, base),
+    cleanupDataDirectory: (action) => request('POST', '/api/config/data-dir/cleanup', { action }, base, { timeoutMs: NO_TIMEOUT }),
+    pickSettingsFolder: () => request('POST', '/api/dialog/pick-folder', undefined, base, { timeoutMs: NO_TIMEOUT }),
+    pickSettingsFile: () => request('POST', '/api/dialog/pick-file', undefined, base, { timeoutMs: NO_TIMEOUT }),
     getUpdateStatus: ()              => request('GET',    '/api/update/status', undefined, base,
       { timeoutMs: NO_TIMEOUT }),
     startUpdate: ()                  => request('POST',   '/api/update/start', undefined, base,
@@ -621,6 +639,16 @@ export function createApi(base = null) {
     // path='' 列 cwd 根本身。showHidden=true 透出 dot 文件,但 noise 黑名单
     // (.git/node_modules/dist/build/__pycache__/.venv/venv/target/.next/.cache)
     // 始终过滤,不受 showHidden 影响。
+    // Web 路径选择器(add-web-path-picker):浏览 daemon 所在机器的文件系统。已鉴权即可,
+    // 不受 /api/files 的 workspace 白名单限制;list 只做词法归一,junction 不解析。
+    fsRoots: () => request('GET', '/api/fs/roots', undefined, base),
+    fsList: (path, { showHidden = false } = {}) => request(
+      'GET',
+      `/api/fs/list?path=${encodeURIComponent(path || '')}${showHidden ? '&show_hidden=1' : ''}`,
+      undefined,
+      base,
+    ),
+
     listFiles: (cwd, path, showHidden = false, showNoise = false) => {
       const qs = `?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path || '')}`
                  + (showHidden ? '&show_hidden=1' : '')

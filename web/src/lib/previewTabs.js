@@ -67,6 +67,12 @@ export function previewScopeKey({ cwd = '', workspaceHash = '', worktreePath = '
   return workspaceHash || normalizePreviewCwd(cwd) || '';
 }
 
+// The sessionId field is also the local tab-owner key. Before a real session
+// exists, scope-owned previews share this namespace without making API sessions.
+export function previewTabContext({ scopeKey = '', sessionId = '' } = {}) {
+  return { scopeKey, sessionId: sessionId || (scopeKey ? `@workspace:${scopeKey}` : '') };
+}
+
 export function previewFileLocation({ cwd = '', path = '' } = {}) {
   const normalizedCwd = normalizePreviewCwd(cwd);
   if (isAbsolutePreviewPath(path)) {
