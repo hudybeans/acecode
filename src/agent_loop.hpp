@@ -13,6 +13,7 @@
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
 #include "pa/pa_overflow_rescue.hpp"
+#include "sandbox/sandbox_runtime.hpp"
 
 #include <vector>
 #include <string>
@@ -301,6 +302,12 @@ public:
     // project dir)不动 —— worktree 是同一个项目会话的临时工作区,不是新项目。
     // 只应在工具执行线程(turn 内)或会话未运行时调用。
     void set_cwd(const std::string& new_cwd);
+    void set_sandbox_config(const SandboxConfig& config);
+    void set_exec_rules(sandbox::ExecRules rules) { exec_rules_ = std::move(rules); }
+    void set_sandbox_availability_for_tests(std::optional<bool> value) {
+        sandbox_runtime_.set_availability_override_for_tests(value);
+    }
+    std::string sandbox_command(const std::string& args);
 
     void set_context_window(int cw) {
         context_window_.store(cw, std::memory_order_relaxed);
@@ -690,6 +697,13 @@ private:
     std::mutex active_provider_mu_;
     std::weak_ptr<LlmProvider> active_provider_;
     std::string cwd_;
+    mutable sandbox::SandboxRuntime sandbox_runtime_;
+    sandbox::ExecRules exec_rules_;
+    std::atomic<bool> sandbox_session_disabled_{false};
+    void reload_exec_rules();
+    std::string sandbox_prompt_description() const;
+    mutable std::mutex sandbox_prompt_mutex_;
+    mutable std::optional<std::pair<PermissionMode, std::string>> sandbox_prompt_snapshot_;
     PermissionManager& permissions_;
     PathValidator path_validator_;
     std::atomic<int> context_window_{128000};

@@ -148,7 +148,7 @@ struct SessionOptions {
     // 留空 = 用 daemon 启动时的 default。
     std::string model_name;
 
-    // 可选 permission mode override(default / accept-edits / plan / yolo)。
+    // 可选 permission mode override(default / auto / plan / yolo;accept-edits 是 auto 的别名)。
     // 留空 = 用 daemon/TUI 共享默认值。
     std::string permission_mode;
 

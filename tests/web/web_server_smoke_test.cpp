@@ -3045,9 +3045,9 @@ TEST(WebServerHttp, DefaultPermissionModeEndpointAppliesToNewSessions) {
                         cpr::Header{{"Content-Type", "application/json"}},
                         cpr::Body{R"({"mode":"accept-edits"})"});
     ASSERT_EQ(put.status_code, 200) << put.text;
-    EXPECT_EQ(json::parse(put.text)["mode"], "accept-edits");
-    EXPECT_EQ(fx.cfg.default_permission_mode, "accept-edits");
-    EXPECT_EQ(fx.registry->default_permission_mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(json::parse(put.text)["mode"], "auto");
+    EXPECT_EQ(fx.cfg.default_permission_mode, "auto");
+    EXPECT_EQ(fx.registry->default_permission_mode(), acecode::PermissionMode::Auto);
 
     auto created = cpr::Post(cpr::Url{fx.url("/api/sessions")},
                              cpr::Header{{"Content-Type", "application/json"}},
@@ -3056,11 +3056,11 @@ TEST(WebServerHttp, DefaultPermissionModeEndpointAppliesToNewSessions) {
     auto sid = json::parse(created.text)["session_id"].get<std::string>();
     auto mode = fx.registry->permission_mode(sid);
     ASSERT_TRUE(mode.has_value());
-    EXPECT_EQ(*mode, acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(*mode, acecode::PermissionMode::Auto);
     auto* entry = fx.registry->lookup(sid);
     ASSERT_NE(entry, nullptr);
     ASSERT_NE(entry->sm, nullptr);
-    EXPECT_EQ(entry->sm->current_permission_mode(), "accept-edits");
+    EXPECT_EQ(entry->sm->current_permission_mode(), "auto");
 
     acecode::ChatMessage msg;
     msg.role = "user";
@@ -3069,12 +3069,12 @@ TEST(WebServerHttp, DefaultPermissionModeEndpointAppliesToNewSessions) {
 
     auto meta = acecode::SessionStorage::read_meta(
         acecode::SessionStorage::meta_path(fx.project_dir, sid));
-    EXPECT_EQ(meta.permission_mode, "accept-edits");
+    EXPECT_EQ(meta.permission_mode, "auto");
 
     std::ifstream ifs(fx.tmp_dir / "config.json");
     ASSERT_TRUE(ifs.is_open());
     auto saved = json::parse(ifs);
-    EXPECT_EQ(saved["default_permission_mode"], "accept-edits");
+    EXPECT_EQ(saved["default_permission_mode"], "auto");
 }
 
 // 场景:Desktop/Web 首页状态栏选择的权限模式会作为 create-session 显式输入,
@@ -6298,7 +6298,7 @@ TEST(WebServerHttp, GetMessagesForInactiveDiskSessionReturnsHistory) {
     ASSERT_EQ(j["messages"].size(), 1u);
     EXPECT_EQ(j["messages"][0]["content"], "old disk prompt");
     EXPECT_EQ(j["turn_count"], 1);
-    EXPECT_EQ(j["permission_mode"], "accept-edits");
+    EXPECT_EQ(j["permission_mode"], "auto");
     ASSERT_TRUE(j["token_usage"].is_object());
     EXPECT_EQ(j["token_usage"]["prompt_tokens"], 32000);
     ASSERT_TRUE(j["token_usage"]["context_breakdown"].is_object());

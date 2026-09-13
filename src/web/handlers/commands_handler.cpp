@@ -74,6 +74,10 @@ nlohmann::json build_commands_payload(const SkillRegistry& global_skills,
         {"description", "Show LSP server status (connected/broken/not installed)"},
     });
     builtins.push_back({
+        {"name", "sandbox"},
+        {"description", "Show the bash sandbox status, or /sandbox off|on for this session"},
+    });
+    builtins.push_back({
         {"name", "rc"},
         {"description", "Alias for /remote-control"},
     });

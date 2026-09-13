@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include "permissions.hpp"
 #include "config_recovery.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
@@ -86,9 +87,10 @@ bool is_one_of(const std::string& value, std::initializer_list<const char*> allo
 }
 
 std::string normalize_permission_mode_name(std::string value) {
-    if (value == "acceptEdits") value = "accept-edits";
-    if (is_one_of(value, {"default", "accept-edits", "plan", "yolo"})) {
-        return value;
+    // 别名(accept-edits / acceptEdits → auto)集中在 PermissionManager 维护;
+    // 老配置里的 accept-edits 读进来即归一成 auto,下次保存写 auto。
+    if (auto parsed = PermissionManager::parse_mode_name(value)) {
+        return PermissionManager::mode_name(*parsed);
     }
     if (!value.empty()) {
         LOG_WARN("[config] default_permission_mode='" + value +
@@ -836,6 +838,28 @@ static AppConfig load_config_from_path_once(
                 j["default_permission_mode"].is_string()) {
                 cfg.default_permission_mode = normalize_permission_mode_name(
                     j["default_permission_mode"].get<std::string>());
+            }
+            // 沙盒段(openspec add-auto-mode-sandbox)。缺省 → enabled、不放行
+            // 网络、无额外可写根。非法条目静默跳过,不阻塞启动。
+            if (j.contains("sandbox") && j["sandbox"].is_object()) {
+                const auto& sj = j["sandbox"];
+                if (sj.contains("enabled") && sj["enabled"].is_boolean()) {
+                    cfg.sandbox.enabled = sj["enabled"].get<bool>();
+                }
+                if (sj.contains("network_access") && sj["network_access"].is_boolean()) {
+                    cfg.sandbox.network_access = sj["network_access"].get<bool>();
+                }
+                if (sj.contains("exclude_tmpdir") && sj["exclude_tmpdir"].is_boolean()) {
+                    cfg.sandbox.exclude_tmpdir = sj["exclude_tmpdir"].get<bool>();
+                }
+                if (sj.contains("writable_roots") && sj["writable_roots"].is_array()) {
+                    for (const auto& item : sj["writable_roots"]) {
+                        if (item.is_string() && !item.get<std::string>().empty() &&
+                            path_from_utf8(item.get<std::string>()).is_absolute()) {
+                            cfg.sandbox.writable_roots.push_back(item.get<std::string>());
+                        }
+                    }
+                }
             }
             if (j.contains("features") && j["features"].is_object()) {
                 const auto& fj = j["features"];
@@ -2118,6 +2142,19 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
     if (normalize_permission_mode_name(cfg.default_permission_mode) != "default") {
         j["default_permission_mode"] =
             normalize_permission_mode_name(cfg.default_permission_mode);
+    }
+
+    {
+        SandboxConfig sandbox_d;
+        nlohmann::json sbj = nlohmann::json::object();
+        if (cfg.sandbox.enabled != sandbox_d.enabled) sbj["enabled"] = cfg.sandbox.enabled;
+        if (cfg.sandbox.network_access != sandbox_d.network_access)
+            sbj["network_access"] = cfg.sandbox.network_access;
+        if (cfg.sandbox.exclude_tmpdir != sandbox_d.exclude_tmpdir)
+            sbj["exclude_tmpdir"] = cfg.sandbox.exclude_tmpdir;
+        if (!cfg.sandbox.writable_roots.empty())
+            sbj["writable_roots"] = cfg.sandbox.writable_roots;
+        if (!sbj.empty()) j["sandbox"] = sbj;
     }
 
     SkillsConfig skills_d;

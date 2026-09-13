@@ -232,12 +232,8 @@ bool apply_cwd_override(const std::string& raw, bool foreground) {
 }
 
 acecode::PermissionMode permission_mode_from_config(const std::string& mode) {
-    if (mode == "accept-edits" || mode == "acceptEdits") {
-        return acecode::PermissionMode::AcceptEdits;
-    }
-    if (mode == "plan") return acecode::PermissionMode::Plan;
-    if (mode == "yolo") return acecode::PermissionMode::Yolo;
-    return acecode::PermissionMode::Default;
+    return acecode::PermissionManager::parse_mode_name(mode)
+        .value_or(acecode::PermissionMode::Default);
 }
 
 } // namespace

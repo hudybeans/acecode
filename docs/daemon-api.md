@@ -1455,7 +1455,9 @@ Body:
 {"mode":"yolo"}
 ```
 
-Valid modes are `default`, `accept-edits`, `plan`, and `yolo`. Switching to
+Canonical modes are `default`, `auto`, `plan`, and `yolo`. Legacy inputs
+`accept-edits` and `acceptEdits` normalize to `auto` in configuration, persisted
+session metadata, and responses. Switching to
 `yolo` also resolves any open permission prompt with allow. Returns the same
 shape as `GET`.
 
@@ -3507,6 +3509,35 @@ All client frames are JSON:
 | `ping` | `{}` | replies `{"type":"pong"}` |
 
 `decision` uses `choice`, not `decision`, in the payload.
+
+For `bash`, `permission_request.args` retains the original tool arguments and
+adds a server-generated `permission` object:
+
+```json
+{
+  "command": "pnpm install",
+  "with_escalated_permissions": true,
+  "justification": "Install dependencies using the shared cache.",
+  "permission": {
+    "reason": "escalation_requested",
+    "sandbox": "full-access",
+    "always_allow_prefix": "pnpm install",
+    "classification": "unknown"
+  }
+}
+```
+
+`reason` can be `dangerous_command`, `escalation_requested`,
+`unknown_command_without_sandbox`, `rule_prompt`, `default_mode`, or `plan_mode`.
+`sandbox` describes the approved execution boundary: `full-access`,
+`workspace-write`, or `read-only`. An empty `always_allow_prefix` means no
+session approval can be remembered. Shell interpreters and opaque scripts do
+not acquire broad session approval. Remembered sandbox approvals never become
+full access when a backend becomes unavailable.
+
+The built-in `sandbox` command supports empty args (status), `off`, and `on`
+through the existing session command endpoint. It is session-local and does not
+save configuration. See [sandbox.md](sandbox.md) for rules and platform limits.
 
 Each `permission_request` is followed by exactly one sequenced
 `permission_closed` event with `{request_id,choice,reason}` when it stops being

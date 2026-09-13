@@ -915,14 +915,14 @@ TEST(BuiltinCommands, McpListShowsNoToolsForConnectedEmptyServer) {
 
 TEST(BuiltinCommands, PlanCommandEntersPlanModeAndCreatesPlanFile) {
     ResumeCommandHarness h("plan_command");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
 
     ASSERT_TRUE(h.dispatch("/plan"));
 
     EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::Plan);
-    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::Auto);
     EXPECT_EQ(h.sm_.current_permission_mode(), "plan");
-    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "accept-edits");
+    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "auto");
     const std::string plan_file = h.sm_.current_plan_file_path();
     ASSERT_FALSE(plan_file.empty());
     EXPECT_TRUE(fs::exists(plan_file));
@@ -937,12 +937,12 @@ TEST(BuiltinCommands, ModeDefaultPersistsWithoutChangingCurrentSession) {
     ScopedHomeOverride home(fs::temp_directory_path() /
         ("acecode_builtin_commands_home_" + std::to_string(std::random_device{}())));
     ResumeCommandHarness h("mode_default");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
 
     ASSERT_TRUE(h.dispatch("/mode default yolo"));
 
     EXPECT_EQ(h.config_.default_permission_mode, "yolo");
-    EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::Auto);
     EXPECT_EQ(h.sm_.current_permission_mode(), "default");
 
     std::ifstream ifs(home.config_path());
@@ -953,21 +953,21 @@ TEST(BuiltinCommands, ModeDefaultPersistsWithoutChangingCurrentSession) {
 
 TEST(BuiltinCommands, ModeCommandSwitchesCurrentSessionToPlan) {
     ResumeCommandHarness h("mode_plan");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
 
     ASSERT_TRUE(h.dispatch("/mode plan"));
 
     EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::Plan);
-    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::Auto);
     EXPECT_EQ(h.sm_.current_permission_mode(), "plan");
-    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "accept-edits");
+    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "auto");
     EXPECT_TRUE(fs::exists(h.sm_.current_plan_file_path()));
     EXPECT_EQ(h.config_.default_permission_mode, "default");
 }
 
 TEST(BuiltinCommands, ModeWithoutArgumentsOpensPickerAtCurrentMode) {
     ResumeCommandHarness h("mode_picker_open");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
 
     ASSERT_TRUE(h.dispatch("/mode"));
 
@@ -976,14 +976,14 @@ TEST(BuiltinCommands, ModeWithoutArgumentsOpensPickerAtCurrentMode) {
     ASSERT_EQ(h.state_.mode_picker_options.size(), 4u);
     EXPECT_EQ(h.state_.mode_picker_selected, 1);
     EXPECT_EQ(h.state_.mode_picker_options[1].mode,
-              acecode::PermissionMode::AcceptEdits);
+              acecode::PermissionMode::Auto);
     EXPECT_TRUE(h.state_.mode_picker_options[1].is_current);
     EXPECT_TRUE(h.state_.mode_picker_callback);
 }
 
 TEST(BuiltinCommands, ModePickerSelectionUsesCurrentSessionTransition) {
     ResumeCommandHarness h("mode_picker_select");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
 
     ASSERT_TRUE(h.dispatch("/mode"));
     {
@@ -997,9 +997,9 @@ TEST(BuiltinCommands, ModePickerSelectionUsesCurrentSessionTransition) {
     }
 
     EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::Plan);
-    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(h.perms_.pre_plan_mode(), acecode::PermissionMode::Auto);
     EXPECT_EQ(h.sm_.current_permission_mode(), "plan");
-    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "accept-edits");
+    EXPECT_EQ(h.sm_.current_pre_plan_permission_mode(), "auto");
     EXPECT_TRUE(fs::exists(h.sm_.current_plan_file_path()));
     ASSERT_FALSE(h.state_.conversation.empty());
     EXPECT_NE(h.state_.conversation.back().content.find("Permission mode: plan"),
@@ -1008,7 +1008,7 @@ TEST(BuiltinCommands, ModePickerSelectionUsesCurrentSessionTransition) {
 
 TEST(BuiltinCommands, ClosingModePickerWithoutSelectionHasNoSideEffects) {
     ResumeCommandHarness h("mode_picker_cancel");
-    h.perms_.set_mode(acecode::PermissionMode::AcceptEdits);
+    h.perms_.set_mode(acecode::PermissionMode::Auto);
     const auto before_default = h.config_.default_permission_mode;
 
     ASSERT_TRUE(h.dispatch("/mode"));
@@ -1020,7 +1020,7 @@ TEST(BuiltinCommands, ClosingModePickerWithoutSelectionHasNoSideEffects) {
         h.state_.mode_picker_callback = nullptr;
     }
 
-    EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::AcceptEdits);
+    EXPECT_EQ(h.perms_.mode(), acecode::PermissionMode::Auto);
     EXPECT_EQ(h.config_.default_permission_mode, before_default);
 }
 

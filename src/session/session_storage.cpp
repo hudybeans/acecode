@@ -1,4 +1,5 @@
 #include "session_storage.hpp"
+#include "permissions.hpp"
 #include "session_serializer.hpp"
 #include "session_title_generator.hpp"
 #include "../config/config.hpp"
@@ -29,8 +30,9 @@ namespace acecode {
 namespace {
 
 std::string normalize_permission_mode_name(std::string mode) {
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "accept-edits" || mode == "yolo" || mode == "plan") return mode;
+    if (auto parsed = PermissionManager::parse_mode_name(mode)) {
+        return PermissionManager::mode_name(*parsed);
+    }
     return "default";
 }
 

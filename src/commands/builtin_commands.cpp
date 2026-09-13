@@ -73,19 +73,14 @@ std::string format_goal_status_chip(const ThreadGoal& goal) {
 }
 
 std::optional<PermissionMode> parse_permission_mode_arg(std::string mode) {
-    mode = trim_ascii_command(std::move(mode));
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "default") return PermissionMode::Default;
-    if (mode == "accept-edits") return PermissionMode::AcceptEdits;
-    if (mode == "plan") return PermissionMode::Plan;
-    if (mode == "yolo") return PermissionMode::Yolo;
-    return std::nullopt;
+    return PermissionManager::parse_mode_name(trim_ascii_command(std::move(mode)));
 }
 
 std::string mode_usage_text() {
-    return "Usage: /mode | /mode <default|accept-edits|plan|yolo>\n"
-           "       /mode default <default|accept-edits|plan|yolo>\n"
-           "       /mode --default <default|accept-edits|plan|yolo>";
+    return "Usage: /mode | /mode <default|auto|plan|yolo>\n"
+           "       /mode default <default|auto|plan|yolo>\n"
+           "       /mode --default <default|auto|plan|yolo>\n"
+           "       (accept-edits is accepted as an alias of auto)";
 }
 
 void emit_system_message_locked(TuiState& state, std::string content) {
@@ -1963,6 +1958,13 @@ void register_builtin_commands(CommandRegistry& registry) {
     });
     register_model_command(registry);
     registry.register_command({"mode", "Show or switch permission mode", cmd_mode});
+    registry.register_command({"sandbox", "Show shell sandbox status or switch it on/off",
+        [](CommandContext& ctx, const std::string& args) {
+            ctx.agent_loop.enqueue_control([loop = &ctx.agent_loop, args] {
+                loop->emit_system_message(loop->sandbox_command(trim_ascii_command(args)));
+                return true;
+            });
+        }});
     registry.register_command({"config", "Open settings (/config show for text summary)", cmd_config});
     registry.register_command({"tokens", "Show session token usage", cmd_tokens});
     register_goal_command(registry);

@@ -2743,11 +2743,8 @@ static void maybe_add_legacy_terminal_hint(
 }
 
 static PermissionMode permission_mode_from_meta_name(std::string mode) {
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "accept-edits") return PermissionMode::AcceptEdits;
-    if (mode == "yolo") return PermissionMode::Yolo;
-    if (mode == "plan") return PermissionMode::Plan;
-    return PermissionMode::Default;
+    return PermissionManager::parse_mode_name(std::move(mode))
+        .value_or(PermissionMode::Default);
 }
 
 static void configure_permissions(PermissionManager& permissions,
@@ -5360,6 +5357,7 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     agent_loop.set_no_model_config_prompt(
         u8"请先配置大模型服务。TUI 可运行 acecode configure 或使用 /model add 添加模型。");
     agent_loop.set_agent_loop_config(config.agent_loop);
+    agent_loop.set_sandbox_config(config.sandbox);
     agent_loop.set_hook_manager(&hook_manager);
     agent_loop.set_skill_registry(&skill_registry);
     agent_loop.set_skill_usage_store(skill_usage_store.get());

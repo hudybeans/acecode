@@ -1,4 +1,5 @@
 #include "settings_mutations.hpp"
+#include "permissions.hpp"
 #include "saved_models_revision.hpp"
 
 #include <algorithm>
@@ -134,15 +135,14 @@ SettingsMutationResult set_default_permission_mode(
     const SettingsMutationOptions& options) {
     return run_mutation(
         [mode](AppConfig& cfg, std::string& error) {
-            if (mode != "default" &&
-                mode != "accept-edits" &&
-                mode != "plan" &&
-                mode != "yolo") {
+            const auto parsed = PermissionManager::parse_mode_name(mode);
+            if (!parsed) {
                 error = "unsupported default permission mode";
                 return false;
             }
-            if (cfg.default_permission_mode == mode) return false;
-            cfg.default_permission_mode = mode;
+            const std::string canonical = PermissionManager::mode_name(*parsed);
+            if (cfg.default_permission_mode == canonical) return false;
+            cfg.default_permission_mode = canonical;
             return true;
         },
         options);

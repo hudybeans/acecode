@@ -88,6 +88,10 @@ struct SystemPromptWorktreeState {
     bool inherited = false;
 };
 
+struct SystemPromptSandboxState {
+    std::string description;
+};
+
 // Build the static system prompt with identity, stable environment info, and
 // behavior rules. Per-request context such as current time/CWD, mutable project
 // instructions, mutable memory index content, and full tool JSON schemas belong
@@ -104,7 +108,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const ToolCapabilityPolicy* effective_tool_policy = nullptr,
                                 const SystemPromptWorktreeState* worktree = nullptr,
                                 bool active_model_can_read_images = true,
-                                const SystemPromptEnvironment* environment = nullptr);
+                                const SystemPromptEnvironment* environment = nullptr,
+                                const SystemPromptSandboxState* sandbox = nullptr);
 
 // Build provider-visible, session-scoped context blocks. These are assembled
 // for the current API request only and must not be persisted into the visible

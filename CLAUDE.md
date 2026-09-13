@@ -56,6 +56,26 @@ Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important 
 
 ## Agent Loop And Tools
 
+### Auto 模式与 exec 沙盒
+
+`PermissionMode::Auto` 的规范名称是 `auto`；旧的 `accept-edits` / `acceptEdits`
+仅作为输入别名，统一走 `PermissionManager::parse_mode_name`。
+`src/sandbox/exec_permission` 组合命令分类、全局/项目规则及会话前缀，
+`exec_decision` 输出是否确认和实际执行边界；`AgentLoop` 是唯一审批入口，
+`bash_tool` 只执行已注入的 `ToolContext::exec_sandbox`，不得自行取消沙盒重试。
+规则 forbidden 优先于 yolo/dangerous。文件工具不得改写 exec 规则。
+
+Windows 使用免管理员 WRITE_RESTRICTED 令牌；合成 SID 绑定完整策略和模式，
+禁止共用写身份给只读模式或其它工作区。敏感路径需保护新建、删除和祖先改名，
+ACL 幂等检查不能只按路径缓存。Windows 不隔离网络，Everyone/登录 SID 写权限
+是已知限制。macOS 使用 Seatbelt，Linux 使用系统 bubblewrap。
+`/sandbox [on|off]` 与配置、升级协议详见 [docs/sandbox.md](docs/sandbox.md)。
+会话级探测结论是粘性的:prepare / 启动失败经 `mark_unavailable` 把后端标成不可用,
+`/sandbox on` 会 `reset_probe()` 让它重新读取进程级探测,这是唯一不重启的恢复入口。
+goal 无人值守下 bash 的 Prompt 决策与其它写工具一样自动放行,但执行沙盒仍取
+`ExecDecision::sandbox`(auto 下危险命令留在 workspace-write 里),Forbidden 不受影响;
+回归 `agent_loop_goal_test.cpp::UnattendedGoalAutoApprovesDangerousBashInsideSandbox`。
+
 `image_generate` uses `config.image_generation` and supports generation and
 editing through the Images API. Settings > Tools > Image generation owns its
 configuration; it is not a chat-model entry. Saving settings refreshes the shared
@@ -100,7 +120,7 @@ MCP 工具调用同样响应 abort:`McpManager::invoke` 把阻塞的 JSON-RPC �
 
 每 session 至多一个 goal,存项目级 `state.sqlite3`(`src/session/thread_goal_store.cpp`)。状态机:`active / paused / blocked / usage_limited / budget_limited / complete`,仅 `active` 参与自动 continuation(`AgentLoop::maybe_continue_goal`,空闲时注入 hidden `goal_context` user 消息开新回合;Plan mode 下不触发)。模型工具 `get_goal` / `create_goal` / `update_goal(complete|blocked)`;`/goal` 命令双端注册(TUI `goal_command.cpp`,daemon builtin 在 `session_registry.cpp`)。
 
-**Goal interaction mode**:`AgentLoop::goal_unattended_active()` = 当前会话(或子代理的父会话)有 `active` goal 且非 Plan mode。为 true 时写工具权限门自动放行,AskUserQuestion 仍弹出提问组件,但固定等待 30 秒;超时后自动采纳每题第一个(推荐)选项并继续。Plan mode 只读约束优先。
+**Goal interaction mode**:`AgentLoop::goal_unattended_active()` = 当前会话(或子代理的父会话)有 `active` goal 且非 Plan mode。为 true 时写工具权限门自动放行(bash 的 exec Prompt 也放行,但沿用决策表的批准后沙盒,见「Auto 模式与 exec 沙盒」),AskUserQuestion 仍弹出提问组件,但固定等待 30 秒;超时后自动采纳每题第一个(推荐)选项并继续。Plan mode 只读约束优先。
 
 **Turn error 停 goal**:provider 终止错误 / 连续空回复耗尽 / provider 缺失 → `stop_active_goal_after_turn_error`(429 → `usage_limited`,其余 → `blocked`),防止 continuation 对同一错误无限重试烧 token;`/goal resume` 恢复。用户 abort → `paused`。
 

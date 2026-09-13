@@ -42,6 +42,15 @@ TEST(BuiltinCommandHandler, ParsesPlanCommand) {
     EXPECT_EQ(parsed.request.display_text, "/plan inspect the updater flow");
 }
 
+TEST(BuiltinCommandHandler, ParsesSandboxCommand) {
+    auto parsed = acecode::web::parse_builtin_command_request(
+        R"({"command":"/sandbox off"})");
+    ASSERT_TRUE(parsed.ok) << parsed.error;
+    EXPECT_EQ(parsed.request.name, "sandbox");
+    EXPECT_EQ(parsed.request.args, "off");
+    EXPECT_EQ(parsed.request.display_text, "/sandbox off");
+}
+
 TEST(BuiltinCommandHandler, RejectsUnsupportedCommand) {
     auto parsed = acecode::web::parse_builtin_command_request(
         R"({"command":"model"})");

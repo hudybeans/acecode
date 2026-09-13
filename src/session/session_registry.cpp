@@ -411,11 +411,8 @@ bool parse_goal_budget_value(const std::string& text, std::int64_t* out) {
 }
 
 PermissionMode permission_mode_from_name(std::string mode) {
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "accept-edits") return PermissionMode::AcceptEdits;
-    if (mode == "yolo") return PermissionMode::Yolo;
-    if (mode == "plan") return PermissionMode::Plan;
-    return PermissionMode::Default;
+    return PermissionManager::parse_mode_name(std::move(mode))
+        .value_or(PermissionMode::Default);
 }
 
 void emit_session_title_updated(SessionEntry& entry) {
@@ -1039,6 +1036,7 @@ SessionRegistry::make_entry_locked(const std::string& id,
             ? initial_model_state.context_window
             : entry_config->context_window);
         entry->loop->set_agent_loop_config(entry_config->agent_loop);
+        entry->loop->set_sandbox_config(entry_config->sandbox);
     }
     if (opts.loop_execution) {
         LoopExecutionPolicy policy;
@@ -1294,7 +1292,7 @@ BuiltinCommandResult SessionRegistry::execute_builtin_command(
     const BuiltinCommandRequest& request) {
     if (request.name != "init" && request.name != "compact" &&
         request.name != "goal" && request.name != "plan" &&
-        request.name != "lsp") {
+        request.name != "lsp" && request.name != "sandbox") {
         // 内置名单之外:先给宿主注册的兜底处理器(daemon 托管 /rc 走这里),
         // 没有兜底或兜底不认时保持原 UnsupportedCommand 语义。锁外调用,
         // handler 内部可以安全地回头 acquire()/emit。
@@ -1331,6 +1329,14 @@ BuiltinCommandResult SessionRegistry::execute_builtin_command(
         if (!entry->loop) return {BuiltinCommandStatus::Failed, "session unavailable"};
         entry->loop->emit_system_message(
             dispatch_lsp_subcommand(trim_ascii(request.args)));
+        return {BuiltinCommandStatus::Accepted, "ok"};
+    }
+
+    if (request.name == "sandbox") {
+        // 与 TUI /sandbox 共用 AgentLoop 的会话状态与开关。
+        if (!entry->loop) return {BuiltinCommandStatus::Failed, "session unavailable"};
+        entry->loop->emit_system_message(
+            entry->loop->sandbox_command(trim_ascii(request.args)));
         return {BuiltinCommandStatus::Accepted, "ok"};
     }
 

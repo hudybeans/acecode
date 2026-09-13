@@ -176,7 +176,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const ToolCapabilityPolicy* effective_tool_policy,
                                 const SystemPromptWorktreeState* worktree,
                                 bool active_model_can_read_images,
-                                const SystemPromptEnvironment* environment) {
+                                const SystemPromptEnvironment* environment,
+                                const SystemPromptSandboxState* sandbox) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -391,6 +392,11 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
             first = false;
         }
         oss << "\n";
+    }
+    if (sandbox) {
+        oss << "- Shell sandbox: " << sandbox->description << "\n"
+            << "- If a necessary command is denied by the sandbox, request approval with "
+               "with_escalated_permissions=true and a non-empty justification; do not bypass the boundary.\n";
     }
     oss << "- Working directory: " << cwd << "\n"
         << "- Is directory a git repo: "

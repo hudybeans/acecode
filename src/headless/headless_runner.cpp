@@ -172,12 +172,8 @@ std::string last_assistant_text_after(SessionManager& sm, std::size_t baseline) 
 // 配置字符串 → PermissionMode(与 daemon worker.cpp 的 permission_mode_from_config
 // 同语义;那个是 worker.cpp 匿名命名空间函数,这里保留一份本地映射)。
 acecode::PermissionMode permission_mode_from_config(const std::string& mode) {
-    if (mode == "accept-edits" || mode == "acceptEdits") {
-        return acecode::PermissionMode::AcceptEdits;
-    }
-    if (mode == "plan") return acecode::PermissionMode::Plan;
-    if (mode == "yolo") return acecode::PermissionMode::Yolo;
-    return acecode::PermissionMode::Default;
+    return acecode::PermissionManager::parse_mode_name(mode)
+        .value_or(acecode::PermissionMode::Default);
 }
 
 // prompt 以 '/' 开头时用本次 headless 已过滤的 registry 做 skill 命令展开。

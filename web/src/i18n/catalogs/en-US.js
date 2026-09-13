@@ -115,6 +115,7 @@ export const enUS = {
       btw: 'Ask a detached one-turn side question',
       side: 'Alias for /btw',
       lsp: 'Show LSP server status (connected, broken, or not installed)',
+      sandbox: 'Show sandbox status or turn this session’s sandbox on or off',
       rc: 'Alias for /remote-control',
       remoteControl: 'Activate a configured channel plugin or manage manual remote-control webhooks',
     },

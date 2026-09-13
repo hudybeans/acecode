@@ -1,6 +1,7 @@
 #include "agent_loop.hpp"
 #include "agent_loop_doom_guard.hpp"
 #include "agent_loop_shell_guard.hpp"
+#include "sandbox/exec_permission.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
 #include "environment/prompt_environment.hpp"
@@ -447,6 +448,7 @@ AgentLoop::AgentLoop(ProviderAccessor provider_accessor, ToolExecutor& tools,
     , path_validator_(cwd, permissions.is_dangerous())
     , no_model_config_prompt_(kDefaultNoModelConfiguredPrompt)
 {
+    reload_exec_rules();
     worker_thread_ = std::thread(&AgentLoop::worker_main, this);
 }
 
@@ -484,6 +486,56 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     // cwd 变了(EnterWorktree/ExitWorktree),旧 gitStatus 快照作废,
     // 下一次模型请求按新 cwd 重采(openspec add-git-context)。
     git_snapshot_cache_.reset();
+    permissions_.clear_session_allows();
+    reload_exec_rules();
+}
+
+void AgentLoop::reload_exec_rules() {
+    exec_rules_ = sandbox::ExecRules::load(
+        path_to_utf8(path_from_utf8(get_acecode_dir()) / "rules"),
+        path_to_utf8(path_from_utf8(cwd_) / ".acecode" / "rules"));
+}
+
+void AgentLoop::set_sandbox_config(const SandboxConfig& config) {
+    sandbox_runtime_.configure({config.enabled, config.network_access,
+                                config.writable_roots, config.exclude_tmpdir});
+    permissions_.clear_session_allows();
+}
+
+std::string AgentLoop::sandbox_prompt_description() const {
+    std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
+    const auto permission_mode = permissions_.mode();
+    if (busy_ && sandbox_prompt_snapshot_ && sandbox_prompt_snapshot_->first == permission_mode) {
+        return sandbox_prompt_snapshot_->second;
+    }
+    const auto describe = [&]() -> std::string {
+    if (permissions_.is_dangerous() || permissions_.mode() == PermissionMode::Yolo) return "none";
+    if (sandbox_session_disabled_) return "unavailable (disabled for this session)";
+    const auto probe = sandbox_runtime_.probe();
+    if (!sandbox_runtime_.available()) return "unavailable (" + probe.reason + ")";
+    const auto mode = sandbox::mode_sandbox(permissions_.mode(), true);
+    const auto root = write_root().empty() ? cwd_ : write_root();
+    return std::string(sandbox::sandbox_mode_name(mode)) + " (" + sandbox::backend_kind_name(probe.kind) +
+        "); " + sandbox::describe_policy(sandbox_runtime_.policy_for(mode, root), probe.network_enforced);
+    };
+    auto result = describe();
+    if (busy_) sandbox_prompt_snapshot_ = std::make_pair(permission_mode, result);
+    return result;
+}
+
+std::string AgentLoop::sandbox_command(const std::string& args) {
+    if (args == "off" || args == "on") {
+        sandbox_session_disabled_.store(args == "off");
+        permissions_.clear_session_allows();
+        // `on` 同时丢掉本会话缓存的探测结论:prepare_request / 启动失败会经
+        // mark_unavailable 把后端粘性地标成不可用,用户修好环境(比如把网络盘
+        // 上的工作区挪回本地)之后需要一个不重启的恢复入口。
+        if (args == "on") sandbox_runtime_.reset_probe();
+    } else if (!args.empty()) {
+        return "Usage: /sandbox [on|off]";
+    }
+    return sandbox_runtime_.status_text(permissions_.mode(),
+        write_root().empty() ? cwd_ : write_root(), sandbox_session_disabled_);
 }
 
 std::string AgentLoop::write_root() const {
@@ -1252,13 +1304,14 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
     }
     const acecode::SystemPromptEnvironment prompt_environment =
         acecode::environment::prompt_environment();
+    const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment);
+        &prompt_environment, &sandbox_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2298,13 +2351,14 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     }
     const acecode::SystemPromptEnvironment prompt_environment =
         acecode::environment::prompt_environment();
+    const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment);
+        &prompt_environment, &sandbox_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -3982,6 +4036,51 @@ bool AgentLoop::execute_tool_calls(
                     return *guarded;
                 }
 
+                ToolContext execution_context = tool_ctx;
+                std::optional<sandbox::ExecPermission> exec_permission;
+                if (effective_tc.function_name == "bash") {
+                    auto platform = sandbox::host_command_platform();
+                    const auto environment = acecode::environment::prompt_environment();
+                    if (environment.terminal_family == "powershell") platform = sandbox::CommandPlatform::PowerShell;
+                    else if (environment.terminal_family == "bash" || environment.terminal_family == "posix") {
+                        platform = sandbox::CommandPlatform::Posix;
+                    }
+                    exec_permission = sandbox::evaluate_exec_permission(effective_tc.function_arguments,
+                        permissions_, exec_rules_, !sandbox_session_disabled_ && sandbox_runtime_.available(), platform);
+                    if (!exec_permission->error.empty()) return ToolResult{"[Error] " + exec_permission->error, false};
+                    if (exec_permission->decision.verdict == sandbox::ExecVerdict::Forbidden) {
+                        return ToolResult{"[Permission denied by configured exec rule]", false};
+                    }
+                    if (exec_permission->decision.sandbox != sandbox::SandboxMode::FullAccess) {
+                        auto request = sandbox_runtime_.request_for(exec_permission->decision.sandbox,
+                            write_root().empty() ? cwd_ : write_root());
+                        const auto error = sandbox_runtime_.prepare_request(request);
+                        if (!error.empty()) {
+                            sandbox_runtime_.mark_unavailable(error);
+                            exec_permission->set_availability(false);
+                        } else {
+                            execution_context.exec_sandbox = std::move(request);
+                        }
+                    }
+                }
+
+                if (effective_tc.function_name == "file_write" || effective_tc.function_name == "file_edit") {
+                    auto path = path_from_utf8(ctx_path);
+                    if (path.is_relative()) path = path_from_utf8(cwd_) / path;
+                    std::error_code ec;
+                    const auto normalized = std::filesystem::weakly_canonical(path, ec);
+                    const auto global_rules = std::filesystem::weakly_canonical(path_from_utf8(get_acecode_dir()) / "rules", ec);
+                    const auto relative = normalized.lexically_relative(global_rules);
+                    if (sandbox::is_exec_rules_path(ctx_path) || sandbox::is_exec_rules_path(path_to_utf8(normalized)) ||
+                        (!relative.empty() && *relative.begin() != "..")) {
+                        return ToolResult{"[Permission denied] Exec rules must be edited by the user.", false};
+                    }
+                }
+                if (!permissions_.is_dangerous() && permissions_.matched_rule(
+                        effective_tc.function_name, ctx_path, ctx_command) == RuleAction::Deny) {
+                    return ToolResult{"[Permission denied by configured rule]", false};
+                }
+
                 const bool targets_active_plan_file =
                     permissions_.mode() == PermissionMode::Plan &&
                     session_manager_ &&
@@ -3997,6 +4096,7 @@ bool AgentLoop::execute_tool_calls(
                     permissions_.mode() != PermissionMode::Plan) {
                     auto_allow = true;
                 }
+                if (exec_permission) auto_allow = exec_permission->decision.verdict == sandbox::ExecVerdict::Allow;
 
                 // In Yolo, should_auto_allow() can only be false when an
                 // explicit Deny rule matched. Preserve that safety rule as a
@@ -4061,11 +4161,22 @@ bool AgentLoop::execute_tool_calls(
                 // 放在 dangerous path 等 auto_allow 降级之后,保证 goal 运行
                 // 期间绝不出现确认弹窗。Plan mode 在 goal_unattended_active
                 // 内部被排除,只读约束不受影响。
+                //
+                // bash 也走这里:exec 决策为 Prompt 时按「用户已批准」执行,
+                // 但 execution_context.exec_sandbox 仍是决策表给出的批准后
+                // 沙盒(auto 下危险命令留在 workspace-write 里),不会因为
+                // 无人值守就升级成完整访问;Forbidden 在上面已经返回,不受影响。
+                // 曾经把 bash 排除在外:daemon 里 AsyncPrompter 会空等 5 分钟
+                // 再 Deny,goal「绝不弹确认」的承诺被打破。
                 if (!auto_allow && goal_unattended_active()) {
                     auto_allow = true;
                     LOG_INFO("[goal] unattended auto-approve: " +
                              effective_tc.function_name +
-                             (ctx_path.empty() ? std::string{} : " path=" + ctx_path));
+                             (ctx_path.empty() ? std::string{} : " path=" + ctx_path) +
+                             (exec_permission
+                                  ? " sandbox=" + std::string(sandbox::sandbox_mode_name(
+                                        exec_permission->decision.sandbox))
+                                  : std::string{}));
                 }
 
                 nlohmann::json permission_hook_input = nlohmann::json::object();
@@ -4096,8 +4207,8 @@ bool AgentLoop::execute_tool_calls(
 
                 if (!auto_allow && hook_manager_) {
                     permission_hook_input =
-                        parse_tool_args_for_permission_payload(
-                            effective_tc.function_arguments);
+                        exec_permission ? exec_permission->arguments :
+                        parse_tool_args_for_permission_payload(effective_tc.function_arguments);
                     permission_request_dispatched = true;
                     auto fields = build_hook_common_fields(kCodexHookEventPermissionRequest);
                     auto payload = build_tool_hook_payload(
@@ -4145,9 +4256,8 @@ bool AgentLoop::execute_tool_calls(
                             "[Headless mode] This tool call requires interactive "
                             "user confirmation, which is unavailable in print (-p) "
                             "mode; it was denied automatically. Prefer a read-only "
-                            "alternative and continue. The user can rerun with "
-                            "--yolo (or --permission-mode accept-edits) to allow "
-                            "such calls.",
+                            "alternative and continue. Rerun in an interactive "
+                            "session to approve this operation.",
                             false};
                     }
                 }
@@ -4158,7 +4268,9 @@ bool AgentLoop::execute_tool_calls(
                         static_cast<int>(entry.original_index), true);
                     const std::string permission_args =
                         build_plan_permission_args(
-                            effective_tc.function_name, effective_tc.function_arguments, session_manager_);
+                            effective_tc.function_name,
+                            exec_permission ? exec_permission->arguments.dump() : effective_tc.function_arguments,
+                            session_manager_);
                     PermissionResult perm = prompter_
                         ? prompter_->prompt(effective_tc.function_name, permission_args, &abort_requested_)
                         : callbacks_.on_tool_confirm(effective_tc.function_name, permission_args);
@@ -4178,8 +4290,21 @@ bool AgentLoop::execute_tool_calls(
                         permissions_.mode() != PermissionMode::Plan &&
                         effective_tc.function_name != "EnterPlanMode" &&
                         effective_tc.function_name != "ExitPlanMode") {
-                        permissions_.add_session_allow(effective_tc.function_name);
+                        if (exec_permission) {
+                            for (const auto& prefix : exec_permission->prefixes) {
+                                permissions_.add_session_command_allow(prefix,
+                                    exec_permission->decision.sandbox == sandbox::SandboxMode::FullAccess &&
+                                    exec_permission->input.escalation_requested);
+                            }
+                        } else {
+                            permissions_.add_session_allow(effective_tc.function_name);
+                        }
                     }
+                    auto_allow = true;
+                }
+
+                if (exec_permission && !auto_allow) {
+                    return ToolResult{"[Permission denied] This command requires approval, but no confirmation channel is available.", false};
                 }
 
                 // A non-interactive embedding may intentionally omit a
@@ -4191,7 +4316,17 @@ bool AgentLoop::execute_tool_calls(
                 }
 
                 ToolResult tool_result = execute_single_tool(effective_tc.function_name, effective_tc.function_arguments,
-                                                             ctx_path, tool_ctx);
+                                                             ctx_path, execution_context);
+                if (exec_permission && tool_result.metadata.value("sandbox_unavailable", false)) {
+                    // 只记一行原因:它会进 /sandbox 状态与 system prompt 的
+                    // `Shell sandbox:` 行,整段工具输出塞进去既难读也浪费上下文。
+                    std::string reason = tool_result.metadata.value(
+                        "sandbox_unavailable_reason", std::string{});
+                    if (reason.empty()) {
+                        reason = tool_result.output.substr(0, tool_result.output.find('\n'));
+                    }
+                    sandbox_runtime_.mark_unavailable(reason);
+                }
 
                 if ((effective_tc.function_name == "file_edit" || effective_tc.function_name == "file_write") &&
                     !ctx_path.empty() && !tool_result.success) {
@@ -4399,6 +4534,10 @@ bool AgentLoop::execute_tool_calls(
 
 void AgentLoop::run_agent_with_input(const UserInput& input,
                                       bool hidden_goal_context) {
+    {
+        std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
+        sandbox_prompt_snapshot_.reset();
+    }
     abort_requested_ = false;
     turn_interrupt_requested_ = false;
     busy_ = true;

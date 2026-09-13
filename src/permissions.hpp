@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <algorithm>
 #include <cstring>
 #include <atomic>
@@ -25,8 +27,12 @@ struct PermissionRule {
 // Permission mode for the current session
 enum class PermissionMode {
     Default,      // Prompt for write/exec tools, auto-allow read-only
-    AcceptEdits,  // Also auto-allow file_write, file_edit (still ask for bash)
-    Yolo,         // Auto-allow all tool permissions without prompting
+    // Auto(openspec add-auto-mode-sandbox,复刻 Codex 的 Auto 预设,取代原
+    // accept-edits):文件编辑自动放行;bash 走 src/sandbox 的决策表 ——
+    // 已知安全命令与沙盒内的未知命令直接跑,危险命令 / 越权申请 / 无沙盒时
+    // 的未知命令才确认。老名字 accept-edits / acceptEdits 仍可解析。
+    Auto,
+    Yolo,         // Auto-allow all tool permissions without prompting (no sandbox)
     Plan          // Explore and write only the active plan file before approval
 };
 
@@ -37,9 +43,24 @@ enum class PermissionResult {
     AlwaysAllow   // Allow + remember for this tool for the rest of the session
 };
 
+// bash 的会话级「总是允许」记忆结论(按命令前缀,见 add_session_command_allow)。
+enum class SessionCommandAllow {
+    None,       // 没记过
+    Sandboxed,  // 记过:免确认,但仍走模式沙盒
+    Bypass      // 记过且当时批准的是越权申请:免确认,沙盒外执行
+};
+
 // Manages tool permission decisions
 class PermissionManager {
 public:
+    PermissionManager() {
+        // 所有宿主与子会话共用内置保护,不能由模型自行写入免确认规则。
+        for (const char* tool : {"file_write", "file_edit"}) {
+            for (const char* path : {".acecode/rules/**", "**/.acecode/rules/**"}) {
+                rules_.push_back({tool, path, "", RuleAction::Deny, 1000});
+            }
+        }
+    }
     void set_mode(PermissionMode mode) {
         const PermissionMode current = mode_.load(std::memory_order_relaxed);
         if (mode == PermissionMode::Plan) {
@@ -51,6 +72,7 @@ public:
             has_pre_plan_mode_.store(false, std::memory_order_relaxed);
         }
         mode_.store(mode, std::memory_order_relaxed);
+        if (current != mode) clear_session_allows();
     }
     PermissionMode mode() const { return mode_.load(std::memory_order_relaxed); }
 
@@ -84,6 +106,21 @@ public:
     void add_rule(const PermissionRule& rule) {
         std::lock_guard<std::mutex> lk(mu_);
         rules_.push_back(rule);
+    }
+
+    std::optional<RuleAction> matched_rule(const std::string& tool_name,
+                                           const std::string& path = "",
+                                           const std::string& command = "") const {
+        std::lock_guard<std::mutex> lk(mu_);
+        const PermissionRule* best = nullptr;
+        for (const auto& rule : rules_) {
+            if (rule_matches(rule, tool_name, path, command) &&
+                (!best || rule.priority > best->priority ||
+                 (rule.priority == best->priority && rule.action == RuleAction::Deny))) {
+                best = &rule;
+            }
+        }
+        return best ? std::optional<RuleAction>(best->action) : std::nullopt;
     }
 
     // Check if a tool should be auto-allowed (no user prompt needed)
@@ -169,8 +206,9 @@ public:
             if (session_allowed_.count(tool_name)) return true;
         }
 
-        // AcceptEdits mode: auto-allow file tools (but not bash)
-        if (mode_.load(std::memory_order_relaxed) == PermissionMode::AcceptEdits) {
+        // Auto mode: auto-allow file tools. bash is decided by the exec policy
+        // in AgentLoop (src/sandbox/exec_decision), never here.
+        if (mode_.load(std::memory_order_relaxed) == PermissionMode::Auto) {
             if (tool_name == "file_write" || tool_name == "file_edit") {
                 return true;
             }
@@ -181,6 +219,7 @@ public:
 
     // Record that user chose "always allow" for a tool
     void add_session_allow(const std::string& tool_name) {
+        if (tool_name == "bash") return;
         std::lock_guard<std::mutex> lk(mu_);
         session_allowed_.insert(tool_name);
     }
@@ -191,20 +230,53 @@ public:
         return session_allowed_.count(tool_name) > 0;
     }
 
+    // bash 的「总是允许」按命令前缀记(`git commit` / `pnpm test`),而不是整个
+    // 工具:点一次"总是允许"不该等于本会话所有 shell 命令全放行。bypass=true
+    // 表示当时批准的是越权申请,同前缀后续命令在沙盒外执行。
+    void add_session_command_allow(const std::string& prefix, bool bypass_sandbox) {
+        if (prefix.empty()) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        bool& slot = session_command_allowed_[prefix];
+        slot = slot || bypass_sandbox;
+    }
+
+    // 多段命令逐段查:每段都记过才算记过;全部带 bypass 才是 Bypass。
+    SessionCommandAllow session_command_allow(const std::vector<std::string>& prefixes) const {
+        if (prefixes.empty()) return SessionCommandAllow::None;
+        std::lock_guard<std::mutex> lk(mu_);
+        bool all_bypass = true;
+        for (const auto& prefix : prefixes) {
+            auto it = session_command_allowed_.find(prefix);
+            if (it == session_command_allowed_.end()) return SessionCommandAllow::None;
+            if (!it->second) all_bypass = false;
+        }
+        return all_bypass ? SessionCommandAllow::Bypass : SessionCommandAllow::Sandboxed;
+    }
+
+    std::vector<std::string> session_command_allows() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<std::string> out;
+        for (const auto& [prefix, bypass] : session_command_allowed_) {
+            out.push_back(bypass ? prefix + " (bypass sandbox)" : prefix);
+        }
+        return out;
+    }
+
     // Clear all session allows (e.g., on mode change)
     void clear_session_allows() {
         std::lock_guard<std::mutex> lk(mu_);
         session_allowed_.clear();
+        session_command_allowed_.clear();
     }
 
     // Cycle to next permission mode
     PermissionMode cycle_mode() {
         PermissionMode next = PermissionMode::Default;
         switch (mode_.load(std::memory_order_relaxed)) {
-            case PermissionMode::Default:     next = PermissionMode::AcceptEdits; break;
-            case PermissionMode::AcceptEdits: next = PermissionMode::Yolo; break;
-            case PermissionMode::Yolo:        next = PermissionMode::Plan; break;
-            case PermissionMode::Plan:        next = PermissionMode::Default; break;
+            case PermissionMode::Default: next = PermissionMode::Auto; break;
+            case PermissionMode::Auto:    next = PermissionMode::Yolo; break;
+            case PermissionMode::Yolo:    next = PermissionMode::Plan; break;
+            case PermissionMode::Plan:    next = PermissionMode::Default; break;
         }
         set_mode(next);
         clear_session_allows();
@@ -213,20 +285,46 @@ public:
 
     static const char* mode_name(PermissionMode m) {
         switch (m) {
-            case PermissionMode::Default:     return "default";
-            case PermissionMode::AcceptEdits: return "accept-edits";
-            case PermissionMode::Yolo:        return "yolo";
-            case PermissionMode::Plan:        return "plan";
+            case PermissionMode::Default: return "default";
+            case PermissionMode::Auto:    return "auto";
+            case PermissionMode::Yolo:    return "yolo";
+            case PermissionMode::Plan:    return "plan";
         }
         return "unknown";
     }
 
+    // 模式名解析的唯一入口:别名(accept-edits / acceptEdits = auto)只在这里
+    // 维护。返回 nullopt = 未知名字,调用方自己决定报错还是回退。
+    static std::optional<PermissionMode> parse_mode_name(std::string name) {
+        // 去两端空白。
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t' ||
+                                 name.back() == '\r' || name.back() == '\n')) {
+            name.pop_back();
+        }
+        std::size_t start = 0;
+        while (start < name.size() && (name[start] == ' ' || name[start] == '\t')) ++start;
+        name = name.substr(start);
+        if (name == "default") return PermissionMode::Default;
+        if (name == "auto" || name == "accept-edits" || name == "acceptEdits") {
+            return PermissionMode::Auto;
+        }
+        if (name == "yolo") return PermissionMode::Yolo;
+        if (name == "plan") return PermissionMode::Plan;
+        return std::nullopt;
+    }
+
+    // 解析后再序列化:把别名归一成线上名("accept-edits" → "auto"),未知名原样返回。
+    static std::string canonical_mode_name(const std::string& name) {
+        if (auto mode = parse_mode_name(name)) return mode_name(*mode);
+        return name;
+    }
+
     static const char* mode_description(PermissionMode m) {
         switch (m) {
-            case PermissionMode::Default:     return "Prompt for write/exec tools";
-            case PermissionMode::AcceptEdits: return "Auto-allow file edits, prompt for bash";
-            case PermissionMode::Yolo:        return "Auto-allow tools; confirm first external file write";
-            case PermissionMode::Plan:        return "Plan first, approve before coding";
+            case PermissionMode::Default: return "Prompt for write/exec tools";
+            case PermissionMode::Auto:    return "Auto-run edits and sandboxed commands; ask when leaving the workspace";
+            case PermissionMode::Yolo:    return "Auto-allow every tool without prompting (no sandbox)";
+            case PermissionMode::Plan:    return "Plan first, approve before coding";
         }
         return "";
     }
@@ -316,6 +414,7 @@ private:
     std::atomic<bool> dangerous_mode_{false};
     mutable std::mutex mu_;
     std::set<std::string> session_allowed_;
+    std::map<std::string, bool> session_command_allowed_;   // prefix → bypass_sandbox
     std::vector<PermissionRule> rules_;
 };
 

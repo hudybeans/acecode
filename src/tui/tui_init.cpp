@@ -254,11 +254,8 @@ void maybe_add_legacy_terminal_hint(
 }
 
 PermissionMode permission_mode_from_meta_name(std::string mode) {
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "accept-edits") return PermissionMode::AcceptEdits;
-    if (mode == "yolo") return PermissionMode::Yolo;
-    if (mode == "plan") return PermissionMode::Plan;
-    return PermissionMode::Default;
+    return PermissionManager::parse_mode_name(std::move(mode))
+        .value_or(PermissionMode::Default);
 }
 
 void configure_permissions(PermissionManager& permissions,

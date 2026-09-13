@@ -20,6 +20,21 @@
 
 namespace fs = std::filesystem;
 
+TEST(SystemPromptSandbox, StableStateAndExplicitEscalationInstructions) {
+    acecode::ToolExecutor tools;
+    acecode::SystemPromptSandboxState state{"workspace-write; writable: C:/work; network: not enforced"};
+    const auto build = [&] {
+        return acecode::build_system_prompt(tools, "C:/work", nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, true, nullptr, &state);
+    };
+    const auto first = build();
+    EXPECT_EQ(first, build());
+    EXPECT_NE(first.find("Shell sandbox:"), std::string::npos);
+    EXPECT_NE(first.find("network: not enforced"), std::string::npos);
+    EXPECT_NE(first.find("with_escalated_permissions"), std::string::npos);
+    EXPECT_NE(first.find("justification"), std::string::npos);
+}
+
 namespace {
 
 #ifdef _WIN32

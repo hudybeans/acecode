@@ -1,6 +1,17 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '自动模式': 'Auto',
+  '显示沙盒状态，或切换本会话的沙盒开关': 'Show sandbox status or turn this session’s sandbox on or off',
+  '自动编辑和运行沙盒内命令,危险操作与越界请求需确认': 'Automatically edit and run sandboxed commands; confirm dangerous operations and requests outside the sandbox',
+  '模型要执行一条危险命令': 'The model wants to run a dangerous command',
+  '模型申请在沙盒外执行': 'The model requests execution outside the sandbox',
+  '命令需要确认': 'Command approval required',
+  '执行规则要求确认这条命令': 'An execution rule requires approval for this command',
+  '本平台没有可用沙盒,未知命令需要确认': 'No sandbox is available; unknown commands require approval',
+  '允许后,这条命令将在沙盒外执行。': 'If approved, this command will run outside the sandbox.',
+  '允许后,这条命令将在沙盒内执行。': 'If approved, this command will run inside the sandbox.',
+  '本次会话允许: {{p0}}': 'Allow for this session: {{p0}}',
   '钩子代码': 'Hook code',
   '主题下载失败': 'Theme download failed',
   // Web 路径选择器(add-web-path-picker)
