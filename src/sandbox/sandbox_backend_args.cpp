@@ -209,6 +209,12 @@ std::vector<std::pair<std::string, std::string>> sandbox_environment(
     BackendKind kind, const SandboxPolicy& policy, bool network_enforced) {
     std::vector<std::pair<std::string, std::string>> env;
     env.emplace_back("ACECODE_SANDBOX", backend_kind_name(kind));
+    if (kind == BackendKind::WindowsRestrictedToken &&
+        policy.mode == SandboxMode::WorkspaceWrite && !policy.temporary_directory.empty()) {
+        for (const char* name : {"TEMP", "TMP", "TMPDIR"}) {
+            env.emplace_back(name, policy.temporary_directory);
+        }
+    }
     if (network_enforced && !policy.network_access) {
         env.emplace_back("ACECODE_SANDBOX_NETWORK_DISABLED", "1");
     }

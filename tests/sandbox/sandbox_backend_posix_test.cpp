@@ -44,3 +44,24 @@ TEST(SandboxBackendPosix, BwrapMountsProtectedPathsAfterWritableRoots) {
     EXPECT_EQ(std::find(argv.begin(), argv.end(), "--unshare-net"), argv.end());
     EXPECT_EQ(sandbox_environment(BackendKind::WindowsRestrictedToken, policy, false).size(), 1u);
 }
+
+// 临时目录覆盖只用于 Windows 的 WorkspaceWrite;只读/完整访问和未追加
+// 临时根(exclude_tmpdir)不能误带写目录或覆盖宿主环境。
+TEST(SandboxBackendPosix, TemporaryEnvironmentOverridesAreScopedToWindowsWorkspaceWrite) {
+    SandboxPolicy policy;
+    policy.mode = SandboxMode::WorkspaceWrite;
+    policy.temporary_directory = "C:/temp/acecode-sandbox/workspace";
+    const auto env = sandbox_environment(BackendKind::WindowsRestrictedToken, policy, false);
+    for (const char* key : {"TEMP", "TMP", "TMPDIR"}) {
+        EXPECT_NE(std::find(env.begin(), env.end(),
+            std::make_pair(std::string(key), policy.temporary_directory)), env.end());
+    }
+    EXPECT_EQ(sandbox_environment(BackendKind::LinuxBwrap, policy, false).size(), 1u);
+    for (const auto mode : {SandboxMode::ReadOnly, SandboxMode::FullAccess}) {
+        policy.mode = mode;
+        EXPECT_EQ(sandbox_environment(BackendKind::WindowsRestrictedToken, policy, false).size(), 1u);
+    }
+    policy.mode = SandboxMode::WorkspaceWrite;
+    policy.temporary_directory.clear();
+    EXPECT_EQ(sandbox_environment(BackendKind::WindowsRestrictedToken, policy, false).size(), 1u);
+}

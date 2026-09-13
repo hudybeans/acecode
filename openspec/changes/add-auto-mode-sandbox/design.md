@@ -132,6 +132,10 @@ bypass 仅来自显式升级批准。旧的整个 bash 工具会话授权通道�
   不存在的 rules/hooks/modules 目录及配置文件先准备实体再保护。
 - 每次执行核对实际 DACL，所需 ACE 存在时不重写，不依赖失效的路径缓存。
   准备/启动失败返回错误或重新进入审批，不在工具中完整访问重试。
+- Windows 默认临时写根使用系统临时目录下的 `acecode-sandbox/<规范化工作区哈希>`，
+  并覆盖子进程 TEMP/TMP/TMPDIR。路径稳定，避免重开会话产生新的策略 SID；不再
+  向整棵系统临时树传播 ACL。准备阶段创建专用目录并拒绝其被 junction/symlink 重定向。
+  exclude_tmpdir 禁用此追加根及环境覆盖；其他平台保留原系统临时目录语义。
 - linked worktree 追加写根前验证 gitdir/commondir 布局和反向登记；
   重叠写根必须继承只读排除项。
 - 2026-09-13 对照 Codex dfaf451426868c22e6859f5494150fd6338c3257 的 token.rs、acl.rs、

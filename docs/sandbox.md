@@ -33,7 +33,7 @@ Auto 自动接受文件编辑，并让普通模型命令在工作区写入沙盒
 ## 可写范围
 
 工作区写入沙盒允许会话写边界根（worktree / LOOP / 继承根，否则 cwd）、显式配置的
-绝对路径及系统临时目录。合法 Git linked worktree 会追加登记的 gitdir 和 common .git
+绝对路径及临时写目录。合法 Git linked worktree 会追加登记的 gitdir 和 common .git
 目录，以支持普通 Git 操作；必须通过 commondir 布局与反向 gitdir 登记验证，任意
 `gitdir:` 文本不能扩大权限。
 
@@ -44,7 +44,10 @@ Auto 自动接受文件编辑，并让普通模型命令在工作区写入沙盒
 用户可在 ACECode 之外编辑这些规则和配置。
 
 只读模式不添加可写根。文件读访问仍可遍及当前用户有权读取的路径。
-默认临时目录是整个系统/用户临时目录；需要缩小范围时设置 `exclude_tmpdir=true`。
+Windows 默认临时写根是系统临时目录下的 `acecode-sandbox/<工作区哈希>`，Shell 的
+`TEMP`、`TMP`、`TMPDIR` 自动指向这里。目录按规范化工作区稳定派生，重开会话后复用，
+首次准备无需给整个系统临时树传播 ACL。目录被 junction/symlink 重定向时准备失败。
+macOS/Linux 沿用系统临时目录；`exclude_tmpdir=true` 不追加临时写根，也不覆盖上述环境变量。
 会话临时文件 `ACECODE_TMPDIR` 位于工作区的 `.acecode/tmp/session-*`。
 
 ## 平台后端
@@ -61,7 +64,7 @@ WRITE_OWNER；敏感路径添加拒绝写入 ACE。
 每次使用前核对 ACL，仅缺失时写入；首次向大目录传播 ACL 可能较慢，耗时记入日志。
 这些 ACE 会保留在文件系统中，它们不对应普通用户账户。
 合成 SID 随策略变化：不同工作区、不同 worktree、不同 `writable_roots` / `exclude_tmpdir`
-组合各自产生一枚 SID，对应的 ACE 会逐渐累积在系统临时目录与各工作区根上（每条约 36 字节，
+组合各自产生一枚 SID，对应的 ACE 会逐渐累积在专用临时目录与各工作区根上（每条约 36 字节，
 DACL 上限 64KB，实际用量远够）。本期不做自动回收；需要清理时用 `icacls` 或资源管理器
 移除主体为 `S-1-5-80-` 开头且无法解析为账户的条目。
 

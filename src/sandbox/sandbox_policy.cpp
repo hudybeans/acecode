@@ -1,6 +1,7 @@
 #include "sandbox_policy.hpp"
 
 #include "utils/utf8_path.hpp"
+#include "utils/sha1.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -24,6 +25,28 @@ std::string canonical_utf8(const std::string& path) {
     while (out.size() > path_to_utf8(c.root_path()).size() &&
            (out.back() == '/' || out.back() == '\\')) out.pop_back();
     return out;
+}
+
+std::string temporary_write_root(const std::string& write_root,
+                                  const SandboxPolicyOptions& options) {
+    if (!options.include_tmpdir) return {};
+    const auto base = options.tmpdir_override.empty() ? system_temp_dir()
+                                                     : canonical_utf8(options.tmpdir_override);
+    if (base.empty()) return {};
+#ifdef _WIN32
+    // 系统 TEMP 可能含几十万个无关文件。SetNamedSecurityInfoW 会递归传播 ACL,
+    // 不能把它直接作为默认写根。目录名绑定规范化工作区,重启/重开会话后仍复用
+    // 同一策略身份,避免因随机临时目录让整个工作区反复新增 ACE。
+    auto identity = canonical_utf8(write_root);
+    for (char& c : identity) {
+        if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
+        if (c == '\\') c = '/';
+    }
+    // 保留预期路径,不要在这里跟随专用目录上的 junction;prepare_request 会核验。
+    return path_to_utf8(path_from_utf8(base) / "acecode-sandbox" / sha1_hex(identity));
+#else
+    return base;
+#endif
 }
 
 bool exists_any(const fs::path& p) {
@@ -170,8 +193,7 @@ std::vector<WritableRoot> compute_writable_roots(const std::string& write_root,
         if (!extra.empty() && path_from_utf8(extra).is_absolute()) add_root(roots, extra, {});
     }
     if (options.include_tmpdir) {
-        const std::string tmp = options.tmpdir_override.empty() ? system_temp_dir()
-                                                                : canonical_utf8(options.tmpdir_override);
+        const std::string tmp = temporary_write_root(write_root, options);
         if (!tmp.empty()) add_root(roots, tmp, {});
     }
     // 可写根重叠时,较窄的 allow 也必须排除所有只读子路径(尤其是 Seatbelt)。
@@ -197,6 +219,9 @@ SandboxPolicy make_sandbox_policy(SandboxMode mode, const std::string& write_roo
     policy.network_access = options.network_access;
     if (mode == SandboxMode::WorkspaceWrite) {
         policy.writable_roots = compute_writable_roots(write_root, options);
+#ifdef _WIN32
+        policy.temporary_directory = temporary_write_root(write_root, options);
+#endif
     }
     return policy;
 }

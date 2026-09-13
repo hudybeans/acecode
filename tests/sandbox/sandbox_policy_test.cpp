@@ -23,6 +23,8 @@ TEST(SandboxPolicy, ComputesRootsAndProtectsMissingSensitivePaths) {
         EXPECT_NE(std::find(paths.begin(), paths.end(), path_to_utf8(fs::weakly_canonical(workspace / child))), paths.end()) << child;
     }
     EXPECT_TRUE(make_sandbox_policy(SandboxMode::ReadOnly, path_to_utf8(workspace), options).writable_roots.empty());
+    EXPECT_TRUE(policy.temporary_directory.empty());
+    EXPECT_TRUE(make_sandbox_policy(SandboxMode::ReadOnly, path_to_utf8(workspace), {}).temporary_directory.empty());
     options.include_tmpdir = true;
     options.tmpdir_override = path_to_utf8(tree.dir("tmp"));
     EXPECT_EQ(compute_writable_roots(path_to_utf8(workspace), options).size(), 3u);

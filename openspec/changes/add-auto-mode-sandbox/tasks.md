@@ -58,3 +58,10 @@
 - [x] 8.3 沙盒拒绝特征词去掉裸 `sandbox`(本仓库 `src/sandbox/` 的编译错误会被误判),改认 `sandbox-exec` / `sandbox: deny` / `seatbelt` / `bwrap:`;加回归用例并同步 spec
 - [x] 8.4 所有新增测试补中文场景 / 期望注释;`docs/sandbox.md` 与 `CLAUDE.md` 记录 goal 行为、`/sandbox on` 重探、合成 SID 随策略累积 ACE 的已知限制
 - [x] 8.5 分支合入 master(7f501a73)后重新构建 `acecode_unit_tests`,跑完整单测与 Web `pnpm test`
+
+## 9. Windows 默认临时目录卡顿修复(2026-09-14)
+
+- [x] 9.1 Windows 默认临时写根改为系统临时目录下按工作区稳定派生的专用目录,同步 TEMP/TMP/TMPDIR,保持 exclude_tmpdir 与只读模式语义
+- [x] 9.2 准备阶段创建并校验专用目录,拒绝目录重定向;补默认配置真机回归,核对系统临时根和无关文件 ACL 不变
+- [x] 9.3 重建并验证会话的 PowerShell 存在性检查及沙盒写边界,启动独立修复预览并更新验证记录
+- [ ] 9.4 更新当前桌面实例:自动审批拦截了停止/替换/重启操作,等待用户先退出桌面版

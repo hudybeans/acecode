@@ -120,6 +120,21 @@ std::string SandboxRuntime::prepare_request(ExecSandboxRequest& request) {
     namespace fs = std::filesystem;
     std::string error;
     if (!available()) return probe().reason;
+#ifdef _WIN32
+    if (!request.policy.temporary_directory.empty()) {
+        const auto temporary = path_from_utf8(request.policy.temporary_directory);
+        std::error_code ec;
+        const auto resolved = fs::weakly_canonical(temporary, ec);
+        if (ec || resolved != temporary) {
+            return "Sandbox temporary directory was redirected: " + request.policy.temporary_directory;
+        }
+        fs::create_directories(temporary, ec);
+        if (ec) return "Cannot prepare sandbox temporary directory: " + ec.message();
+        if (fs::weakly_canonical(temporary, ec) != temporary || ec) {
+            return "Sandbox temporary directory was redirected: " + request.policy.temporary_directory;
+        }
+    }
+#endif
     if (request.policy.mode == SandboxMode::WorkspaceWrite) {
         if (request.policy.writable_roots.empty()) return "No sandbox workspace root.";
         for (const auto& writable : request.policy.writable_roots) {

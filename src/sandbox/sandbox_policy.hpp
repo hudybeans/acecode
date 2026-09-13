@@ -21,6 +21,8 @@ struct SandboxPolicy {
     SandboxMode mode = SandboxMode::FullAccess;
     std::vector<WritableRoot> writable_roots;      // 仅 WorkspaceWrite 非空
     bool network_access = false;
+    // Windows WorkspaceWrite 的专用临时目录;空 = 不覆盖子进程临时环境。
+    std::string temporary_directory;
 };
 
 // AgentLoop 注入到 ToolContext 的"这次 bash 怎么跑":策略 + 用哪个后端 +
@@ -36,7 +38,7 @@ struct SandboxPolicyOptions {
     std::vector<std::string> extra_writable_roots; // config.sandbox.writable_roots
     bool include_tmpdir = true;                    // !config.sandbox.exclude_tmpdir
     bool network_access = false;
-    std::string tmpdir_override;                   // 测试用;空 = 系统临时目录
+    std::string tmpdir_override;                   // 测试用的系统临时根;空 = 系统临时目录
 };
 
 // 计算 WorkspaceWrite 的可写根:write_root(会话写边界根 / cwd)+ 额外根 +

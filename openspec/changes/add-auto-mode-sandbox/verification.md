@@ -97,3 +97,39 @@ ACECode build. No running user daemon was replaced, and no release was published
   Other running ACECode instances were left untouched.
 - Strict OpenSpec validation and the staged/unstaged whitespace checks passed. Integration
   logs and the focused-test XML report are in the ignored `build/merge-*` paths.
+
+## Windows shared-temp preparation stall (2026-09-14)
+
+- Session `20260913-172848-7217` was owned by the desktop daemon, not the port-18489
+  preview. Its first turn created three workspace files successfully. The second turn
+  stopped before launching a PowerShell `Test-Path 'C:\1.txt'` command.
+- Live native stacks placed the session worker in `SetNamedSecurityInfoW` under
+  `ensure_windows_acl_grants` / `SandboxRuntime::prepare_request`. The system TEMP root's
+  three ACL propagation calls took 288,356 ms, 129,809 ms, and 93,600 ms: 511,765 ms total.
+  Only afterward did the pending interruption take effect. No restart was needed to
+  recover that already-interrupted turn.
+- Windows now grants its default temporary write root under
+  `<system-temp>/acecode-sandbox/<canonical-workspace-hash>` and redirects TEMP/TMP/TMPDIR
+  for the restricted child. The stable path preserves the policy identity across sessions.
+  Preparation rejects a redirected temporary directory before changing target ACLs.
+- Release unit-test build passed. Focused filter:
+  `Sandbox*.*:Exec*.*:CommandClassifier.*:AgentLoopAutoMode.*:Bash*.*:SystemPrompt*.*:ConfigSandbox.*`.
+  Results: 95 passed, one expected POSIX-only system-prompt skip on Windows.
+- The default-config native regression measured preparation at 6 ms and the user's
+  PowerShell existence check at 435 ms. It also executed real cmd and PowerShell temporary
+  writes, verified TEMP/TMP/TMPDIR, checked stable/reopened policy identity, and compared
+  the system TEMP root and an unrelated file's DACL before/after. The redirected-directory
+  rejection test passed. Timings are observations, not a hard timeout guarantee for
+  explicitly configured large writable roots.
+- Evidence and build/test logs are in ignored `build/sandbox-hang-47172-*` and
+  `build/sandbox-tempfix-*`; the focused-test XML contains the measured timing properties.
+- Linux g++17 syntax checks passed for the changed policy, runtime, and environment builder.
+  Release `acecode` also built successfully using a separate MSBuild output directory;
+  `build/sandbox-tempfix-runtime/Release/acecode.exe --version` reported v0.9.14.
+- Started that fixed binary as an independent preview on port 18491 (PID 36672).
+  `/api/health` and `/` returned HTTP 200, and the health PID and executable path matched
+  the new build. The existing desktop and the port-18489 preview were not replaced.
+- Updating the current desktop remains pending: automatic approval review rejected the
+  proposed stop/replace/restart operation with only `blocked by policy` as its reason.
+  The operation did not run. The independent preview avoids stopping or replacing the
+  current desktop; updating that desktop requires the user to exit it first.

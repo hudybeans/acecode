@@ -10,6 +10,7 @@
 #include "test_support.hpp"
 #include <windows.h>
 #include <aclapi.h>
+#include <sddl.h>
 #include <condition_variable>
 #include <chrono>
 #include <mutex>
@@ -22,6 +23,38 @@ namespace {
 struct Token {
     HANDLE value = nullptr;
     ~Token() { if (value) CloseHandle(value); }
+};
+
+std::wstring dacl_snapshot(const fs::path& path) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const auto rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, nullptr, &descriptor);
+    EXPECT_EQ(rc, ERROR_SUCCESS);
+    if (rc != ERROR_SUCCESS) return {};
+    LPWSTR text = nullptr;
+    const auto ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor,
+        SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &text, nullptr);
+    EXPECT_TRUE(ok);
+    std::wstring result = ok ? text : L"";
+    if (text) LocalFree(text);
+    LocalFree(descriptor);
+    return result;
+}
+
+// 仅清理本例新建、仍位于预期系统临时子目录内的树,不跟随被重定向的根。
+struct ScopedSandboxTemp {
+    fs::path path;
+    bool owned;
+    explicit ScopedSandboxTemp(const std::string& value)
+        : path(path_from_utf8(value)), owned(!fs::exists(path)) {}
+    ~ScopedSandboxTemp() {
+        std::error_code ec;
+        if (owned && !path.empty() &&
+            path.parent_path() == path_from_utf8(system_temp_dir()) / "acecode-sandbox" &&
+            fs::weakly_canonical(path, ec) == path && !ec) {
+            fs::remove_all(path, ec);
+        }
+    }
 };
 // 本机 TEMP 被其它程序授予 Everyone FullControl。此用例创建自己的私有目录,
 // 验证普通用户私有路径的隔离,不修改 TEMP 的权限或掩盖公开目录的已知限制。
@@ -77,6 +110,108 @@ bool token_can_open_access(HANDLE token, const fs::path& path, DWORD access) {
     RevertToSelf();
     return allowed;
 }
+}
+
+// 默认配置必须覆盖真实系统 TEMP 场景:只授权工作区专用临时目录,不改整个
+// 系统临时根或无关文件的 ACL;子进程实际经 TEMP/TMP/TMPDIR 写入同一目录。
+TEST(SandboxBackendWin, DefaultTempWritesWithoutChangingSharedTempAcl) {
+    if (!probe_backend().available) GTEST_SKIP() << "restricted tokens unavailable";
+    test::TempTree tree;
+    ASSERT_TRUE(make_private_test_root(tree.root));
+    const auto workspace = tree.dir("workspace");
+    const auto unrelated = tree.root / "unrelated.txt";
+    tree.write(unrelated, "untouched");
+    SandboxRuntime runtime;
+    auto request = runtime.request_for(SandboxMode::WorkspaceWrite, path_to_utf8(workspace));
+    ASSERT_FALSE(request.policy.temporary_directory.empty());
+    ScopedSandboxTemp temporary(request.policy.temporary_directory);
+    const auto shared = path_from_utf8(system_temp_dir());
+    ASSERT_NE(temporary.path, shared);
+    ASSERT_EQ(temporary.path.parent_path(), shared / "acecode-sandbox");
+    ASSERT_TRUE(temporary.owned);
+    const auto shared_before = dacl_snapshot(shared);
+    const auto unrelated_before = dacl_snapshot(unrelated);
+    const auto prepare_started = std::chrono::steady_clock::now();
+    const auto prepare_error = runtime.prepare_request(request);
+    RecordProperty("prepare_ms", static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - prepare_started).count()));
+    ASSERT_TRUE(prepare_error.empty()) << prepare_error;
+    EXPECT_EQ(dacl_snapshot(shared), shared_before);
+    EXPECT_EQ(dacl_snapshot(unrelated), unrelated_before);
+
+    SandboxRuntime reopened;
+    const auto same = reopened.request_for(SandboxMode::WorkspaceWrite,
+        path_to_utf8(workspace / "."));
+    EXPECT_EQ(same.policy.temporary_directory, request.policy.temporary_directory);
+    EXPECT_EQ(synthetic_sid_string(same.policy), synthetic_sid_string(request.policy));
+    EXPECT_NE(reopened.request_for(SandboxMode::WorkspaceWrite, path_to_utf8(tree.dir("other")))
+        .policy.temporary_directory, request.policy.temporary_directory);
+
+    auto previous = environment::terminal().last();
+    struct RestoreTerminal {
+        decltype(previous) snapshot;
+        ~RestoreTerminal() {
+            if (snapshot) environment::terminal().publish(*snapshot);
+            else environment::terminal().reset_for_test();
+        }
+    } restore{previous};
+    environment::terminal().reset_for_test();
+    ToolContext ctx;
+    ctx.cwd = path_to_utf8(workspace);
+    ctx.exec_sandbox = request;
+    const auto result = create_bash_tool().execute(nlohmann::json{{"command",
+        "echo temp>\"%TEMP%\\temp.txt\" && echo tmp>\"%TMP%\\tmp.txt\" && "
+        "echo tmpdir>\"%TMPDIR%\\tmpdir.txt\""}}.dump(), ctx);
+    ASSERT_TRUE(result.success) << result.output;
+    for (const auto* name : {"temp.txt", "tmp.txt", "tmpdir.txt"}) {
+        EXPECT_TRUE(fs::exists(temporary.path / name)) << name;
+    }
+
+    // 复现用户会话的 PowerShell 存在性检查,只读取 C:\1.txt,不创建或修改它。
+    ConsoleConfig console;
+    console.default_shell = "powershell";
+    const auto terminal = environment::terminal().reresolve(console);
+    ASSERT_TRUE(terminal.resolved.usable) << terminal.resolved.fallback_reason;
+    ASSERT_EQ(terminal.resolved.id, "powershell");
+    const auto shell_started = std::chrono::steady_clock::now();
+    const auto check = create_bash_tool().execute(nlohmann::json{{"command",
+        R"(if (Test-Path 'C:\1.txt') { Write-Output 'EXISTS' } else { Write-Output 'MISSING' })"}}.dump(), ctx);
+    RecordProperty("powershell_probe_ms", static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - shell_started).count()));
+    EXPECT_TRUE(check.success) << check.output;
+    EXPECT_TRUE(check.output.find("EXISTS") != std::string::npos ||
+                check.output.find("MISSING") != std::string::npos) << check.output;
+    const auto powershell_write = create_bash_tool().execute(nlohmann::json{{"command",
+        R"([System.IO.File]::WriteAllText((Join-Path $env:TEMP 'powershell.txt'), 'hello'))"}}.dump(), ctx);
+    EXPECT_TRUE(powershell_write.success) << powershell_write.output;
+    EXPECT_TRUE(fs::exists(temporary.path / "powershell.txt"));
+    EXPECT_EQ(dacl_snapshot(shared), shared_before);
+    EXPECT_EQ(dacl_snapshot(unrelated), unrelated_before);
+}
+
+// 专用临时目录若是指向外部目录的链接,准备必须先拒绝,不能向目标传播 ACL。
+TEST(SandboxBackendWin, RejectsRedirectedTemporaryDirectoryBeforeGrantingAcl) {
+    if (!probe_backend().available) GTEST_SKIP() << "restricted tokens unavailable";
+    test::TempTree tree;
+    auto workspace = tree.dir("workspace");
+    auto outside = tree.dir("outside");
+    SandboxRuntime runtime;
+    auto request = runtime.request_for(SandboxMode::WorkspaceWrite, path_to_utf8(workspace));
+    ASSERT_FALSE(request.policy.temporary_directory.empty());
+    ScopedSandboxTemp temporary(request.policy.temporary_directory);
+    ASSERT_TRUE(temporary.owned);
+    fs::create_directories(temporary.path.parent_path());
+    if (!CreateSymbolicLinkW(temporary.path.c_str(), outside.c_str(),
+                            SYMBOLIC_LINK_FLAG_DIRECTORY | 0x2)) {
+        GTEST_SKIP() << "directory symlinks unavailable: " << GetLastError();
+    }
+    const auto before = dacl_snapshot(outside);
+    const auto error = runtime.prepare_request(request);
+    EXPECT_NE(error.find("redirected"), std::string::npos) << error;
+    EXPECT_EQ(dacl_snapshot(outside), before);
+    EXPECT_FALSE(fs::exists(outside / ".acecode"));
+    // RemoveDirectoryW 只删除目录链接本身,不递归到链接目标。
+    EXPECT_TRUE(RemoveDirectoryW(temporary.path.c_str()));
 }
 
 // 真机回归:工作区 A 的 ACE 不能让 B 或只读令牌继续写 A。

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: 沙盒策略模型
-系统 SHALL 用统一的 `SandboxPolicy { mode: FullAccess | ReadOnly | WorkspaceWrite; writable_roots: [WritableRoot]; network_access: bool }` 描述一次 bash 执行的限制。`WorkspaceWrite` 的可写根 MUST 由 `compute_writable_roots(write_root_or_cwd, config)` 计算:会话写边界根(worktree / LOOP / 继承根,否则 cwd)+ `config.sandbox.writable_roots` + 系统临时目录(除非 `exclude_tmpdir`)+ 链接 worktree 的 gitdir 与 common dir;每个根下的 `.git/hooks`、`.git/config`、`.git/config.worktree`、`.git/modules`、`.git/worktrees/*/config.worktree`、`.acecode/rules` MUST 列为只读子路径。`ReadOnly` 的可写根 MUST 为空。
+系统 SHALL 用统一的 `SandboxPolicy { mode: FullAccess | ReadOnly | WorkspaceWrite; writable_roots: [WritableRoot]; network_access: bool; temporary_directory: string }` 描述一次 bash 执行的限制。`WorkspaceWrite` 的可写根 MUST 由 `compute_writable_roots(write_root_or_cwd, config)` 计算:会话写边界根(worktree / LOOP / 继承根,否则 cwd)+ `config.sandbox.writable_roots` + 临时目录(除非 `exclude_tmpdir`)+ 链接 worktree 的 gitdir 与 common dir;Windows 默认临时写根 SHALL 为系统临时目录下按规范化工作区路径稳定派生的专用目录,其他平台沿用系统临时目录;每个根下的 `.git/hooks`、`.git/config`、`.git/config.worktree`、`.git/modules`、`.git/worktrees/*/config.worktree`、`.acecode/rules` MUST 列为只读子路径。`ReadOnly` 的可写根 MUST 为空。
 
 #### Scenario: 主仓可写根与只读子路径
 - **WHEN** cwd 是含 `.git/hooks` 与 `.acecode/rules` 的 git 仓库根
@@ -15,7 +15,17 @@
 
 #### Scenario: exclude_tmpdir
 - **WHEN** `config.sandbox.exclude_tmpdir=true`
-- **THEN** 可写根不含系统临时目录
+- **THEN** 可写根不追加临时目录,子进程不添加 TEMP/TMP/TMPDIR 覆盖
+
+#### Scenario: Windows 默认临时目录不会遍历系统临时树
+- **WHEN** Windows 在默认配置下为一个新工作区首次准备 WorkspaceWrite 沙盒
+- **THEN** 系统创建并授权该工作区的专用临时目录,不向整个系统临时目录传播 ACL
+- **AND** 子进程 TEMP/TMP/TMPDIR 指向该目录,同一工作区重复准备使用相同目录和策略身份
+- **AND** 系统临时根和无关既有文件的 ACL 保持不变
+
+#### Scenario: 专用临时目录被重定向
+- **WHEN** 专用临时目录或其父目录通过 junction 或 symlink 解析到其他位置
+- **THEN** 准备失败并报告原因,不向重定向目标授予沙盒权限
 
 ### Requirement: Windows 受限令牌后端
 在 Windows 上，系统 SHALL 派生 WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE | LUA_TOKEN 令牌，
