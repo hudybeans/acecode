@@ -2,8 +2,8 @@
 
 The default source is ``assets/branding/acecode-icon.svg``. Raster sources are
 also accepted for one-off regeneration. Pillow is required; SVG input uses
-``sips`` on macOS, ``rsvg-convert``, or ImageMagick. When ``iconutil`` is
-available, the macOS ICNS used by the app bundle is regenerated as well.
+``sips`` on macOS, ``rsvg-convert``, ImageMagick, or Playwright with Chromium.
+The macOS ICNS is generated with ``iconutil`` when available and Pillow otherwise.
 
 Usage:
   python3 scripts/regenerate_icons.py [source.svg|source.png]
@@ -24,6 +24,7 @@ WIN_PNG = ROOT / "assets" / "windows" / "acecode_icon.png"
 WIN_ICO = ROOT / "assets" / "windows" / "acecode.ico"
 WEB_LOGO = ROOT / "web" / "public" / "acecode-logo.png"
 WEB_FAVICON = ROOT / "web" / "public" / "favicon.ico"
+WORKSHOP_LOGO = ROOT / "services" / "iis-feedback-upload" / "workshop" / "assets" / "acecode-logo.png"
 
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 FAVICON_SIZES = [16, 32, 48]
@@ -63,9 +64,30 @@ def rasterize_svg(src_path: Path) -> Image.Image:
                 str(output_path),
             ]
         else:
-            raise RuntimeError(
-                "SVG input requires sips (macOS), rsvg-convert, or ImageMagick"
-            )
+            try:
+                from playwright.sync_api import Error, sync_playwright
+            except ImportError as error:
+                raise RuntimeError(
+                    "SVG input requires sips (macOS), rsvg-convert, ImageMagick, "
+                    "or Playwright with Chromium"
+                ) from error
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(headless=True)
+                    try:
+                        page = browser.new_page(viewport={"width": MASTER_SIZE, "height": MASTER_SIZE})
+                        page.goto(src_path.resolve().as_uri())
+                        page.locator("svg").evaluate(
+                            "(svg, size) => { svg.setAttribute('width', size); svg.setAttribute('height', size); }",
+                            MASTER_SIZE,
+                        )
+                        page.screenshot(path=str(output_path), omit_background=True)
+                    finally:
+                        browser.close()
+            except Error as error:
+                raise RuntimeError(f"Playwright could not rasterize the icon: {error}") from error
+            with Image.open(output_path) as image:
+                return image.convert("RGBA").copy()
 
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
         with Image.open(output_path) as image:
@@ -92,7 +114,13 @@ def resize(img: Image.Image, size: int) -> Image.Image:
 def write_macos_icon(master: Image.Image) -> None:
     iconutil = shutil.which("iconutil")
     if not iconutil:
-        print(f"skipped {MAC_ICNS} (iconutil is unavailable)")
+        MAC_ICNS.parent.mkdir(parents=True, exist_ok=True)
+        master.save(
+            MAC_ICNS,
+            format="ICNS",
+            append_images=[resize(master, size) for size in (32, 64, 128, 256, 512, 1024)],
+        )
+        print(f"wrote {MAC_ICNS} (32x32 through 1024x1024, Pillow)")
         return
 
     iconset_sizes = [
@@ -156,6 +184,10 @@ def main() -> int:
     web_logo = resize(master, WEB_LOGO_SIZE)
     web_logo.save(WEB_LOGO, format="PNG", optimize=True)
     print(f"wrote {WEB_LOGO} ({WEB_LOGO_SIZE}x{WEB_LOGO_SIZE})")
+
+    if WORKSHOP_LOGO.parent.is_dir():
+        shutil.copyfile(WEB_LOGO, WORKSHOP_LOGO)
+        print(f"wrote {WORKSHOP_LOGO} ({WEB_LOGO_SIZE}x{WEB_LOGO_SIZE})")
 
     master.save(WEB_FAVICON, format="ICO", sizes=[(s, s) for s in FAVICON_SIZES])
     print(f"wrote {WEB_FAVICON} (sizes: {FAVICON_SIZES})")

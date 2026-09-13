@@ -1,23 +1,85 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal.jsx';
+import { toast } from './Toast.jsx';
 import { clsx } from '../lib/format.js';
+import { api } from '../lib/api.js';
 import { EVA_THEME_ID, themeDownloadPercent, themeJobActive, themePackageSize } from '../lib/themePackages.js';
+import { canManageTheme, createThemeExportController, EMPTY_THEME_EXPORT, themeExportBusy, themeExportProgress, themeManagementFailure } from '../lib/themeExports.js';
 
 const EVA_PREVIEW_SWATCHES = ['#E9DEFA', '#F9F5FE', '#B7EF65'];
 
-export function ThemeCards({ options, selected, onSelect, downloads }) {
+export function LocalThemeCard({ entry, selected, onSelect, onExport, onDelete, actionsDisabled, deleting, exporting }) {
+  const [thumbnail, setThumbnail] = useState('');
+  useEffect(() => {
+    let active = true, url = '';
+    setThumbnail('');
+    api.readThemeImage(entry.id, 'thumbnail', entry.version).then((blob) => {
+      if (!active) return;
+      url = URL.createObjectURL(blob);
+      setThumbnail(url);
+    }).catch(() => {});
+    return () => { active = false; if (url) URL.revokeObjectURL(url); };
+  }, [entry.id, entry.version]);
+  return (
+    <div className={clsx('ace-theme-card ace-local-theme', selected && 'is-selected', (deleting || exporting) && 'has-active-operation')} data-theme-id={entry.id}>
+      {thumbnail && <img className="ace-theme-card-background" src={thumbnail} alt="" draggable="false" />}
+      <button type="button" className="ace-theme-card-choice" aria-pressed={selected} onClick={() => onSelect(entry.id)} disabled={deleting}>
+        <div className="ace-theme-card-swatches" aria-hidden="true">
+          {(Array.isArray(entry.swatches) ? entry.swatches : []).slice(0, 3).map((color, index) => <span key={index} style={{ backgroundColor: /^#[0-9a-f]{6}$/i.test(color) ? color : undefined }} />)}
+        </div>
+        <span className="ace-theme-card-name" title={entry.name}>{entry.name}</span>
+        <span className="ace-theme-card-state">{selected ? '使用中' : '已生成'}</span>
+      </button>
+      {canManageTheme(entry) && (
+        <div className="ace-theme-card-actions">
+          <button type="button" className="ace-theme-export-link" disabled={actionsDisabled} onClick={(event) => { event.stopPropagation(); onExport(entry); }}>
+            {exporting ? '正在导出…' : '导出主题'}
+          </button>
+          <button type="button" className="ace-theme-delete-link" disabled={actionsDisabled} onClick={(event) => { event.stopPropagation(); onDelete(entry); }}>
+            {deleting ? '正在删除…' : '删除主题'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiTheme }) {
   const [confirmation, setConfirmation] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [exportState, setExportState] = useState(EMPTY_THEME_EXPORT);
+  const exports = useMemo(() => createThemeExportController({
+    api,
+    onChange: setExportState,
+    onComplete: ({ saved }) => toast({ kind: 'ok', text: saved ? '主题包已保存' : '主题包已交给浏览器下载' }),
+  }), []);
+  useEffect(() => { exports.activate(); return () => exports.dispose(); }, [exports]);
+  const exportBusy = themeExportBusy(exportState);
+  const exportProgress = themeExportProgress(exportState.job);
+  const deleteTheme = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await downloads.controller.remove(deleteTarget.id);
+      setDeleteTarget(null);
+      toast({ kind: result.cleanup_pending ? 'info' : 'ok', text: result.cleanup_pending ? '主题已删除，部分缓存待清理' : '主题已删除' });
+    } catch (error) { setDeleteError(themeManagementFailure(error, '删除主题失败，请重试')); }
+    finally { setDeleting(false); }
+  };
   const entry = downloads?.entry;
   const job = downloads?.job;
   const busy = themeJobActive(job);
-  const canDownload = (!entry?.installed || entry?.update_available) && !busy;
+  const canDownload = entry?.available !== false && (!entry?.installed || entry?.update_available) && !busy;
 
   const selectEva = async () => {
     let current = entry;
     if (!current) {
       current = await downloads?.controller.refresh({ notify: true });
     }
-    if (!current) return;
+    if (!current || (current.available === false && !current.installed)) return;
     if (current.installed && !current.update_available) void onSelect(EVA_THEME_ID);
     else setConfirmation(current);
   };
@@ -39,12 +101,12 @@ export function ThemeCards({ options, selected, onSelect, downloads }) {
         <div className={clsx('ace-theme-card ace-downloadable-theme', selected === EVA_THEME_ID && 'is-selected')}>
           <img className="ace-theme-card-background" src="/themes/eva-01-thumbnail.png" alt="EVA 初号机背景缩略图" draggable="false" />
           <button type="button" className={clsx('ace-theme-card-choice', canDownload && 'can-download')} aria-pressed={selected === EVA_THEME_ID}
-            aria-label="EVA 初号机" aria-busy={busy || downloads?.loading} onClick={selectEva} disabled={busy || downloads?.loading}>
+            aria-label="EVA 初号机" aria-busy={busy || downloads?.loading} onClick={selectEva} disabled={busy || downloads?.loading || (entry?.available === false && !entry?.installed)}>
             <div className="ace-theme-card-swatches" aria-hidden="true">
               {EVA_PREVIEW_SWATCHES.map((fallback, index) => <span key={index} style={{ backgroundColor: /^#[0-9a-f]{6}$/i.test(entry?.swatches?.[index]) ? entry.swatches[index] : fallback }} />)}
             </div>
             <span className="ace-theme-card-name">EVA 初号机</span>
-            <span className="ace-theme-card-state">{entry?.update_available ? '可更新' : selected === EVA_THEME_ID && entry?.installed ? '使用中' : entry?.installed ? '已下载' : '未下载'}</span>
+            <span className="ace-theme-card-state">{entry?.update_available ? '可更新' : selected === EVA_THEME_ID && entry?.installed ? '使用中' : entry?.installed ? '已下载' : entry?.available === false ? '暂时无法下载' : '未下载'}</span>
             {canDownload && (
               <span className="ace-theme-card-download-cover" aria-hidden="true">
                 <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -67,7 +129,63 @@ export function ThemeCards({ options, selected, onSelect, downloads }) {
             </div>
           )}
         </div>
+        <div className="ace-theme-card ace-ai-theme-action">
+          <button type="button" className="ace-theme-card-choice" onClick={onCreateAiTheme}>
+            <svg className="ace-ai-theme-wand" width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m14 5 5 5L8 21H3v-5L14 5Zm-3 3 5 5M5 2v5M2.5 4.5h5M20 15v5M17.5 17.5h5M19 2v4M17 4h4" />
+            </svg>
+            <span className="ace-theme-card-name">AI主题</span>
+            <span className="ace-ai-theme-description">描述灵感，生成专属主题</span>
+            <svg className="ace-ai-theme-arrow" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg>
+          </button>
+        </div>
+        {(downloads?.localEntries || []).map((local) => <LocalThemeCard key={local.id} entry={local} selected={selected === local.id} onSelect={onSelect}
+          onExport={(theme) => { void exports.start(theme); }} onDelete={(theme) => { setDeleteError(null); setDeleteTarget(theme); }}
+          actionsDisabled={exportBusy || deleting || !!downloads?.deletingId} deleting={downloads?.deletingId === local.id}
+          exporting={exportBusy && exportState.entry?.id === local.id} />)}
       </div>
+      {downloads?.error && <p className="mt-2 text-[12px] text-fg-mute" role="status">{downloads.error} <button type="button" className="text-accent hover:underline" onClick={() => downloads.controller.refresh({ notify: true })}>重试</button></p>}
+      {deleteTarget && (
+        <Modal width={400} layerClassName="z-[400]" labelledBy="theme-delete-title" onClose={() => { if (!deleting) setDeleteTarget(null); }} dismissOnBackdrop={!deleting} dismissOnEscape={!deleting}>
+          <div className="p-5">
+            <h3 id="theme-delete-title" className="text-base font-semibold">删除主题</h3>
+            <p className="mt-3 text-sm text-fg-2 break-words">{`将删除“${deleteTarget.name}”及其在应用内的主题包。`}</p>
+            {selected === deleteTarget.id && <p className="mt-2 text-sm text-fg-2">删除后将切换为蓝色主题。</p>}
+            {deleteError && <ThemeActionError failure={deleteError} />}
+            <div className="flex justify-end gap-2 mt-5">
+              <button type="button" disabled={deleting} className="px-3 py-1.5 rounded-md border border-border hover:bg-surface-hi disabled:opacity-50" onClick={() => setDeleteTarget(null)}>取消</button>
+              <button type="button" data-ace-dialog-primary="true" disabled={deleting} className="px-3 py-1.5 rounded-md bg-danger text-white disabled:opacity-50" onClick={() => { void deleteTheme(); }}>{deleting ? '正在删除…' : '删除主题'}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {exportBusy && exportState.hadCompression && (
+        <Modal width={420} layerClassName="z-[400]" labelledBy="theme-export-title" onClose={() => { if (exportState.canCancel) void exports.cancel(); }} dismissOnBackdrop={exportState.canCancel} dismissOnEscape={exportState.canCancel}>
+          <div className="p-5" aria-live="polite">
+            <h3 id="theme-export-title" className="text-base font-semibold">{exportState.status === 'saving' ? '正在保存主题…' : '正在打包主题…'}</h3>
+            <p className="mt-3 text-sm break-words">{exportState.filename}</p>
+            {exportState.status === 'compressing' && (
+              <div className="ace-theme-export-progress-row">
+                <progress className="ace-theme-export-progress" max={1} value={exportProgress ?? undefined} aria-label="主题压缩进度" />
+                {exportProgress !== null && <span className="text-sm text-fg-2 tabular-nums">{Math.floor(exportProgress * 100)}%</span>}
+              </div>
+            )}
+            <p className="mt-2 text-sm text-fg-2">{exportState.cancelling ? '正在取消…' : exportState.status === 'saving' ? '正在保存主题包…' : '正在压缩主题资源…'}</p>
+            <div className="flex justify-end mt-5">
+              <button type="button" disabled={exportState.cancelling || !exportState.canCancel} className="px-3 py-1.5 rounded-md border border-border hover:bg-surface-hi disabled:opacity-50" onClick={() => { void exports.cancel(); }}>取消</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {exportState.error && !exportBusy && (
+        <Modal width={420} layerClassName="z-[400]" labelledBy="theme-export-error-title" onClose={() => exports.dismissError()}>
+          <div className="p-5">
+            <h3 id="theme-export-error-title" className="text-base font-semibold">导出主题失败</h3>
+            <ThemeActionError failure={exportState.error} />
+            <div className="flex justify-end mt-5"><button type="button" data-ace-dialog-primary="true" className="px-3 py-1.5 rounded-md border border-border hover:bg-surface-hi" onClick={() => exports.dismissError()}>知道了</button></div>
+          </div>
+        </Modal>
+      )}
       {confirmation && (
         <Modal width={400} layerClassName="z-[400]" labelledBy="theme-download-title" onClose={() => setConfirmation(null)}>
           <div className="p-5">
@@ -81,7 +199,7 @@ export function ThemeCards({ options, selected, onSelect, downloads }) {
             )}
             <div className="flex justify-end gap-2 mt-5">
               <button type="button" className="px-3 py-1.5 rounded-md border border-border hover:bg-surface-hi" onClick={() => setConfirmation(null)}>取消</button>
-              <button type="button" className="px-3 py-1.5 rounded-md bg-accent text-white" onClick={() => {
+              <button type="button" data-ace-dialog-primary="true" className="px-3 py-1.5 rounded-md bg-accent text-white" onClick={() => {
                 const entry = confirmation;
                 setConfirmation(null);
                 void downloads.controller.install(entry);
@@ -92,4 +210,12 @@ export function ThemeCards({ options, selected, onSelect, downloads }) {
       )}
     </>
   );
+}
+
+function ThemeActionError({ failure }) {
+  return <div className="mt-3 text-sm break-words" role="alert">
+    <p className="text-danger">{failure.message}</p>
+    {failure.detail && <p className="mt-2 text-fg-2">{failure.detail}</p>}
+    {failure.path && <p className="mt-2 text-fg-2">{failure.path}</p>}
+  </div>;
 }

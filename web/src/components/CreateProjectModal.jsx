@@ -138,6 +138,7 @@ export function CreateProjectModal({ api, onClose, onCreated }) {
             </button>
             <button
               type="submit"
+              data-ace-dialog-primary="true"
               disabled={busy || !name.trim()}
               className="h-8 min-w-[82px] px-3 rounded-lg bg-accent text-white text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100 flex items-center justify-center gap-1.5"
             >

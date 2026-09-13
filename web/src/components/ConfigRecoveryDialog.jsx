@@ -46,6 +46,7 @@ export function ConfigRecoveryDialog({
           <button
             type="button"
             autoFocus
+            data-ace-dialog-primary="true"
             disabled={busy}
             onClick={onAcknowledge}
             className="px-3 py-1.5 text-[12.5px] rounded-lg bg-accent text-white hover:opacity-90 transition-opacity disabled:cursor-wait disabled:opacity-60"

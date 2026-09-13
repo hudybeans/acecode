@@ -4,6 +4,10 @@
 
 const TABLE = {
   IMAGE_SETTINGS_UNSUPPORTED: '当前后台服务不支持图像生成，请更新 ACECode 并重启后重试',
+  SUMMARY_SETTINGS_UNSUPPORTED: '当前后台服务不支持摘要生成，请更新 ACECode 并重启后重试',
+  SUMMARY_SETTINGS_AUTH_REQUIRED: '后台连接认证已失效，请重新连接 ACECode 后重试',
+  SUMMARY_SETTINGS_UNAVAILABLE: '后台服务暂不可用，请稍后重试',
+  SUMMARY_MODEL_REQUIRED: '请选择摘要模型',
   IMAGE_SETTINGS_AUTH_REQUIRED: '后台连接认证已失效，请重新连接 ACECode 后重试',
   IMAGE_SETTINGS_UNAVAILABLE: '后台服务暂不可用，请稍后重试',
   IMAGE_COST_CONFIRMATION_REQUIRED: '测试会消耗额度，请从生成测试图片按钮发起',
@@ -11,6 +15,10 @@ const TABLE = {
   IMAGE_NOT_CONFIGURED: '请先填写 API 地址和 Key，或选择可用的模型连接',
   IMAGE_QUOTA_ERROR: '图像服务额度不足或请求过于频繁，请检查额度后重试',
   IMAGE_TEST_FAILED: '生成测试图片失败，请检查连接和模型名称',
+  TOOL_REWRITES_UNSUPPORTED: '当前后台服务不支持工具重写，请更新 ACECode 并重启后重试',
+  TOOL_REWRITES_AUTH_REQUIRED: '后台连接认证已失效，请重新连接 ACECode 后重试',
+  TOOL_REWRITES_UNAVAILABLE: '后台服务暂不可用，请稍后重试',
+  APPLY_FAILED: '配置已保存但未能生效，请重试',
   INVALID_NAME:      '名字不能为空',
   RESERVED_NAME:     '名字以 ( 开头是系统保留',
   NAME_TAKEN:        '已存在同名条目',

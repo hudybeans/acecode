@@ -1,12 +1,18 @@
 #include "theme_store.hpp"
+#include "../utils/base64.hpp"
+#include "theme_package.hpp"
 
 #include "../upgrade/version.hpp"
+#include "../image/image_processor.hpp"
 #include "../utils/atomic_file.hpp"
 #include "../utils/sha256.hpp"
 #include "../utils/utf8_path.hpp"
+#include "../utils/uuid.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cctype>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -17,9 +23,120 @@
 namespace acecode::themes {
 namespace fs = std::filesystem;
 using nlohmann::json;
+
+struct ThemeRootState {
+    std::recursive_mutex mutex;
+    std::set<std::string> active_exports;
+};
+
+struct ThemeExportJob {
+    mutable std::mutex mutex;
+    json info;
+    std::atomic<bool> cancelled{false};
+    std::thread worker;
+    fs::path destination;
+    fs::path archive;
+    std::string package_sha256;
+    bool published = false;
+    std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
+};
+
 namespace {
 constexpr std::uintmax_t kMaxPackageBytes = 16 * 1024 * 1024;
 constexpr std::uintmax_t kMaxPreviewBytes = 256 * 1024;
+constexpr std::size_t kMaxExportJobs = 32;
+
+std::shared_ptr<ThemeRootState> shared_root_state(const fs::path& root) {
+    static std::mutex mutex;
+    static std::map<std::string, std::weak_ptr<ThemeRootState>> roots;
+    auto key = path_to_utf8(fs::weakly_canonical(fs::absolute(root)));
+#ifdef _WIN32
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+#endif
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto it = roots.begin(); it != roots.end();) {
+        if (it->second.expired()) it = roots.erase(it); else ++it;
+    }
+    auto& slot = roots[key];
+    auto state = slot.lock();
+    if (!state) { state = std::make_shared<ThemeRootState>(); slot = state; }
+    return state;
+}
+
+void require_local(const std::string& id) {
+    if (id == "blue" || id == "orange" || is_downloadable_theme(id))
+        throw ThemeError(403, "THEME_BUILTIN_PROTECTED", "Built-in themes cannot be exported or deleted");
+    if (!is_local_theme(id)) throw ThemeError(400, "THEME_INVALID_ID", "Invalid custom theme identifier");
+}
+
+void reject_link(const fs::path& path) {
+    std::error_code ec;
+    const auto status = fs::symlink_status(path, ec);
+    if (ec == std::errc::no_such_file_or_directory) return;
+    if (ec) throw ThemeError(422, "THEME_UNSAFE_PATH", "Could not verify theme path", path_to_utf8(path));
+    bool linked = fs::is_symlink(status);
+#ifdef _WIN32
+    const DWORD attributes = ::GetFileAttributesW(path.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) linked = true;
+#endif
+    if (linked) throw ThemeError(422, "THEME_UNSAFE_PATH", "Theme paths cannot contain symbolic links or reparse points", path_to_utf8(path));
+}
+
+fs::path checked_path(const fs::path& root, const fs::path& relative) {
+    if (relative.is_absolute()) throw ThemeError(422, "THEME_UNSAFE_PATH", "Theme path must be inside the theme directory");
+    auto path = root;
+    reject_link(path);
+    for (const auto& part : relative) {
+        if (part == "..") throw ThemeError(422, "THEME_UNSAFE_PATH", "Theme path escaped its storage directory");
+        path /= part;
+        reject_link(path);
+    }
+    return path;
+}
+
+void check_tree(const fs::path& root, const fs::path& relative) {
+    const auto directory = checked_path(root, relative);
+    std::error_code ec;
+    if (!fs::exists(directory, ec)) return;
+    std::size_t count = 0;
+    for (fs::recursive_directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+        reject_link(it->path());
+        if (++count > 4096) throw ThemeError(422, "THEME_UNSAFE_PATH", "Theme directory contains too many resources");
+    }
+    if (ec) throw ThemeError(422, "THEME_UNSAFE_PATH", "Could not verify theme directory", path_to_utf8(directory));
+}
+
+bool export_busy(const json& info) {
+    const auto state = info.value("state", "failed");
+    return state == "preparing" || state == "compressing" || state == "saving";
+}
+
+std::string export_filename(const json& definition) {
+    std::string name = definition.at("name");
+    for (char& character : name) {
+        const auto c = static_cast<unsigned char>(character);
+        if (c < 32 || c == 127 || std::string("<>:\"/\\|?*").find(character) != std::string::npos) character = '_';
+    }
+    if (name.size() > 144) {
+        std::size_t end = 144;
+        while (end && (static_cast<unsigned char>(name[end]) & 0xc0) == 0x80) --end;
+        name.resize(end);
+    }
+    while (!name.empty() && (name.back() == ' ' || name.back() == '.')) name.pop_back();
+    if (name.empty()) name = definition.at("id").get<std::string>();
+    return "ACECode-" + name + ".zip";
+}
+
+void replace_file(const fs::path& source, const fs::path& destination) {
+    std::error_code ec;
+    fs::rename(source, destination, ec);
+#ifdef _WIN32
+    if (ec && ::MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ec.clear();
+#endif
+    if (ec) throw ThemeError(500, "THEME_SAVE_FAILED", "Could not save theme package", path_to_utf8(destination));
+}
 const std::set<std::string> kColors = {
     "bg", "surface", "surface-alt", "surface-hi", "shell-hi", "shell-bg",
     "border", "border-soft", "fg", "fg-2", "fg-mute", "accent", "accent-bg",
@@ -94,11 +211,8 @@ std::string theme_base(std::string update_base) {
     return update_base + "/themes/";
 }
 
-std::map<std::string, std::string> unpack(const fs::path& zip_path) {
-    int error = 0;
-    std::unique_ptr<zip_t, decltype(&zip_discard)> archive(
-        zip_open(path_to_utf8(zip_path).c_str(), ZIP_RDONLY, &error), zip_discard);
-    if (!archive || zip_get_num_entries(archive.get(), 0) != 3) {
+std::map<std::string, std::string> unpack_archive(zip_t* archive) {
+    if (!archive || zip_get_num_entries(archive, 0) != 3) {
         throw ThemeError(422, "THEME_INVALID_PACKAGE", "Theme archive must contain three resources");
     }
     std::map<std::string, std::string> files;
@@ -106,8 +220,8 @@ std::map<std::string, std::string> unpack(const fs::path& zip_path) {
         zip_stat_t info{};
         zip_uint8_t os = 0;
         zip_uint32_t attributes = 0;
-        if (zip_stat_index(archive.get(), i, 0, &info) || !info.name ||
-            zip_file_get_external_attributes(archive.get(), i, 0, &os, &attributes)) {
+        if (zip_stat_index(archive, i, 0, &info) || !info.name ||
+            zip_file_get_external_attributes(archive, i, 0, &os, &attributes)) {
             throw ThemeError(422, "THEME_INVALID_PACKAGE", "Invalid archive metadata");
         }
         const std::string name = info.name;
@@ -119,7 +233,7 @@ std::map<std::string, std::string> unpack(const fs::path& zip_path) {
             ((os == ZIP_OPSYS_UNIX || os == ZIP_OPSYS_OS_X) && type && type != 0100000)) {
             throw ThemeError(422, "THEME_INVALID_PACKAGE", "Unsupported theme archive entry");
         }
-        std::unique_ptr<zip_file_t, decltype(&zip_fclose)> file(zip_fopen_index(archive.get(), i, 0), zip_fclose);
+        std::unique_ptr<zip_file_t, decltype(&zip_fclose)> file(zip_fopen_index(archive, i, 0), zip_fclose);
         std::string bytes(static_cast<std::size_t>(info.size), '\0');
         std::size_t offset = 0;
         while (file && offset < bytes.size()) {
@@ -130,7 +244,46 @@ std::map<std::string, std::string> unpack(const fs::path& zip_path) {
         if (!file || offset != bytes.size()) {
             throw ThemeError(422, "THEME_INVALID_PACKAGE", "Truncated theme archive entry");
         }
+        char extra = 0;
+        if (zip_fread(file.get(), &extra, 1) != 0)
+            throw ThemeError(422, "THEME_INVALID_PACKAGE", "Theme archive entry checksum or length is invalid");
         files.emplace(name, std::move(bytes));
+    }
+    return files;
+}
+
+std::map<std::string, std::string> unpack(const fs::path& zip_path) {
+    int error = 0;
+    std::unique_ptr<zip_t, decltype(&zip_discard)> archive(
+        zip_open(path_to_utf8(zip_path).c_str(), ZIP_RDONLY, &error), zip_discard);
+    return unpack_archive(archive.get());
+}
+
+std::map<std::string, std::string> unpack_import(const std::string& bytes) {
+    if (bytes.empty() || bytes.size() > kMaxPackageBytes)
+        throw ThemeError(413, "THEME_PACKAGE_TOO_LARGE", "Theme ZIP must be between 1 byte and 16 MiB");
+    auto* source = zip_source_buffer_create(bytes.data(), bytes.size(), 0, nullptr);
+    if (!source) throw ThemeError(422, "THEME_INVALID_PACKAGE", "Could not read theme ZIP");
+    std::unique_ptr<zip_t, decltype(&zip_discard)> archive(zip_open_from_source(source, ZIP_RDONLY, nullptr), zip_discard);
+    if (!archive) { zip_source_free(source); throw ThemeError(422, "THEME_INVALID_PACKAGE", "Invalid theme ZIP"); }
+    auto files = unpack_archive(archive.get());
+    try {
+        const auto definition = json::parse(files.at("theme.json"));
+        if (!valid_theme_definition(definition) || !is_local_theme(definition.value("id", "")))
+            throw ThemeError(422, "THEME_INVALID_PACKAGE", "Only custom ACECode theme ZIPs can be imported");
+        for (const auto* kind : {"background", "thumbnail"}) {
+            const auto& image_bytes = files.at(std::string(kind) + ".png");
+            image::ImageNormalizeOptions options;
+            options.force_png = true;
+            options.max_edge = 0;
+            options.final_max_bytes = kMaxPackageBytes;
+            if (!png(image_bytes) || image_bytes.size() != definition.at(kind).at("bytes") ||
+                sha256_hex(image_bytes) != definition.at(kind).at("sha256") ||
+                !image::normalize_image_bytes(image_bytes, "image/png", options).ok)
+                throw ThemeError(422, "THEME_INVALID_PACKAGE", "Theme image integrity check failed");
+        }
+    } catch (const json::exception&) {
+        throw ThemeError(422, "THEME_INVALID_PACKAGE", "Invalid theme definition");
     }
     return files;
 }
@@ -141,14 +294,43 @@ ThemeError::ThemeError(int status, std::string code, const std::string& message,
 
 bool is_downloadable_theme(const std::string& id) { return id == "eva-01"; }
 
+bool valid_theme_colors(const json& colors) {
+    try {
+        if (!colors.is_object() || colors.size() != kColors.size()) return false;
+        for (const auto& key : kColors) if (!hex(colors.at(key), 7, true)) return false;
+        return true;
+    } catch (...) { return false; }
+}
+
+bool valid_theme_appearance(const json& appearance) {
+    if (!appearance.is_object()) return false;
+    for (const auto& item : appearance.items()) {
+        if (item.key() == "logo_color" || item.key() == "home_title_color") {
+            if (!hex(item.value(), 7, true)) return false;
+        } else if (item.key() == "extend_to_titlebar") {
+            if (!item.value().is_boolean()) return false;
+        } else return false;
+    }
+    return true;
+}
+
 bool valid_theme_definition(const json& d) {
     try {
-        if (d.at("schema_version") != 1 || d.at("id") != "eva-01" ||
-            !version_ok(d.at("version")) || d.at("mode") != "light" ||
-            !d.at("colors").is_object() || d.at("colors").size() != kColors.size() ||
+        const auto id = d.at("id").get<std::string>();
+        const bool local = is_local_theme(id);
+        if (d.at("schema_version") != 1 || (!is_downloadable_theme(id) && !local) ||
+            !version_ok(d.at("version")) ||
+            (d.at("mode") != "light" && (!local || d.at("mode") != "dark")) ||
+            !valid_theme_colors(d.at("colors")) ||
+            (d.contains("appearance") && !valid_theme_appearance(d.at("appearance"))) ||
             !asset_ok(d.at("background"), kMaxPackageBytes) ||
             !asset_ok(d.at("thumbnail"), kMaxPreviewBytes)) return false;
-        for (const auto& key : kColors) if (!hex(d.at("colors").at(key), 7, true)) return false;
+        if (local) {
+            const auto name = d.at("name").get<std::string>();
+            if (name.empty() || name.size() > 256 ||
+                name.find_first_not_of(" \t\r\n") == std::string::npos ||
+                std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; })) return false;
+        }
         return true;
     } catch (...) { return false; }
 }
@@ -175,8 +357,8 @@ ThemeStore::ThemeStore(fs::path root, std::string update_base, ThemeTransport tr
                  std::move(transport)) {}
 
 ThemeStore::ThemeStore(fs::path root, UpdateBaseProvider update_base, ThemeTransport transport)
-    : root_(std::move(root)), update_base_(std::move(update_base)),
-      base_(theme_base(update_base_())), transport_(std::move(transport)) {
+    : root_(fs::absolute(root).lexically_normal()), update_base_(std::move(update_base)),
+      base_(theme_base(update_base_())), transport_(std::move(transport)), local_state_(shared_root_state(root_)) {
     if (!transport_.fetch) transport_.fetch = [](const std::string& url) { return upgrade::fetch_text(url, 10000); };
     if (!transport_.download) transport_.download = [](const std::string& url, const fs::path& path,
             const upgrade::DownloadProgressCallback& progress, const upgrade::HttpCancelCheck& cancel) {
@@ -194,6 +376,8 @@ ThemeStore::ThemeStore(fs::path root, UpdateBaseProvider update_base, ThemeTrans
 ThemeStore::~ThemeStore() {
     cancel_.store(true);
     if (worker_.joinable()) worker_.join();
+    for (auto& [id, job] : exports_) job->cancelled.store(true);
+    for (auto& [id, job] : exports_) if (job->worker.joinable()) job->worker.join();
 }
 
 json ThemeStore::catalog(bool refresh) {
@@ -222,9 +406,24 @@ json ThemeStore::catalog(bool refresh) {
         } catch (const std::exception& error) { offline = true; failure_message = error.what(); }
         catch (...) { offline = true; }
     }
-    if (catalog_.is_null()) throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", failure_message, base_ + "catalog.json");
-    auto result = catalog_;
+    const auto local_themes = local_catalog();
+    if (catalog_.is_null() && local_themes.empty())
+        throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE", failure_message, base_ + "catalog.json");
+    auto result = catalog_.is_null() ? json{{"schema_version", 1}, {"themes", json::array()}} : catalog_;
+    if (catalog_.is_null()) {
+        json fallback = {{"id", "eva-01"}, {"name", "EVA 初号机"}, {"source", "remote"},
+            {"available", false}, {"installed", installed("eva-01")}, {"update_available", false},
+            {"swatches", {"#7762A8", "#E9ECF6", "#A9D46A"}}};
+        if (fallback["installed"] == true) {
+            const auto d = definition("eva-01");
+            fallback["version"] = fallback["installed_version"] = d["version"];
+        }
+        result["themes"].push_back(std::move(fallback));
+    }
     for (auto& entry : result["themes"]) {
+        if (!entry.contains("package")) continue;
+        entry["source"] = "remote";
+        entry["available"] = true;
         std::string installed_version;
         try { installed_version = definition(entry["id"]).at("version").get<std::string>(); }
         catch (const ThemeError&) {} // Missing or damaged resources remain downloadable.
@@ -236,31 +435,47 @@ json ThemeStore::catalog(bool refresh) {
         entry["package"]["url"] = base_ + entry["package"]["path"].get<std::string>();
         entry["thumbnail"]["url"] = base_ + entry["thumbnail"]["path"].get<std::string>();
     }
+    for (const auto& entry : local_themes) result["themes"].push_back(entry);
     result["offline"] = offline;
+    if (offline) result["catalog_error"] = {{"error", "THEME_CATALOG_UNAVAILABLE"},
+        {"message", failure_message}, {"error_path", base_ + "catalog.json"}};
     result["job"] = job();
     return result;
 }
 
 json ThemeStore::descriptor(const std::string& id) {
     if (!is_downloadable_theme(id)) throw ThemeError(404, "THEME_NOT_FOUND", "Unknown theme");
-    return catalog().at("themes").at(0);
+    const auto entry = catalog().at("themes").at(0);
+    if (!entry.contains("package")) throw ThemeError(503, "THEME_CATALOG_UNAVAILABLE",
+        "Theme catalog is unavailable", base_ + "catalog.json");
+    return entry;
 }
 
 fs::path ThemeStore::installed_directory(const std::string& id) const {
-    if (!is_downloadable_theme(id)) throw ThemeError(404, "THEME_NOT_FOUND", "Unknown theme");
-    const auto pointer = read_json(root_ / id / "installed.json");
+    if (!is_downloadable_theme(id) && !is_local_theme(id))
+        throw ThemeError(404, "THEME_NOT_FOUND", "Unknown theme");
+    const auto pointer = read_json(is_local_theme(id)
+        ? checked_path(root_, fs::path(id) / "installed.json") : root_ / id / "installed.json");
     if (!version_ok(pointer.at("version"))) throw ThemeError(404, "THEME_NOT_INSTALLED", "Theme is not installed");
-    return root_ / id / pointer.at("version").get<std::string>();
+    const auto relative = fs::path(id) / pointer.at("version").get<std::string>();
+    return is_local_theme(id) ? checked_path(root_, relative) : root_ / relative;
 }
 
 json ThemeStore::definition(const std::string& id) const {
+    std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
     try {
         const auto dir = installed_directory(id);
+        if (is_local_theme(id)) {
+            for (const auto* name : {"theme.json", "background.png", "thumbnail.png"})
+                checked_path(root_, dir.lexically_relative(root_) / name);
+        }
         const auto d = read_json(dir / "theme.json");
         if (d.at("id") == id && valid_theme_definition(d) &&
             d.at("version") == dir.filename().string() &&
             matches_file(dir / "background.png", d.at("background")) &&
             matches_file(dir / "thumbnail.png", d.at("thumbnail"))) return d;
+    } catch (const ThemeError& error) {
+        if (error.code == "THEME_UNSAFE_PATH") throw;
     } catch (...) {}
     throw ThemeError(404, "THEME_NOT_INSTALLED", "Theme is not installed or is incomplete");
 }
@@ -269,9 +484,106 @@ bool ThemeStore::installed(const std::string& id) const {
     try { definition(id); return true; } catch (...) { return false; }
 }
 
+json ThemeStore::local_catalog() const {
+    std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+    json entries = json::array();
+    std::error_code ec;
+    fs::directory_iterator it(root_, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto id = path_to_utf8(it->path().filename());
+        if (!is_local_theme(id) || !it->is_directory(ec)) continue;
+        try {
+            const auto d = definition(id);
+            auto thumbnail = d.at("thumbnail");
+            thumbnail["url"] = "/api/themes/" + id + "/images/thumbnail";
+            entries.push_back({{"id", id}, {"name", d.at("name")}, {"mode", d.at("mode")},
+                {"version", d.at("version")}, {"installed_version", d.at("version")},
+                {"source", "local"}, {"installed", true}, {"available", true},
+                {"update_available", false}, {"thumbnail", thumbnail},
+                {"swatches", {d.at("colors").at("accent"), d.at("colors").at("bg"),
+                    d.at("colors").at("send-bg")}}});
+        } catch (...) { /* Incomplete versions are not usable themes. */ }
+    }
+    std::sort(entries.begin(), entries.end(), [](const json& a, const json& b) {
+        return a.at("id").get<std::string>() < b.at("id").get<std::string>();
+    });
+    return entries;
+}
+
+json ThemeStore::preview_import(const std::string& archive_bytes) const {
+    const auto files = unpack_import(archive_bytes);
+    return {{"theme", json::parse(files.at("theme.json"))},
+        {"package_sha256", sha256_hex(archive_bytes)}, {"package_bytes", archive_bytes.size()},
+        {"thumbnail_url", "data:image/png;base64," + base64_encode(files.at("thumbnail.png"))}};
+}
+
+json ThemeStore::import_archive(const std::string& archive_bytes, const std::string& confirmed_sha256) {
+    if (!hex(confirmed_sha256, 64) || sha256_hex(archive_bytes) != confirmed_sha256)
+        throw ThemeError(409, "THEME_IMPORT_CHANGED", "Theme ZIP changed; preview it again before importing");
+    const auto files = unpack_import(archive_bytes);
+    return install_local(json::parse(files.at("theme.json")), files.at("background.png"), files.at("thumbnail.png"));
+}
+
+json ThemeStore::install_local(const json& d, const std::string& background_png,
+                              const std::string& thumbnail_png) {
+    // Different tool instances share this data root. Serialize the final
+    // immutable-version/pointer transaction, never the interactive drafting.
+    std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+    if (!valid_theme_definition(d) || !is_local_theme(d.value("id", "")))
+        throw ThemeError(422, "THEME_INVALID_PACKAGE", "Invalid local theme definition");
+    const std::map<std::string, std::string> files = {
+        {"theme.json", d.dump(2)}, {"background.png", background_png}, {"thumbnail.png", thumbnail_png}};
+    for (const auto* kind : {"background", "thumbnail"}) {
+        const auto& bytes = files.at(std::string(kind) + ".png");
+        image::ImageNormalizeOptions options;
+        options.force_png = true;
+        options.max_edge = 0;
+        options.final_max_bytes = kMaxPackageBytes;
+        if (!png(bytes) || bytes.size() != d.at(kind).at("bytes") ||
+            sha256_hex(bytes) != d.at(kind).at("sha256") ||
+            !image::normalize_image_bytes(bytes, "image/png", options).ok)
+            throw ThemeError(422, "THEME_INVALID_PACKAGE", "Invalid local theme image");
+    }
+    const auto id = d.at("id").get<std::string>();
+    const auto version = d.at("version").get<std::string>();
+    if (local_state_->active_exports.count(id)) throw ThemeError(409, "THEME_BUSY", "Theme export is in progress");
+    const auto destination = checked_path(root_, fs::path(id) / version);
+    const auto staging = checked_path(root_, fs::path(id) / (version + ".staging"));
+    const auto archive = checked_path(root_, fs::path("exports") / id / (version + ".zip"));
+    check_tree(root_, id);
+    auto temporary_archive = archive; temporary_archive += ".tmp";
+    checked_path(root_, temporary_archive.lexically_relative(root_));
+    const auto cleanup = [&] {
+        std::error_code ec;
+        fs::remove_all(staging, ec);
+        fs::remove(temporary_archive, ec);
+    };
+    try {
+        fs::create_directories(staging);
+        fs::create_directories(archive.parent_path());
+        for (const auto& [name, bytes] : files) write_file(staging / name, bytes);
+        write_theme_archive(temporary_archive, files);
+        const auto package = read_file(temporary_archive, kMaxPackageBytes);
+        if (fs::exists(destination)) {
+            for (const auto& [name, bytes] : files) {
+                if (read_file(destination / name, kMaxPackageBytes) != bytes)
+                    throw ThemeError(409, "THEME_VERSION_CONFLICT", "Local theme version already has different resources");
+            }
+        } else fs::rename(staging, destination);
+        write_file(archive, package);
+        write_file(root_ / id / "installed.json", json{{"version", version}}.dump());
+        cleanup();
+        return {{"id", id}, {"version", version}, {"name", d.at("name")},
+            {"installed_path", path_to_utf8(destination)}, {"package_path", path_to_utf8(archive)},
+            {"apply", true}};
+    } catch (...) { cleanup(); throw; }
+}
+
 std::string ThemeStore::image(const std::string& id, const std::string& kind) {
+    std::unique_lock<std::recursive_mutex> local_lock(local_state_->mutex);
     if (kind != "background" && kind != "thumbnail") throw ThemeError(404, "THEME_NOT_FOUND", "Unknown theme resource");
     if (installed(id)) return read_file(installed_directory(id) / (kind + ".png"), kMaxPackageBytes);
+    local_lock.unlock();
     if (kind == "background") throw ThemeError(404, "THEME_NOT_INSTALLED", "Theme is not installed");
     const auto e = descriptor(id);
     std::lock_guard<std::mutex> preview_lock(preview_mu_);
@@ -291,6 +603,267 @@ std::string ThemeStore::image(const std::string& id, const std::string& kind) {
         write_file(file, bytes);
     }
     return read_file(file, kMaxPreviewBytes);
+}
+
+std::shared_ptr<ThemeExportJob> ThemeStore::find_export(const std::string& job_id) const {
+    std::lock_guard<std::mutex> lock(exports_mu_);
+    const auto it = exports_.find(job_id);
+    if (it == exports_.end()) throw ThemeError(404, "THEME_EXPORT_NOT_FOUND", "Theme export job was not found or has expired");
+    return it->second;
+}
+
+json ThemeStore::export_job(const std::string& job_id) const {
+    const auto job = find_export(job_id);
+    std::lock_guard<std::mutex> lock(job->mutex);
+    return job->info;
+}
+
+json ThemeStore::cancel_export(const std::string& job_id) {
+    const auto job = find_export(job_id);
+    std::lock_guard<std::mutex> lock(job->mutex);
+    if (export_busy(job->info) && !job->published) job->cancelled.store(true);
+    return job->info;
+}
+
+json ThemeStore::start_export(const std::string& id, const ExportSavePicker& picker) {
+    require_local(id);
+    json d;
+    {
+        std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+        if (local_state_->active_exports.count(id)) throw ThemeError(409, "THEME_BUSY", "This theme is already being exported");
+        d = definition(id);
+        checked_path(root_, fs::path("exports") / id);
+        local_state_->active_exports.insert(id);
+    }
+    const auto release = [&] {
+        std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+        local_state_->active_exports.erase(id);
+    };
+    try {
+        const auto filename = export_filename(d);
+        fs::path destination;
+        if (picker) {
+            const auto picked = picker(filename);
+            if (!picked || picked->empty()) { release(); return {{"state", "cancelled"}, {"cancelled", true}}; }
+            destination = *picked;
+            auto extension = path_to_utf8(destination.extension());
+            std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (extension != ".zip") destination += ".zip";
+            std::error_code ec;
+            if (!destination.is_absolute() || destination.filename().empty() ||
+                !fs::is_directory(destination.parent_path(), ec) || ec || fs::is_directory(destination, ec))
+                throw ThemeError(400, "THEME_INVALID_DESTINATION", "Theme package destination is unavailable", path_to_utf8(destination));
+        }
+        auto job = std::make_shared<ThemeExportJob>();
+        const auto job_id = generate_uuid_v7();
+        job->destination = std::move(destination);
+        job->info = {{"job_id", job_id}, {"id", id}, {"version", d.at("version")}, {"filename", filename},
+            {"state", "preparing"}, {"progress", nullptr}, {"reused", false}, {"native_saved", false}};
+        {
+            std::lock_guard<std::mutex> lock(exports_mu_);
+            while (exports_.size() >= kMaxExportJobs) {
+                auto oldest = exports_.end();
+                for (auto it = exports_.begin(); it != exports_.end(); ++it) {
+                    std::lock_guard<std::mutex> job_lock(it->second->mutex);
+                    if (!export_busy(it->second->info) &&
+                        (oldest == exports_.end() || it->second->created < oldest->second->created)) oldest = it;
+                }
+                if (oldest == exports_.end()) throw ThemeError(409, "THEME_BUSY", "Too many theme exports are active");
+                if (oldest->second->worker.joinable()) oldest->second->worker.join();
+                exports_.erase(oldest);
+            }
+            exports_.emplace(job_id, job);
+            // Publication and the joinable handle are one operation. A fast
+            // cached export cannot be pruned before its thread is registered.
+            try { job->worker = std::thread([this, job] { run_export(job); }); }
+            catch (...) { exports_.erase(job_id); throw; }
+        }
+        std::lock_guard<std::mutex> lock(job->mutex);
+        return job->info;
+    } catch (...) { release(); throw; }
+}
+
+void ThemeStore::run_export(const std::shared_ptr<ThemeExportJob>& job) {
+    const auto id = job->info.at("id").get<std::string>();
+    const auto version = job->info.at("version").get<std::string>();
+    const auto job_id = job->info.at("job_id").get<std::string>();
+    fs::path temporary_archive;
+    fs::path temporary_destination;
+    bool owns_temporary_destination = false;
+    json terminal;
+    const auto update = [&](const json& values) { std::lock_guard<std::mutex> lock(job->mutex); job->info.update(values); };
+    const auto check_cancelled = [&] {
+        if (job->cancelled.load()) throw ThemeError(499, "THEME_CANCELLED", "Theme export cancelled");
+    };
+    try {
+        ThemePackageFiles files;
+        bool reused = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+            check_cancelled();
+            const auto d = definition(id);
+            if (d.at("version") != version) throw ThemeError(409, "THEME_CHANGED", "Theme changed before export");
+            const auto directory = installed_directory(id);
+            std::uintmax_t total = 0;
+            for (const auto* name : {"theme.json", "background.png", "thumbnail.png"}) {
+                const auto limit = std::string(name) == "theme.json" ? 32 * 1024 : kMaxPackageBytes;
+                auto bytes = read_file(checked_path(root_, directory.lexically_relative(root_) / name), limit);
+                total += bytes.size();
+                files.emplace(name, std::move(bytes));
+            }
+            if (total > kMaxPackageBytes) throw ThemeError(422, "THEME_INVALID_PACKAGE", "Theme resources exceed the package size limit");
+            job->archive = checked_path(root_, fs::path("exports") / id / (version + ".zip"));
+            try {
+                read_file(job->archive, kMaxPackageBytes);
+                reused = unpack(job->archive) == files;
+            } catch (...) { /* A missing or stale derived ZIP must be rebuilt from the validated installation. */ }
+            if (!reused) {
+                const auto legacy = checked_path(root_, fs::path("exports") / (id + "-" + version + ".zip"));
+                try {
+                    read_file(legacy, kMaxPackageBytes);
+                    if (unpack(legacy) == files) { job->archive = legacy; reused = true; }
+                } catch (...) { /* Legacy flat packages are reusable only when their complete content matches. */ }
+            }
+            fs::create_directories(job->archive.parent_path());
+            temporary_archive = checked_path(root_, fs::path("exports") / (job_id + ".tmp.zip"));
+        }
+        update({{"reused", reused}});
+        if (!reused) {
+            update({{"state", "compressing"}, {"progress", nullptr}});
+            write_theme_archive(temporary_archive, files,
+                [&](double progress) { update({{"progress", progress}}); }, [&] { return job->cancelled.load(); });
+            check_cancelled();
+            read_file(temporary_archive, kMaxPackageBytes);
+            if (unpack(temporary_archive) != files) throw ThemeError(422, "THEME_INVALID_PACKAGE", "Exported theme package did not match its resources");
+            std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+            checked_path(root_, job->archive.lexically_relative(root_));
+            check_cancelled();
+            replace_file(temporary_archive, job->archive);
+        }
+        check_cancelled();
+        const auto bytes = read_file(job->archive, kMaxPackageBytes);
+        job->package_sha256 = sha256_hex(bytes);
+        if (!job->destination.empty()) {
+            update({{"state", "saving"}, {"progress", nullptr}});
+            temporary_destination = job->destination;
+            temporary_destination += ".acecode-" + job_id + ".tmp";
+            if (fs::exists(temporary_destination)) throw ThemeError(409, "THEME_SAVE_FAILED", "Theme save temporary file already exists");
+            std::ofstream output(temporary_destination, std::ios::binary | std::ios::trunc);
+            if (!output) throw ThemeError(500, "THEME_SAVE_FAILED", "Could not create theme package", path_to_utf8(job->destination));
+            owns_temporary_destination = true;
+            for (std::size_t offset = 0; offset < bytes.size(); offset += 64 * 1024) {
+                check_cancelled();
+                const auto count = std::min<std::size_t>(64 * 1024, bytes.size() - offset);
+                output.write(bytes.data() + offset, static_cast<std::streamsize>(count));
+            }
+            output.flush();
+            if (!output) throw ThemeError(500, "THEME_SAVE_FAILED", "Could not write theme package", path_to_utf8(job->destination));
+            output.close();
+            // Cancel and publish are serialized: cancellation cannot report
+            // success while a destination file is still about to be replaced.
+            std::lock_guard<std::mutex> lock(job->mutex);
+            check_cancelled();
+            replace_file(temporary_destination, job->destination);
+            job->published = true;
+            terminal = {{"state", "completed"}, {"progress", nullptr}, {"native_saved", true}};
+        } else {
+            check_cancelled();
+            terminal = {{"state", "completed"}, {"progress", nullptr},
+                {"download_url", "/api/themes/exports/" + job_id + "/download"}};
+        }
+    } catch (const ThemeError& error) {
+        terminal = {{"state", error.code == "THEME_CANCELLED" ? "cancelled" : "failed"}, {"progress", nullptr},
+            {"error", error.code}, {"message", error.what()}, {"error_path", error.path}};
+    } catch (const std::exception& error) {
+        terminal = {{"state", "failed"}, {"progress", nullptr}, {"error", "THEME_EXPORT_FAILED"},
+            {"message", error.what()}, {"error_path", path_to_utf8(job->archive)}};
+    }
+    std::error_code ec;
+    if (!temporary_archive.empty()) fs::remove(temporary_archive, ec);
+    if (owns_temporary_destination) fs::remove(temporary_destination, ec);
+    std::lock_guard<std::recursive_mutex> root_lock(local_state_->mutex);
+    std::lock_guard<std::mutex> lock(job->mutex);
+    local_state_->active_exports.erase(id);
+    if (terminal.at("state") == "completed" && !job->published && job->cancelled.load())
+        terminal = {{"state", "cancelled"}, {"progress", nullptr}, {"error", "THEME_CANCELLED"},
+            {"message", "Theme export cancelled"}, {"error_path", ""}};
+    job->info.update(terminal);
+}
+
+std::string ThemeStore::export_download(const std::string& job_id) const {
+    const auto job = find_export(job_id);
+    std::lock_guard<std::recursive_mutex> root_lock(local_state_->mutex);
+    std::lock_guard<std::mutex> lock(job->mutex);
+    if (job->info.at("state") != "completed") throw ThemeError(409, "THEME_EXPORT_NOT_READY", "Theme export is not available for download");
+    const auto id = job->info.at("id").get<std::string>();
+    const auto d = definition(id);
+    if (d.at("version") != job->info.at("version")) throw ThemeError(409, "THEME_CHANGED", "The installed theme has changed; export it again");
+    const auto bytes = read_file(checked_path(root_, job->archive.lexically_relative(root_)), kMaxPackageBytes);
+    if (sha256_hex(bytes) != job->package_sha256) throw ThemeError(409, "THEME_CHANGED", "The theme package has changed; export it again");
+    return bytes;
+}
+
+json ThemeStore::remove_local(const std::string& id, const std::function<void()>& commit) {
+    require_local(id);
+    std::lock_guard<std::recursive_mutex> lock(local_state_->mutex);
+    if (local_state_->active_exports.count(id)) throw ThemeError(409, "THEME_BUSY", "Theme export is in progress");
+    definition(id);
+    check_tree(root_, id);
+    const auto source = checked_path(root_, id);
+    const auto package_directory = checked_path(root_, fs::path("exports") / id);
+    check_tree(root_, fs::path("exports") / id);
+    std::vector<fs::path> packages;
+    // Derive exact filenames from this theme's version directories. A prefix
+    // match would also delete packages belonging to IDs such as ai-name-2.
+    for (const auto& entry : fs::directory_iterator(source)) {
+        const auto version = path_to_utf8(entry.path().filename());
+        if (!entry.is_directory() || !version_ok(version)) continue;
+        const auto package = checked_path(root_, fs::path("exports") / (id + "-" + version + ".zip"));
+        if (fs::exists(package)) {
+            if (!fs::is_regular_file(package)) throw ThemeError(422, "THEME_UNSAFE_PATH", "Theme package is not a regular file", path_to_utf8(package));
+            // Legacy flat names can be ambiguous across IDs and versions.
+            // Delete only archives whose own manifest identifies this theme.
+            try {
+                const auto manifest = json::parse(unpack(package).at("theme.json"));
+                if (manifest.at("id") == id && manifest.at("version") == version) packages.push_back(package);
+            } catch (...) { /* An unidentifiable legacy archive is not safe to claim. */ }
+        }
+    }
+    const auto quarantine = checked_path(root_, ".deleted-" + generate_uuid_v7());
+    std::vector<std::pair<fs::path, fs::path>> moved;
+    try {
+        fs::create_directory(quarantine);
+        fs::rename(source, quarantine / "theme");
+        moved.emplace_back(source, quarantine / "theme");
+        if (fs::exists(package_directory)) {
+            fs::rename(package_directory, quarantine / "packages");
+            moved.emplace_back(package_directory, quarantine / "packages");
+        }
+        for (std::size_t index = 0; index < packages.size(); ++index) {
+            const auto destination = quarantine / (std::to_string(index) + ".zip");
+            fs::rename(packages[index], destination);
+            moved.emplace_back(packages[index], destination);
+        }
+        check_tree(root_, quarantine.lexically_relative(root_));
+        if (commit) commit();
+    } catch (...) {
+        const auto failure = std::current_exception();
+        for (auto it = moved.rbegin(); it != moved.rend(); ++it) {
+            std::error_code ec;
+            fs::rename(it->second, it->first, ec);
+            if (ec) throw ThemeError(500, "THEME_DELETE_ROLLBACK_FAILED", "Could not restore isolated theme files", path_to_utf8(quarantine));
+        }
+        std::error_code ec; fs::remove(quarantine, ec);
+        std::rethrow_exception(failure);
+    }
+    std::error_code ec;
+    fs::remove_all(quarantine, ec);
+    json result = {{"id", id}, {"deleted", true}};
+    if (ec) {
+        result["cleanup_pending"] = true;
+        result["cleanup_message"] = "Theme was removed; isolated files could not yet be cleaned up";
+    }
+    return result;
 }
 
 json ThemeStore::job() const { std::lock_guard<std::mutex> lock(mu_); return job_; }

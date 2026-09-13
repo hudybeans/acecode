@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACECode · 扁平图标方案</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: #111; background: #fff; --accent: #3b82f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button { cursor: pointer; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    main { width: min(1080px, calc(100% - 64px)); margin: 0 auto; padding: 30px 0 32px; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 22px; border-bottom: 1px solid #ddd; }
+    .brand { font-weight: 700; font-size: 17px; letter-spacing: .09em; }
+    .edition { font-size: 12px; letter-spacing: .08em; color: #666; }
+    .intro { display: flex; justify-content: space-between; align-items: end; gap: 24px; padding: 30px 0 26px; }
+    h1 { font-size: 36px; line-height: 1.25; letter-spacing: -.035em; font-weight: 650; margin: 0 0 12px; }
+    .intro p { color: #666; margin: 0; font-size: 14px; }
+    .palette { display: flex; gap: 7px; align-items: center; padding-bottom: 4px; }
+    .palette span { width: 28px; height: 28px; border: 1px solid #ccc; border-radius: 50%; }
+    .palette .black { background: #000; border-color: #000; }
+    .palette .white { background: #fff; }
+    .palette .accent { background: var(--accent); border-color: var(--accent); }
+    .previews { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    figure { margin: 0; height: 330px; position: relative; display: grid; place-items: center; background: #f4f4f4; }
+    figure.dark-stage { background: #141414; color: #fff; }
+    .large-icon { width: 250px; height: 250px; }
+    .large-icon svg { display: block; width: 100%; height: 100%; }
+    figcaption { position: absolute; bottom: 19px; left: 24px; display: flex; gap: 12px; align-items: baseline; font-size: 12px; }
+    figcaption span { color: #737373; }
+    .dark-stage figcaption span { color: #999; }
+    .controls { margin-top: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .control-label { font-size: 13px; margin-right: 5px; }
+    input[type="color"] { border: 1px solid #ccc; width: 34px; height: 34px; padding: 3px; background: #fff; cursor: pointer; }
+    output { font-family: Consolas, monospace; font-size: 14px; min-width: 75px; }
+    .swatches { display: flex; gap: 7px; margin-left: 8px; }
+    .swatches button { width: 26px; height: 26px; padding: 0; border: 3px solid #fff; border-radius: 50%; background: var(--swatch); outline: 1px solid #ddd; }
+    .swatches button[aria-pressed="true"] { outline: 2px solid #111; }
+    .downloads { display: flex; gap: 8px; margin-left: auto; }
+    .downloads button { min-height: 36px; background: #fff; color: #111; border: 1px solid #ccc; padding: 7px 14px; border-radius: 6px; font-size: 12px; }
+    .downloads button:first-child { background: #111; color: #fff; border-color: #111; }
+    .size-section { display: flex; align-items: center; gap: 30px; margin-top: 27px; padding: 22px 0; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd; }
+    .size-heading { font-size: 13px; min-width: 104px; }
+    .size-heading span { display: block; color: #777; font-size: 11px; margin-top: 6px; }
+    .sizes { display: flex; align-items: end; justify-content: space-between; max-width: 430px; width: 100%; }
+    .sample { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 46px; }
+    .sample svg { display: block; }
+    .sample span { font-family: Consolas, monospace; font-size: 11px; color: #777; }
+    footer { display: flex; justify-content: space-between; gap: 20px; padding-top: 19px; font-size: 12px; color: #777; }
+    footer strong { color: #111; font-weight: 500; }
+    @media (max-width: 650px) {
+      main { width: calc(100% - 32px); padding-top: 20px; }
+      .intro { align-items: start; }
+      h1 { font-size: 26px; }
+      .palette { display: none; }
+      figure { height: 240px; }
+      .large-icon { width: min(170px, 90%); height: auto; aspect-ratio: 1; }
+      figcaption { left: 14px; bottom: 14px; font-size: 11px; }
+      figcaption span { display: none; }
+      .downloads { margin-left: 0; width: 100%; }
+      .size-section { gap: 14px; }
+      .size-heading { min-width: 66px; }
+      .sample { min-width: 24px; }
+      footer { flex-direction: column; gap: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header><div class="brand">ACECODE</div><div class="edition">FLAT ICON / 01</div></header>
+    <section class="intro" aria-label="设计说明">
+      <div><h1>黑 · 白 · 一种主题色</h1><p>保留 A &gt; 的识别特征，让主题色独立变化。</p></div>
+      <div class="palette" aria-label="三种颜色"><span class="black" title="黑色 #000000"></span><span class="white" title="白色 #FFFFFF"></span><span class="accent" title="主题色"></span></div>
+    </section>
+    <section class="previews" aria-label="深浅底图标预览">
+      <figure><div class="large-icon" data-icon="dark"></div><figcaption>深底版 <span>黑底 / 白色 A / 主题色 &gt;</span></figcaption></figure>
+      <figure class="dark-stage"><div class="large-icon" data-icon="light"></div><figcaption>浅底版 <span>白底 / 黑色 A / 主题色 &gt;</span></figcaption></figure>
+    </section>
+    <section class="controls" aria-label="替换主题色">
+      <label class="control-label" for="accent">主题色</label>
+      <input id="accent" type="color" value="#3b82f6">
+      <output id="accent-value" for="accent" aria-live="polite">#3B82F6</output>
+      <div class="swatches" aria-label="示例主题色">
+        <button type="button" data-accent="#3b82f6" style="--swatch: #3b82f6" aria-label="蓝色" aria-pressed="true"></button>
+        <button type="button" data-accent="#14b8a6" style="--swatch: #14b8a6" aria-label="青色" aria-pressed="false"></button>
+        <button type="button" data-accent="#8b5cf6" style="--swatch: #8b5cf6" aria-label="紫色" aria-pressed="false"></button>
+        <button type="button" data-accent="#f97316" style="--swatch: #f97316" aria-label="橙色" aria-pressed="false"></button>
+      </div>
+      <div class="downloads"><button id="download-dark" type="button">下载深底 SVG</button><button id="download-light" type="button">下载浅底 SVG</button></div>
+    </section>
+    <section class="size-section" aria-label="实际尺寸预览">
+      <div class="size-heading">小尺寸预览<span>实际像素大小</span></div>
+      <div class="sizes" id="sizes"></div>
+    </section>
+    <footer><span><strong>纯色填充 · 清晰轮廓 · 独立换色</strong></span><span>主题色仅用于 &gt;，黑白保持固定。</span></footer>
+  </main>
+  <template id="icon-template">
+    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-label="ACECode 扁平图标">
+      <rect data-color="background" x="16" y="16" width="480" height="480" rx="104" fill="#000000"/>
+      <g transform="translate(-10 3)">
+        <path data-color="foreground" fill="#FFFFFF" fill-rule="evenodd" d="M72 380L162 146C167 132 177 126 190 126H222C235 126 245 132 250 146L334 380H268L249 324H158L139 380H72ZM178 270H229L203 202L178 270Z"/>
+        <path data-color="accent" fill="#3B82F6" d="M350 180L460 256L350 332V286L394 256L350 226V180Z"/>
+      </g>
+    </svg>
+  </template>
+  <script>
+    const template = document.querySelector('#icon-template');
+    const accent = document.querySelector('#accent');
+    const colorValue = document.querySelector('#accent-value');
+    const swatches = [...document.querySelectorAll('[data-accent]')];
+
+    function makeIcon(mode, size = 512) {
+      const svg = template.content.querySelector('svg').cloneNode(true);
+      svg.setAttribute('width', size);
+      svg.setAttribute('height', size);
+      svg.dataset.variant = mode;
+      if (mode === 'light') {
+        svg.querySelector('[data-color="background"]').setAttribute('fill', '#FFFFFF');
+        svg.querySelector('[data-color="foreground"]').setAttribute('fill', '#000000');
+      }
+      svg.querySelector('[data-color="accent"]').setAttribute('fill', accent.value.toUpperCase());
+      return svg;
+    }
+
+    for (const slot of document.querySelectorAll('[data-icon]')) slot.append(makeIcon(slot.dataset.icon));
+    for (const size of [16, 24, 32, 48, 64]) {
+      const sample = document.createElement('div');
+      sample.className = 'sample';
+      const label = document.createElement('span');
+      label.textContent = `${size} px`;
+      sample.append(makeIcon('dark', size), label);
+      document.querySelector('#sizes').append(sample);
+    }
+
+    function updateColor(color) {
+      accent.value = color;
+      const normalized = accent.value.toUpperCase();
+      document.documentElement.style.setProperty('--accent', normalized);
+      colorValue.value = normalized;
+      for (const shape of document.querySelectorAll('svg [data-color="accent"]')) shape.setAttribute('fill', normalized);
+      for (const swatch of swatches) swatch.setAttribute('aria-pressed', String(swatch.dataset.accent.toUpperCase() === normalized));
+    }
+
+    function downloadIcon(mode) {
+      const svg = makeIcon(mode);
+      svg.removeAttribute('data-variant');
+      const source = new XMLSerializer().serializeToString(svg);
+      const url = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `acecode-icon-flat-${mode}-${accent.value.slice(1)}.svg`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    accent.addEventListener('input', () => updateColor(accent.value));
+    for (const swatch of swatches) swatch.addEventListener('click', () => updateColor(swatch.dataset.accent));
+    document.querySelector('#download-dark').addEventListener('click', () => downloadIcon('dark'));
+    document.querySelector('#download-light').addEventListener('click', () => downloadIcon('light'));
+  </script>
+</body>
+</html>

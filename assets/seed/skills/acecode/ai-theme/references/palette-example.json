@@ -1,0 +1,39 @@
+{
+  "name": "机甲紫",
+  "mode": "dark",
+  "appearance": {
+    "logo_color": "#BB94FF",
+    "home_title_color": "#F5F0FC",
+    "extend_to_titlebar": true
+  },
+  "colors": {
+    "bg": "#171320",
+    "surface": "#241D31",
+    "surface-alt": "#2D253D",
+    "surface-hi": "#3B3050",
+    "shell-hi": "#392D4D",
+    "shell-bg": "#201929",
+    "border": "#655375",
+    "border-soft": "#42354F",
+    "fg": "#F5F0FC",
+    "fg-2": "#D7CBE8",
+    "fg-mute": "#B8A8CB",
+    "accent": "#BB94FF",
+    "accent-bg": "#49316A",
+    "accent-soft": "#332642",
+    "ok": "#B1EA77",
+    "ok-bg": "#283922",
+    "ok-border": "#557B3A",
+    "warn": "#FFD08A",
+    "warn-bg": "#49361D",
+    "danger": "#FF9AAB",
+    "danger-bg": "#4B2834",
+    "code-bg": "#15111C",
+    "code-fg": "#EEE5FA",
+    "code-line": "#77658D",
+    "selection": "#7953AC",
+    "on-selection": "#FFFFFF",
+    "send-bg": "#B1EA77",
+    "send-fg": "#182214"
+  }
+}

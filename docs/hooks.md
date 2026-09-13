@@ -207,6 +207,11 @@ Runs only when ACECode would otherwise ask the user for permission. Deny wins ov
 }
 ```
 
+Matcher aliases: `Bash`, `Edit`, `Write` and `apply_patch` map to the native
+`bash`, `file_edit` and `file_write` tools. When Settings > Tools > 工具重写 is
+enabled, the rewritten names (for example `read` or `write`) also match their
+native tool, so a matcher can use the same name the model uses.
+
 ### `PermissionResolved`
 
 ACECode extension that runs once after a previously emitted `PermissionRequest`

@@ -13,6 +13,7 @@
 | Daemon API | [daemon-api.md](daemon-api.md) | HTTP、WebSocket 与 session 事件协议 |
 | Hooks | [hooks.md](hooks.md) | Hook 生命周期和配置 |
 | Skills | [skills.md](skills.md) | Skill 发现、加载和运行契约 |
+| Themes | [themes.md](themes.md) | AI 主题创建、图标与标题配色、背景通顶、自定义主题导出与删除、EVA 资源包 |
 | Localization | [localization.md](localization.md) | Web/Desktop 文案来源和本地化流程 |
 | User Manual | [user-manual.md](user-manual.md) | 面向用户的功能说明 |
 

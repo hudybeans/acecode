@@ -221,12 +221,27 @@ TEST(ConfigWebUiPreferencesValidation, AcceptsOnlyCanonicalValues) {
     EXPECT_TRUE(is_valid_web_ui_color_theme("blue"));
     EXPECT_TRUE(is_valid_web_ui_color_theme("orange"));
     EXPECT_TRUE(is_valid_web_ui_color_theme("eva-01"));
+    EXPECT_TRUE(is_valid_web_ui_color_theme("ai-eva-01"));
+    EXPECT_FALSE(is_valid_web_ui_color_theme("ai-../outside"));
     EXPECT_FALSE(is_valid_web_ui_color_theme("green"));
 
     EXPECT_TRUE(is_valid_web_ui_font_size("small"));
     EXPECT_TRUE(is_valid_web_ui_font_size("medium"));
     EXPECT_TRUE(is_valid_web_ui_font_size("large"));
     EXPECT_FALSE(is_valid_web_ui_font_size("huge"));
+}
+
+TEST(ConfigWebUiPreferencesSave, LocalThemeRoundTripsWithOrdinaryModePreference) {
+    const auto path = temp_config_path("ai-theme");
+    AppConfig cfg;
+    cfg.web_ui.theme = "system";
+    cfg.web_ui.color_theme = "ai-eva-night";
+    save_config(cfg, path.string());
+    const auto loaded = load_config_from_path(path.string());
+    EXPECT_EQ(loaded.web_ui.theme, "system");
+    EXPECT_EQ(loaded.web_ui.color_theme, "ai-eva-night");
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST(ConfigWebUiPreferencesSave, DownloadedThemePreservesOrdinaryDarkPreference) {

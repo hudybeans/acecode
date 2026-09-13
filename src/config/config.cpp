@@ -4,6 +4,7 @@
 #include "config_recovery.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
+#include "../themes/theme_id.hpp"
 #include "../utils/constants.hpp"
 #include "../utils/atomic_file.hpp"
 #include "../utils/logger.hpp"
@@ -208,7 +209,8 @@ bool is_valid_web_ui_theme(const std::string& theme) {
 }
 
 bool is_valid_web_ui_color_theme(const std::string& color_theme) {
-    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01";
+    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01" ||
+        themes::is_local_theme(color_theme);
 }
 
 bool is_valid_web_ui_font_size(const std::string& font_size) {
@@ -500,7 +502,7 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("web_ui.theme must be one of: system, light, dark");
     }
     if (!is_valid_web_ui_color_theme(cfg.web_ui.color_theme)) {
-        errors.push_back("web_ui.color_theme must be one of: blue, orange, eva-01");
+        errors.push_back("web_ui.color_theme must be blue, orange, eva-01, or a valid ai- theme ID");
     }
     if (!is_valid_web_ui_font_size(cfg.web_ui.font_size)) {
         errors.push_back("web_ui.font_size must be one of: small, medium, large");
@@ -1517,6 +1519,17 @@ static AppConfig load_config_from_path_once(
                 }
             }
 
+            if (j.contains("summary_generation")) {
+                const auto& summary = j["summary_generation"];
+                if (!summary.is_object() ||
+                    (summary.contains("enabled") && !summary["enabled"].is_boolean()) ||
+                    (summary.contains("model_name") && !summary["model_name"].is_string())) {
+                    throw std::runtime_error("summary_generation must contain a boolean enabled and a string model_name");
+                }
+                cfg.summary_generation.enabled = summary.value("enabled", false);
+                cfg.summary_generation.model_name = summary.value("model_name", std::string{});
+            }
+
             if (j.contains("session_title")) {
                 if (!j["session_title"].is_object()) {
                     LOG_WARN("[config] 'session_title' must be an object, ignoring");
@@ -2351,6 +2364,13 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         if (cfg.ui.locale != ui_d.locale) {
             j["ui"]["locale"] = cfg.ui.locale;
         }
+
+        nlohmann::json summary = nlohmann::json::object();
+        if (cfg.summary_generation.enabled)
+            summary["enabled"] = true;
+        if (!cfg.summary_generation.model_name.empty())
+            summary["model_name"] = cfg.summary_generation.model_name;
+        if (!summary.empty()) j["summary_generation"] = std::move(summary);
 
         SessionTitleConfig st_d;
         nlohmann::json stj = nlohmann::json::object();

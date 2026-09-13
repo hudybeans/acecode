@@ -1,8 +1,60 @@
-# ACECode IIS feedback upload compatibility
+# ACECode IIS upload service and theme workshop
 
 This component lets existing ACECode releases upload feedback to an IIS-hosted
 update directory without any client change. It adds one ASP.NET 4 handler for
-`POST /aupdate/`; GET and HEAD requests remain static and read-only.
+`POST /aupdate/`. The same assembly serves `/aupdate/workshop`; existing updater
+downloads keep their static GET/HEAD handler.
+
+## Theme workshop
+
+- Public catalogue: `http://2017studio.imwork.net:82/aupdate/workshop`
+- Administrator review: `http://2017studio.imwork.net:82/aupdate/workshop/admin`
+- Private storage: `J:\acecode-workshop`
+- Administrator key file: `J:\acecode-feedback-deploy-backups\workshop-admin-key.txt`
+
+The first deployment generates a random administrator key, writes it only to the
+private key file, and stores its SHA-256 in protected application configuration.
+Read that file locally to sign in; logs never print the key. Existing deployments
+preserve the key. Login uses an encrypted HttpOnly/SameSite cookie lasting eight
+hours. The review page provides logout.
+
+Visitors search, filter, preview and download approved themes. Upload first
+validates and previews a ZIP; confirming **Submit for review** stores it as
+pending. Administrators can preview, approve and reject themes. Pending and
+rejected records, images and ZIPs are not publicly accessible. Rejecting an
+approved theme also removes it from public access.
+
+Packages are custom `ai-*` ACECode ZIPs up to 16 MiB, containing exactly
+`theme.json`, `background.png`, `thumbnail.png`. Validation covers the existing
+schema, 28 colors, optional appearance settings, PNG dimensions, byte counts and
+SHA-256. Definitions are limited to 32 KiB and thumbnails to 256 KiB. No uploaded
+paths, scripts, HTML or CSS are executed. Identical submissions are idempotent;
+an existing ID/version with different content returns a conflict. Corrected or
+previously rejected themes need a new version.
+
+Digest-named private directories, a cross-process publication lock and atomic
+record replacement provide storage without a database. Workshop uploads do not
+change `aceupdate.json` or the built-in EVA catalogue. Only the website asset
+allowlist is deployed under `aupdate/workshop`; source docs remain in the repo.
+The two original ACECode light/dark screenshots are included as preview templates.
+
+| Method | Workshop-relative path | Purpose |
+| --- | --- | --- |
+| GET | `api/themes?q=&mode=all&sort=latest&page=1` | Approved catalogue; 24 items per page |
+| POST | `api/preview` | Validate multipart `file`, return preview without storing |
+| POST | `api/themes` | Submit multipart `file` for review |
+| GET/HEAD | `api/themes/{sha256}/thumbnail`, `background`, `download` | Approved resources, or admin preview |
+| GET/POST | `api/admin/session` | Session status / login with JSON `key` |
+| POST | `api/admin/logout` | Clear admin cookie |
+| GET | `api/admin/themes?status=pending` | Admin review catalogue |
+| POST | `api/admin/themes/{sha256}/approve`, `reject` | Admin review decision |
+
+Writes require `X-Workshop-Request: 1`; cross-origin writes are rejected.
+
+Run `scripts/test-workshop.ps1` in PowerShell 7 for an isolated IIS Express HTTP
+integration test covering preview, pending privacy, admin login, approval,
+download hash, rejection, logout and legacy feedback/updater compatibility.
+`-KeepSite` retains the test site and records its URL/PID in `out/test-runtime.json`.
 
 ## Current-host defaults
 
@@ -77,8 +129,8 @@ The deployment script:
    `J:\feedback`;
 5. installs the handler in the protected application `bin` directory;
 6. adds a root `<location path="aupdate">` ASP.NET size limit; and
-7. adds the POST mapping and IIS request limit under `aupdate` while preserving
-   all existing MIME mappings.
+7. adds workshop mappings before the POST mapping and preserves MIME mappings;
+8. deploys workshop assets and provisions private theme storage/admin credentials.
 
 No `iisreset` is needed. IIS reloads the application after configuration or
 `bin` changes. The command returns the exact backup directory for rollback.
@@ -115,9 +167,10 @@ Use the `BackupDirectory` printed by deployment:
   -BackupDirectory 'J:\acecode-feedback-deploy-backups\<deployment-id>'
 ```
 
-Rollback restores both prior IIS configuration files and either restores or
-removes the handler DLL according to the manifest. It deliberately leaves
-`J:\feedback` and all received feedback packages untouched.
+Rollback restores both configuration files, the DLL and prior workshop assets.
+A newly created administrator key is removed only when its hash still matches
+that deployment. Received feedback and theme packages remain untouched. Both
+legacy schema-1 and new schema-2 deployment manifests are supported.
 
 ## Security boundary
 

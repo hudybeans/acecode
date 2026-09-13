@@ -21,6 +21,7 @@
 #include "../skills/skill_registry.hpp"
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tool/builtin_tool_registry.hpp"
+#include "../tool/tool_rewrites.hpp"
 #include "../tool/spawn_subagent_tool.hpp"
 #include "../tool/skill_view_tool.hpp"
 #include "../tool/skills_tool.hpp"
@@ -230,6 +231,7 @@ int print_available_capabilities(const HeadlessCliOptions& opts) {
     };
 
     if (opts.list_tools) {
+        tool_rewrites::load_and_apply(acecode::get_acecode_dir());
         const bool initialized_web_search =
             cfg.web_search.enabled && !web_search::is_initialized();
         if (initialized_web_search) {
@@ -400,6 +402,9 @@ int run_print_mode(const HeadlessCliOptions& opts) {
 
     // ---- 网络 / 惰性子系统(与 daemon worker.cpp 同序) ----
     network::proxy_resolver().init(cfg.network);
+
+    // 「工具重写」先于 register_headless_tools 发布(与 daemon / TUI 同一份文件)。
+    tool_rewrites::load_and_apply(acecode::get_acecode_dir());
     network::proxy_resolver().probe_and_maybe_fallback();
 
     acecode::lsp::init(cfg.lsp, cwd);

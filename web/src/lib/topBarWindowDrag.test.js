@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { TOPBAR_WINDOW_DRAG_HEIGHT, topBarWindowDragAction, isTopBarDragExcludedTarget } from './topBarWindowDrag.js';
+import { TOPBAR_WINDOW_DRAG_HEIGHT, topBarWindowDragAction, isTopBarDragBackdrop, isTopBarDragExcludedTarget, topBarWindowControlAt } from './topBarWindowDrag.js';
 
 const bounds = { left: 0, right: 1280, top: 0, width: 1280, height: 30 };
 const event = { button: 0, clientX: 600, clientY: 15, detail: 1 };
@@ -26,6 +26,49 @@ for (const selector of ['[data-ace-native-overlay]', '[role="tab"]', '[role="sep
   assert.equal(isTopBarDragExcludedTarget({ closest: (list) => list.split(',').includes(selector) }), true);
 }
 console.log('[pass] compact title-bar drag keeps the original band and excludes consumed interactions');
+
+function overlayTarget({ backdrop = false, selectors = [] } = {}) {
+  return {
+    matches: (selector) => backdrop && selector === '[data-ace-native-overlay="blocking"]',
+    closest: (selector) => selector.split(',').some((item) => selectors.includes(item)),
+  };
+}
+for (const role of [[], ['[role="dialog"]']]) {
+  const backdrop = overlayTarget({ backdrop: true, selectors: ['[data-ace-native-overlay]', ...role] });
+  assert.equal(isTopBarDragBackdrop(backdrop), true);
+  const excluded = isTopBarDragExcludedTarget(backdrop);
+  assert.equal(excluded, false);
+  assert.equal(topBarWindowDragAction(event, bounds, excluded), 'drag');
+  assert.equal(topBarWindowDragAction({ ...event, detail: 2 }, bounds, excluded), 'maximize');
+  assert.equal(topBarWindowDragAction({ ...event, clientY: 44 }, bounds, excluded), null);
+}
+for (const selectors of [
+  ['[data-ace-native-overlay]'],
+  ['[data-ace-native-overlay]', '[role="dialog"]'],
+  ['[role="dialog"]'],
+]) {
+  const content = overlayTarget({ selectors });
+  assert.equal(isTopBarDragBackdrop(content), false);
+  assert.equal(isTopBarDragExcludedTarget(content), true);
+}
+assert.equal(isTopBarDragExcludedTarget(overlayTarget({ backdrop: true, selectors: ['[tabindex]'] })), true);
+console.log('[pass] only the blocking backdrop itself permits title-bar gestures; modal content stays excluded');
+
+const closeControl = { getBoundingClientRect: () => ({ left: 1240, right: 1270, top: 0, bottom: 30 }) };
+const maximizeControl = { getBoundingClientRect: () => ({ left: 1210, right: 1240, top: 0, bottom: 30 }) };
+const topBar = {
+  getBoundingClientRect: () => bounds,
+  querySelectorAll: () => [maximizeControl, closeControl],
+};
+assert.equal(topBarWindowControlAt({ ...event, clientX: 1255 }, topBar), closeControl);
+assert.equal(topBarWindowControlAt({ ...event, clientX: 1225, detail: 2 }, topBar), maximizeControl);
+for (const other of [event, { ...event, clientX: 1270 }, { ...event, clientX: 1255, clientY: 30 },
+  { ...event, clientX: 1255, button: 2 }, { ...event, clientX: 1255, defaultPrevented: true },
+  { ...event, clientX: 1255, target: overlayTarget({ selectors: ['[role="dialog"]'] }) }]) {
+  assert.equal(topBarWindowControlAt(other, topBar), null);
+}
+assert.equal(topBarWindowControlAt(event, null), null);
+console.log('[pass] covered window controls use their real bounds and remain distinct from blank-area dragging');
 
 const topbar = fs.readFileSync(new URL('../components/TopBar.jsx', import.meta.url), 'utf8');
 const icon = fs.readFileSync(new URL('../components/Icon.jsx', import.meta.url), 'utf8');

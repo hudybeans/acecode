@@ -7,6 +7,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 
 #include <chrono>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -17,13 +18,19 @@ namespace {
 // questions_to_payload 的逆向:overlay 渲染吃的是 AskQuestion 结构而不是 JSON。
 // 字段名与 daemon 的 wire 契约一致,这里只做形状转换,不做校验 —— 参数校验
 // 已经在工具层 validate_ask_user_question_args 里做过了。
-std::vector<AskQuestion> questions_from_payload(const nlohmann::json& payload) {
+std::vector<AskQuestion> questions_from_payload(
+    const nlohmann::json& payload,
+    std::map<std::string, std::string>& question_ids) {
     std::vector<AskQuestion> out;
     if (!payload.is_array()) return out;
     for (const auto& item : payload) {
         if (!item.is_object()) continue;
         AskQuestion q;
         q.question = item.value("text", item.value("id", std::string{}));
+        // The overlay indexes answers by display text, while callers correlate
+        // responses by wire ID. Keep both; theme/cost tools use distinct IDs.
+        const auto id = item.value("id", std::string{});
+        question_ids[q.question] = id.empty() ? q.question : id;
         q.header = item.value("header", std::string{});
         q.multi_select = item.value("multiSelect", false);
         if (item.contains("options") && item["options"].is_array()) {
@@ -43,6 +50,7 @@ std::vector<AskQuestion> questions_from_payload(const nlohmann::json& payload) {
 nlohmann::json make_response(bool cancelled,
                              bool timed_out,
                              const std::vector<std::string>& question_order,
+                             const std::map<std::string, std::string>& question_ids,
                              const std::map<std::string, std::string>& answers) {
     nlohmann::json out;
     out["cancelled"] = cancelled;
@@ -52,7 +60,7 @@ nlohmann::json make_response(bool cancelled,
         auto it = answers.find(question);
         if (it == answers.end()) continue;
         arr.push_back(nlohmann::json{
-            {"question_id", question},
+            {"question_id", question_ids.at(question)},
             {"selected", nlohmann::json::array({it->second})},
             {"custom_text", ""},
         });
@@ -69,17 +77,18 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
                                    const std::atomic<bool>* abort_flag,
                                    int timeout_seconds,
                                    const std::string& origin_label) {
+    std::map<std::string, std::string> question_ids;
     const std::vector<AskQuestion> questions =
-        questions_from_payload(questions_payload);
+        questions_from_payload(questions_payload, question_ids);
     std::vector<std::string> question_order;
     question_order.reserve(questions.size());
     for (const auto& q : questions) question_order.push_back(q.question);
 
     if (questions.empty()) {
-        return make_response(/*cancelled=*/true, false, question_order, {});
+        return make_response(/*cancelled=*/true, false, question_order, question_ids, {});
     }
     if (abort_flag && abort_flag->load()) {
-        return make_response(/*cancelled=*/true, false, question_order, {});
+        return make_response(/*cancelled=*/true, false, question_order, question_ids, {});
     }
 
     {
@@ -91,7 +100,7 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
             state.overlay_cv.wait_for(lk, std::chrono::milliseconds(100));
         }
         if (abort_flag && abort_flag->load()) {
-            return make_response(/*cancelled=*/true, false, question_order, {});
+            return make_response(/*cancelled=*/true, false, question_order, question_ids, {});
         }
         state.ask_origin_label = origin_label;
         state.ask_pending = true;
@@ -184,14 +193,14 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
     // 到点前一瞬用户已提交时 ok=true —— 按正常回答处理,用户真实意志优先。
     if (timed_out && !aborted && !ok) {
         return make_response(/*cancelled=*/false, /*timed_out=*/true,
-                             question_order, {});
+                             question_order, question_ids, {});
     }
     if (aborted || !ok) {
         LOG_INFO("[AskUserQuestion] declined (aborted=" +
                  std::string(aborted ? "true" : "false") + ")");
-        return make_response(/*cancelled=*/true, false, question_order, {});
+        return make_response(/*cancelled=*/true, false, question_order, question_ids, {});
     }
-    return make_response(false, false, question_order, answers);
+    return make_response(false, false, question_order, question_ids, answers);
 }
 
 } // namespace acecode::tui

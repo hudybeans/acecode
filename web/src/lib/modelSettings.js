@@ -14,6 +14,8 @@ import {
   parseRequestHeadersJson,
   splitModelIds,
 } from './modelManager.js';
+import { autoModelAliasForSelection, uniqueModelAlias } from './modelAlias.js';
+import { providerDisplayName } from './providerCatalogGroups.js';
 
 export const MODEL_CATALOG_QUERY_LIMIT = 50;
 export const MODEL_ENDPOINT_MODES = ['base_url', 'full_url'];
@@ -560,7 +562,6 @@ export function toggleCatalogModelInDraft(
   const wasSelected = selected.includes(id);
   let metadataById = { ...catalogMetadataMap(draft) };
   let activeId = String(draft?._active_catalog_model_id || '');
-  let selectedMetadata = null;
 
   if (wasSelected) {
     selected = selected.filter((value) => value !== id);
@@ -574,8 +575,7 @@ export function toggleCatalogModelInDraft(
     }
     selected.push(id);
     if (rawModel) {
-      selectedMetadata = catalogModelMetadataDraft(rawModel);
-      metadataById[id] = selectedMetadata;
+      metadataById[id] = catalogModelMetadataDraft(rawModel);
       activeId = id;
     }
   }
@@ -585,16 +585,15 @@ export function toggleCatalogModelInDraft(
   }
   const overrides = draftMetadataOverrides(draft);
   const visibleMetadata = activeId ? metadataById[activeId] : emptyModelMetadataDraft();
-  const next = applyVisibleModelMetadata({
+  // 别名不在这里写:曾经「name 为空就填第一个模型的目录显示名」,多选时再被
+  // buildModelDraftsFromSelection 拼成 <第一个模型名>-<其他模型 ID>。现在别名
+  // 统一由 syncAutoModelAlias 按整份选择维护。
+  return applyVisibleModelMetadata({
     ...draft,
     model: selected.join(', '),
     _catalog_model_metadata: metadataById,
     _active_catalog_model_id: activeId,
   }, visibleMetadata, overrides);
-  if (!wasSelected && selectedMetadata && !String(draft?.name || '').trim()) {
-    next.name = String(rawModel?.name || id).trim();
-  }
-  return next;
 }
 
 export function addManualModelToDraft(draft, modelId, { allowMultiple = false } = {}) {
@@ -671,7 +670,6 @@ export function emptyModelProfileDraft() {
     api_key: '',
     has_api_key: false,
     clear_api_key: false,
-    credential_source_name: '',
     request_headers_json: '',
     context_window: '',
     max_output_tokens: '',
@@ -681,6 +679,8 @@ export function emptyModelProfileDraft() {
     _catalog_model_metadata: {},
     _model_metadata_overrides: {},
     _active_catalog_model_id: '',
+    // 上一次自动生成的别名;name 仍等于它(或为空)说明用户没手改过,可继续跟随选择刷新。
+    _auto_alias: '',
   };
 }
 
@@ -758,7 +758,6 @@ export function applyCatalogProviderToDraft(draft, provider) {
     api_key: '',
     has_api_key: false,
     clear_api_key: !!draft?.has_api_key && provider.auth_mode === 'none',
-    credential_source_name: '',
     request_headers_json: '',
     context_window: '',
     max_output_tokens: '',
@@ -785,37 +784,40 @@ export function applyCatalogModelToDraft(draft, model) {
   };
 }
 
+// 名称冲突时「另存为」的建议名,与别名自动去重同一套 (N) 规则。
 export function modelNameSuggestion(baseName, existingNames = []) {
-  const normalizedBase = String(baseName || 'model').trim() || 'model';
-  const occupied = new Set(existingNames.map((name) => String(name || '').trim()));
-  if (!occupied.has(normalizedBase)) return normalizedBase;
-  let suffix = 2;
-  while (occupied.has(`${normalizedBase}-${suffix}`)) suffix += 1;
-  return `${normalizedBase}-${suffix}`;
+  return uniqueModelAlias(String(baseName || '').trim() || 'model', existingNames);
 }
 
-function normalizeBaseUrlIdentity(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  try {
-    const parsed = new URL(raw);
-    const path = parsed.pathname.replace(/\/+$/, '') || '/';
-    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${path}${parsed.search}${parsed.hash}`;
-  } catch {
-    return raw.replace(/\/+$/, '');
+// 多选时作为别名前缀的厂商名。自定义 OpenAI 兼容 API 没有真正的厂商
+// (目录名是 "Custom OpenAI-compatible API"),拼进别名只会碍眼,返回空串 → 只用模型 ID。
+export function modelAliasProviderName(provider) {
+  if (!provider || isCustomOpenAiCompatibilityProvider(provider)) return '';
+  return providerDisplayName(provider);
+}
+
+// 别名当前是否仍是自动值:为空,或与上一次自动生成的值一致。
+// 用户手改过(与 _auto_alias 不同且非空)之后就不再跟随选择刷新。
+export function isAutoModelAlias(draft) {
+  const name = String(draft?.name || '').trim();
+  return !name || name === String(draft?._auto_alias || '');
+}
+
+// 选择(model / provider)变化后调用,按 modelAlias.js 的规则刷新自动别名。
+// 只在别名仍是自动值且非编辑模式时改写;返回同一引用表示无需改动。
+export function syncAutoModelAlias(
+  draft,
+  { providerName = '', existingNames = [], editing = false } = {},
+) {
+  if (!draft || editing || !isAutoModelAlias(draft)) return draft;
+  const next = autoModelAliasForSelection(splitModelIds(draft.model), {
+    providerName,
+    existingNames,
+  });
+  if (String(draft.name || '') === next && String(draft._auto_alias || '') === next) {
+    return draft;
   }
-}
-
-export function compatibleCredentialSources(models, draft) {
-  const provider = String(draft?.provider || '');
-  const providerId = String(draft?.models_dev_provider_id || '');
-  const baseUrl = normalizeBaseUrlIdentity(draft?.base_url);
-  return (Array.isArray(models) ? models : []).filter((model) => (
-    !!model?.has_api_key
-      && model.provider === provider
-      && String(model.models_dev_provider_id || '') === providerId
-      && normalizeBaseUrlIdentity(model.base_url) === baseUrl
-  ));
+  return { ...draft, name: next, _auto_alias: next };
 }
 
 export function redactModelDraftSecrets(value, draft) {
@@ -851,7 +853,6 @@ export function validateModelProfileDraft(draft, provider, { editing = false } =
     return { ok: false, code: 'MISSING_BASE_URL' };
   }
   if (policy.api_key_required && !String(draft.api_key || '').trim()
-      && !String(draft.credential_source_name || '').trim()
       && !(editing && draft.has_api_key)) {
     return { ok: false, code: 'INVALID_API_KEY' };
   }
@@ -947,10 +948,6 @@ export function buildModelMutationPayload(draft, provider, options = {}) {
   if (policy.show_api_key && String(draft.api_key || '').trim()) {
     payload.api_key = String(draft.api_key).trim();
   }
-  if (policy.show_api_key && !options.editing && !payload.api_key
-      && String(draft.credential_source_name || '').trim()) {
-    payload.credential_source_name = String(draft.credential_source_name).trim();
-  }
   if (draft.clear_api_key && policy.can_clear_api_key) payload.clear_api_key = true;
   if (policy.show_request_headers) {
     if (validation.request_headers !== undefined) {
@@ -1005,19 +1002,21 @@ function draftForSelectedModelMutation(draft, modelId, { editing = false } = {})
   return effective;
 }
 
+// options.existingNames = 已保存条目的名字,供多选派生名与空别名回退时做 (N) 去重;
+// 不传则只在本批内去重,撞已有名字交给后端 NAME_TAKEN 冲突流程。
 export function buildModelMutationPayloads(draft, provider, options = {}) {
   const selected = splitModelIds(draft?.model);
   if (selected.length === 0) return { ok: false, code: 'MISSING_MODEL' };
   if (options.editing && selected.length !== 1) {
     return { ok: false, code: 'MULTI_MODEL_EDIT' };
   }
-  const generated = buildModelDraftsFromSelection(draft);
-  const useModelIdAsName = isCustomOpenAiCompatibilityProvider(provider)
-    && !String(draft?.name || '').trim();
+  const generated = buildModelDraftsFromSelection(draft, {
+    existingNames: options.existingNames || [],
+    editing: !!options.editing,
+  });
   const payloads = [];
   for (const item of generated) {
-    const namedItem = useModelIdAsName ? { ...item, name: item.model } : item;
-    const effective = draftForSelectedModelMutation(namedItem, item.model, options);
+    const effective = draftForSelectedModelMutation(item, item.model, options);
     const result = buildModelMutationPayload(effective, provider, options);
     if (!result.ok) return result;
     payloads.push(result.payload);

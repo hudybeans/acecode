@@ -14,6 +14,7 @@
 #include "plan_mode_tool.hpp"
 #include "show_image_tool.hpp"
 #include "task_complete_tool.hpp"
+#include "theme_create_tool.hpp"
 #include "todo_write_tool.hpp"
 #include "tool_executor.hpp"
 #include "vision_subagent_tool.hpp"
@@ -32,6 +33,7 @@ inline void register_session_builtin_tools(ToolExecutor& tools, const AppConfig&
     tools.register_tool(create_grep_tool());
     tools.register_tool(create_glob_tool());
     tools.register_tool(create_task_complete_tool());
+    tools.register_tool(create_theme_create_tool());
     tools.register_tool(create_todo_write_tool());
     tools.register_tool(create_get_goal_tool());
     tools.register_tool(create_create_goal_tool());

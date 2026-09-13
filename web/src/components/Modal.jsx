@@ -1,11 +1,24 @@
-// 共享 modal 容器:遮罩 + 居中 + esc 关闭。效率工具中的弹窗立即出现/关闭,
+// 共享 modal 容器:遮罩 + 居中 + 键盘约定。效率工具中的弹窗立即出现/关闭,
 // 不做进入/退出动画,也不延迟 onClose。
 // 不依赖 bootstrap modal,纯 Tailwind + 内联状态。
+//
+// 键盘约定(全部对话框共用,判定逻辑见 lib/dialogKeyboard.js):
+//   - Esc 取消(dismissOnEscape 允许时);
+//   - Tab / Shift+Tab 只在对话框内循环;
+//   - Enter 触发标了 `data-ace-dialog-primary` 的默认操作按钮(焦点没落在会自己消费
+//     Enter 的元素上时);按住不放的 auto-repeat Enter 一律拦掉;
+//   - 打开时初始焦点:已有焦点 > 第一个文本输入框 > 默认操作按钮 > 第一个可聚焦元素。
+//     删除确认框只要把「删除」标成 primary,打开就默认选中它,Enter 即确认。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { clsx } from '../lib/format.js';
 import { notifyNativeSurfaceOverlayChange } from '../lib/agentBrowserSurfaceCoordinator.js';
+import {
+  dialogEnterAction,
+  resolveDialogInitialFocus,
+  resolveDialogTabTarget,
+} from '../lib/dialogKeyboard.js';
 
 export function Modal({
   children,
@@ -25,47 +38,40 @@ export function Modal({
   useLayoutEffect(() => {
     notifyNativeSurfaceOverlayChange();
     const previouslyFocused = document.activeElement;
-    const focusableSelector = [
-      'button:not([disabled])',
-      '[href]',
-      'input:not([disabled])',
-      'select:not([disabled])',
-      'textarea:not([disabled])',
-      '[tabindex]:not([tabindex="-1"])',
-    ].join(',');
-    const focusFirst = () => {
+    const focusInitial = () => {
       const dialog = dialogRef.current;
       if (!dialog) return;
-      const target = dialog.querySelector('[autofocus]') || dialog.querySelector(focusableSelector);
-      (target || dialog).focus?.();
+      // 子组件的 React autoFocus 在 commit 阶段已经先跑过,这里尊重它,不再抢焦点。
+      const target = resolveDialogInitialFocus(dialog, document.activeElement);
+      if (target && target !== document.activeElement) target.focus?.();
     };
-    focusFirst();
+    focusInitial();
     const onKey = (event) => {
       const dialog = dialogRef.current;
       const modalDialogs = [...document.querySelectorAll('[data-ace-modal-dialog="true"]')];
       if (!dialog || modalDialogs[modalDialogs.length - 1] !== dialog) return;
-      if (event.key === 'Escape' && dismissOnEscapeRef.current) {
+      if (event.key === 'Escape') {
+        // 输入法合成中的 Esc 只是取消候选词,不能把对话框一起关掉。
+        if (event.isComposing || !dismissOnEscapeRef.current) return;
         event.stopImmediatePropagation();
         closeRef.current?.();
         return;
       }
-      if (event.key !== 'Tab') return;
-      const focusable = [...dialog.querySelectorAll(focusableSelector)]
-        .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog.focus();
+      if (event.key === 'Enter') {
+        const action = dialogEnterAction(event, dialog);
+        if (action.type === 'block') {
+          event.preventDefault();
+        } else if (action.type === 'activate') {
+          event.preventDefault();
+          action.element.click();
+        }
         return;
       }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      if (event.key !== 'Tab') return;
+      const target = resolveDialogTabTarget(dialog, document.activeElement, event.shiftKey);
+      if (!target) return;
+      event.preventDefault();
+      target.focus?.();
     };
     document.addEventListener('keydown', onKey);
     return () => {

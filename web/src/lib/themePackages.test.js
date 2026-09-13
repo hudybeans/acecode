@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   createThemeDownloadController, THEME_COLOR_KEYS, themeCssProperties,
-  themeDownloadConsent, themeDownloadPercent, themeFailure, validThemeDefinition,
+  themeDownloadConsent, themeDownloadPercent, themeFailure, validThemeDefinition, releaseThemeResource,
 } from './themePackages.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
@@ -177,4 +177,127 @@ await run('a failed update retains the installed version and does not replace th
   assert.equal(f.controller.state().entry.installed_version, '1.0.0');
   assert.equal(f.controller.state().entry.update_available, true);
   f.controller.dispose();
+});
+
+await run('AI theme definitions validate all tokens in either fixed mode', () => {
+  const definition = { schema_version: 1, id: 'ai-night', name: '夜色', version: '1.0.0', mode: 'dark', colors: Object.fromEntries(THEME_COLOR_KEYS.map((key) => [key, '#123ABC'])) };
+  assert.equal(validThemeDefinition(definition), true);
+  assert.equal(validThemeDefinition({ ...definition, mode: 'light' }), true);
+  assert.equal(validThemeDefinition({ ...definition, mode: 'system' }), false);
+  assert.equal(validThemeDefinition({ ...definition, name: ' ' }), false);
+  assert.equal(validThemeDefinition({ ...definition, id: 'ai-../blue' }), false);
+  assert.equal(validThemeDefinition({ ...definition, colors: { ...definition.colors, 'extra-css': '#123ABC' } }), false);
+  const css = themeCssProperties(definition, 'blob:http://localhost/night');
+  assert.equal(css['--ace-bg-rgb'], '18, 58, 188');
+  assert.equal(css['--ace-send-bg'], '#123ABC');
+  assert.equal(css['--ace-home-title-color'], '#123ABC');
+  assert.equal(Object.keys(css).length, THEME_COLOR_KEYS.length * 2 + 2);
+});
+
+await run('offline catalog keeps local themes selectable without a remote package', async () => {
+  const f = fixture();
+  const local = { id: 'ai-night', name: '夜色', source: 'local', installed: true, version: '1.0.0' };
+  f.api.getThemes = async () => ({ themes: [{ id: 'eva-01', available: false, installed: false }, local], offline: true,
+    catalog_error: { error: 'THEME_CATALOG_UNAVAILABLE' } });
+  await f.controller.refresh();
+  assert.deepEqual(f.controller.state().localEntries, [local]);
+  assert.match(f.controller.state().error, /主题信息/);
+  await f.controller.select(local.id);
+  assert.deepEqual(f.prepared, ['ai-night']);
+  assert.deepEqual(f.applies, ['ai-night']);
+  assert.deepEqual(f.requests, []);
+  f.api.getThemes = async () => ({ themes: [local] });
+  await f.controller.refresh();
+  assert.deepEqual(f.controller.state().localEntries, [local]);
+  f.controller.dispose();
+});
+
+await run('created local theme refreshes, prepares and uses the normal appearance application', async () => {
+  const f = fixture();
+  await f.controller.created({ id: 'ai-night', version: '1.0.0', apply: true }, f.controller.beginCreation());
+  assert.deepEqual(f.prepared, ['ai-night']);
+  assert.deepEqual(f.preparations, [{ refresh: true }]);
+  assert.deepEqual(f.applies, ['ai-night']);
+  f.controller.dispose();
+});
+
+await run('later selection wins while a created theme is preparing', async () => {
+  const waiting = pending(), applies = [];
+  const controller = createThemeDownloadController({ api: { getThemes: async () => ({ themes: [] }) },
+    prepare: () => waiting.promise, apply: (id) => applies.push(id) });
+  const creating = controller.created({ id: 'ai-night', apply: true }, controller.beginCreation());
+  await tick();
+  await controller.select('orange');
+  waiting.resolve();
+  await creating;
+  assert.deepEqual(applies, ['orange']);
+  controller.dispose();
+});
+
+await run('created-theme resource errors retain the current appearance and report the actual failure', async () => {
+  const applies = [];
+  const controller = createThemeDownloadController({ api: { getThemes: async () => ({ themes: [] }) },
+    prepare: async () => { throw new Error('PNG checksum mismatch'); }, apply: (id) => applies.push(id) });
+  await controller.created({ id: 'ai-night', apply: true }, controller.beginCreation());
+  assert.deepEqual(applies, []);
+  assert.equal(controller.state().failure.message, 'PNG checksum mismatch');
+  controller.dispose();
+});
+
+await run('local deletion removes its card and image without waiting for a remote catalogue', async () => {
+  const local = { id: 'ai-night', name: '夜色', source: 'local', installed: true, version: '1.0.0' };
+  const refreshing = pending(), forgotten = [];
+  let count = 0;
+  const controller = createThemeDownloadController({ api: { getThemes: () => ++count === 1 ? Promise.resolve({ themes: [local] }) : refreshing.promise },
+    prepare: async () => {}, apply: async () => {}, forget: (id) => forgotten.push(id), remove: async (id) => ({ id, deleted: true, cleanup_pending: true }) });
+  await controller.refresh();
+  const removed = await controller.remove(local.id);
+  assert.equal(removed.cleanup_pending, true);
+  assert.deepEqual(controller.state().localEntries, []);
+  assert.deepEqual(forgotten, [local.id]);
+  assert.equal(controller.state().deletingId, '');
+  refreshing.resolve({ themes: [local] });
+  await tick();
+  assert.deepEqual(controller.state().localEntries, [], 'a stale catalogue must not restore a removed card');
+  controller.dispose();
+});
+
+await run('failed deletion keeps local cards and cached resources while builtin removal is rejected', async () => {
+  const local = { id: 'ai-night', name: '夜色', source: 'local', installed: true };
+  const controller = createThemeDownloadController({ api: { getThemes: async () => ({ themes: [local] }) }, prepare: async () => {}, apply: async () => {},
+    forget: () => assert.fail('must retain resources'), remove: async () => { throw new Error('read only'); } });
+  await controller.refresh();
+  await assert.rejects(controller.remove(local.id), /read only/);
+  assert.deepEqual(controller.state().localEntries, [local]);
+  await assert.rejects(controller.remove('blue'));
+  assert.equal(controller.state().deletingId, '');
+  controller.dispose();
+});
+
+await run('deleted resources cannot be applied by a late selection or creation completion', async () => {
+  const asset = pending(), applies = [], released = [];
+  const controller = createThemeDownloadController({ api: { getThemes: async () => ({ themes: [] }) }, prepare: () => asset.promise,
+    apply: (id) => applies.push(id), remove: async (id) => ({ id, deleted: true }), forget: (id) => released.push(id) });
+  const selecting = controller.select('ai-night');
+  await controller.remove('ai-night');
+  asset.resolve();
+  await selecting;
+  await controller.created({ id: 'ai-night', apply: true }, controller.beginCreation());
+  assert.deepEqual(applies, []);
+  assert.deepEqual(released, ['ai-night']);
+  await controller.select('orange');
+  assert.deepEqual(applies, ['orange']);
+  controller.dispose();
+});
+
+await run('evicted pending image releases its eventual Blob while other theme resources remain cached', async () => {
+  const image = pending(), released = [];
+  const other = Promise.resolve({ backgroundUrl: 'blob:other' });
+  const cache = new Map([['ai-night', image.promise], ['ai-other', other]]);
+  releaseThemeResource(cache, 'ai-night', (url) => released.push(url));
+  assert.equal(cache.has('ai-night'), false);
+  assert.equal(cache.get('ai-other'), other);
+  image.resolve({ backgroundUrl: 'blob:removed' });
+  await tick();
+  assert.deepEqual(released, ['blob:removed']);
 });

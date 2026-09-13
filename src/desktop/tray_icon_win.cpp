@@ -5,10 +5,12 @@
 
 #include "tray_icon_win.hpp"
 
+#include "application_icon.hpp"
 #include "tray_menu_layout.hpp"
 #include "tray_menu_popup_model.hpp"
 #include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
+#include "../utils/utf8_path.hpp"
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -35,9 +37,6 @@
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 #  include <dlfcn.h>
-#  include <filesystem>
-#  include <limits.h>
-#  include <unistd.h>
 #endif
 
 #ifdef __APPLE__
@@ -1792,7 +1791,6 @@ void shutdown_tray_icon() {
 
 namespace {
 
-namespace fs = std::filesystem;
 
 struct GtkTrayApi {
     using GtkStatusIconNewFromFile = void* (*)(const char*);
@@ -1879,42 +1877,8 @@ void* g_context_menu = nullptr;
 TrayMenuLayout g_context_layout;
 bool g_linux_tray_installed = false;
 
-std::string linux_exe_dir() {
-    std::vector<char> buf(static_cast<size_t>(PATH_MAX) + 1);
-    ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
-    if (n <= 0) return {};
-    buf[static_cast<size_t>(n)] = '\0';
-    std::error_code ec;
-    fs::path resolved = fs::weakly_canonical(fs::path(buf.data()), ec);
-    if (ec) resolved = fs::path(buf.data());
-    return resolved.parent_path().string();
-}
-
 std::string find_linux_tray_icon() {
-    std::vector<fs::path> roots;
-    if (auto dir = linux_exe_dir(); !dir.empty()) roots.push_back(fs::path(dir));
-    std::error_code ec;
-    roots.push_back(fs::current_path(ec));
-    for (auto root : roots) {
-        for (int i = 0; i < 8 && !root.empty(); ++i) {
-            for (const auto& rel : {
-                     fs::path("acecode-logo.png"),
-                     fs::path("web/dist/acecode-logo.png"),
-                     fs::path("assets/windows/acecode_icon.png"),
-                 }) {
-                fs::path candidate = root / rel;
-                std::error_code exists_ec;
-                if (fs::exists(candidate, exists_ec) && !exists_ec) {
-                    return candidate.string();
-                }
-            }
-            if (!root.has_parent_path()) break;
-            fs::path parent = root.parent_path();
-            if (parent == root) break;
-            root = std::move(parent);
-        }
-    }
-    return {};
+    return acecode::path_to_utf8(application_icon_path());
 }
 
 extern "C" void linux_tray_activate(void*, void*) {

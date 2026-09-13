@@ -210,6 +210,7 @@ Server event frames and replayed events use:
   "type": "message",
   "seq": 42,
   "timestamp_ms": 1783152000000,
+  "replayed": false,
   "session_id": "session-id",
   "workspace_hash": "abc123",
   "payload": {}
@@ -218,6 +219,12 @@ Server event frames and replayed events use:
 
 `payload.session_id`, `payload.workspace_hash`, and `payload.cwd` are injected
 when known.
+
+`replayed` is delivery provenance: it is `false` for live session events and
+`true` for copies replayed from the event ring on reconnect. It is not added to
+the stored event payload. Clients must require explicit `false` before applying
+side effects such as an AI theme installation; history and catch-up frames only
+update their transcript presentation.
 
 ---
 
@@ -320,6 +327,7 @@ when known.
 | PUT | `/api/models/:name` | update saved model profile |
 | DELETE | `/api/models/:name` | remove saved model profile |
 | POST | `/api/models/probe` | probe provider model ids |
+| POST | `/api/models/test` | test an unsaved model with a short conversation |
 | GET | `/api/models/catalog` | read local model catalog summary and reviewed recommendations |
 | GET | `/api/models/catalog/:provider_id` | search one provider's local model catalog |
 | POST | `/api/models/catalog/refresh` | explicitly refresh the models.dev registry when network refresh is enabled |
@@ -337,20 +345,31 @@ when known.
 | POST | `/api/ui/onboarding/desktop/dismiss` | dismiss the current Desktop guided-tour version |
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
-| GET | `/api/themes` | downloadable theme catalogue and local installation status |
+| GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
+| POST | `/api/themes/import/preview` | validate a raw theme ZIP and return a read-only preview |
+| POST | `/api/themes/import?sha256=<digest>` | import the same previewed ZIP after confirmation |
 | GET | `/api/themes/job` | current theme download progress |
 | POST | `/api/themes/job/cancel` | cancel the current theme download |
 | GET | `/api/themes/<id>` | verified locally installed theme definition |
 | POST | `/api/themes/<id>/install` | download a theme after size/hash confirmation |
 | GET | `/api/themes/<id>/images/<kind>` | theme thumbnail or installed background |
+| POST | `/api/themes/<id>/export` | prepare a custom theme ZIP, optionally saving through the native picker |
+| GET | `/api/themes/exports/<job_id>` | read theme export/packing progress |
+| POST | `/api/themes/exports/<job_id>/cancel` | cancel the matching theme export job |
+| GET | `/api/themes/exports/<job_id>/download` | download the completed, verified theme ZIP |
+| DELETE | `/api/themes/<id>` | delete a custom theme and update the active preference when needed |
 | GET | `/api/config/ui-locale` | read Desktop/WebUI locale preference |
 | PUT | `/api/config/ui-locale` | write Desktop/WebUI locale preference |
 | GET | `/api/config/custom-instructions` | read custom instructions |
 | PUT | `/api/config/custom-instructions` | write custom instructions |
 | GET | `/api/config/connectors` | read connector settings |
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
+| GET | `/api/config/summary-generation` | read summary-model override and available models |
+| PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
+| GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
+| PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
 | PUT | `/api/config/connectors` | write connector settings |
 | GET | `/api/config/default-permission-mode` | read default permission mode |
 | PUT | `/api/config/default-permission-mode` | write default permission mode |
@@ -2294,6 +2313,42 @@ returns `409 MODEL_IN_USE`. On success:
 {"ok":true}
 ```
 
+### `POST /api/models/test`
+
+Tests one OpenAI-compatible or Anthropic model using the current unsaved draft.
+Requires the same authentication as model management. Accepts the model mutation
+fields (`provider`, `model`, `base_url`, `api_key`, `request_headers`,
+`endpoint_mode`, and supported advanced options). The display `name` is optional
+and ignored, so a conflicting or unfinished preset name does not block testing.
+
+```json
+{"provider":"openai","model":"example-model","base_url":"https://example.com/v1","api_key":"example-key"}
+```
+
+For a new model, `credential_source_name` reuses a compatible saved credential
+inside the daemon. For editing, `original_name` identifies the existing profile
+and applies update semantics, including retaining an omitted API key. Validation
+and merging happen on a private configuration snapshot. No configuration,
+default-model setting, session history, or probe cache is saved.
+
+The daemon sends one user message, `Reply with OK.`, with no tools or history.
+It uses the existing Provider implementation and request options, with a timeout
+of at most 30 seconds and no automatic retry. Multiple selections are tested
+sequentially by the UI; a failure stops that batch.
+
+Success requires non-whitespace visible reply text and no Provider error:
+
+```json
+{"ok":true}
+```
+
+Invalid drafts return `400` with a model validation code. Provider failures
+return `502` with `MODEL_TEST_NETWORK`, `MODEL_TEST_HTTP_ERROR`,
+`MODEL_TEST_EMPTY_REPLY`, or `MODEL_TEST_FAILED`; timeouts return
+`504 MODEL_TEST_TIMEOUT`. An upstream HTTP status may be included as
+`upstream_status`. Replies, credentials, exception text and raw upstream bodies
+are never included in this endpoint's response.
+
 ### `POST /api/models/probe`
 
 Probes provider model ids. OpenAI-compatible providers call upstream
@@ -2632,6 +2687,16 @@ cannot override EVA. Its background image is used only on the new-task home.
 
 ### Downloadable themes
 
+Local ZIP import uses authenticated `POST /api/themes/import/preview` with
+`Content-Type: application/zip` and the original ZIP body (maximum 16 MiB).
+It returns `theme`, `package_sha256`, `package_bytes`, and a PNG `thumbnail_url`
+data URI without installing. After explicit UI confirmation, send the same body
+to `POST /api/themes/import?sha256=<package_sha256>`. The daemon revalidates the
+archive and digest, then uses the existing atomic local install. Changed bytes
+return `409/THEME_IMPORT_CHANGED`; conflicting installed versions are preserved.
+Applying the imported theme is a separate normal UI preference operation and
+depends on the user's checkbox. These local APIs do not contact the workshop.
+
 All theme endpoints require the normal daemon authentication. Theme files live
 in `themes/` beside the daemon configuration, independently of application
 updates. The application bundles only the small card thumbnail and three
@@ -2653,7 +2718,34 @@ The API also includes `package.url` and `thumbnail.url`, resolved against the
 configured update server. Error responses and failed jobs include
 `error_path` with the actual catalogue/archive URL or failing local path.
 An unavailable server falls back to its own cached catalogue with `offline:true`;
-without a cache for that server it returns `503/THEME_CATALOG_UNAVAILABLE`.
+without a cache for that server and without local AI themes it returns
+`503/THEME_CATALOG_UNAVAILABLE`. If local AI themes exist, they remain visible:
+the response contains `offline:true`, a `catalog_error` object, an EVA descriptor
+with `available:false` and no remote package, followed by the local entries.
+Clients disable the unavailable download without hiding installed local themes.
+
+Local entries have `source:"local"`, `installed:true`, `name`, `mode`, `version`,
+`installed_version`, three `swatches`, `update_available:false` and thumbnail
+metadata whose URL uses the authenticated `/api/themes/<id>/images/thumbnail`
+endpoint. Their IDs match `^ai-[a-z0-9]+(?:-[a-z0-9]+)*$` and are at most 64
+characters. Definitions accept light or dark mode and all 28 HEX tokens. The
+definition and image routes work offline. Built-in IDs cannot be overwritten.
+
+Schema version 1 definitions may also include an `appearance` object:
+
+```json
+{"appearance":{"logo_color":"#9B6DFF","home_title_color":"#F5F0FF","extend_to_titlebar":true}}
+```
+
+All three members are optional. `logo_color` and `home_title_color` accept only
+`#RRGGBB`; `extend_to_titlebar` accepts only a JSON boolean. Unknown members,
+null, non-object appearance and wrong member types are rejected. Omitting the
+object preserves legacy behavior: original logo colors, `colors.fg` for the
+homepage heading, no extension for custom themes and the existing extension
+and white right-side controls for EVA. Explicit members override defaults.
+Dark themes with extension enabled use white right-side title-bar controls
+while the homepage wallpaper is visible. Full definitions and exported ZIPs
+preserve the optional object; the 28-member `colors` object is unchanged.
 
 `POST /api/themes/eva-01/install` requires the exact metadata displayed by the
 confirmation dialog:
@@ -2684,6 +2776,106 @@ server preview; Appearance uses its bundled thumbnail without calling it.
 `.../images/background` is available only after installation.
 Both image responses are PNGs. Applying an installed theme requires no
 redownload, including after an offline restart.
+
+### Custom theme export and deletion
+
+Only installed local `ai-*` themes support export and deletion. Blue, orange,
+and the downloadable built-in EVA theme reject both operations. These routes
+require normal daemon authentication and preserve the existing EVA download
+job independently of theme export progress.
+
+`POST /api/themes/<id>/export` accepts `{ "native_save": false }` by default.
+With `native_save:true`, the daemon immediately opens the existing native
+Save As picker with a ZIP filename. Only a picker-selected path may become a
+native output target; request-supplied arbitrary destination paths are not
+supported. Cancelling the picker returns
+`{ "state":"cancelled", "cancelled":true }` without starting packaging.
+An unavailable native picker returns `501/THEME_NATIVE_SAVE_UNAVAILABLE`.
+
+An accepted job returns `job_id`, `id`, `version`, `filename`, `state`,
+`progress` (null or a real fraction from 0 to 1), `reused`, and `native_saved`.
+States are `preparing`, `compressing`, `saving`, `completed`, `cancelled`,
+and `failed`. Clients poll `GET /api/themes/exports/<job_id>` and cancel via
+`POST /api/themes/exports/<job_id>/cancel`. Failed jobs include `error`,
+`message`, and `error_path`. A valid existing ZIP matching the installed
+resources is reused; missing or stale archives are rebuilt with libzip's
+actual progress/cancellation callbacks. Native completion means the selected
+file was written; Web completion means the ZIP is ready for download.
+Cancellation can initially return a working snapshot. Clients must resolve the
+terminal state and preserve a later confirmed `completed/native_saved:true`
+result, even if the cancel request failed; a file already committed must not be
+reported as cancelled. The same rule applies when Web file writing has committed.
+
+New archive caches use `themes/exports/<id>/<version>.zip`. Legacy flat
+`<id>-<version>.zip` caches remain readable only after verifying their embedded
+theme ID, version, and resources; deletion also checks this ownership instead
+of treating a filename prefix as sufficient proof.
+
+`GET /api/themes/exports/<job_id>/download` returns the completed ZIP as
+`application/zip` with an attachment filename, `no-store`, and `nosniff`.
+Clients may use an authenticated Blob download, without placing daemon
+credentials in a download URL. The ZIP contains exactly `theme.json`,
+`background.png`, and `thumbnail.png`. Unknown, cancelled, failed, or
+unfinished jobs cannot download a partial package.
+
+`DELETE /api/themes/<id>` returns `{id,deleted:true,ui_preferences}`. Deleting
+the configured active theme persists `color_theme:"blue"`; deleting another
+theme preserves the configured selection. The theme files and matching
+application-owned exports are isolated before preference persistence and are
+restored if that commit fails. User-saved exports, original input images,
+drafts, and other themes remain untouched. Invalid IDs, out-of-root paths,
+symlink/reparse redirects, and conflicting operations are rejected. Preference
+writes also validate local theme availability under the same transaction
+ordering, so a stale queued selection cannot restore a deleted ID.
+If post-commit quarantine cleanup cannot finish, deletion remains successful
+and the response includes `cleanup_pending:true` and `cleanup_message`; clients must not restore
+the deleted card or report that the deletion itself failed.
+
+Representative theme-management errors:
+
+| HTTP / code | Meaning |
+|---|---|
+| `400/THEME_INVALID_ID` | invalid custom theme identifier |
+| `403/THEME_BUILTIN_PROTECTED` | built-in theme export/deletion is forbidden |
+| `404/THEME_EXPORT_NOT_FOUND` | unknown or expired export job |
+| `409/THEME_BUSY` | a conflicting theme export or transaction is active |
+| `409/THEME_EXPORT_NOT_READY` | the export is not complete or was cancelled/failed |
+| `409/THEME_CHANGED` | the installed theme or validated archive changed |
+| `422/THEME_UNSAFE_PATH` | a theme path or filesystem redirection is unsafe |
+| `500/PERSIST_FAILED` | appearance persistence failed; isolated files are restored |
+| `501/THEME_NATIVE_SAVE_UNAVAILABLE` | no native Save As capability is available |
+
+### AI theme workflow tool
+
+The built-in `theme_create` tool is registered for daemon and TUI sessions.
+`palette` accepts `name`, `mode`, all 28 `colors`, optional `appearance`, and
+optionally `draft_id` to revise a draft. Each palette call replaces the whole
+proposal; omitting `appearance` removes a previous override. It persists the
+draft under `themes/drafts`, then uses the
+native question channel for explicit palette approval. `prototype` accepts
+`draft_id`, `background_path` and `preview_path`; it decodes and copies both
+images before asking for prototype approval. A draft is owned by its creating
+session, and an update invalidates earlier approvals. Headless mode, deny
+policy, unattended goals, cancellation, timeout and custom feedback never count
+as approval. No `confirmed` input can bypass these gates.
+The palette and prototype approvals cover explicit appearance members as well
+as colors. A draft without appearance retains the original digest algorithm,
+so already approved legacy drafts remain resumable. Adding, changing or
+removing appearance invalidates previous approvals. Draft status and installed
+definitions retain the confirmed object; installation retries also compare it.
+Invalid palette appearance returns `422/THEME_INVALID_APPEARANCE` before
+replacing a draft or requesting approval.
+
+`install` accepts only `draft_id`, verifies approved checksums, generates the
+thumbnail and three-file ZIP, and publishes the immutable version and installed
+pointer. Successful tool output includes `installed_path` and `package_path`
+(under `themes/exports`); metadata includes
+`theme_created:{id,version,name,apply:true}`. The current live UI can refresh and
+apply this theme. Repeating installation of the same draft returns the same
+theme. Prior themes and the ordinary appearance mode preference remain intact.
+`status` reads a draft, or lists the caller's drafts when `draft_id` is omitted.
+Results include `draft_id`, `stage`, and `next_action` for resuming after an
+interruption. No status call generates images or records user approval.
 
 ### `GET /api/config/ui-locale`
 
@@ -2819,6 +3011,29 @@ Body:
 The text is byte-limited by `kCustomInstructionsMaxBytes`. Existing sessions
 pick up changes on later turns through the daemon config pointer.
 
+### Summary generation settings
+
+`GET /api/config/summary-generation` returns `enabled` (default `false`),
+`model_name` (a saved model name), `configured` (whether that saved model exists),
+and `models` (available `{name, provider, model}` records). No model credentials
+are included. Reads and writes require the normal API authentication and return
+`Cache-Control: no-store`.
+
+`PUT /api/config/summary-generation` accepts a partial object containing only
+`enabled` (boolean) and `model_name` (string). Enabling requires an existing
+saved model. Invalid patches return `400 BAD_REQUEST`; malformed JSON returns
+`400 BAD_JSON`. Atomic persistence failures return `500 PERSIST_FAILED` and do
+not change the live configuration. Unrelated settings are preserved by reloading
+the latest disk configuration inside the config mutation lock.
+
+When enabled, subsequent automatic-title attempts use this model before all
+session, workspace, default and legacy `session_title.model_name` selections.
+Each daemon title request captures its configuration before running. A removed
+summary model gives `configured: false` and title generation skips that attempt
+without substituting another model. Disabling retains `model_name` and restores
+the previous title-resolution behavior, including the legacy override. This
+setting does not change the conversation model or disable automatic titles.
+
 ### Image generation settings
 
 `GET /api/config/image-generation` returns `enabled`, `source` (`inline` or
@@ -2870,6 +3085,42 @@ history or logs. A concurrent test returns 409 `IMAGE_TEST_BUSY`; incomplete
 configuration returns 400 `IMAGE_NOT_CONFIGURED`; upstream failures return 502
 `IMAGE_QUOTA_ERROR` or `IMAGE_TEST_FAILED` without echoing provider error bodies.
 All endpoints use normal API authentication/CORS and `Cache-Control: no-store`.
+
+### Tool rewrite settings
+
+Settings > Tools > 工具重写. Renames built-in tools as the model sees them: the
+tool list sent to the provider, `tool_calls[].function.name` in replayed
+history, the system prompt, tool descriptions and the error/guard texts tools
+emit all use the rewritten name. Internal ids (session JSONL, permissions,
+hooks payloads, TUI/Web rows) stay native. Inbound calls are accepted under
+either name. This is an explicit opt-in for audit scenarios; the process
+default is no rewriting.
+
+The data is **not** part of `config.json`. It lives in
+`<data_dir>/tool-rewrites.json` next to `config.json`, shared by the daemon,
+the TUI and headless mode, and is loaded once at startup before tool
+registration:
+
+```json
+{ "version": 1, "enabled": false,
+  "rewrites": { "TodoWrite": "todowrite", "file_edit": "edit", "file_read": "read", "file_write": "write" } }
+```
+
+`GET /api/config/tool-rewrites` re-reads the file and returns `enabled`,
+`rewrites` (`{native: public}`), `defaults` (the built-in seed above), `path`,
+`tools` (Builtin-source tools registered in this daemon, sorted by name, each
+`{name, description, read_only}`) and, only when the file could not be parsed,
+`warning`. A missing file reads as `enabled:false` with the seed rewrites.
+
+`PUT /api/config/tool-rewrites` takes `{enabled, rewrites}` and replaces the
+whole document. Entries with an empty value or a value equal to the key are
+dropped. Rules: every value matches `^[A-Za-z0-9_-]{1,64}$`, values are unique,
+a value never equals another registered tool name or another rewrite key.
+Violations return 400 `{error:"BAD_REQUEST", message}` without touching the
+file or the live mapping; write failures return 500 `PERSIST_FAILED`. Success
+writes the file atomically, publishes the mapping to the process so the next
+model request uses it, and returns the same shape as GET. Hook matchers accept
+the rewritten names as aliases of the native tool while a rewrite is active.
 
 ### `GET /api/config/connectors`
 

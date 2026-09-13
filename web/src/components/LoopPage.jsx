@@ -81,18 +81,13 @@ function AddLoopDialog({ loop = null, template = null, models, defaultModelName,
     }
   };
 
+  // 走共享 Modal:Esc 关闭、Tab 只在表单内循环、Enter 触发保存;点遮罩不关(表单内容不能
+  // 因误触丢失)。Modal 的对话框容器就是滚动容器,sticky 头尾照旧贴在上下沿。
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3"
-      data-ace-native-overlay="blocking"
-      style={{ backgroundColor: 'rgba(0, 0, 0, 0.55)' }}
-      role="dialog"
-      aria-modal="true"
-      aria-label={loop ? '编辑循环' : '添加循环'}
-    >
-      <div className="w-full max-w-[620px] max-h-[calc(100vh-24px)] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl">
+    <Modal onClose={onClose} width={620} dismissOnBackdrop={false} labelledBy="loop-dialog-title">
+      <>
         <div className="sticky top-0 z-10 h-12 px-5 flex items-center justify-between border-b border-border bg-surface">
-          <h2 className="text-[16px] font-semibold">{loop ? '编辑循环' : '添加循环'}</h2>
+          <h2 id="loop-dialog-title" className="text-[16px] font-semibold">{loop ? '编辑循环' : '添加循环'}</h2>
           <button type="button" onClick={onClose} className="w-7 h-7 rounded-md hover:bg-surface-hi flex items-center justify-center" aria-label="关闭">
             <VsIcon name="close" size={14} />
           </button>
@@ -235,11 +230,11 @@ function AddLoopDialog({ loop = null, template = null, models, defaultModelName,
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <button type="button" onClick={onClose} className="h-8 px-4 rounded-md border border-border text-[12px] hover:bg-surface-hi">取消</button>
-            <button type="button" onClick={submit} disabled={saving} className="h-8 px-5 rounded-md bg-fg text-bg text-[12px] font-medium disabled:opacity-50">{saving ? '保存中…' : loop ? '保存' : '添加循环'}</button>
+            <button type="button" data-ace-dialog-primary="true" onClick={submit} disabled={saving} className="h-8 px-5 rounded-md bg-fg text-bg text-[12px] font-medium disabled:opacity-50">{saving ? '保存中…' : loop ? '保存' : '添加循环'}</button>
           </div>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }
 
@@ -474,6 +469,7 @@ export function LoopPage({ onOpenSession }) {
                 </button>
                 <button
                   type="button"
+                  data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-danger/40 bg-danger-bg text-danger hover:opacity-80"
                   onClick={confirmRemove}
                 >

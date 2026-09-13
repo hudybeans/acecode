@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import { clsx } from '../lib/format.js';
 import { shouldInsetMacTopBar } from '../lib/desktopShellMode.js';
 import { NavigationArrowIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
-import { isTopBarDragExcludedTarget, topBarWindowDragAction } from '../lib/topBarWindowDrag.js';
+import { isTopBarDragBackdrop, isTopBarDragExcludedTarget, topBarWindowControlAt, topBarWindowDragAction } from '../lib/topBarWindowDrag.js';
 import {
   WindowControls,
   isInteractiveTarget,
@@ -83,6 +83,8 @@ export function TopBar({
 
   useEffect(() => {
     if (!framelessDesktop) return undefined;
+    let backdropDragTarget = null;
+    let backdropWindowControl = null;
     const onWindowDragMouseDown = (event) => {
       const action = topBarWindowDragAction(
         event,
@@ -91,15 +93,55 @@ export function TopBar({
       );
       if (!action) return;
       event.preventDefault();
+      if (isTopBarDragBackdrop(event.target)) {
+        backdropDragTarget = event.target;
+        event.stopImmediatePropagation();
+      }
       if (action === 'maximize' && typeof window.aceDesktop_toggleMaximizeWindow === 'function') {
         window.aceDesktop_toggleMaximizeWindow();
       } else {
         window.aceDesktop_startWindowDrag(nativePointerEvent(event));
       }
     };
+    const onBackdropMouseDown = (event) => {
+      // Native dragging can consume mouseup; do not retain its click guard
+      // when the next independent press starts.
+      backdropDragTarget = null;
+      backdropWindowControl = null;
+      if (!isTopBarDragBackdrop(event.target) || isInteractiveTarget(event.target)) return;
+      const control = topBarWindowControlAt(event, topBarRef.current);
+      if (control) {
+        backdropDragTarget = event.target;
+        backdropWindowControl = control;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      onWindowDragMouseDown(event);
+    };
+    const onBackdropClick = (event) => {
+      const dragTarget = backdropDragTarget;
+      const control = backdropWindowControl;
+      backdropDragTarget = null;
+      backdropWindowControl = null;
+      if (dragTarget && event.target === dragTarget) {
+        const activateControl = control && topBarWindowControlAt(event, topBarRef.current) === control;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (activateControl) control.click();
+      }
+    };
+    // Modal backdrops may dismiss on mousedown or click. Consume only their
+    // title-bar gestures before those handlers, without lifting UI above them.
+    document.addEventListener('mousedown', onBackdropMouseDown, true);
+    document.addEventListener('click', onBackdropClick, true);
     // Bubble after content handlers, so consumed tab/resize gestures stay local.
     document.addEventListener('mousedown', onWindowDragMouseDown);
-    return () => document.removeEventListener('mousedown', onWindowDragMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', onBackdropMouseDown, true);
+      document.removeEventListener('click', onBackdropClick, true);
+      document.removeEventListener('mousedown', onWindowDragMouseDown);
+    };
   }, [framelessDesktop]);
 
   return (

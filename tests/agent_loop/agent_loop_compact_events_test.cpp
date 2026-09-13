@@ -793,7 +793,7 @@ TEST(AgentLoopCompactEvents, ExhaustedHistoryUsesOneEmergencyProfileRetry) {
     ASSERT_EQ(emergency_tools.size(), 2u);
     EXPECT_TRUE(std::any_of(
         emergency_tools.begin(), emergency_tools.end(), [](const auto& tool) {
-            return tool.name == "read";
+            return tool.name == "file_read";
         }));
     EXPECT_TRUE(std::any_of(
         emergency_tools.begin(), emergency_tools.end(), [](const auto& tool) {

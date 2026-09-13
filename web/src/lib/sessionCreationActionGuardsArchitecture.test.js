@@ -36,7 +36,7 @@ test('workspace new-task actions route to the shared lazy home entry point', () 
   );
 
   assert.match(app, /onOpenHome=\{openHomeForWorkspace\}/);
-  assert.match(openFlow, /onOpenHome\?\.\(ws\)/);
+  assert.match(openFlow, /onOpenHome\?\.\(ws, \{ composerFeedback: true \}\)/);
   assert.doesNotMatch(openFlow, /api\.create(?:Workspace)?Session|notifySessionListChanged/);
   assert.match(sidebar, /onNewSession=\{openNewTaskInWorkspace\}/);
   assert.doesNotMatch(sidebar, /createSessionInWorkspace|workspaceSessionCreationGuardRef|pendingWorkspaceSessionKeys/);

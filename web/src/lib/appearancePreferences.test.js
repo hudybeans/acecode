@@ -181,3 +181,81 @@ await run('rapid changes serialize saves and keep the newest snapshot', async ()
     sidebarSessionTime: true,
   });
 });
+
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+const deletionTick = () => new Promise((resolve) => setImmediate(resolve));
+const localAppearance = { theme: 'dark', colorTheme: 'ai-night', fontSize: 'medium', sidebarSessionTime: true };
+
+await run('deleting the current theme waits for older writes and rewrites later snapshots referencing it', async () => {
+  const firstSave = deferred(), deletion = deferred(), events = [];
+  const controller = createAppearancePersistenceController({ initial: localAppearance, apply: () => {}, save: async (value) => {
+    events.push(['save', value.color_theme, value.font_size]);
+    if (events.length === 1) await firstSave.promise;
+    return value;
+  } });
+  controller.change({ fontSize: 'small' });
+  const deleting = controller.removeColorTheme('ai-night', async () => {
+    events.push(['delete']);
+    await deletion.promise;
+    return { id: 'ai-night', deleted: true, ui_preferences: { theme: 'dark', color_theme: 'blue', font_size: 'small' } };
+  });
+  controller.change({ fontSize: 'large' });
+  await deletionTick();
+  assert.deepEqual(events, [['save', 'ai-night', 'small']]);
+  firstSave.resolve();
+  await deletionTick();
+  assert.deepEqual(events.at(-1), ['delete']);
+  deletion.resolve();
+  await deleting;
+  await controller.idle();
+  assert.deepEqual(events.at(-1), ['save', 'blue', 'large']);
+  assert.equal(controller.current().colorTheme, 'blue');
+  assert.equal(controller.current().fontSize, 'large');
+  assert.equal(controller.confirmed().colorTheme, 'blue');
+});
+
+await run('later manual theme choices survive deletion and a subsequent save failure rolls back to blue', async () => {
+  for (const failSave of [false, true]) {
+    const deleting = deferred(), applied = [];
+    const controller = createAppearancePersistenceController({ initial: localAppearance, apply: (value) => applied.push(value), save: async (value) => {
+      if (failSave) throw new Error('disk full');
+      return value;
+    } });
+    const removal = controller.removeColorTheme('ai-night', () => deleting.promise);
+    const save = controller.change({ colorTheme: 'orange' });
+    deleting.resolve({ id: 'ai-night', deleted: true, ui_preferences: { ...localAppearance, colorTheme: 'blue' } });
+    await removal;
+    assert.equal(applied[0].colorTheme, 'orange');
+    await save;
+    assert.equal(controller.current().colorTheme, failSave ? 'blue' : 'orange');
+    assert.equal(applied.some((value) => value.colorTheme === 'ai-night'), false);
+  }
+});
+
+await run('failed deletion preserves the theme and does not block later appearance saves', async () => {
+  const controller = createAppearancePersistenceController({ initial: localAppearance, apply: () => {}, save: async (value) => value });
+  await assert.rejects(controller.removeColorTheme('ai-night', async () => { throw new Error('read only'); }), /read only/);
+  assert.deepEqual(controller.current(), localAppearance);
+  await controller.change({ fontSize: 'small' });
+  assert.equal(controller.confirmed().colorTheme, 'ai-night');
+  assert.equal(controller.confirmed().fontSize, 'small');
+  await assert.rejects(controller.removeColorTheme('eva-01', () => assert.fail('must not delete built-in')));
+});
+
+await run('cleanup pending remains a successful removal and stale bootstrap cannot restore deleted theme', async () => {
+  const controller = createAppearancePersistenceController({ initial: localAppearance, apply: () => {}, save: async (value) => value });
+  const result = await controller.removeColorTheme('ai-night', async () => ({ id: 'ai-night', deleted: true, cleanup_pending: true }));
+  assert.equal(result.cleanup_pending, true);
+  assert.equal(controller.current().colorTheme, 'blue');
+  assert.equal(controller.restore(localAppearance), false);
+  await controller.change({ theme: 'light', colorTheme: 'ai-night' });
+  assert.equal(controller.current().colorTheme, 'blue');
+});
+
+await run('deleting an inactive theme does not apply the server snapshot over local appearance', async () => {
+  const applied = [];
+  const controller = createAppearancePersistenceController({ initial: { ...localAppearance, colorTheme: 'orange' }, apply: (value) => applied.push(value), save: async (value) => value });
+  await controller.removeColorTheme('ai-night', async () => ({ id: 'ai-night', deleted: true, ui_preferences: { ...localAppearance, colorTheme: 'orange' } }));
+  assert.equal(controller.current().colorTheme, 'orange');
+  assert.deepEqual(applied, []);
+});

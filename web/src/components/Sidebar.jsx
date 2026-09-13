@@ -20,6 +20,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { SidebarQuickMenu } from './SidebarQuickMenu.jsx';
+import { Modal } from './Modal.jsx';
+import BrandLogo from './BrandLogo.jsx';
 import { api } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -29,6 +31,7 @@ import {
   SESSION_PIN_TOGGLE_EVENT,
 } from '../lib/desktopContextMenu.js';
 import { relativeTime, clsx, formatCount } from '../lib/format.js';
+import { preserveComposerFocusOnPointerDown } from '../lib/composerCaretRestore.js';
 import { formatProgramVersion } from '../lib/webCoreInfo.js';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
 import {
@@ -502,11 +505,17 @@ function SidebarDisclosure({ expanded, className = '' }) {
   );
 }
 
+function preserveHomeComposerFocus(event) {
+  const composer = event.currentTarget.ownerDocument.querySelector('.ace-home-composer .ace-composer-card');
+  preserveComposerFocusOnPointerDown(event, composer);
+}
+
 function SidebarNavItem({ item, onClick }) {
   return (
     <button
       type="button"
       data-tour-target={item.id === 'new-task' ? 'sidebar-new-task' : undefined}
+      onPointerDown={item.id === 'new-task' ? preserveHomeComposerFocus : undefined}
       onClick={onClick}
       className="ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
@@ -1375,12 +1384,14 @@ function OpencodeImportDialog({
   onToggleSession,
   onToggleAll,
 }) {
-  if (!dialog) return null;
-  const phase = dialog.phase || 'confirm';
-  const status = dialog.status || {};
-  const sessions = Array.isArray(dialog.sessions) ? dialog.sessions : [];
-  const selectedIds = Array.isArray(dialog.selectedSessionIds) ? dialog.selectedSessionIds : [];
+  const phase = dialog?.phase || 'confirm';
+  const status = dialog?.status || {};
+  const sessions = Array.isArray(dialog?.sessions) ? dialog.sessions : [];
+  const selectedIds = Array.isArray(dialog?.selectedSessionIds) ? dialog.selectedSessionIds : [];
+  // hook 必须放在提前返回之前:这个组件常驻在 Sidebar 里,dialog 从 null 变成对象时若 hook
+  // 数量跟着变,React 会直接抛 "Rendered more hooks than during the previous render"。
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  if (!dialog) return null;
   const selectedCount = selectedIds.filter((id) => sessions.some((session) => session.id === id)).length;
   const progress = opencodeImportProgress({
     total: status.total ?? selectedCount,
@@ -1395,13 +1406,19 @@ function OpencodeImportDialog({
   const allSelected = sessions.length > 0 && sessions.every((session) => selectedSet.has(session.id));
   const partlySelected = !allSelected && sessions.some((session) => selectedSet.has(session.id));
 
+  // 走共享 Modal 拿到统一的键盘约定(Esc 取消 / Tab 循环 / Enter 确认导入);导入进行中
+  // 既不能 Esc 也不能点遮罩关掉,完成或出错后 Esc 等价于「完成」。
   return (
-    <div
-      data-ace-native-overlay="blocking"
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-[rgba(0,0,0,0.2)]"
+    <Modal
+      onClose={running ? undefined : (phase === 'confirm' ? onCancel : onClose)}
+      width="min(520px, calc(100vw - 32px))"
+      layerClassName="z-[1000]"
+      dismissOnBackdrop={false}
+      dismissOnEscape={!running}
+      labelledBy="opencode-import-title"
     >
-      <div className="w-[min(520px,calc(100vw-32px))] rounded-lg border border-border bg-surface shadow-xl px-5 py-4">
-        <div className="text-[14px] font-medium text-fg">
+      <div className="px-5 py-4">
+        <div id="opencode-import-title" className="text-[14px] font-medium text-fg">
           {opencodeImportConfirmationText(selectedCount)}
         </div>
         <div className="mt-3 h-64 overflow-y-auto rounded-md border border-border bg-surface-alt">
@@ -1477,6 +1494,7 @@ function OpencodeImportDialog({
               </button>
               <button
                 type="button"
+                data-ace-dialog-primary="true"
                 onClick={onConfirm}
                 disabled={selectedCount <= 0}
                 className={clsx(
@@ -1491,6 +1509,7 @@ function OpencodeImportDialog({
           {(done || errored) && (
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={onClose}
               className="px-3 py-1.5 rounded-md text-[12px] bg-accent text-white hover:opacity-90"
             >
@@ -1499,7 +1518,7 @@ function OpencodeImportDialog({
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1651,9 +1670,8 @@ function WorkspaceGroup({
             className="ace-sidebar-primary-text min-w-0 h-7 px-1 py-0 text-[14px] bg-surface border border-accent rounded outline-none"
           />
         ) : (
-          <span className="flex min-w-0 items-center gap-1 font-medium">
-            <span className="min-w-0 truncate">{ws.name || ws.hash}</span>
-            <SidebarDisclosure expanded={expanded} />
+          <span className={clsx('min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
+            {ws.name || ws.hash}
           </span>
         )}
         <span data-sidebar-workspace-actions="true" className="flex items-center justify-end gap-1 shrink-0">
@@ -1669,6 +1687,7 @@ function WorkspaceGroup({
           <button
             data-sidebar-workspace-new-task="true"
             type="button"
+            onPointerDown={preserveHomeComposerFocus}
             onClick={(e) => { e.stopPropagation(); onNewSession(ws); }}
             className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="在此工作区新建任务"
@@ -3408,7 +3427,7 @@ export function Sidebar({
       ...item,
       active: item.hash === workspaceHash,
     })));
-    onOpenHome?.(ws);
+    onOpenHome?.(ws, { composerFeedback: true });
   }, [cancelSessionSelection, onOpenHome, updateExpanded]);
 
   const onAddWorkspace = async () => {
@@ -3472,7 +3491,7 @@ export function Sidebar({
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
         <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 px-[18px] py-3 select-none">
-          <img src="/acecode-logo.png" alt="" width="20" height="20" className="ace-brand-logo block shrink-0" draggable="false" />
+          <BrandLogo width="20" height="20" className="ace-brand-logo block shrink-0" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
             <span className="truncate text-[11px] font-medium leading-none text-fg-mute opacity-75 tabular-nums">

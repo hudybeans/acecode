@@ -49,7 +49,7 @@ test('all workspace-backed new-task entry points refresh without changing generi
   assert.match(expertTask, /refreshWorkspaceGitInfo\(createApi\(base\), base\)/);
   assert.match(trayTask, /refreshWorkspaceGitInfo\(createApi\(next\), next\)/);
   assert.match(homeTask, /refreshWorkspaceGitInfo\(api, target\)/);
-  assert.match(sidebarTask, /onOpenHome\?\.\(ws\)/);
+  assert.match(sidebarTask, /onOpenHome\?\.\(ws, \{ composerFeedback: true \}\)/);
   assert.doesNotMatch(sidebarTask, /refreshWorkspaceGitInfo|createWorkspaceSession/);
   assert.doesNotMatch(genericNavigation, /refreshWorkspaceGitInfo/);
 });

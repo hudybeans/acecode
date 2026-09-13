@@ -34,6 +34,8 @@
 #include "hooks/hook_manager.hpp"
 #include "loop/loop_store.hpp"
 #include "prompt/system_prompt.hpp"
+#include "tool/tool_protocol_names.hpp"
+#include "tool/tool_rewrites.hpp"
 #include "provider/cwd_model_override.hpp"
 #include "provider/models_dev_registry.hpp"
 #include "session/local_session_client.hpp"
@@ -41,12 +43,15 @@
 #include "session/session_manager.hpp"
 #include "session/session_pin_store.hpp"
 #include "session/session_registry.hpp"
+#include "session/session_auto_title.hpp"
 #include "session/session_storage.hpp"
 #include "session/session_trajectory.hpp"
 #include "session/session_user_message_search.hpp"
 #include "session/todo_state.hpp"
 #include "session/session_usage_ledger.hpp"
 #include "skills/skill_registry.hpp"
+#include "themes/theme_store.hpp"
+#include "../themes/theme_test_resources.hpp"
 #include "tool/mtime_tracker.hpp"
 #include "tool/tool_executor.hpp"
 #include "upgrade/manifest.hpp"
@@ -59,6 +64,7 @@
 #include "web/remote_web_proxy.hpp"
 #include "web/message_payload.hpp"
 #include "web/server.hpp"
+#include "web/handlers/models_handler.hpp"
 #include "worktree/worktree_manager.hpp"
 
 #include <algorithm>
@@ -7802,6 +7808,155 @@ TEST(WebServerHttp, DesktopFeedbackEnforcesUnicodeCharacterLimitBeforePackaging)
     }
 }
 
+TEST(WebServerHttp, CustomThemeImportPreviewsBeforeInstallingAndRequiresMatchingDigest) {
+    WebServerFixture fx;
+    const auto png = theme_test::png();
+    const auto definition = theme_test::definition(png);
+    acecode::themes::ThemeStore source(fx.tmp_dir / "import-source", "https://unused.invalid");
+    const auto packaged = source.install_local(definition, png, png);
+    std::ifstream input(path_from_utf8(packaged.at("package_path")), std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    const cpr::Header denied_headers{{"Origin", "http://localhost:5173"}, {"Content-Type", "application/zip"}};
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/themes/import/preview")}, denied_headers, cpr::Body{bytes}).status_code, 401);
+    const cpr::Header headers{{"Origin", "http://localhost:5173"}, {"Content-Type", "application/zip"}, {"X-ACECode-Token", "smoke-token"}};
+    const auto preview = cpr::Post(cpr::Url{fx.url("/api/themes/import/preview")}, headers, cpr::Body{bytes});
+    ASSERT_EQ(preview.status_code, 200) << preview.text;
+    const auto result = json::parse(preview.text);
+    EXPECT_EQ(result["theme"], definition);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/themes/ai-example")}).status_code, 404);
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/themes/import?sha256=invalid")}, headers, cpr::Body{bytes}).status_code, 409);
+    const auto imported = cpr::Post(cpr::Url{fx.url("/api/themes/import?sha256=" + result.at("package_sha256").get<std::string>())}, headers, cpr::Body{bytes});
+    ASSERT_EQ(imported.status_code, 200) << imported.text;
+    EXPECT_EQ(json::parse(imported.text)["id"], "ai-example");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/themes/ai-example")}).status_code, 200);
+    EXPECT_NE(fx.cfg.web_ui.color_theme, "ai-example");
+}
+
+TEST(WebServerHttp, CustomThemeExportProtectsBuiltinsAndDownloadsAuthenticatedZip) {
+    WebServerFixture fx;
+    const auto png = theme_test::png();
+    const auto definition = theme_test::definition(png);
+    acecode::themes::ThemeStore store(fx.tmp_dir / "themes", "https://unused.invalid");
+    store.install_local(definition, png, png);
+    const cpr::Header json_headers{{"Content-Type", "application/json"}};
+    for (const auto* id : {"blue", "orange", "eva-01"}) {
+        const auto exported = cpr::Post(cpr::Url{fx.url(std::string("/api/themes/") + id + "/export")}, json_headers, cpr::Body{"{}"});
+        EXPECT_EQ(exported.status_code, 403) << exported.text;
+        EXPECT_EQ(json::parse(exported.text)["error"], "THEME_BUILTIN_PROTECTED");
+        EXPECT_EQ(cpr::Delete(cpr::Url{fx.url(std::string("/api/themes/") + id)}).status_code, 403);
+    }
+    const auto injected = cpr::Post(cpr::Url{fx.url("/api/themes/ai-example/export")}, json_headers,
+        cpr::Body{R"({"destination":"C:/outside.zip"})"});
+    EXPECT_EQ(injected.status_code, 400);
+    const auto native = cpr::Post(cpr::Url{fx.url("/api/themes/ai-example/export")}, json_headers, cpr::Body{R"({"native_save":true})"});
+    EXPECT_EQ(native.status_code, 501);
+    EXPECT_EQ(json::parse(native.text)["error"], "THEME_NATIVE_SAVE_UNAVAILABLE");
+    const auto started = cpr::Post(cpr::Url{fx.url("/api/themes/ai-example/export")}, json_headers, cpr::Body{"{}"});
+    ASSERT_EQ(started.status_code, 200) << started.text;
+    auto job = json::parse(started.text);
+    const auto job_path = "/api/themes/exports/" + job.at("job_id").get<std::string>();
+    for (int index = 0; index < 100 && job["state"] != "completed" && job["state"] != "failed"; ++index) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        job = json::parse(cpr::Get(cpr::Url{fx.url(job_path)}).text);
+    }
+    ASSERT_EQ(job["state"], "completed") << job;
+    EXPECT_TRUE(job["reused"]);
+    const auto denied = cpr::Get(cpr::Url{fx.url(job_path + "/download")}, cpr::Header{{"Origin", "http://localhost:5173"}});
+    EXPECT_EQ(denied.status_code, 401);
+    const auto downloaded = cpr::Get(cpr::Url{fx.url(job_path + "/download")},
+        cpr::Header{{"Origin", "http://localhost:5173"}, {"X-ACECode-Token", "smoke-token"}});
+    ASSERT_EQ(downloaded.status_code, 200) << downloaded.text;
+    EXPECT_EQ(response_header(downloaded, "Content-Type"), "application/zip");
+    EXPECT_EQ(response_header(downloaded, "X-Content-Type-Options"), "nosniff");
+    EXPECT_NE(response_header(downloaded, "Content-Disposition").find("filename*=UTF-8''ACECode-"), std::string::npos);
+    EXPECT_NE(response_header(downloaded, "Cache-Control").find("no-store"), std::string::npos);
+    EXPECT_EQ(downloaded.text.substr(0, 2), "PK");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/themes/exports/missing")}).status_code, 404);
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/themes/exports/missing/cancel")}).status_code, 404);
+}
+
+TEST(WebServerHttp, CustomThemeNativePickerCancelsBeforePackagingAndSavesZip) {
+    bool cancel = true;
+    std::filesystem::path destination;
+    std::vector<std::string> suggestions;
+    WebServerFixture fx(WebServerFixture::NativeSavePickerTag{}, [&](const std::string& filename) {
+        suggestions.push_back(filename);
+        acecode::web::NativeSaveFilePickResult result;
+        if (!cancel) result.path = acecode::path_to_utf8(destination);
+        return result;
+    });
+    destination = fx.tmp_dir / "theme.zip";
+    const auto png = theme_test::png();
+    acecode::themes::ThemeStore store(fx.tmp_dir / "themes", "https://unused.invalid");
+    const auto installed = store.install_local(theme_test::definition(png), png, png);
+    std::filesystem::remove(path_from_utf8(installed.at("package_path")));
+    const auto start = [&] {
+        return cpr::Post(cpr::Url{fx.url("/api/themes/ai-example/export")},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"native_save":true})"});
+    };
+    auto result = start();
+    ASSERT_EQ(result.status_code, 200) << result.text;
+    auto job = json::parse(result.text);
+    EXPECT_EQ(job["state"], "cancelled");
+    EXPECT_FALSE(job.contains("job_id"));
+    EXPECT_FALSE(std::filesystem::exists(path_from_utf8(installed.at("package_path"))));
+    cancel = false;
+    result = start();
+    ASSERT_EQ(result.status_code, 200) << result.text;
+    job = json::parse(result.text);
+    const auto job_path = "/api/themes/exports/" + job.at("job_id").get<std::string>();
+    for (int index = 0; index < 100 && job["state"] != "completed" && job["state"] != "failed"; ++index) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        job = json::parse(cpr::Get(cpr::Url{fx.url(job_path)}).text);
+    }
+    ASSERT_EQ(job["state"], "completed") << job;
+    EXPECT_TRUE(job["native_saved"]);
+    EXPECT_FALSE(job["reused"]);
+    ASSERT_TRUE(std::filesystem::exists(destination));
+    ASSERT_EQ(suggestions.size(), 2u);
+    EXPECT_EQ(path_from_utf8(suggestions[0]).extension(), ".zip");
+}
+
+TEST(WebServerHttp, CustomThemeDeletionPersistsFallbackAndRejectsStalePreferenceWrites) {
+    WebServerFixture fx;
+    const auto png = theme_test::png();
+    acecode::themes::ThemeStore store(fx.tmp_dir / "themes", "https://unused.invalid");
+    store.install_local(theme_test::definition(png), png, png);
+    const auto apply = [&] {
+        return cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"color_theme":"ai-example"})"});
+    };
+    ASSERT_EQ(apply().status_code, 200);
+    const auto deleted = cpr::Delete(cpr::Url{fx.url("/api/themes/ai-example")});
+    ASSERT_EQ(deleted.status_code, 200) << deleted.text;
+    const auto result = json::parse(deleted.text);
+    EXPECT_TRUE(result["deleted"]);
+    EXPECT_EQ(result["color_theme"], "blue");
+    EXPECT_EQ(result["ui_preferences"]["color_theme"], "blue");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "blue");
+    const auto persisted = acecode::load_config_from_path(acecode::path_to_utf8(fx.tmp_dir / "config.json"));
+    EXPECT_EQ(persisted.web_ui.color_theme, "blue");
+    EXPECT_FALSE(store.installed("ai-example"));
+    EXPECT_EQ(apply().status_code, 409);
+}
+
+TEST(WebServerHttp, CustomThemeDeletionRollsBackWhenPreferencesCannotPersist) {
+    WebServerFixture fx;
+    const auto png = theme_test::png();
+    acecode::themes::ThemeStore store(fx.tmp_dir / "themes", "https://unused.invalid");
+    const auto installed = store.install_local(theme_test::definition(png), png, png);
+    fx.cfg.web_ui.color_theme = "ai-example";
+    const auto config_path = fx.tmp_dir / "config.json";
+    std::filesystem::remove(config_path);
+    std::filesystem::create_directory(config_path);
+    const auto result = cpr::Delete(cpr::Url{fx.url("/api/themes/ai-example")});
+    EXPECT_EQ(result.status_code, 500) << result.text;
+    EXPECT_EQ(json::parse(result.text)["error"], "PERSIST_FAILED");
+    EXPECT_EQ(fx.cfg.web_ui.color_theme, "ai-example");
+    EXPECT_TRUE(store.installed("ai-example"));
+    EXPECT_TRUE(std::filesystem::exists(path_from_utf8(installed.at("package_path"))));
+}
+
 TEST(WebServerHttp, UiPreferencesCannotSelectMissingThemeResources) {
     WebServerFixture fx;
     const auto missing = cpr::Get(cpr::Url{fx.url("/api/themes/eva-01")});
@@ -8411,6 +8566,88 @@ TEST(WebServerHttp, FailedUpdateJobCanBeRetried) {
     EXPECT_EQ(retried["state"], "succeeded");
     EXPECT_EQ(retried["log_path"], failed["log_path"]);
     EXPECT_NE(read_text(log_path).find(retry_id), std::string::npos);
+}
+
+TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
+    std::atomic<bool> requested_summary_model{false};
+    LocalUpdateServer summary_upstream([&](httplib::Server& server) {
+        server.Post("/v1/chat/completions", [&](const httplib::Request& request, httplib::Response& response) {
+            requested_summary_model = json::parse(request.body).value("model", "") == "small-local";
+            response.set_content(json{{"choices", json::array({
+                {{"message", {{"role", "assistant"}, {"content", "Local summary title"}}},
+                 {"finish_reason", "stop"}}
+            })}}.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/summary-generation")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const auto initial = cpr::Get(url);
+    ASSERT_EQ(initial.status_code, 200);
+    EXPECT_FALSE(json::parse(initial.text)["enabled"].get<bool>());
+    EXPECT_EQ(initial.header.at("Cache-Control"), "no-store");
+    const auto added = cpr::Post(cpr::Url{fx.url("/api/models")}, headers,
+        cpr::Body{json{{"name", "local-summary"}, {"provider", "openai"},
+            {"model", "small-local"}, {"base_url", summary_upstream.base_url() + "v1"},
+            {"api_key", "summary-test-secret"}}.dump()});
+    ASSERT_EQ(added.status_code, 200) << added.text;
+    auto put = cpr::Put(url, headers,
+        cpr::Body{R"({"enabled":true,"model_name":"local-summary"})"});
+    ASSERT_EQ(put.status_code, 200) << put.text;
+    EXPECT_TRUE(json::parse(put.text)["configured"].get<bool>());
+    EXPECT_EQ(put.text.find("summary-test-secret"), std::string::npos);
+    EXPECT_TRUE(fx.cfg.summary_generation.enabled);
+    const auto selected = acecode::resolve_auto_title_profile(fx.cfg, "fixture-copilot", fx.cwd);
+    ASSERT_TRUE(selected);
+    EXPECT_EQ(selected->model, "small-local");
+    auto provider = acecode::create_auto_title_provider(*selected, fx.cfg);
+    ASSERT_NE(provider, nullptr);
+    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "Summarize this session", fx.cfg),
+        "Local summary title");
+    EXPECT_TRUE(requested_summary_model.load());
+
+    const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);
+    EXPECT_EQ(cpr::Put(url, cpr::Header{{"Origin", origin}},
+        cpr::Body{R"({"enabled":false})"}).status_code, 401);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin},
+        {"X-ACECode-Token", "smoke-token"}}).status_code, 200);
+
+    auto disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_TRUE(disk.summary_generation.enabled);
+    EXPECT_EQ(disk.summary_generation.model_name, "local-summary");
+    disk.ui.locale = "en-US";
+    acecode::save_config(disk, (fx.tmp_dir / "config.json").string());
+    put = cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"});
+    ASSERT_EQ(put.status_code, 200);
+    disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_EQ(disk.ui.locale, "en-US");
+    EXPECT_FALSE(disk.summary_generation.enabled);
+    EXPECT_EQ(disk.summary_generation.model_name, "local-summary");
+    EXPECT_EQ(acecode::resolve_auto_title_profile(fx.cfg, "fixture-copilot", fx.cwd)->name,
+        "fixture-copilot");
+
+    ASSERT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":true})"}).status_code, 200);
+    ASSERT_EQ(cpr::Delete(cpr::Url{fx.url("/api/models/local-summary")}).status_code, 200);
+    EXPECT_FALSE(json::parse(cpr::Get(url).text)["configured"].get<bool>());
+    EXPECT_FALSE(acecode::resolve_auto_title_profile(fx.cfg, "fixture-copilot", fx.cwd));
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 200);
+}
+
+TEST(WebServerHttp, SummaryGenerationRejectsInvalidAndFailedWrites) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/summary-generation")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    for (const auto* patch : {"{", "[]", R"({"enabled":"yes"})",
+        R"({"enabled":true})", R"({"model_name":"gone"})"}) {
+        EXPECT_EQ(cpr::Put(url, headers, cpr::Body{patch}).status_code, 400);
+        EXPECT_FALSE(fx.cfg.summary_generation.enabled);
+        EXPECT_TRUE(fx.cfg.summary_generation.model_name.empty());
+    }
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    EXPECT_EQ(cpr::Put(url, headers,
+        cpr::Body{R"({"enabled":true,"model_name":"fixture-copilot"})"}).status_code, 500);
+    EXPECT_FALSE(fx.cfg.summary_generation.enabled);
 }
 
 TEST(WebServerHttp, ImageGenerationSettingsPersistSecretsAndRefreshToolsLive) {
@@ -9216,6 +9453,41 @@ TEST(WebServerHttp, ConnectorSavedModelRefreshPublishesOnlyStructuralChanges) {
     EXPECT_EQ(acecode::current_saved_models_revision(), before + 1);
 }
 
+TEST(WebServerHttp, PostModelsTestAuthenticatesAndDoesNotSaveDraft) {
+    std::atomic<int> requests{0};
+    LocalUpdateServer upstream([&](httplib::Server& server) {
+        server.Post("/chat/completions", [&](const httplib::Request& request,
+                                              httplib::Response& response) {
+            ++requests;
+            EXPECT_EQ(json::parse(request.body)["messages"][0]["content"], "Reply with OK.");
+            response.set_content(R"({"choices":[{"message":{"content":"OK"}}]})", "application/json");
+        });
+    });
+    WebServerFixture fx;
+    const auto before = acecode::web::list_models(fx.cfg);
+    const auto before_disk = read_text(fx.tmp_dir / "config.json");
+    const json input = {{"provider", "openai"}, {"model", "test-model"},
+                        {"base_url", upstream.base_url()}, {"api_key", "fake-key"}};
+    const std::string origin = "http://localhost:5173";
+    auto rejected = cpr::Post(cpr::Url{fx.url("/api/models/test")},
+        cpr::Header{{"Origin", origin}, {"Content-Type", "application/json"}},
+        cpr::Body{input.dump()});
+    EXPECT_EQ(rejected.status_code, 401);
+    EXPECT_EQ(requests.load(), 0);
+    const cpr::Header headers{{"Origin", origin}, {"Content-Type", "application/json"},
+                              {"X-ACECode-Token", "smoke-token"}};
+    auto result = cpr::Post(cpr::Url{fx.url("/api/models/test")}, headers, cpr::Body{input.dump()});
+    EXPECT_EQ(result.status_code, 200) << result.text;
+    EXPECT_EQ(json::parse(result.text), (json{{"ok", true}}));
+    EXPECT_EQ(requests.load(), 1);
+    EXPECT_EQ(acecode::web::list_models(fx.cfg), before);
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), before_disk);
+    auto malformed = cpr::Post(cpr::Url{fx.url("/api/models/test")}, headers, cpr::Body{"{secret"});
+    EXPECT_EQ(malformed.status_code, 400);
+    EXPECT_EQ(json::parse(malformed.text)["error"], "BAD_JSON");
+    EXPECT_EQ(malformed.text.find("secret"), std::string::npos);
+}
+
 // 场景:POST /api/models/probe 只接受 OpenAI-compatible 探测参数。这里走
 // 400 分支,不发真实网络请求,用于固定 route wiring + 错误码。
 TEST(WebServerHttp, PostModelsProbeRejectsUnsupportedProvider) {
@@ -9710,4 +9982,72 @@ TEST(WebServerHttp, FsListRejectsRelativeMissingAndFilePaths) {
                          cpr::Parameters{{"path", acecode::path_to_utf8(dir / "file.txt")}});
     ASSERT_EQ(file.status_code, 404) << file.text;
     EXPECT_EQ(json::parse(file.text)["error"], "not a directory");
+}
+
+// 场景:设置页「工具重写」的 REST 往返。GET 默认 → PUT 启用一条重写 → 文件落在
+// config.json 同目录的 tool-rewrites.json、进程映射立即生效 → 撞真实工具名的
+// PUT 被拒且不改动已生效映射 → PUT 关闭后映射清空。
+// 回归:这份配置刻意不进 config.json,所以不能靠 config 路由的测试覆盖。
+TEST(WebServerHttp, ToolRewritesRoundTripPersistsJsonAndAppliesToProcess) {
+    acecode::ScopedModelToolNameMappings restore(acecode::model_tool_name_mappings());
+    WebServerFixture fx;
+    auto register_probe = [&](const std::string& name) {
+        acecode::ToolImpl impl;
+        impl.definition.name = name;
+        impl.definition.description = "probe " + name;
+        impl.definition.parameters = json::object();
+        impl.execute = [](const std::string&, const acecode::ToolContext&) {
+            return acecode::ToolResult{"ok", true};
+        };
+        ASSERT_TRUE(fx.tools.register_tool(impl));
+    };
+    register_probe("file_read");
+    register_probe("bash");
+
+    auto initial = cpr::Get(cpr::Url{fx.url("/api/config/tool-rewrites")});
+    ASSERT_EQ(initial.status_code, 200) << initial.text;
+    auto initial_json = json::parse(initial.text);
+    EXPECT_EQ(initial_json["enabled"], false);
+    EXPECT_EQ(initial_json["rewrites"]["file_read"], "read");
+    EXPECT_EQ(initial_json["defaults"]["file_write"], "write");
+    bool listed_file_read = false;
+    for (const auto& tool : initial_json["tools"]) {
+        if (tool["name"] == "file_read") listed_file_read = true;
+    }
+    EXPECT_TRUE(listed_file_read);
+
+    auto enable = cpr::Put(
+        cpr::Url{fx.url("/api/config/tool-rewrites")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"enabled":true,"rewrites":{"file_read":"peek"}})"});
+    ASSERT_EQ(enable.status_code, 200) << enable.text;
+    EXPECT_EQ(json::parse(enable.text)["enabled"], true);
+    EXPECT_EQ(json::parse(enable.text)["rewrites"]["file_read"], "peek");
+    EXPECT_EQ(acecode::model_tool_name_for_native("file_read"), "peek");
+    {
+        std::ifstream ifs(fx.tmp_dir / acecode::tool_rewrites::kSettingsFileName);
+        ASSERT_TRUE(ifs.is_open());
+        auto saved = json::parse(ifs);
+        EXPECT_EQ(saved["enabled"], true);
+        EXPECT_EQ(saved["rewrites"]["file_read"], "peek");
+    }
+
+    auto collide = cpr::Put(
+        cpr::Url{fx.url("/api/config/tool-rewrites")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"enabled":true,"rewrites":{"file_read":"bash"}})"});
+    ASSERT_EQ(collide.status_code, 400) << collide.text;
+    EXPECT_EQ(json::parse(collide.text)["error"], "BAD_REQUEST");
+    EXPECT_EQ(acecode::model_tool_name_for_native("file_read"), "peek");
+
+    auto disable = cpr::Put(
+        cpr::Url{fx.url("/api/config/tool-rewrites")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"enabled":false,"rewrites":{"file_read":"peek"}})"});
+    ASSERT_EQ(disable.status_code, 200) << disable.text;
+    EXPECT_TRUE(acecode::model_tool_name_mappings().empty());
+    auto after = cpr::Get(cpr::Url{fx.url("/api/config/tool-rewrites")});
+    ASSERT_EQ(after.status_code, 200) << after.text;
+    EXPECT_EQ(json::parse(after.text)["enabled"], false);
+    EXPECT_EQ(json::parse(after.text)["rewrites"]["file_read"], "peek");
 }

@@ -1,5 +1,6 @@
 #include "web_host.hpp"
 
+#include "application_icon.hpp"
 #include "external_url.hpp"
 #include "taskbar_badge_win.hpp"
 #include "web_host_close_policy.hpp"
@@ -1885,6 +1886,11 @@ struct WebHost::Impl {
         install_mac_application_reopen_handler(mac_window_from_host(*w));
 #else
         w = std::make_unique<webview::webview>(debug, nullptr);
+        auto native_window = w->window();
+        if (native_window.ok() && native_window.value() &&
+            !set_linux_window_icon(native_window.value(), application_icon_path())) {
+            LOG_WARN("[desktop] could not load the Linux application window icon");
+        }
         configure_linux_window_chrome(*w);
         install_linux_close_handler(*w);
         install_linux_window_state_handler(*w);

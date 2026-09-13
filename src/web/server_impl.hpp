@@ -276,6 +276,8 @@ struct WebServer::Impl {
     void refresh_saved_models_from_disk();
     void refresh_image_generation_tool_locked();
     std::mutex image_generation_test_mu;
+    // 串行化 tool-rewrites.json 的读改写(它不在 config.json 里,不受 app_config_mu 管)。
+    std::mutex tool_rewrites_mu;
 
     mutable std::mutex attention_mu;
     mutable std::unordered_set<std::string> loaded_attention_workspaces;
@@ -544,6 +546,8 @@ struct WebServer::Impl {
     // -----------------------------------------------------------------
     void register_routes();
     void register_image_generation();
+    void register_summary_generation();
+    void register_tool_rewrites();
 
     void register_health();
     void register_usage();

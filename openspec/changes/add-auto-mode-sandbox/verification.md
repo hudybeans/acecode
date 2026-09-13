@@ -74,3 +74,26 @@ ACECode build. No running user daemon was replaced, and no release was published
   smokes, real-JSONL replay fixture, POSIX-only prompt case), 1 failure
   `McpManagerAsync.DisableConnectedServerUnregistersToolsAndSnapshots` (5 s startup-settle
   timeout under full-suite load; passes in isolation, unrelated to this change).
+
+## Master integration checks (2026-09-14)
+
+- Integrated master `0cd6afe12b3ec1267499510769b8f0dc9988e2ec` in the existing sandbox
+  worktree. Resolved the English override conflict by retaining both sets of reviewed copy,
+  then regenerated the source catalog (1,954 entries) using `pnpm i18n:catalog`.
+- Web `pnpm install --frozen-lockfile`, `pnpm test` (2,297 passing assertions), and
+  `pnpm build` passed. Reconfigured CMake afterward to refresh embedded Web assets.
+- Release `acecode_unit_tests` rebuilt successfully. Expanded the focused filter above with
+  `ToolRewrites.*:ToolProtocolNames.*:ToolRewritesHandler.*:SavedModels*.*:`
+  `ModelProfileRuntimeOptions.*:HookRuntime.*:WebServerHttp.*ToolRewrites*`.
+  All 601 selected tests completed: 600 passed and the POSIX-only system-prompt test was
+  skipped on Windows. This integration run did not repeat the full C++ suite.
+- Parameterized the native AgentLoop smoke for both the original `bash` name and its
+  configured `run_shell` alias. Both cases advertise the expected tool name, execute real
+  Git without confirmation, reject external content writes, require escalation approval,
+  honor a rejected dangerous command, and refuse a forbidden rule without prompting or
+  executing. The accepted Windows deletion/rename limitation remains unchanged.
+- Release `acecode` rebuilt successfully. Restarted the owned preview daemon with this binary
+  on port 18489; `/api/health`, `/`, and `/api/config/tool-rewrites` all returned HTTP 200.
+  Other running ACECode instances were left untouched.
+- Strict OpenSpec validation and the staged/unstaged whitespace checks passed. Integration
+  logs and the focused-test XML report are in the ignored `build/merge-*` paths.

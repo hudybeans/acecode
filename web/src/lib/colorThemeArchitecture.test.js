@@ -56,7 +56,7 @@ run('ThemeProvider preserves the ordinary mode independently of installed themes
   );
   assert.match(
     theme,
-    /value=\{\{ theme, themeMode, colorTheme, toggle, set, setColorTheme, prepareTheme \}\}/,
+    /value=\{\{ theme, themeMode, colorTheme, appearance, toggle, set, setColorTheme, prepareTheme, forgetTheme \}\}/,
   );
 });
 
@@ -81,7 +81,7 @@ run('Appearance settings separate color cards from the dark-mode toggle', () => 
   );
   assert.match(settings, /<ThemeCards options=\{COLOR_THEME_OPTIONS\} selected=\{colorTheme\}/);
   assert.match(settings, /onSelect=\{setColorTheme\} downloads=\{themeDownloads\}/);
-  assert.match(settings, /colorTheme !== EVA_THEME_ID/);
+  assert.match(settings, /!isInstalledColorTheme\(colorTheme\)/);
   assert.match(settings, /<div className="text-\[13px\] font-medium">暗黑模式<\/div>/);
   assert.match(
     settings,

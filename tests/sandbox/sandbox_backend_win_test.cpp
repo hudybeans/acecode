@@ -3,6 +3,7 @@
 #include "sandbox/sandbox_backend.hpp"
 #include "sandbox/sandbox_runtime.hpp"
 #include "tool/bash_tool.hpp"
+#include "tool/tool_protocol_names.hpp"
 #include "environment/terminal_runtime.hpp"
 #include "agent_loop.hpp"
 #include "../agent_loop/stub_provider.hpp"
@@ -197,8 +198,14 @@ TEST(SandboxBackendWin, DocumentsUnelevatedDeleteAndRenameLimitation) {
 
 // 真机完整链路:模型调用 -> AgentLoop 审批 -> Bash 受限/完整访问子进程。
 // LLM 使用确定性 provider,Shell、git、令牌和文件系统全部真实执行。
-TEST(SandboxBackendWin, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndDanger) {
+// 同时覆盖工具重写关闭与 bash 改名为 run_shell,两种入口必须遵守相同边界。
+class SandboxBackendWinAgentLoop : public testing::TestWithParam<bool> {};
+
+TEST_P(SandboxBackendWinAgentLoop, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndDanger) {
     if (!probe_backend().available) GTEST_SKIP() << "restricted tokens unavailable";
+    ScopedModelToolNameMappings mappings(GetParam()
+        ? ToolProtocolNameMappings{{"bash", "run_shell"}} : ToolProtocolNameMappings{});
+    const std::string model_tool_name = GetParam() ? "run_shell" : "bash";
     test::TempTree tree;
     ASSERT_TRUE(make_private_test_root(tree.root));
     const auto workspace = tree.dir("workspace");
@@ -242,7 +249,8 @@ TEST(SandboxBackendWin, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndD
         busy = value;
         if (!busy) cv.notify_all();
     };
-    callbacks.on_tool_confirm = [&](const std::string&, const std::string& args) {
+    callbacks.on_tool_confirm = [&](const std::string& tool_name, const std::string& args) {
+        EXPECT_EQ(tool_name, "bash");
         prompts.push_back(nlohmann::json::parse(args));
         return answer;
     };
@@ -254,7 +262,7 @@ TEST(SandboxBackendWin, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndD
     loop.set_sandbox_config(config);
     loop.set_exec_rules({});
     auto run = [&](nlohmann::json args) {
-        provider->push_tool_call("bash", args.dump(), "native-" + std::to_string(provider->turn_count()));
+        provider->push_tool_call(model_tool_name, args.dump(), "native-" + std::to_string(provider->turn_count()));
         provider->push_text("done");
         { std::lock_guard<std::mutex> lock(mutex); busy = true; }
         loop.submit("run");
@@ -266,6 +274,9 @@ TEST(SandboxBackendWin, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndD
     EXPECT_TRUE(prompts.empty());
     EXPECT_TRUE(results.back().success) << results.back().output;
     EXPECT_EQ(execution_modes.back(), SandboxMode::WorkspaceWrite);
+    const auto advertised_tools = provider->tools_for_turn(0);
+    ASSERT_EQ(advertised_tools.size(), 1u);
+    EXPECT_EQ(advertised_tools.front().name, model_tool_name);
     const auto command = "echo denied > \"" + path_to_utf8(outside / "probe.txt") + "\"";
     ASSERT_TRUE(run({{"command", command}}));
     ASSERT_EQ(results.size(), 2u);
@@ -287,5 +298,21 @@ TEST(SandboxBackendWin, AutoAgentLoopRunsGitAndRequiresApprovalForEscalationAndD
     ASSERT_EQ(prompts.size(), 2u);
     EXPECT_EQ(prompts.back()["permission"]["reason"], "dangerous_command");
     EXPECT_EQ(results.size(), 3u);
+
+    ExecRules forbidden_rules;
+    PrefixRule forbidden;
+    forbidden.pattern = {{"git"}, {"status"}};
+    forbidden.decision = RuleDecision::Forbidden;
+    forbidden_rules.add_rule(std::move(forbidden));
+    loop.set_exec_rules(std::move(forbidden_rules));
+    answer = PermissionResult::Allow;
+    ASSERT_TRUE(run({{"command", "git status --short"}}));
+    EXPECT_EQ(prompts.size(), 2u);
+    EXPECT_EQ(results.size(), 3u);
 }
+
+INSTANTIATE_TEST_SUITE_P(SandboxToolNames, SandboxBackendWinAgentLoop,
+    testing::Bool(), [](const testing::TestParamInfo<bool>& info) {
+        return info.param ? "Rewritten" : "Native";
+    });
 #endif

@@ -223,7 +223,7 @@ export function SettingsConfigSection() {
         <div className="p-5"><h3 id="delete-old-workspace" className="font-semibold">删除旧工作空间数据？</h3>
           <p className="text-[13px] text-fg-mute break-all my-4">{directory.previous_dir}</p>
           <div className="flex justify-end gap-3"><button className="ace-settings-button" disabled={!!busy} onClick={() => setConfirmCleanup(false)}>取消</button>
-            <button className="ace-settings-button text-danger" disabled={!!busy} onClick={() => perform('cleanup', async () => {
+            <button data-ace-dialog-primary="true" className="ace-settings-button text-danger" disabled={!!busy} onClick={() => perform('cleanup', async () => {
               setDirectory(await api.cleanupDataDirectory('delete')); setConfirmCleanup(false);
             })}>删除旧数据</button></div>
           {error && <p role="alert" className="text-danger text-[12px] mt-3">{error}</p>}

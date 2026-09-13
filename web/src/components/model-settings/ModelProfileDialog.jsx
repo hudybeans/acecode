@@ -1,21 +1,25 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { clsx } from '../../lib/format.js';
 import { lookupErrorMessage } from '../../lib/errors.js';
 import {
   applyCatalogProviderToDraft,
   buildModelMutationPayloads,
-  compatibleCredentialSources,
   hasAdvancedModelValues,
   isCustomOpenAiCompatibilityProvider,
   markModelMetadataOverrides,
+  modelAliasProviderName,
   modelFieldPolicy,
   modelNameSuggestion,
   redactModelDraftSecrets,
+  syncAutoModelAlias,
   toggleModelCapability,
 } from '../../lib/modelSettings.js';
-import { MODEL_CAPABILITY_OPTIONS } from '../../lib/modelManager.js';
+import { MODEL_CAPABILITY_OPTIONS, splitModelIds } from '../../lib/modelManager.js';
+import { expandModelAliases } from '../../lib/modelAlias.js';
+import { modelTestFailureMessage, testModelDraft } from '../../lib/modelConnectionTest.js';
 import { Modal, Toggle } from '../Modal.jsx';
 import { VsIcon } from '../Icon.jsx';
+import { toast } from '../Toast.jsx';
 import { ProviderCatalogPicker } from './ProviderCatalogPicker.jsx';
 
 function inputClass(extra = '') {
@@ -35,15 +39,123 @@ function fieldLabel(id, label, optional = false) {
   );
 }
 
+function ModelApiKeyInput({ draft, apiKeyVisible, onPatchDraft, onToggleApiKey,
+  testStatus, onTest, submitting }) {
+  const testing = testStatus === 'testing';
+  const succeeded = testStatus === 'success';
+  const testLabel = testing ? '检测中…' : succeeded ? '检测成功，点击重新检测' : '检测';
+  return (
+    <div className="relative">
+      <input
+        id="model-api-key"
+        type={apiKeyVisible ? 'text' : 'password'}
+        value={draft.api_key}
+        onChange={(event) => onPatchDraft({
+          api_key: event.target.value,
+          clear_api_key: false,
+        })}
+        placeholder="输入 API Key"
+        className={inputClass('pr-24')}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        onClick={onToggleApiKey}
+        aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+        aria-pressed={apiKeyVisible}
+        aria-controls="model-api-key"
+        title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
+        className={clsx(
+          'absolute inset-y-px right-14 flex w-9 items-center justify-center transition',
+          'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
+          apiKeyVisible && 'text-accent',
+        )}
+      >
+        <VsIcon name="eye" size={14} />
+      </button>
+      <button
+        type="button"
+        onClick={onTest}
+        disabled={testing || submitting}
+        aria-label={testLabel}
+        aria-busy={testing}
+        title={testLabel}
+        data-model-connection-test={testStatus}
+        className={clsx(
+          'absolute inset-y-0 right-0 flex w-14 items-center justify-center rounded-r-md text-[12px] transition',
+          'focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60',
+          succeeded
+            ? 'border border-ok text-ok hover:bg-ok-bg'
+            : 'border-l border-border text-fg-2 hover:bg-surface-hi',
+        )}
+      >
+        {testing ? <span className="ace-spinner" />
+          : succeeded ? <VsIcon name="check" size={17} /> : '检测'}
+      </button>
+      <span className="sr-only" role="status">{testStatus === 'idle' ? '' : testLabel}</span>
+    </div>
+  );
+}
+
+// 别名 = saved_models 的 name。单选时自动填模型 ID,多选时退化为「前缀」,
+// 每个模型保存为 <前缀>-<模型 ID>;规则见 lib/modelAlias.js,自动值由
+// syncAutoModelAlias 维护,用户手改过就不再覆盖。
+function ModelAliasField({ draft, editing, existingNames, onPatchDraft }) {
+  const selected = splitModelIds(draft.model);
+  const multiple = !editing && selected.length > 1;
+  let help = null;
+  if (multiple) {
+    const names = expandModelAliases(draft.name, selected, { existingNames });
+    const shown = names.slice(0, 2).join('、');
+    help = names.length > 2 ? `${shown} 等 ${names.length} 个` : shown;
+  }
+  return (
+    <div>
+      {fieldLabel('model-profile-name', multiple ? '别名前缀' : '别名', !editing)}
+      <input
+        id="model-profile-name"
+        type="text"
+        value={draft.name}
+        onChange={(event) => onPatchDraft({ name: event.target.value })}
+        placeholder={editing ? '' : multiple ? '留空则直接使用模型 ID' : '选择模型后自动填入模型 ID'}
+        aria-describedby={help ? 'model-profile-name-help' : undefined}
+        className={inputClass()}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      {help && (
+        <p id="model-profile-name-help" className="mt-1.5 truncate text-[10px] text-fg-mute" title={help}>
+          {'将分别保存为：'}
+          <span className="ml-0.5 text-fg-2">{help}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CustomCompatibilityApiFields({
   draft,
   policy,
+  editing,
+  existingNames,
   apiKeyVisible,
   onPatchDraft,
   onToggleApiKey,
+  testStatus,
+  onTest,
+  submitting,
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="md:col-span-2">
+        <ModelAliasField
+          draft={draft}
+          editing={editing}
+          existingNames={existingNames}
+          onPatchDraft={onPatchDraft}
+        />
+      </div>
       {policy?.show_base_url && (
         <div className={policy.show_api_key ? '' : 'md:col-span-2'}>
           {fieldLabel('model-base-url', draft.endpoint_mode === 'full_url' ? '完整端点 URL' : 'Base URL')}
@@ -61,54 +173,17 @@ function CustomCompatibilityApiFields({
       {policy?.show_api_key && (
         <div>
           {fieldLabel('model-api-key', 'API Key')}
-          <div className="relative">
-            <input
-              id="model-api-key"
-              type={apiKeyVisible ? 'text' : 'password'}
-              value={draft.api_key}
-              onChange={(event) => onPatchDraft({
-                api_key: event.target.value,
-                clear_api_key: false,
-                credential_source_name: '',
-              })}
-              placeholder="输入 API Key"
-              className={inputClass('pr-10')}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              onClick={onToggleApiKey}
-              aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-              aria-pressed={apiKeyVisible}
-              aria-controls="model-api-key"
-              title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-              className={clsx(
-                'absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md transition',
-                'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
-                apiKeyVisible && 'text-accent',
-              )}
-            >
-              <VsIcon name="eye" size={14} />
-            </button>
-          </div>
+          <ModelApiKeyInput
+            draft={draft}
+            apiKeyVisible={apiKeyVisible}
+            onPatchDraft={onPatchDraft}
+            onToggleApiKey={onToggleApiKey}
+            testStatus={testStatus}
+            onTest={onTest}
+            submitting={submitting}
+          />
         </div>
       )}
-      <div className="md:col-span-2">
-        {fieldLabel('model-profile-name', '预设名称', true)}
-        <input
-          id="model-profile-name"
-          type="text"
-          value={draft.name}
-          onChange={(event) => onPatchDraft({ name: event.target.value })}
-          placeholder="为空时使用 Model ID"
-          aria-describedby="model-profile-name-help"
-          className={inputClass()}
-        />
-        <p id="model-profile-name-help" className="mt-1.5 text-[10px] text-fg-mute">
-          留空时使用当前 Model ID 作为预设名称。
-        </p>
-      </div>
     </div>
   );
 }
@@ -145,6 +220,11 @@ export function ModelProfileDialog({
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(() => editing && hasAdvancedModelValues(seed));
   const [submitting, setSubmitting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const testRunRef = useRef(null);
+  const latestDraftRef = useRef(draft);
+  latestDraftRef.current = draft;
+  const testStatus = testResult?.draft === draft ? testResult.status : 'idle';
   const [formError, setFormError] = useState('');
   const [conflict, setConflict] = useState(null);
   const [conflictMode, setConflictMode] = useState('');
@@ -156,17 +236,53 @@ export function ModelProfileDialog({
   const customCompatibilityApi = isCustomOpenAiCompatibilityProvider(provider);
   const managedConnection = managedConnections?.[provider?.runtime_provider] || null;
   const managedAuthenticated = !!managedConnection?.auth?.authenticated;
-  const credentialSources = useMemo(
-    () => compatibleCredentialSources(savedModels, draft),
-    [draft, savedModels],
+  const existingNames = useMemo(
+    () => (Array.isArray(savedModels) ? savedModels : []).map((model) => model.name),
+    [savedModels],
   );
+
+  useEffect(() => () => {
+    testRunRef.current?.abort();
+    testRunRef.current = null;
+  }, [draft, apiClient]);
+
+  const testConnection = async () => {
+    if (submitting || testRunRef.current) return;
+    const controller = new AbortController();
+    testRunRef.current = controller;
+    const isCurrent = () => testRunRef.current === controller
+      && latestDraftRef.current === draft && !controller.signal.aborted;
+    setTestResult({ draft, status: 'testing' });
+    try {
+      await testModelDraft(apiClient, draft, provider, {
+        editing, originalName, signal: controller.signal,
+      });
+      if (isCurrent()) setTestResult({ draft, status: 'success' });
+    } catch (error) {
+      if (isCurrent()) {
+        setTestResult({ draft, status: 'idle' });
+        toast({ kind: 'err', text: modelTestFailureMessage(error, draft) });
+      }
+    } finally {
+      if (testRunRef.current === controller) testRunRef.current = null;
+    }
+  };
+
+  // 所有会改变「选了哪些模型 / 哪个 Provider」的草稿更新都经这里,让自动别名
+  // 跟着刷新;只改其它字段的 patchDraft 不走它,避免用户正在手打的别名被覆盖。
+  const withAutoAlias = (next) => syncAutoModelAlias(next, {
+    providerName: modelAliasProviderName(providerForDraft(providers, next)),
+    existingNames,
+    editing,
+  });
+  const changeSelectionDraft = (next) => setDraft(withAutoAlias(next));
 
   const patchDraft = (patch) => setDraft((current) => ({ ...current, ...patch }));
   const patchMetadataDraft = (patch) => setDraft((current) => (
     markModelMetadataOverrides(current, patch)
   ));
   const selectProvider = (nextProvider) => {
-    setDraft((current) => applyCatalogProviderToDraft(current, nextProvider));
+    setDraft((current) => withAutoAlias(applyCatalogProviderToDraft(current, nextProvider)));
     setApiKeyVisible(false);
     setFormError('');
     setConflict(null);
@@ -174,7 +290,7 @@ export function ModelProfileDialog({
 
   const submit = async () => {
     if (!provider || submitting) return;
-    const built = buildModelMutationPayloads(draft, provider, { editing });
+    const built = buildModelMutationPayloads(draft, provider, { editing, existingNames });
     if (!built.ok) {
       setFormError(lookupErrorMessage(built.code));
       return;
@@ -313,16 +429,30 @@ export function ModelProfileDialog({
               <CustomCompatibilityApiFields
                 draft={draft}
                 policy={policy}
+                editing={editing}
+                existingNames={existingNames}
                 apiKeyVisible={apiKeyVisible}
                 onPatchDraft={patchDraft}
                 onToggleApiKey={() => setApiKeyVisible((visible) => !visible)}
+                testStatus={testStatus}
+                onTest={testConnection}
+                submitting={submitting}
               />
             ) : null}
             managedAuthenticated={managedAuthenticated}
             managedConnection={managedConnection}
             onProviderChange={selectProvider}
-            onDraftChange={setDraft}
+            onDraftChange={changeSelectionDraft}
           />
+
+          {!customCompatibilityApi && (
+            <ModelAliasField
+              draft={draft}
+              editing={editing}
+              existingNames={existingNames}
+              onPatchDraft={patchDraft}
+            />
+          )}
 
           {!policy?.managed && !customCompatibilityApi && (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -343,62 +473,17 @@ export function ModelProfileDialog({
               {policy?.show_api_key && (
                 <div>
                   {fieldLabel('model-api-key', 'API Key')}
-                  <div className="relative">
-                    <input
-                      id="model-api-key"
-                      type={apiKeyVisible ? 'text' : 'password'}
-                      value={draft.api_key}
-                      onChange={(event) => patchDraft({
-                        api_key: event.target.value,
-                        clear_api_key: false,
-                        credential_source_name: '',
-                      })}
-                      placeholder="输入 API Key"
-                      className={inputClass('pr-10')}
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setApiKeyVisible((visible) => !visible)}
-                      aria-label={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-                      aria-pressed={apiKeyVisible}
-                      aria-controls="model-api-key"
-                      title={apiKeyVisible ? '隐藏 API Key' : '显示 API Key'}
-                      className={clsx(
-                        'absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md transition',
-                        'text-fg-mute hover:bg-surface-hi hover:text-fg focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent',
-                        apiKeyVisible && 'text-accent',
-                      )}
-                    >
-                      <VsIcon name="eye" size={14} />
-                    </button>
-                  </div>
+                  <ModelApiKeyInput
+                    draft={draft}
+                    apiKeyVisible={apiKeyVisible}
+                    onPatchDraft={patchDraft}
+                    onToggleApiKey={() => setApiKeyVisible((visible) => !visible)}
+                    testStatus={testStatus}
+                    onTest={testConnection}
+                    submitting={submitting}
+                  />
                 </div>
               )}
-            </div>
-          )}
-
-          {!editing && policy?.show_api_key && credentialSources.length > 0 && !draft.api_key && (
-            <div className="rounded-md border border-border bg-surface px-3.5 py-2.5">
-              {fieldLabel('model-credential-source', '复用已有凭据', true)}
-              <select
-                id="model-credential-source"
-                value={draft.credential_source_name}
-                onChange={(event) => patchDraft({
-                  credential_source_name: event.target.value,
-                  api_key: '',
-                })}
-                className={inputClass('cursor-pointer')}
-              >
-                <option value="">不复用，输入新密钥</option>
-                {credentialSources.map((model) => (
-                  <option key={model.name} value={model.name}>{`复用 ${model.name} 的密钥`}</option>
-                ))}
-              </select>
-              <div className="mt-1 text-[10px] text-fg-mute">
-                只提交来源预设名称，密钥复制完全在 Daemon 内完成。
-              </div>
             </div>
           )}
 
@@ -420,19 +505,6 @@ export function ModelProfileDialog({
             </label>
           )}
 
-          {editing && !customCompatibilityApi && (
-            <div>
-              {fieldLabel('model-profile-name', '预设名称')}
-              <input
-                id="model-profile-name"
-                type="text"
-                value={draft.name}
-                onChange={(event) => patchDraft({ name: event.target.value })}
-                className={inputClass()}
-              />
-            </div>
-          )}
-
           <div
             ref={advancedSectionRef}
             className="scroll-mt-4 rounded-md border border-border bg-surface"
@@ -452,20 +524,6 @@ export function ModelProfileDialog({
                 id="model-profile-advanced-settings"
                 className="space-y-4 border-t border-border px-3.5 py-3"
               >
-                {!editing && !customCompatibilityApi && (
-                  <div>
-                    {fieldLabel('model-profile-name', '预设名称', true)}
-                    <input
-                      id="model-profile-name"
-                      type="text"
-                      value={draft.name}
-                      onChange={(event) => patchDraft({ name: event.target.value })}
-                      placeholder="未填写时根据模型 ID 自动生成"
-                      className={inputClass()}
-                    />
-                  </div>
-                )}
-
                 {policy?.show_endpoint_mode && (
                   <fieldset>
                     <legend className="mb-1.5 text-[11px] font-medium text-fg-2">端点模式</legend>
@@ -698,6 +756,7 @@ export function ModelProfileDialog({
           </button>
           <button
             type="button"
+            data-ace-dialog-primary="true"
             onClick={submit}
             disabled={submitting || !provider || !draft.model}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"

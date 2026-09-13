@@ -2,6 +2,7 @@
 
 #include "sha256.hpp"
 #include "tool_errors.hpp"
+#include "../tool/tool_protocol_names.hpp"
 #include "utf8_path.hpp"
 
 #include <algorithm>
@@ -626,7 +627,7 @@ TextBufferResult decode_text_file_bytes(const std::string& bytes,
                                            lossy.replacement_count);
             }
             return fail_decode(path, bytes, TextEncoding::Unsupported,
-                "[Error] UTF-8 BOM file can be read with file_read using lossy decoding, but its bytes are too ambiguous to edit safely.");
+                "[Error] UTF-8 BOM file can be read with " + model_tool_name_for_native("file_read") + " using lossy decoding, but its bytes are too ambiguous to edit safely.");
         }
         return make_decoded_result(path, bytes, body, TextEncoding::Utf8Bom, true);
     }
@@ -679,7 +680,7 @@ TextBufferResult decode_text_file_bytes(const std::string& bytes,
                                        lossy.replacement_count);
         }
         return fail_decode(path, bytes, TextEncoding::Unsupported,
-            "[Error] File can be read with file_read using lossy UTF-8 decoding, but its encoding is too ambiguous to edit safely.");
+            "[Error] File can be read with " + model_tool_name_for_native("file_read") + " using lossy UTF-8 decoding, but its encoding is too ambiguous to edit safely.");
     }
 
 #ifdef _WIN32
@@ -702,7 +703,7 @@ TextBufferResult decode_text_file_bytes(const std::string& bytes,
     }
 
     return fail_decode(path, bytes, TextEncoding::Unsupported,
-        "[Error] File can be read with file_read using lossy decoding, but its encoding is too ambiguous to edit safely.");
+        "[Error] File can be read with " + model_tool_name_for_native("file_read") + " using lossy decoding, but its encoding is too ambiguous to edit safely.");
 }
 
 TextBufferResult decode_text_file_bytes_with_metadata(const std::string& bytes,
@@ -774,7 +775,7 @@ TextEncodeResult encode_text_for_write(const std::string& lf_text,
                                        const TextFileMetadata& metadata) {
     if (metadata.lossy) {
         return {false, {},
-            "[Error] Target file cannot be safely written as text because it was decoded lossily. Use file_read for inspection and convert the file to a confirmed encoding before editing."};
+            "[Error] Target file cannot be safely written as text because it was decoded lossily. Use " + model_tool_name_for_native("file_read") + " for inspection and convert the file to a confirmed encoding before editing."};
     }
     if (metadata.binary || metadata.unsupported ||
         metadata.encoding == TextEncoding::Binary ||

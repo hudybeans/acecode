@@ -123,6 +123,7 @@ function GoalEditModal({ objective, pending, onCancel, onSave }) {
           </button>
           <button
             type="submit"
+            data-ace-dialog-primary="true"
             disabled={!canSave}
             className="flex h-8 min-w-[64px] items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-[12px] text-white hover:opacity-90 disabled:cursor-default disabled:opacity-50"
           >

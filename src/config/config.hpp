@@ -460,6 +460,12 @@ struct SessionTitleConfig {
     int timeout_ms = 15000;
 };
 
+struct SummaryGenerationConfig {
+    bool enabled = false;
+    // A saved_models.name, independent of the current conversation model.
+    std::string model_name;
+};
+
 struct NetworkConfig {
     // "auto"   = Windows: WinHTTP-IE → registry → env → direct;
     //            POSIX: env (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY/NO_PROXY).
@@ -523,6 +529,7 @@ struct AppConfig {
     ConsoleConfig console;                       // 终端类型 / 程序路径(控制台 + bash 工具共用)
     ToolchainsConfig toolchains;                 // Agent 工具链目录(进程 PATH 前缀)
     SessionTitleConfig session_title;            // hidden auto session title generation
+    SummaryGenerationConfig summary_generation; // optional background title model
 
     // --- model profiles (openspec/changes/model-profiles) ---
     // 用户维护的命名模型列表。

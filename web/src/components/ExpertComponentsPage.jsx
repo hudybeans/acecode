@@ -74,10 +74,10 @@ export function ExpertComponentsPage({
     }
   };
 
-  const dispatchToNewTask = async (expert, prompt = '') => {
+  const dispatchToNewTask = async (expert, prompt) => {
     if (!expert?.id || !onDispatchToNewTask) return false;
     try {
-      const accepted = await onDispatchToNewTask(expert, String(prompt || ''));
+      const accepted = await onDispatchToNewTask(expert, prompt);
       if (accepted === false) return false;
       onRememberExpert?.(expert);
       return true;
@@ -200,7 +200,7 @@ export function ExpertComponentsPage({
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)} className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-2 hover:bg-surface-hi disabled:opacity-50">取消</button>
-              <button type="button" disabled={deleting} onClick={confirmDelete} className="h-8 rounded-md bg-danger px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">
+              <button type="button" data-ace-dialog-primary="true" disabled={deleting} onClick={confirmDelete} className="h-8 rounded-md bg-danger px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">
                 {deleting ? '删除中…' : '删除'}
               </button>
             </div>
