@@ -672,6 +672,10 @@ Unknown name → error, no state change. All persisting paths run under `provide
 
 **cwd 一律以 UTF-8 `std::string` 传递,别用 `std::filesystem::path` 当参数类型接它。** `cwd_model_override` 的四个接口曾声明为 `const fs::path&`,而所有调用方手里都是 UTF-8 string —— MSVC 的隐式 `string → path` 转换按系统 ANSI 代码页(中文 Windows = GBK)+ `MB_ERR_INVALID_CHARS` 解码:反斜杠形态的中文路径解成乱码、算错 `<cwd_hash>`(override 静默失效,TUI 与 Web 两边 hash 还不一样);Desktop 注册 workspace 用的正斜杠形态(`E:/SS项目数据库/…`,`库/` = `93 2F`,0x2F 不是合法 GBK 尾字节)直接抛 `std::system_error`,新建/恢复会话变成裸 500,daemon 日志一行线索都没有(2026-09-11 用户反馈)。是否触发取决于目录名里 CJK 连续字符个数的奇偶与后一个字节,所以表现为「有的中文目录能用有的不能」。现在签名改为 `const std::string& cwd_utf8`;新加接 cwd 的函数照此办理,内部需要 `fs::path` 时用 `path_from_utf8`。配套:会话 create/resume 路由把逃逸的 `std::exception` 收成 JSON 500(`SESSION_CREATE_FAILED` / `SESSION_RESUME_FAILED`,带 message 与 cwd)并记 ERR 日志;`server.cpp` 装了 Crow 全局 `exception_handler`(其它路由 → `INTERNAL_ERROR` JSON 500)和 Crow 日志桥(Warning+ 进 daemon-*.log,Info 丢弃 —— Crow 每个响应都打一行 Info)。**Desktop 托管的 daemon stderr 指向 NUL**,任何只写 stderr 的诊断信息在线上都等于没有。回归测试:`tests/provider/cwd_model_override_test.cpp` 的两条 Cjk 用例(hash 与 UTF-8 口径逐字节一致,在 936 与 1252 下修复前都挂)+ `web_server_smoke_test.cpp` 的 `WorkspaceSessionCreateWorksForCjkCwdRegisteredWithForwardSlashes` / `SessionRoutesReportEscapedExceptionsAsJson500` / `UncaughtRouteExceptionBecomesJson500`。
 
+Windows 升级兼容:新 UTF-8 override 文件缺失时,只读回退到当前文件系统代码页下旧版计算的键,依次检查传入拼写、反斜杠和正斜杠形态。旧转换放在受保护的兼容助手里,失败时跳过;已有新文件(含损坏文件)始终优先。新保存只写 UTF-8 键,显式删除同时清理旧键,避免旧模型选择重新生效。对应 `LegacyCwdModelOverrideTest`。
+
+Crow 的 `ResponseCorsMiddleware` 在响应完成时复用 `add_loopback_cors_headers`,让全局异常 JSON 也带上允许的 loopback Origin。路由已经加过头时不重复追加,原有 Token 与来源校验保持不变。
+
 ## CI / Release
 
 `.github/workflows/package.yml` builds Linux x64/arm64, Windows x64/arm64, macOS x64/arm64. Releases auto-cut on `v*` tags.

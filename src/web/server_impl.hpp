@@ -186,6 +186,7 @@ std::string ascii_lower(std::string s);
 bool is_loopback_origin(const std::string& origin);
 bool is_loopback_host(const std::string& host);
 bool is_same_request_origin(const crow::request& req, const std::string& origin);
+void add_loopback_cors_headers(const crow::request& req, crow::response& resp);
 void log_unauthorized(const std::string& path, const std::string& client_ip, const char* reason);
 AuthResult check_explicit_token(std::string_view server_token,
                                  std::string_view header_token,
@@ -217,6 +218,16 @@ struct UpdateJobRuntime {
     std::shared_ptr<acecode::upgrade::DiagnosticLog> diagnostics;
 };
 
+// 在 Crow 完成响应时补齐 CORS,覆盖绕过路由返回助手的全局异常路径。
+struct ResponseCorsMiddleware {
+    struct context {};
+
+    void before_handle(crow::request&, crow::response&, context&) {}
+    void after_handle(crow::request& req, crow::response& resp, context&) {
+        add_loopback_cors_headers(req, resp);
+    }
+};
+
 // =====================================================================
 // WebServer::Impl — hidden pimpl implementation
 // =====================================================================
@@ -226,7 +237,7 @@ struct WebServer::Impl {
     // persist config-file values, but a live bind change must never move the
     // already-running daemon to a different port.
     const int                  runtime_port;
-    crow::SimpleApp            app;
+    crow::App<ResponseCorsMiddleware> app;
 
     // 静态资源 source(EmbeddedAssetSource / FileSystemAssetSource),按
     // web.static_dir 路径在 register_routes 前实例化。

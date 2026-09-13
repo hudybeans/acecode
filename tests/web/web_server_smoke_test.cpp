@@ -1573,6 +1573,11 @@ TEST(WebServerHttp, CorsCrossOriginLoopbackRequiresToken) {
                                            {"X-ACECode-Token", "smoke-token"}});
     EXPECT_EQ(with_token.status_code, 200);
     EXPECT_EQ(response_header(with_token, "Access-Control-Allow-Origin"), origin);
+    const std::string cors_header = "\r\nAccess-Control-Allow-Origin:";
+    const auto first_cors_header = with_token.raw_header.find(cors_header);
+    ASSERT_NE(first_cors_header, std::string::npos);
+    EXPECT_EQ(with_token.raw_header.find(cors_header, first_cors_header + 1),
+              std::string::npos);
 
     auto bad_origin = cpr::Get(cpr::Url{fx.url("/api/sessions")},
                                cpr::Header{{"Origin", "http://example.com"},
@@ -3557,6 +3562,18 @@ TEST(WebServerHttp, UncaughtRouteExceptionBecomesJson500) {
     ASSERT_NO_THROW(body = json::parse(r.text)) << r.text;
     EXPECT_EQ(body.value("error", ""), "INTERNAL_ERROR");
     EXPECT_NE(body.value("message", "").find("boom: destroy"), std::string::npos) << r.text;
+
+    // 支持的跨端口客户端必须能读到相同 JSON,而非被浏览器 CORS 拦截。
+    const std::string origin = "http://localhost:5173";
+    auto cross_origin = cpr::Delete(
+        cpr::Url{fx.url("/api/sessions/20260911-000000-dead")},
+        cpr::Header{{"Origin", origin}, {"X-ACECode-Token", "smoke-token"}});
+    EXPECT_EQ(cross_origin.status_code, 500) << cross_origin.text;
+    EXPECT_EQ(response_header(cross_origin, "Access-Control-Allow-Origin"), origin);
+    EXPECT_EQ(response_header(cross_origin, "Vary"), "Origin");
+    ASSERT_NO_THROW(body = json::parse(cross_origin.text));
+    EXPECT_EQ(body.value("error", ""), "INTERNAL_ERROR");
+    EXPECT_NE(body.value("message", "").find("boom: destroy"), std::string::npos);
 }
 
 TEST(WebServerHttp, WorkspaceHintLoadsInactiveTranscriptFromRequestedProject) {

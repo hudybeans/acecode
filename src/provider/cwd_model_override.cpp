@@ -7,7 +7,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -18,8 +20,43 @@ std::string cwd_model_override_path(const std::string& cwd_utf8) {
     return path_to_utf8(path_from_utf8(project_dir) / "model_override.json");
 }
 
-std::optional<std::string> load_cwd_model_override(const std::string& cwd_utf8) {
-    std::string path = cwd_model_override_path(cwd_utf8);
+namespace {
+
+std::vector<std::string> legacy_override_paths(const std::string& cwd_utf8,
+                                               const std::string& canonical_path) {
+    std::vector<std::string> paths;
+#ifdef _WIN32
+    if (std::none_of(cwd_utf8.begin(), cwd_utf8.end(),
+                     [](unsigned char c) { return c >= 0x80; })) {
+        return paths;
+    }
+
+    std::string native = cwd_utf8;
+    std::replace(native.begin(), native.end(), '/', '\\');
+    std::string generic = cwd_utf8;
+    std::replace(generic.begin(), generic.end(), '\\', '/');
+    for (const auto& spelling : {cwd_utf8, native, generic}) {
+        try {
+            // 仅兼容旧存储键时重现旧版的代码页转换。正斜杠形态可能无法
+            // 解码,但同一目录的 TUI 反斜杠形态仍可能存有可读取的设置。
+            const auto legacy_cwd = path_to_utf8(fs::path(spelling));
+            auto path = cwd_model_override_path(legacy_cwd);
+            if (path != canonical_path &&
+                std::find(paths.begin(), paths.end(), path) == paths.end()) {
+                paths.push_back(std::move(path));
+            }
+        } catch (const std::exception&) {
+            // 旧版不能解析的拼写不会有对应设置,也不能阻塞新会话。
+        }
+    }
+#else
+    (void)cwd_utf8;
+    (void)canonical_path;
+#endif
+    return paths;
+}
+
+std::optional<std::string> read_override_file(const std::string& path) {
     std::error_code ec;
     if (!fs::exists(path_from_utf8(path), ec) || ec) return std::nullopt;
 
@@ -41,6 +78,21 @@ std::optional<std::string> load_cwd_model_override(const std::string& cwd_utf8) 
         LOG_WARN(std::string("[cwd_model_override] parse failure: ") + e.what() + " (" + path + ")");
         return std::nullopt;
     }
+}
+
+} // namespace
+
+std::optional<std::string> load_cwd_model_override(const std::string& cwd_utf8) {
+    const std::string path = cwd_model_override_path(cwd_utf8);
+    std::error_code ec;
+    const bool canonical_exists = fs::exists(path_from_utf8(path), ec);
+    if (ec) return std::nullopt;
+    // 已有新文件即为权威来源,损坏或空值也不能重新启用旧设置。
+    if (canonical_exists) return read_override_file(path);
+    for (const auto& legacy_path : legacy_override_paths(cwd_utf8, path)) {
+        if (auto name = read_override_file(legacy_path)) return name;
+    }
+    return std::nullopt;
 }
 
 void save_cwd_model_override(const std::string& cwd_utf8, const std::string& name) {
@@ -89,11 +141,15 @@ void save_cwd_model_override(const std::string& cwd_utf8, const std::string& nam
 }
 
 void remove_cwd_model_override(const std::string& cwd_utf8) {
-    std::string path = cwd_model_override_path(cwd_utf8);
-    std::error_code ec;
-    fs::remove(path_from_utf8(path), ec);
-    if (ec) {
-        LOG_WARN(std::string("[cwd_model_override] remove failed: ") + ec.message());
+    const std::string path = cwd_model_override_path(cwd_utf8);
+    auto paths = legacy_override_paths(cwd_utf8, path);
+    paths.push_back(path);
+    for (const auto& candidate : paths) {
+        std::error_code ec;
+        fs::remove(path_from_utf8(candidate), ec);
+        if (ec) {
+            LOG_WARN(std::string("[cwd_model_override] remove failed: ") + ec.message());
+        }
     }
 }
 

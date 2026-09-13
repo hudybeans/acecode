@@ -864,6 +864,17 @@ text>"}`; the same text is written to the daemon log as an `ERR` line, so a
 bare `500 Internal Server Error` body no longer occurs for daemon-side
 exceptions.
 
+These responses follow the same loopback CORS policy as successful requests,
+including errors handled by the global exception handler. A supported loopback
+`Origin` receives `Access-Control-Allow-Origin` on the JSON error response;
+cross-origin requests still require the daemon token.
+
+On Windows, directory model settings saved by older versions remain readable
+when the canonical UTF-8 setting is absent. An existing canonical file takes
+priority even if malformed. New saves use the canonical location, while explicit
+removal clears both canonical and applicable legacy copies so an old model
+choice cannot become active again through compatibility lookup.
+
 ### Model-facing thread and workspace tools
 
 Daemon, TUI, and headless runtimes expose the same in-process thread and

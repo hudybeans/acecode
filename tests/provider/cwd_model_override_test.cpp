@@ -200,3 +200,88 @@ TEST(CwdModelOverrideTest, CjkCwdWithBackslashesHashesAsUtf8) {
 
     cleanup(cwd);
 }
+
+#ifdef _WIN32
+namespace {
+
+class LegacyCwdModelOverrideTest : public testing::Test {
+protected:
+    std::string cwd;
+    std::string generic_cwd;
+    std::string canonical_path;
+    std::string legacy_path;
+
+    void SetUp() override {
+        cwd = make_unique_cwd() + "\\资料库\\中文";
+        fs::create_directories(path_from_utf8(cwd));
+        generic_cwd = path_to_utf8_generic(path_from_utf8(cwd));
+        canonical_path = cwd_model_override_path(cwd);
+        try {
+            // 重现旧版签名造成的隐式转换,不使用新版兼容路径计算逻辑。
+            legacy_path = expected_override_path(path_to_utf8(fs::path(cwd)));
+        } catch (const std::exception&) {
+            GTEST_SKIP() << "This code page cannot have saved the legacy fixture";
+        }
+        if (legacy_path == canonical_path) {
+            GTEST_SKIP() << "UTF-8 filesystem code page does not need legacy lookup";
+        }
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        for (const auto& path : {canonical_path, legacy_path}) {
+            if (!path.empty()) fs::remove(path_from_utf8(path), ec);
+        }
+    }
+
+    void write_legacy(const std::string& contents = R"({"model_name":"legacy-model"})") {
+        const auto path = path_from_utf8(legacy_path);
+        fs::create_directories(path.parent_path());
+        std::ofstream out(path);
+        out << contents;
+    }
+};
+
+} // namespace
+
+// 升级后保留旧模型选择;Desktop 正斜杠入口也能找到 TUI 保存的旧键。
+TEST_F(LegacyCwdModelOverrideTest, LoadPreservesLegacyChoiceAcrossSlashForms) {
+    write_legacy();
+    EXPECT_EQ(load_cwd_model_override(cwd), "legacy-model");
+    EXPECT_EQ(load_cwd_model_override(generic_cwd), "legacy-model");
+    EXPECT_FALSE(fs::exists(path_from_utf8(canonical_path)));
+    EXPECT_TRUE(fs::exists(path_from_utf8(legacy_path)));
+}
+
+// 新设置始终优先;即使新文件损坏,也不能回退到已经被覆盖的旧模型。
+TEST_F(LegacyCwdModelOverrideTest, CanonicalFileAlwaysTakesPriority) {
+    write_legacy();
+    save_cwd_model_override(generic_cwd, "new-model");
+    EXPECT_EQ(load_cwd_model_override(cwd), "new-model");
+    {
+        std::ofstream out(path_from_utf8(canonical_path));
+        out << "{ invalid json";
+    }
+    EXPECT_FALSE(load_cwd_model_override(cwd).has_value());
+}
+
+// 兼容文件损坏仍为非致命错误;旧代码页转换失败的正斜杠候选也不能抛出。
+TEST_F(LegacyCwdModelOverrideTest, MalformedLegacyFileDoesNotPreventStartup) {
+    write_legacy("{ invalid json");
+    EXPECT_NO_THROW({
+        EXPECT_FALSE(load_cwd_model_override(generic_cwd).has_value());
+    });
+}
+
+// 显式删除应清理两种存储键,避免下次读取时旧模型重新生效。
+TEST_F(LegacyCwdModelOverrideTest, RemovalClearsLegacyAndCanonicalCopies) {
+    for (bool has_canonical : {false, true}) {
+        write_legacy();
+        if (has_canonical) save_cwd_model_override(cwd, "new-model");
+        remove_cwd_model_override(generic_cwd);
+        EXPECT_FALSE(fs::exists(path_from_utf8(canonical_path)));
+        EXPECT_FALSE(fs::exists(path_from_utf8(legacy_path)));
+        EXPECT_FALSE(load_cwd_model_override(cwd).has_value());
+    }
+}
+#endif

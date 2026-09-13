@@ -491,14 +491,20 @@ std::optional<crow::response> WebServer::Impl::require_auth(const crow::request&
     return resp;
 }
 
-void WebServer::Impl::add_cors(const crow::request& req, crow::response& resp) {
+void add_loopback_cors_headers(const crow::request& req, crow::response& resp) {
     std::string origin = req.get_header_value("Origin");
     if (origin.empty() || !is_loopback_origin(origin)) return;
+    // 路由可提前加头,响应完成的兜底不能重复追加 ACAO,否则浏览器拒收。
+    if (!resp.get_header_value("Access-Control-Allow-Origin").empty()) return;
     resp.add_header("Access-Control-Allow-Origin", origin);
     resp.add_header("Vary", "Origin");
     resp.add_header("Access-Control-Allow-Credentials", "false");
     resp.add_header("Access-Control-Allow-Headers", "Content-Type, X-ACECode-Token");
     resp.add_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+}
+
+void WebServer::Impl::add_cors(const crow::request& req, crow::response& resp) {
+    add_loopback_cors_headers(req, resp);
 }
 
 crow::response WebServer::Impl::with_cors(const crow::request& req, crow::response resp) {

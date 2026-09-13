@@ -17,13 +17,14 @@ namespace acecode {
 
 // 读 override。文件不存在 → nullopt;malformed / 缺字段 / 类型错误 →
 // nullopt + log warning(MUST NOT 抛异常,不阻塞启动)。
+// Windows 仅在 UTF-8 键缺失时兼容读取旧代码页键,读取时不改写文件。
 std::optional<std::string> load_cwd_model_override(const std::string& cwd_utf8);
 
 // 原子写(tmp + rename,Windows 下 rename 失败回退 remove+rename)。
 // 复用 `session_storage.cpp::compute_project_hash(cwd)` 得到 <cwd_hash>。
 void save_cwd_model_override(const std::string& cwd_utf8, const std::string& name);
 
-// 删除 override 文件;文件不存在为 no-op。
+// 删除 override 文件及 Windows 旧代码页副本;文件不存在为 no-op。
 void remove_cwd_model_override(const std::string& cwd_utf8);
 
 // 便捷函数:返回 override 文件的绝对路径(UTF-8)。测试可用。不保证父目录存在。
