@@ -15,7 +15,6 @@ import {
   isIntegerContextWindowKInput,
   MODEL_CAPABILITY_OPTIONS,
   modelCapabilityPresentation,
-  modelNameSlug,
   normalizeModelCapabilities,
   normalizeModelProbeResult,
   parseContextWindowK,
@@ -380,35 +379,75 @@ run('formatContextWindowK 把 token 数显示为不带小数的 K', () => {
   assert.equal(formatContextWindowK(0), '');
 });
 
-run('modelNameSlug 清理不可用字符并避免保留前缀', () => {
-  assert.equal(modelNameSlug('(open router/gpt 4o)'), 'open-router-gpt-4o');
-  assert.equal(modelNameSlug(''), 'model');
-});
-
-run('buildModelDraftsFromSelection 单模型使用输入名称或模型名', () => {
+// 场景:单选、别名留空 → 保存名直接用模型 ID(不再 slug 清洗,`/` 等字符原样保留)。
+run('buildModelDraftsFromSelection 单模型空别名回退模型 ID 原文', () => {
   assert.deepEqual(buildModelDraftsFromSelection({
     name: '', provider: 'copilot', model: 'gpt-4o',
   }), [{
     name: 'gpt-4o', provider: 'copilot', model: 'gpt-4o',
   }]);
+  assert.equal(buildModelDraftsFromSelection({
+    name: '', provider: 'openai', model: 'vendor/model.v1',
+  })[0].name, 'vendor/model.v1');
 });
 
-run('buildModelDraftsFromSelection 多模型生成稳定名称', () => {
+// 场景:单选、用户手填别名 → 原样使用,即便与已存在条目重名也不改
+// (交给后端 NAME_TAKEN → 覆盖 / 另存为流程,不能替用户偷偷改名)。
+run('buildModelDraftsFromSelection 单模型手填别名原样透传且不自动去重', () => {
+  const drafts = buildModelDraftsFromSelection(
+    { name: 'my coding model', provider: 'openai', model: 'gpt-4o' },
+    { existingNames: ['my coding model'] },
+  );
+  assert.deepEqual(drafts.map((d) => d.name), ['my coding model']);
+});
+
+// 场景:单选、空别名、模型 ID 与已保存条目重名 → 自动追加 (1),(1) 也占了就 (2)。
+run('buildModelDraftsFromSelection 单模型空别名撞已有名字时追加 (N)', () => {
+  const drafts = buildModelDraftsFromSelection(
+    { name: '', provider: 'openai', model: 'gpt-4o' },
+    { existingNames: ['gpt-4o', 'gpt-4o(1)'] },
+  );
+  assert.deepEqual(drafts.map((d) => d.name), ['gpt-4o(2)']);
+});
+
+// 场景:多选 → 别名字段是前缀,每条 = <前缀>-<模型 ID>,ID 原文不清洗。
+// 回归:旧实现把「第一个被勾选模型的显示名」当前缀,结果是 <首个模型名>-<其他模型 ID>。
+run('buildModelDraftsFromSelection 多模型按 <前缀>-<模型 ID> 命名', () => {
   const drafts = buildModelDraftsFromSelection({
-    name: 'open router', provider: 'openai', model: 'gpt-4o, anthropic/claude',
+    name: 'ACEModel', provider: 'openai', model: 'gpt-4o, anthropic/claude',
     base_url: 'http://x', api_key: 'sk',
   });
   assert.equal(drafts.length, 2);
-  assert.equal(drafts[0].name, 'open-router-gpt-4o');
+  assert.equal(drafts[0].name, 'ACEModel-gpt-4o');
   assert.equal(drafts[0].model, 'gpt-4o');
-  assert.equal(drafts[1].name, 'open-router-anthropic-claude');
+  assert.equal(drafts[1].name, 'ACEModel-anthropic/claude');
   assert.equal(drafts[1].model, 'anthropic/claude');
 });
 
-run('buildModelDraftsFromSelection 多模型名称冲突时追加后缀', () => {
-  const drafts = buildModelDraftsFromSelection({
-    name: '', provider: 'openai', model: 'a/b, a b, a-b',
-    base_url: 'http://x', api_key: 'sk',
-  });
-  assert.deepEqual(drafts.map((d) => d.name), ['a-b', 'a-b-2', 'a-b-3']);
+// 场景:多选、前缀为空 → 只用模型 ID;同批内与已保存条目里的重名都追加 (N)。
+run('buildModelDraftsFromSelection 多模型空前缀只用模型 ID 并对批内与已有名字去重', () => {
+  const drafts = buildModelDraftsFromSelection(
+    { name: '', provider: 'openai', model: 'a, b, a', base_url: 'http://x', api_key: 'sk' },
+    { existingNames: ['b'] },
+  );
+  // splitModelIds 会去掉重复的第二个 a,所以这里只剩 a 与 b;b 撞已有名字 → b(1)
+  assert.deepEqual(drafts.map((d) => d.name), ['a', 'b(1)']);
+  const prefixed = buildModelDraftsFromSelection(
+    { name: 'X', provider: 'openai', model: 'a, b' },
+    { existingNames: ['X-a', 'X-a(1)'] },
+  );
+  assert.deepEqual(prefixed.map((d) => d.name), ['X-a(2)', 'X-b']);
+});
+
+// 场景:编辑模式只拆不改名 —— 空名保持为空,由 buildModelMutationPayload 报 INVALID_NAME,
+// 不能像新增那样悄悄改成模型 ID 把用户的条目重命名。
+run('buildModelDraftsFromSelection 编辑模式不做任何自动命名', () => {
+  assert.deepEqual(buildModelDraftsFromSelection(
+    { name: '  ', provider: 'openai', model: 'gpt-4o' },
+    { editing: true, existingNames: ['gpt-4o'] },
+  ).map((d) => d.name), ['']);
+  assert.deepEqual(buildModelDraftsFromSelection(
+    { name: 'kept', provider: 'openai', model: 'gpt-4o' },
+    { editing: true, existingNames: ['kept'] },
+  ).map((d) => d.name), ['kept']);
 });
