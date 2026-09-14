@@ -16,6 +16,12 @@ TEST(BuiltinToolRegistry, RegistersSharedCoreAndPlatformBrowserTools) {
 
     EXPECT_TRUE(tools.has_tool("bash"));
     EXPECT_TRUE(tools.has_tool("file_read"));
+    // 三个编辑工具始终注册(GPT 系用 apply_patch,其它用 file_edit / file_write),
+    // 由每次请求按模型裁定义表;apply_patch 是写工具,不能免确认。
+    EXPECT_TRUE(tools.has_tool("file_edit"));
+    EXPECT_TRUE(tools.has_tool("file_write"));
+    EXPECT_TRUE(tools.has_tool("apply_patch"));
+    EXPECT_FALSE(tools.is_read_only("apply_patch"));
     EXPECT_TRUE(tools.has_tool("show_image"));
     EXPECT_TRUE(tools.has_tool("task_complete"));
     EXPECT_TRUE(tools.has_tool("TodoWrite"));

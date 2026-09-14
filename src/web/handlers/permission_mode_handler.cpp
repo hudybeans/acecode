@@ -3,11 +3,8 @@
 namespace acecode::web {
 
 std::optional<PermissionMode> parse_permission_mode_name(const std::string& name) {
-    if (name == "default") return PermissionMode::Default;
-    if (name == "accept-edits" || name == "acceptEdits") return PermissionMode::AcceptEdits;
-    if (name == "yolo") return PermissionMode::Yolo;
-    if (name == "plan") return PermissionMode::Plan;
-    return std::nullopt;
+    // 别名(accept-edits / acceptEdits = auto)集中在 PermissionManager 维护。
+    return PermissionManager::parse_mode_name(name);
 }
 
 nlohmann::json permission_mode_to_json(PermissionMode mode) {

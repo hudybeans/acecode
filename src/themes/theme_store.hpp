@@ -1,17 +1,24 @@
 #pragma once
 
 #include "../upgrade/http.hpp"
+#include "theme_id.hpp"
 
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <nlohmann/json.hpp>
 
 namespace acecode::themes {
+
+struct ThemeRootState;
+struct ThemeExportJob;
 
 struct ThemeError : std::runtime_error {
     int status;
@@ -20,8 +27,9 @@ struct ThemeError : std::runtime_error {
     ThemeError(int status, std::string code, const std::string& message, std::string path = {});
 };
 
-bool is_downloadable_theme(const std::string& id);
 bool valid_theme_definition(const nlohmann::json& definition);
+bool valid_theme_colors(const nlohmann::json& colors);
+bool valid_theme_appearance(const nlohmann::json& appearance);
 bool valid_theme_catalog(const nlohmann::json& catalog);
 
 struct ThemeTransport {
@@ -42,12 +50,27 @@ public:
                ThemeTransport transport = {});
     ~ThemeStore();
     nlohmann::json catalog(bool refresh = false);
+    nlohmann::json claim_startup_theme();
     nlohmann::json definition(const std::string& id) const;
     bool installed(const std::string& id) const;
     std::string image(const std::string& id, const std::string& kind);
     nlohmann::json start(const std::string& id, const nlohmann::json& consent);
     nlohmann::json job() const;
     nlohmann::json cancel();
+    // Validated local package installation. Only ai-* identifiers are accepted;
+    // immutable versions and the installed pointer use the remote store layout.
+    nlohmann::json install_local(const nlohmann::json& definition,
+                                const std::string& background_png,
+                                const std::string& thumbnail_png);
+    nlohmann::json preview_import(const std::string& archive_bytes) const;
+    nlohmann::json import_archive(const std::string& archive_bytes, const std::string& confirmed_sha256);
+    // The picker is trusted native UI, never a destination supplied by HTTP.
+    using ExportSavePicker = std::function<std::optional<std::filesystem::path>(const std::string&)>;
+    nlohmann::json start_export(const std::string& id, const ExportSavePicker& picker = {});
+    nlohmann::json export_job(const std::string& job_id) const;
+    nlohmann::json cancel_export(const std::string& job_id);
+    std::string export_download(const std::string& job_id) const;
+    nlohmann::json remove_local(const std::string& id, const std::function<void()>& commit = {});
 
 private:
     std::filesystem::path root_;
@@ -62,10 +85,16 @@ private:
     nlohmann::json job_ = {{"state", "idle"}};
     std::atomic<bool> cancel_{false};
     std::thread worker_;
+    std::shared_ptr<ThemeRootState> local_state_;
+    mutable std::mutex exports_mu_;
+    std::map<std::string, std::shared_ptr<ThemeExportJob>> exports_;
+    std::shared_ptr<ThemeExportJob> find_export(const std::string& job_id) const;
+    void run_export(const std::shared_ptr<ThemeExportJob>& job);
     nlohmann::json descriptor(const std::string& id);
     std::filesystem::path installed_directory(const std::string& id) const;
     void install(nlohmann::json entry);
     void update_job(const nlohmann::json& patch);
+    nlohmann::json local_catalog() const;
 };
 
 } // namespace acecode::themes

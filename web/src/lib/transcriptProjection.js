@@ -223,7 +223,8 @@ function countTranscriptOnlyTools(items) {
 }
 
 function isFileToolName(name) {
-  return name === 'file_read' || name === 'file_edit' || name === 'file_write';
+  return name === 'file_read' || name === 'file_edit' || name === 'file_write'
+    || name === 'apply_patch';
 }
 
 function summarizeToolItems(items) {
@@ -250,7 +251,10 @@ function summarizeToolItems(items) {
     if (mayDescribeFile && verb === 'created') {
       countObject(created, 'created', index, object);
       countedAsFile = true;
-    } else if (mayDescribeFile && (verb === 'wrote' || verb === 'edited' || verb === 'edit')) {
+    } else if (mayDescribeFile && (verb === 'wrote' || verb === 'edited' || verb === 'edit'
+      || verb === 'patched' || verb === 'deleted')) {
+      // patched / deleted 是 apply_patch 的动词:多文件补丁的 object 是
+      // "N files",按一条"已编辑"计;单文件删除同样归入编辑。
       countObject(edited, 'edited', index, object);
       countedAsFile = true;
     } else if (mayDescribeFile && verb === 'read') {
@@ -266,7 +270,7 @@ function summarizeToolItems(items) {
         countObject(edited, 'edited', index, object);
       }
       countedAsFile = true;
-    } else if (name === 'file_edit') {
+    } else if (name === 'file_edit' || name === 'apply_patch') {
       countObject(edited, 'edited', index, object);
       countedAsFile = true;
     } else if (name === 'file_read') {

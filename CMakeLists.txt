@@ -7,7 +7,7 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.14 LANGUAGES C CXX)
+project(acecode VERSION 0.9.15 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
 
@@ -206,6 +206,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
 )
 
 set(ACECODE_DESKTOP_SUPPORT_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/desktop/application_icon.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_supervisor.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/desktop_about.cpp

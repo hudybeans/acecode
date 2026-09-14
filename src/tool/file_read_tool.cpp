@@ -2,6 +2,7 @@
 
 #include "mtime_tracker.hpp"
 #include "tool_icons.hpp"
+#include "tool_protocol_names.hpp"
 #include "utils/encoding.hpp"
 #include "utils/file_operations.hpp"
 #include "utils/logger.hpp"
@@ -252,17 +253,22 @@ std::string format_read_metadata_footer(
 std::string format_file_unchanged_stub(
     const MtimeTracker::ReadObservation& observation
 ) {
+    const std::string read_name = model_tool_name_for_native("file_read");
     std::ostringstream oss;
     oss << kFileUnchangedStub
-        << " The previous file_read result for this same file/window is still current.";
+        << " The previous " << read_name
+        << " result for this same file/window is still current.";
     if (!observation.tool_call_id.empty()) {
-        oss << "\nPrevious file_read tool_call_id: " << observation.tool_call_id;
+        oss << "\nPrevious " << read_name
+            << " tool_call_id: " << observation.tool_call_id;
     }
     if (!observation.persisted_output_path.empty()) {
         oss << "\nFull previous output path: " << observation.persisted_output_path
-            << "\nIf full content is needed, call file_read on that saved output path.";
+            << "\nIf full content is needed, call " << read_name
+            << " on that saved output path.";
     }
-    oss << "\nDo not call file_read on the original file/window again unless the "
+    oss << "\nDo not call " << read_name
+        << " on the original file/window again unless the "
            "file changed or a different window is needed.";
     return oss.str();
 }
@@ -973,7 +979,8 @@ ToolResult execute_file_read(
 
     if (presentation.automatic_truncation) {
         if (!content.empty() && content.back() != '\n') content += "\n";
-        content += "[truncated: file_read returned at most " +
+        content += "[truncated: " + model_tool_name_for_native("file_read") +
+                   " returned at most " +
                    std::to_string(kFileReadContentLimit) +
                    " content bytes.";
         if (presentation.next_line.has_value()) {

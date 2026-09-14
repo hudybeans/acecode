@@ -5,6 +5,7 @@
 #include "provider/dsml_tool_call_recovery.hpp"
 #include "stub_provider.hpp"
 #include "tool/tool_executor.hpp"
+#include "tool/tool_protocol_names.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -167,6 +168,10 @@ public:
     }
 
 private:
+    // 边界测试验证的是「映射生效时」的双向翻译;进程默认不重写,所以在
+    // 注册工具之前先把内置种子映射发布出去,析构时恢复。
+    acecode::ScopedModelToolNameMappings scoped_mappings_{
+        acecode::default_model_tool_name_mappings()};
     std::string cwd_;
     std::shared_ptr<acecode::LlmProvider> provider_;
     std::shared_ptr<acecode_test::StubLlmProvider> stub_provider_;

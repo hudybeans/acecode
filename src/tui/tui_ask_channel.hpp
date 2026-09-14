@@ -34,9 +34,8 @@ struct TuiState;
 namespace tui {
 
 // 阻塞直到用户回答 / 超时 / 中止。
-//   timeout_seconds > 0 —— 到期返回 timed_out=true(不代填答案,采纳推荐项
-//                          由工具层的 make_timeout_adopted_ask_result 负责,
-//                          与 daemon 路径同一处)。
+//   timeout_seconds > 0 —— 到期返回 timed_out=true;会话保留已有答案,
+//                          未答题按显式 Recommended 标记收卷。
 //   timeout_seconds = 0 —— 无限期等待。
 //   origin_label        —— 非空时在 overlay 顶部标注提问来源(子代理场景)。
 nlohmann::json ask_via_tui_overlay(TuiState& state,

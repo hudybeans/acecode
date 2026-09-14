@@ -115,6 +115,7 @@ export const zhCN = {
       btw: '提出一个独立的单回合旁路问题',
       side: '/btw 的别名',
       lsp: '显示 LSP 服务器状态（已连接、异常或未安装）',
+      sandbox: '显示沙盒状态，或切换本会话的沙盒开关',
       rc: '/remote-control 的别名',
       remoteControl: '启用已配置的频道插件，或管理手动远程控制 Webhook',
     },

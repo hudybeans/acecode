@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>主题工坊 · ACECode</title>
+  <link rel="icon" href="assets/acecode-logo.png">
+  <link rel="stylesheet" href="workshop.css">
+  <script src="workshop.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到主题列表</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="./" aria-label="ACECode 主题工坊首页"><img src="assets/acecode-logo.png" width="34" height="34" alt=""><strong>ACECode</strong><span>主题工坊</span></a>
+      <nav aria-label="工坊导航"><a id="public-link" href="./" hidden>返回工坊</a><button class="primary" id="upload-open" type="button"><span data-icon="upload"></span>上传主题</button><button id="logout" type="button" hidden>退出管理</button></nav>
+    </div>
+  </header>
+  <main id="main" class="page">
+    <div class="intro"><div><h1 id="page-title">让灵感成为你的主题</h1><p id="page-description">发现喜欢的配色与壁纸，为 ACECode 换一种心情。</p></div><p class="intro-note" id="review-note"><span data-icon="check"></span>每一份公开主题，均经管理员确认</p></div>
+    <section id="login-panel" class="login-panel" hidden aria-labelledby="login-title">
+      <span class="login-mark" data-icon="lock"></span><h2 id="login-title">管理员登录</h2><p>登录后预览和审核用户提交的主题。</p>
+      <form id="login-form"><label for="admin-key">管理密钥</label><input id="admin-key" type="password" autocomplete="current-password" required maxlength="256" placeholder="输入管理密钥"><p id="login-error" class="error" role="alert" hidden></p><button class="primary" type="submit">登录</button></form>
+    </section>
+    <section id="catalogue" aria-label="主题目录">
+      <div class="toolbar">
+        <label class="search"><span data-icon="search"></span><span class="sr-only">搜索主题</span><input id="search" type="search" placeholder="搜索主题名称" maxlength="256" autocomplete="off"></label>
+        <div class="filters" id="mode-filters" role="group" aria-label="主题色系"><button type="button" data-mode="all" aria-pressed="true">全部</button><button type="button" data-mode="light" aria-pressed="false"><span data-icon="sun"></span>浅色</button><button type="button" data-mode="dark" aria-pressed="false"><span data-icon="moon"></span>深色</button></div>
+        <label class="sort"><span class="sr-only">主题排序</span><select id="sort"><option value="latest">最新上传</option><option value="name">按名称排序</option></select></label>
+      </div>
+      <div id="review-filters" class="review-filters" role="group" aria-label="审核状态" hidden><button type="button" data-status="pending" aria-pressed="true">待审核</button><button type="button" data-status="approved" aria-pressed="false">已通过</button><button type="button" data-status="rejected" aria-pressed="false">已驳回</button></div>
+      <div class="results-line"><span id="result-count" role="status" aria-live="polite">正在读取主题…</span><button id="refresh" class="text-button" type="button"><span data-icon="refresh"></span>刷新</button></div>
+      <div id="load-error" class="error-panel" role="alert" hidden><span data-icon="alert"></span><div><strong>暂时无法读取主题</strong><p id="load-error-message"></p><button id="retry" type="button">重试</button></div></div>
+      <div id="theme-grid" class="theme-grid" aria-busy="true"></div>
+      <div id="empty" class="empty" hidden><span data-icon="palette"></span><h2 id="empty-title">还没有公开主题</h2><p id="empty-copy">上传你的第一份主题，管理员确认后将在这里展示。</p><button id="empty-upload" class="primary" type="button">上传主题</button></div>
+      <nav class="pagination" id="pagination" aria-label="目录分页" hidden><button id="previous" type="button">上一页</button><span id="page-number"></span><button id="next" type="button">下一页</button></nav>
+    </section>
+  </main>
+  <footer class="footer"><span>ACECode 主题工坊</span><span>下载主题 ZIP 后，在「设置 → 外观 → 本地导入」中使用。</span><a id="admin-link" href="admin">管理员入口</a></footer>
+  <dialog id="upload-dialog" aria-labelledby="upload-title">
+    <div class="dialog-header"><h2 id="upload-title">上传主题</h2><button class="icon-button close-dialog" type="button" aria-label="关闭上传"><span data-icon="close"></span></button></div>
+    <div class="dialog-body">
+      <input type="file" id="theme-file" accept=".zip,application/zip" hidden>
+      <button class="dropzone" id="dropzone" type="button"><span data-icon="upload"></span><strong>拖入主题 ZIP，或选择文件</strong><span>从 ACECode 导出的完整主题包 · 最大 16 MB</span></button>
+      <div id="upload-file-row" class="file-row" hidden><span id="upload-filename"></span><button id="change-file" class="text-button" type="button">更换文件</button></div>
+      <div id="upload-progress-row" class="upload-progress" hidden><div><span id="upload-progress-label">正在读取主题包…</span><span id="upload-percent"></span></div><progress id="upload-progress" max="100" aria-label="主题上传进度"></progress></div>
+      <section id="upload-preview" class="upload-preview" hidden aria-label="待上传主题预览"><img id="upload-thumbnail" src="assets/acecode-light.png" loading="lazy" alt="待上传主题预览"><h3 id="upload-name"></h3><p id="upload-meta" class="muted"></p><div id="upload-swatches" class="swatches"></div><dl id="upload-details" class="details"></dl></section>
+      <p id="upload-error" class="error" role="alert" hidden></p>
+      <p id="upload-policy" class="helper">主题信息会从包中读取。提交后进入待审核，通过后公开展示。</p>
+      <div id="upload-success" class="success-state" role="status" hidden><span data-icon="check"></span><h3>已提交，等待管理员确认</h3><p>审核通过后，主题会出现在工坊公开列表中。</p></div>
+    </div>
+    <div class="dialog-footer"><button id="upload-cancel" type="button">取消</button><button id="upload-submit" class="primary" type="button" disabled>提交审核</button></div>
+  </dialog>
+  <dialog id="preview-dialog" class="wide-dialog" aria-labelledby="preview-title">
+    <div class="dialog-header"><div><h2 id="preview-title"></h2><p id="preview-meta" class="muted"></p></div><button class="icon-button close-dialog" type="button" aria-label="关闭预览"><span data-icon="close"></span></button></div>
+    <div class="dialog-body preview-body"><div class="preview-tabs" role="group" aria-label="预览内容"><button type="button" data-preview="theme" aria-pressed="true">主题预览</button><button type="button" data-preview="template" aria-pressed="false">基础模板</button></div><img id="preview-image" class="large-preview" src="assets/acecode-light.png" loading="lazy" alt="主题预览"><div class="preview-info"><div><h3>主题配色</h3><div id="preview-swatches" class="swatches"></div></div><dl id="preview-details" class="details"></dl></div><p id="review-error" class="error" role="alert" hidden></p></div>
+    <div class="dialog-footer"><span id="preview-status" class="muted"></span><button id="reject" class="danger-button" type="button" hidden>驳回</button><button id="approve" class="primary" type="button" hidden>通过审核</button><a id="preview-download" class="button primary" download><span data-icon="download"></span>下载主题</a></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <noscript><p class="empty">请启用 JavaScript，以浏览、上传和下载主题。</p></noscript>
+</body>
+</html>

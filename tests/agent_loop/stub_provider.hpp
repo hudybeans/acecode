@@ -230,11 +230,20 @@ public:
 
     std::string name() const override { return "stub"; }
     bool is_authenticated() override { return true; }
-    std::string model() const override { return "stub-1"; }
-    void set_model(const std::string& /*m*/) override {}
+    // 默认 "stub-1";测试可 set_model("gpt-5") 之类切换模型族行为
+    // (apply_patch / 模型族提示)。
+    std::string model() const override {
+        std::lock_guard<std::mutex> lk(mu_);
+        return model_;
+    }
+    void set_model(const std::string& m) override {
+        std::lock_guard<std::mutex> lk(mu_);
+        model_ = m;
+    }
 
 private:
     mutable std::mutex mu_;
+    std::string model_ = "stub-1";
     std::vector<ScriptedResponse> responses_;
     std::vector<std::vector<acecode::ChatMessage>> request_messages_;
     std::vector<std::vector<acecode::ToolDef>> request_tools_;

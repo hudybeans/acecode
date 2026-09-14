@@ -6,6 +6,7 @@
 
 #include "settings_center.hpp"
 
+#include "../../permissions.hpp"
 #include "../../config/request_headers.hpp"
 #include "../../config/settings_mutations.hpp"
 #include "../../desktop/workspace_registry.hpp"
@@ -676,9 +677,10 @@ struct SettingsCenter::Impl {
 
     void sync_from_config() {
         if (!deps.config) return;
-        const std::string permission = deps.config->default_permission_mode;
+        const std::string permission =
+            PermissionManager::canonical_mode_name(deps.config->default_permission_mode);
         permission_index =
-            permission == "accept-edits" ? 1 :
+            permission == "auto" ? 1 :
             permission == "plan" ? 2 :
             permission == "yolo" ? 3 : 0;
         notifications_enabled = deps.config->desktop.notifications.enabled;
@@ -693,7 +695,7 @@ struct SettingsCenter::Impl {
 
     void persist_permission() {
         static const std::array<const char*, 4> values = {
-            "default", "accept-edits", "plan", "yolo",
+            "default", "auto", "plan", "yolo",
         };
         const auto result = set_default_permission_mode(
             values[static_cast<std::size_t>(

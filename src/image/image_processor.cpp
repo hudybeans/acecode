@@ -188,7 +188,7 @@ ImageNormalizeResult normalize_image_bytes(
     const int max_dim = std::max(info->width, info->height);
     const bool size_trigger = bytes.size() >= options.compression_threshold_bytes;
     const bool dimension_trigger = options.max_edge > 0 && max_dim > options.max_edge;
-    if (!options.force && !size_trigger && !dimension_trigger) {
+    if (!options.force && !options.force_png && !size_trigger && !dimension_trigger) {
         result.ok = true;
         result.reason = "below thresholds";
         result.output = result.input;
@@ -271,7 +271,7 @@ ImageNormalizeResult normalize_image_bytes(
 
     std::string out_mime;
     std::string encoded;
-    if (alpha) {
+    if (alpha || options.force_png) {
         out_mime = "image/png";
         encoded = encode_png(output_pixels, out_width, out_height);
     } else {
@@ -296,7 +296,7 @@ ImageNormalizeResult normalize_image_bytes(
                  " final_max=" + std::to_string(options.final_max_bytes));
         return result;
     }
-    if (!dimension_trigger &&
+    if (!options.force_png && !dimension_trigger &&
         encoded.size() >= bytes.size() &&
         bytes.size() <= options.final_max_bytes) {
         result.ok = true;

@@ -2,6 +2,7 @@
 #include "environment/terminal_runtime.hpp"
 #include "tool/bash_tool.hpp"
 #include <nlohmann/json.hpp>
+#include "../sandbox/test_support.hpp"
 
 namespace {
 class BashToolShellTest : public testing::Test {
@@ -42,3 +43,25 @@ TEST_F(BashToolShellTest, FailedDetectionReportsAnErrorInsteadOfExecutingAnother
     EXPECT_NE(result.output.find("launch denied"), std::string::npos);
     EXPECT_EQ(result.output.find("should-not-run"), std::string::npos);
 }
+
+#if defined(__linux__)
+TEST_F(BashToolShellTest, MissingSandboxBackendNeverRunsTheCommandWithoutRestrictions) {
+    acecode::environment::terminal().reset_for_test();
+    acecode::sandbox::test::TempTree tree;
+    acecode::ToolContext context;
+    context.cwd = acecode::path_to_utf8(tree.root);
+    acecode::sandbox::ExecSandboxRequest request;
+    request.policy.mode = acecode::sandbox::SandboxMode::ReadOnly;
+    request.backend = acecode::sandbox::BackendKind::LinuxBwrap;
+    request.backend_executable = acecode::path_to_utf8(tree.root / "missing-bwrap");
+    context.exec_sandbox = request;
+    auto result = acecode::create_bash_tool().execute(R"({"command":"touch should-not-exist"})", context);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.metadata.value("sandbox_unavailable", false));
+    EXPECT_FALSE(std::filesystem::exists(tree.root / "should-not-exist"));
+    context.exec_sandbox.reset();
+    auto ordinary_failure = acecode::create_bash_tool().execute(R"({"command":"exit 127"})", context);
+    EXPECT_FALSE(ordinary_failure.success);
+    EXPECT_FALSE(ordinary_failure.metadata.value("sandbox_unavailable", false));
+}
+#endif

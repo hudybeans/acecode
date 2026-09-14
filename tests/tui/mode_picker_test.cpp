@@ -11,8 +11,8 @@ TEST(ModePicker, BuildsAllModesInCommandOrder) {
     ASSERT_EQ(options.size(), 4u);
     EXPECT_EQ(options[0].mode, PermissionMode::Default);
     EXPECT_EQ(options[0].name, "default");
-    EXPECT_EQ(options[1].mode, PermissionMode::AcceptEdits);
-    EXPECT_EQ(options[1].name, "accept-edits");
+    EXPECT_EQ(options[1].mode, PermissionMode::Auto);
+    EXPECT_EQ(options[1].name, "auto");
     EXPECT_EQ(options[2].mode, PermissionMode::Plan);
     EXPECT_EQ(options[2].name, "plan");
     EXPECT_EQ(options[3].mode, PermissionMode::Yolo);

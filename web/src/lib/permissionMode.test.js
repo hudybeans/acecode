@@ -13,7 +13,8 @@ function run(name, fn) {
 
 run('permission mode normalizes daemon canonical names', () => {
   assert.equal(normalizePermissionMode('default'), 'default');
-  assert.equal(normalizePermissionMode('accept-edits'), 'accept-edits');
+  assert.equal(normalizePermissionMode('auto'), 'auto');
+  assert.equal(normalizePermissionMode('accept-edits'), 'auto');
   assert.equal(normalizePermissionMode('yolo'), 'yolo');
 });
 
@@ -22,14 +23,14 @@ run('permission mode exposes the three desktop permission options', () => {
     PERMISSION_MODES.map(({ id, label }) => ({ id, label })),
     [
       { id: 'default', label: '默认权限' },
-      { id: 'accept-edits', label: '自动接收编辑' },
+      { id: 'auto', label: '自动模式' },
       { id: 'yolo', label: '完全访问权限' },
     ],
   );
 });
 
 run('permission mode accepts legacy camelCase UI value', () => {
-  assert.equal(normalizePermissionMode('acceptEdits'), 'accept-edits');
+  assert.equal(normalizePermissionMode('acceptEdits'), 'auto');
 });
 
 run('permission mode falls back to default for invalid values', () => {

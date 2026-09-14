@@ -1,8 +1,10 @@
 #include "config.hpp"
 
+#include "permissions.hpp"
 #include "config_recovery.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
+#include "../themes/theme_id.hpp"
 #include "../utils/constants.hpp"
 #include "../utils/atomic_file.hpp"
 #include "../utils/logger.hpp"
@@ -30,6 +32,14 @@ namespace acecode {
 namespace {
 
 std::atomic<bool> g_acecode_home_created_by_process{false};
+
+// Call only for integer JSON values. Compare before narrowing so large signed
+// or unsigned values clamp to the intended boundary instead of wrapping.
+int clamp_config_integer(const nlohmann::json& value, int minimum, int maximum) {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value.get<int>();
+}
 
 class ConfigLoadFailure final : public std::runtime_error {
 public:
@@ -86,9 +96,10 @@ bool is_one_of(const std::string& value, std::initializer_list<const char*> allo
 }
 
 std::string normalize_permission_mode_name(std::string value) {
-    if (value == "acceptEdits") value = "accept-edits";
-    if (is_one_of(value, {"default", "accept-edits", "plan", "yolo"})) {
-        return value;
+    // 别名(accept-edits / acceptEdits → auto)集中在 PermissionManager 维护;
+    // 老配置里的 accept-edits 读进来即归一成 auto,下次保存写 auto。
+    if (auto parsed = PermissionManager::parse_mode_name(value)) {
+        return PermissionManager::mode_name(*parsed);
     }
     if (!value.empty()) {
         LOG_WARN("[config] default_permission_mode='" + value +
@@ -206,7 +217,8 @@ bool is_valid_web_ui_theme(const std::string& theme) {
 }
 
 bool is_valid_web_ui_color_theme(const std::string& color_theme) {
-    return color_theme == "blue" || color_theme == "orange" || color_theme == "eva-01";
+    return color_theme == "blue" || color_theme == "orange" || themes::is_downloadable_theme(color_theme) ||
+        themes::is_local_theme(color_theme);
 }
 
 bool is_valid_web_ui_font_size(const std::string& font_size) {
@@ -498,7 +510,7 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("web_ui.theme must be one of: system, light, dark");
     }
     if (!is_valid_web_ui_color_theme(cfg.web_ui.color_theme)) {
-        errors.push_back("web_ui.color_theme must be one of: blue, orange, eva-01");
+        errors.push_back("web_ui.color_theme must be blue, orange, eva-01, national-day-2026, or a valid ai- theme ID");
     }
     if (!is_valid_web_ui_font_size(cfg.web_ui.font_size)) {
         errors.push_back("web_ui.font_size must be one of: small, medium, large");
@@ -840,6 +852,28 @@ static AppConfig load_config_from_path_once(
                 j["default_permission_mode"].is_string()) {
                 cfg.default_permission_mode = normalize_permission_mode_name(
                     j["default_permission_mode"].get<std::string>());
+            }
+            // 沙盒段(openspec add-auto-mode-sandbox)。缺省 → enabled、不放行
+            // 网络、无额外可写根。非法条目静默跳过,不阻塞启动。
+            if (j.contains("sandbox") && j["sandbox"].is_object()) {
+                const auto& sj = j["sandbox"];
+                if (sj.contains("enabled") && sj["enabled"].is_boolean()) {
+                    cfg.sandbox.enabled = sj["enabled"].get<bool>();
+                }
+                if (sj.contains("network_access") && sj["network_access"].is_boolean()) {
+                    cfg.sandbox.network_access = sj["network_access"].get<bool>();
+                }
+                if (sj.contains("exclude_tmpdir") && sj["exclude_tmpdir"].is_boolean()) {
+                    cfg.sandbox.exclude_tmpdir = sj["exclude_tmpdir"].get<bool>();
+                }
+                if (sj.contains("writable_roots") && sj["writable_roots"].is_array()) {
+                    for (const auto& item : sj["writable_roots"]) {
+                        if (item.is_string() && !item.get<std::string>().empty() &&
+                            path_from_utf8(item.get<std::string>()).is_absolute()) {
+                            cfg.sandbox.writable_roots.push_back(item.get<std::string>());
+                        }
+                    }
+                }
             }
             if (j.contains("features") && j["features"].is_object()) {
                 const auto& fj = j["features"];
@@ -1314,11 +1348,10 @@ static AppConfig load_config_from_path_once(
                         if (!value.is_number_integer()) {
                             LOG_WARN("[config] ask.max_questions must be an integer; ignoring");
                         } else {
-                            const int configured = value.get<int>();
-                            const int normalized = std::clamp(configured, 1, 50);
-                            if (configured != normalized) {
+                            const int normalized = clamp_config_integer(value, 1, 50);
+                            if (value != normalized) {
                                 LOG_WARN("[config] ask.max_questions=" +
-                                         std::to_string(configured) +
+                                         value.dump() +
                                          " is outside [1, 50]; clamping to " +
                                          std::to_string(normalized));
                             }
@@ -1379,11 +1412,10 @@ static AppConfig load_config_from_path_once(
                                      " must be an integer; ignoring");
                             return;
                         }
-                        const int configured = value.get<int>();
-                        const int normalized = std::clamp(configured, minimum, maximum);
-                        if (configured != normalized) {
+                        const int normalized = clamp_config_integer(value, minimum, maximum);
+                        if (value != normalized) {
                             LOG_WARN(std::string("[config] tui.") + key + "=" +
-                                     std::to_string(configured) + " is outside [" +
+                                     value.dump() + " is outside [" +
                                      std::to_string(minimum) + ", " +
                                      std::to_string(maximum) + "]; clamping to " +
                                      std::to_string(normalized));
@@ -1545,6 +1577,17 @@ static AppConfig load_config_from_path_once(
                     read_dir("node", cfg.toolchains.node);
                     read_dir("csharp", cfg.toolchains.csharp);
                 }
+            }
+
+            if (j.contains("summary_generation")) {
+                const auto& summary = j["summary_generation"];
+                if (!summary.is_object() ||
+                    (summary.contains("enabled") && !summary["enabled"].is_boolean()) ||
+                    (summary.contains("model_name") && !summary["model_name"].is_string())) {
+                    throw std::runtime_error("summary_generation must contain a boolean enabled and a string model_name");
+                }
+                cfg.summary_generation.enabled = summary.value("enabled", false);
+                cfg.summary_generation.model_name = summary.value("model_name", std::string{});
             }
 
             if (j.contains("session_title")) {
@@ -2174,6 +2217,19 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             normalize_permission_mode_name(cfg.default_permission_mode);
     }
 
+    {
+        SandboxConfig sandbox_d;
+        nlohmann::json sbj = nlohmann::json::object();
+        if (cfg.sandbox.enabled != sandbox_d.enabled) sbj["enabled"] = cfg.sandbox.enabled;
+        if (cfg.sandbox.network_access != sandbox_d.network_access)
+            sbj["network_access"] = cfg.sandbox.network_access;
+        if (cfg.sandbox.exclude_tmpdir != sandbox_d.exclude_tmpdir)
+            sbj["exclude_tmpdir"] = cfg.sandbox.exclude_tmpdir;
+        if (!cfg.sandbox.writable_roots.empty())
+            sbj["writable_roots"] = cfg.sandbox.writable_roots;
+        if (!sbj.empty()) j["sandbox"] = sbj;
+    }
+
     SkillsConfig skills_d;
     if (!cfg.skills.disabled.empty() ||
         !cfg.skills.external_dirs.empty() ||
@@ -2382,6 +2438,13 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         if (cfg.ui.locale != ui_d.locale) {
             j["ui"]["locale"] = cfg.ui.locale;
         }
+
+        nlohmann::json summary = nlohmann::json::object();
+        if (cfg.summary_generation.enabled)
+            summary["enabled"] = true;
+        if (!cfg.summary_generation.model_name.empty())
+            summary["model_name"] = cfg.summary_generation.model_name;
+        if (!summary.empty()) j["summary_generation"] = std::move(summary);
 
         SessionTitleConfig st_d;
         nlohmann::json stj = nlohmann::json::object();

@@ -243,7 +243,7 @@ run('create session preferences normalize removed plan mode to default', () => {
 
 run('create session preferences normalize permission mode aliases', () => {
   const next = withCreateSessionPreferences({}, { permissionMode: 'acceptEdits' });
-  assert.deepEqual(next, { permission_mode: 'accept-edits' });
+  assert.deepEqual(next, { permission_mode: 'auto' });
 });
 
 run('create session preferences omit empty permission mode', () => {

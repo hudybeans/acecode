@@ -600,6 +600,7 @@ export function PathPickerModal({
             </button>
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={confirm}
               disabled={!target}
               className="h-8 min-w-[108px] px-3 rounded-lg bg-accent text-white text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100"

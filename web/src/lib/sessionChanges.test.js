@@ -62,6 +62,38 @@ run('latestTurnSuccessfulChangedFiles falls back to file tool arguments without 
   ]), ['empty.txt', 'src/a.js']);
 });
 
+// 场景:apply_patch 只删除文件(没有可渲染的 hunk)但 metadata.files 列出了路径。
+// 期望:回退到 metadata.files 的 path,面板刷新能找到被删的文件;失败的调用不计。
+run('latestTurnSuccessfulChangedFiles falls back to apply_patch metadata.files', () => {
+  assert.deepEqual(latestTurnSuccessfulChangedFiles([
+    { kind: 'msg', role: 'user', id: 1 },
+    { kind: 'tool', tool: { isDone: true, success: true, tool: 'apply_patch', hunks: [], metadata: { files: [{ path: 'gone.txt', type: 'delete' }, { path: 'src/x.js', type: 'update' }] } } },
+    { kind: 'tool', tool: { isDone: true, success: false, tool: 'apply_patch', hunks: [], metadata: { files: [{ path: 'never.txt', type: 'add' }] } } },
+  ]), ['gone.txt', 'src/x.js']);
+});
+
+// 场景:apply_patch 一次结果含两个文件的 hunk(每个 hunk 带 file 与 per-hunk 统计)。
+// 期望:aggregateHunksFromMessages 按 hunk.file 分组成两个文件,加删行取 per-hunk
+// 统计而不是 message 级的 "+3/-1"(多文件时 message 级数字无法归属到单个文件)。
+run('aggregateHunksFromMessages groups multi-file apply_patch hunks by hunk.file', () => {
+  const groups = aggregateHunksFromMessages([
+    {
+      role: 'tool',
+      file: '2 files',
+      additions: 3,
+      deletions: 1,
+      hunks: [
+        { file: 'a.txt', additions: 2, deletions: 0, old_start: 0, old_count: 0, new_start: 1, new_count: 2, lines: [] },
+        { file: 'b.txt', additions: 1, deletions: 1, old_start: 1, old_count: 1, new_start: 1, new_count: 1, lines: [] },
+      ],
+    },
+  ]);
+  assert.deepEqual(groups.map((g) => [g.file, g.totalAdditions, g.totalDeletions, g.hunks.length]), [
+    ['a.txt', 2, 0, 1],
+    ['b.txt', 1, 1, 1],
+  ]);
+});
+
 run('latestTurnSuccessfulChangedFiles requires a user-turn boundary', () => {
   assert.deepEqual(latestTurnSuccessfulChangedFiles([
     { kind: 'tool', tool: { isDone: true, success: true, tool: 'file_write', args: { path: 'a.js' }, hunks: [] } },

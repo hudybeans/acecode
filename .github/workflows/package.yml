@@ -582,7 +582,7 @@ jobs:
                 exit 1
               fi
               cp "build/acecode-desktop" "$package_dir/"
-              cp "web/dist/acecode-logo.png" "$package_dir/"
+              cp "build/acecode-logo.png" "$package_dir/"
             fi
           fi
           legacy="$(find "$package_dir" -maxdepth 1 -iname 'ace-browser-*' -print -quit)"
@@ -1102,7 +1102,7 @@ jobs:
               exit 1
             fi
             cp "build/acecode-desktop" "$package_dir/"
-            cp "web/dist/acecode-logo.png" "$package_dir/"
+            cp "build/acecode-logo.png" "$package_dir/"
           fi
 
           legacy="$(find "$package_dir" -maxdepth 1 -iname 'ace-browser-*' -print -quit)"

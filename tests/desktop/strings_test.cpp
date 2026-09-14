@@ -49,6 +49,8 @@ TEST(DesktopStrings, FolderPickerAndDaemonFailuresUseSelectedLocale) {
               "导出会话");
     EXPECT_EQ(desktop_string(DesktopStringId::SessionExportSavePrompt, "en-US"),
               "Save");
+    EXPECT_EQ(desktop_string(DesktopStringId::ThemeExportSaveTitle, "zh-CN"), "导出主题");
+    EXPECT_EQ(desktop_string(DesktopStringId::ThemeExportZipType, "en-US"), "Theme package (*.zip)");
     EXPECT_NE(format_daemon_workspace_failed_message(
                   u8"用户项目", "exit 1", "en-US").find(u8"用户项目"),
               std::string::npos);

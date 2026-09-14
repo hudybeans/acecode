@@ -407,7 +407,7 @@ TEST(AgentLoopDoomGuardIntegration, SemanticBashGuardSkipsExecutionAndContinues)
 
     ASSERT_TRUE(h.submit_and_wait());
     EXPECT_EQ(h.bash_executions(), 2);
-    EXPECT_EQ(h.permission_prompts(), 2);
+    EXPECT_EQ(h.permission_prompts(), 0); // 已知只读命令由 exec 策略免确认，重复守卫仍只执行两次。
     EXPECT_EQ(h.turn_count(), 2);
 
     bool saw_guard_result = false;

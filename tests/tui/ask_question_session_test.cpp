@@ -62,6 +62,19 @@ TEST(AskQuestionSessionTest, DoubleEscapeCancelsOnlyWithinWindow) {
     EXPECT_TRUE(session.finished());
 }
 
+TEST(AskQuestionSessionTest, LayoutScrollSynchronizationPreservesDoubleEscape) {
+    const auto start = AskQuestionSession::TimePoint{};
+    AskQuestionSession session({question()}, {}, {}, 0, start);
+    session.dispatch({AskQuestionEventKind::BeginCustom}, start);
+    session.dispatch({AskQuestionEventKind::InsertText, -1, 0, "long\ndraft"}, start);
+    session.escape(start);
+    session.dispatch({AskQuestionEventKind::SetScrollOffset, -1, 1},
+                     start + std::chrono::milliseconds(20));
+    session.escape(start + std::chrono::milliseconds(200));
+    ASSERT_TRUE(session.completion().has_value());
+    EXPECT_TRUE(session.completion()->cancelled);
+}
+
 TEST(AskQuestionSessionTest, LateSecondEscapeStartsNewLocalEscape) {
     const auto start = AskQuestionSession::TimePoint{};
     AskQuestionSession session({question()}, {}, {}, 0, start);

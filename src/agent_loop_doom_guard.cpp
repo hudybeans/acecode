@@ -1,4 +1,5 @@
 #include "agent_loop_doom_guard.hpp"
+#include "tool/tool_protocol_names.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -184,8 +185,9 @@ bool is_retryable_precondition_failure(const ToolResult& result) {
     if (result.success) return false;
     const std::string lower = ascii_lower(result.output);
     return contains_any(lower, {
-        // ToolErrors::file_not_read_for_edit
-        "read the target file with file_read",
+        // ToolErrors::file_not_read_for_edit —— 工具名随「工具重写」变化,
+        // 只按前缀识别,不带名字。
+        "read the target file with ",
         // ToolErrors::external_modification
         "re-read the file before writing"
     });
@@ -356,12 +358,15 @@ bool AgentLoopDoomGuard::is_low_signal(ResultClass result) const {
 }
 
 ToolResult AgentLoopDoomGuard::make_cached_read_result(const CallKey& key) const {
+    const std::string read_name = model_tool_name_for_native("file_read");
     std::ostringstream oss;
-    oss << "[Cached read guard] Skipped repeated file_read: the same file/range was already reported unchanged.";
+    oss << "[Cached read guard] Skipped repeated " << read_name
+        << ": the same file/range was already reported unchanged.";
     if (!key.target.empty()) {
         oss << "\nTarget: " << key.target;
     }
-    oss << "\nUse the previous file_read result. If that result was a <persisted-output> preview, read its saved output path instead of reading the original file/range again.";
+    oss << "\nUse the previous " << read_name
+        << " result. If that result was a <persisted-output> preview, read its saved output path instead of reading the original file/range again.";
 
     ToolResult result;
     result.output = oss.str();
@@ -388,7 +393,9 @@ ToolResult AgentLoopDoomGuard::make_synthetic_result(const CallKey& key,
     }
     if (cooldown_active_flag && key.tool == "bash") {
         oss << "\nThe bash tool is temporarily cooled down for this task. "
-            << "Use existing evidence or a dedicated non-shell tool such as file_read or grep when applicable.";
+            << "Use existing evidence or a dedicated non-shell tool such as "
+            << model_tool_name_for_native("file_read")
+            << " or grep when applicable.";
     } else {
         oss << "\nUse the previous result, choose a different approach, or answer with the evidence already available.";
     }

@@ -103,7 +103,7 @@ TEST(SessionStorage, MetaRoundtrip) {
     EXPECT_EQ(out.title_source,  in.title_source);
     EXPECT_EQ(out.input_draft,   in.input_draft);
     EXPECT_EQ(out.permission_mode, in.permission_mode);
-    EXPECT_EQ(out.pre_plan_permission_mode, in.pre_plan_permission_mode);
+    EXPECT_EQ(out.pre_plan_permission_mode, "auto"); // 旧别名读写时归一化。
     EXPECT_EQ(out.turn_count,    in.turn_count);
     EXPECT_EQ(out.last_token_usage.prompt_tokens, 8000);
     EXPECT_EQ(out.last_token_usage.completion_tokens, 1200);

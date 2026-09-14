@@ -157,7 +157,11 @@ EventDispatcher::subscribe(EventListener listener, std::uint64_t since_seq) {
         std::lock_guard<std::mutex> lk(mu_);
         if (since_seq > 0) {
             for (const auto& buffered : buffer_) {
-                if (buffered.event.seq > since_seq) to_replay.push_back(buffered.event);
+                if (buffered.event.seq > since_seq) {
+                    auto replay = buffered.event;
+                    replay.replayed = true;
+                    to_replay.push_back(std::move(replay));
+                }
             }
         }
         subscriptions_[id] = sub;

@@ -18,6 +18,7 @@ inline std::string tool_icon(const std::string& tool_id) {
         if (tool_id == "file_read") return "R";
         if (tool_id == "file_write") return "W";
         if (tool_id == "file_edit") return "E";
+        if (tool_id == "apply_patch") return "P";
         if (tool_id == "task_complete") return "D"; // Done
         if (tool_id == "TodoWrite") return "T";
         if (tool_id == "skill_view") return "S";
@@ -29,6 +30,7 @@ inline std::string tool_icon(const std::string& tool_id) {
     if (tool_id == "file_read") return "\xE2\x86\x92";  // right arrow (read)
     if (tool_id == "file_write") return "\xE2\x9C\x8D"; // writing hand (write)
     if (tool_id == "file_edit") return "\xE2\x9C\x8E";  // lower-right pencil (edit)
+    if (tool_id == "apply_patch") return "\xE2\x9C\x8E"; // same pencil (patch = edit)
     if (tool_id == "task_complete") return "\xE2\x9C\x93"; // check mark (done)
     if (tool_id == "TodoWrite") return "\xE2\x9C\x93"; // check mark (todo)
     if (tool_id == "skill_view") return "*";

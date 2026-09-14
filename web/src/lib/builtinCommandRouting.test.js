@@ -50,6 +50,14 @@ run('skill slash input remains ordinary message route', () => {
   });
 });
 
+run('/sandbox is handled locally without auto-starting a model turn', () => {
+  assert.deepEqual(inputRouteForText('/sandbox off'), {
+    kind: 'builtin',
+    command: { command: 'sandbox', args: 'off', display_text: '/sandbox off' },
+  });
+  assert.deepEqual(sessionCreateOptionsForText('/sandbox on'), { auto_start: false });
+});
+
 run('/btw routes immediately as a side question before builtin parsing', () => {
   assert.deepEqual(sideQuestionRequestForText('  /BTW   explain this\nplease  '), {
     command: 'btw',

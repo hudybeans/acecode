@@ -10,6 +10,7 @@
 #include "memory/memory_registry.hpp"
 #include "memory/memory_types.hpp"
 #include "prompt/system_prompt.hpp"
+#include "tool/tool_protocol_names.hpp"
 #include "tool/tool_executor.hpp"
 
 #include <cstdlib>
@@ -19,6 +20,21 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+TEST(SystemPromptSandbox, StableStateAndExplicitEscalationInstructions) {
+    acecode::ToolExecutor tools;
+    acecode::SystemPromptSandboxState state{"workspace-write; writable: C:/work; network: not enforced"};
+    const auto build = [&] {
+        return acecode::build_system_prompt(tools, "C:/work", nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, true, nullptr, &state);
+    };
+    const auto first = build();
+    EXPECT_EQ(first, build());
+    EXPECT_NE(first.find("Shell sandbox:"), std::string::npos);
+    EXPECT_NE(first.find("network: not enforced"), std::string::npos);
+    EXPECT_NE(first.find("with_escalated_permissions"), std::string::npos);
+    EXPECT_NE(first.find("justification"), std::string::npos);
+}
 
 namespace {
 
@@ -413,6 +429,9 @@ TEST_F(SystemPromptTest, EffectiveToolPolicyOmitsDisabledToolGuidance) {
         register_tool(name);
     }
 
+    // 模型侧名只在「工具重写」生效时出现,这里显式启用内置种子映射。
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolCapabilityPolicy policy;
     policy.builtin_tools =
         std::unordered_set<std::string>{"file_read"};
@@ -437,6 +456,8 @@ TEST_F(SystemPromptTest, EffectiveToolPolicyOmitsDisabledToolGuidance) {
 // 场景:工具使用与进度更新文案应鼓励同一 assistant turn 中批量发出独立工具调用,
 // 而不是形成一句旁白配一个工具调用的低密度交替模式。
 TEST_F(SystemPromptTest, PromptEncouragesBatchedToolCallsWithoutPerCallNarration) {
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolExecutor tools;
     std::string out = acecode::build_system_prompt(tools, temp_home.string());
 
@@ -455,6 +476,8 @@ TEST_F(SystemPromptTest, PromptEncouragesBatchedToolCallsWithoutPerCallNarration
 }
 
 TEST_F(SystemPromptTest, PromptUsesClaudeStyleReadFailureGuidanceAndGuidesScratchScripts) {
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     acecode::ToolExecutor tools;
     std::string out = acecode::build_system_prompt(tools, temp_home.string());
 
@@ -472,6 +495,22 @@ TEST_F(SystemPromptTest, PromptUsesClaudeStyleReadFailureGuidanceAndGuidesScratc
     EXPECT_EQ(out.find("file_read"), std::string::npos);
     EXPECT_EQ(out.find("file_edit"), std::string::npos);
     EXPECT_EQ(out.find("file_write"), std::string::npos);
+}
+
+// 场景:「工具重写」未启用(进程默认)。
+// 期望:system prompt 里的工具指引直接使用原生名 file_read / file_edit /
+// file_write,与发给模型的工具表一致;不出现任何 OpenCode 别名。
+TEST_F(SystemPromptTest, PromptUsesNativeToolNamesWhenNoRewriteIsActive) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    std::string out = acecode::build_system_prompt(tools, temp_home.string());
+
+    EXPECT_NE(out.find("`file_edit` will error if you attempt an edit without reading the file"), std::string::npos);
+    EXPECT_NE(out.find("`file_write` will fail if you did not read the file first"), std::string::npos);
+    EXPECT_NE(out.find("Do not call `file_read` again for the same file/range"), std::string::npos);
+    EXPECT_EQ(out.find("`read`"), std::string::npos);
+    EXPECT_EQ(out.find("`edit`"), std::string::npos);
+    EXPECT_EQ(out.find("`write`"), std::string::npos);
 }
 
 // 场景:Windows 平台 build prompt 必须注入 "# Shell Command Guidance (Windows)" 段。
@@ -745,4 +784,129 @@ TEST_F(SystemPromptTest, InheritedWorktreeTellsSubagentToStayInside) {
     EXPECT_NE(out.find("Do not call `EnterWorktree` or `ExitWorktree`"), std::string::npos);
     EXPECT_EQ(out.find("- Session worktree return cwd:"), std::string::npos);
     EXPECT_EQ(out.find("requires `ExitWorktree`"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// GPT 系模型适配(openspec add-gpt-apply-patch-adaptation)。
+// 背景:GPT-5 / gpt-5-codex 是用 Codex 的 apply_patch 补丁语言训练的,对
+// file_edit 的 old_string 精确匹配不熟,反复失败后退化成 shell heredoc 写文件。
+// 现在按模型族分支:GPT 系的工具指引整段换成 apply_patch,并追加模型族行为段;
+// 其它模型输出必须逐字节不变。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+acecode::SystemPromptModelState gpt_model_state(const char* id = "gpt-5") {
+    acecode::SystemPromptModelState state;
+    state.model_id = id;
+    state.family = acecode::detect_model_family(id);
+    state.prefers_apply_patch = acecode::model_prefers_apply_patch(id);
+    return state;
+}
+
+void register_probe_tools(acecode::ToolExecutor& tools,
+                          std::initializer_list<const char*> names) {
+    for (const char* name : names) {
+        acecode::ToolImpl impl;
+        impl.definition.name = name;
+        impl.definition.description = "probe";
+        impl.definition.parameters = nlohmann::json::object();
+        impl.execute = [](const std::string&, const acecode::ToolContext&) {
+            return acecode::ToolResult{"ok", true};
+        };
+        ASSERT_TRUE(tools.register_tool(impl));
+    }
+}
+
+} // namespace
+
+// 场景:模型态是 gpt-5(偏好 apply_patch),工具表里 apply_patch 可用。
+// 期望:出现 apply_patch 指引(相对路径 / 3 行上下文 / @@ 锚点、找不到时重读
+// 而不是绕道 shell)与 "# Model-specific guidance" 段(自主推进、最小改动、脏
+// 工作区、ASCII 默认);file_edit / file_write 的指引一句都不剩,连 cmd 指引里
+// 「多行内容用 file_write」也改指 apply_patch。
+TEST_F(SystemPromptTest, GptModelStateSwitchesGuidanceToApplyPatch) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    register_probe_tools(tools, {"file_read", "file_edit", "file_write", "apply_patch", "bash"});
+    const acecode::SystemPromptModelState gpt = gpt_model_state("gpt-5");
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "cmd";
+    env.terminal_program = "cmd.exe";
+
+    const std::string out = acecode::build_system_prompt(
+        tools, temp_home.string(), nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, true, &env, nullptr, &gpt);
+
+    EXPECT_NE(out.find("Use `apply_patch` for every file creation, edit, deletion, or rename"),
+              std::string::npos);
+    EXPECT_NE(out.find("add an `@@` anchor"), std::string::npos);
+    EXPECT_NE(out.find("# Model-specific guidance"), std::string::npos);
+    EXPECT_NE(out.find("Always use `apply_patch` for manual code edits"), std::string::npos);
+    EXPECT_NE(out.find("NEVER revert, undo, or modify changes you did not make"), std::string::npos);
+    EXPECT_NE(out.find("prefer the `apply_patch` tool"), std::string::npos);
+    EXPECT_EQ(out.find("file_edit"), std::string::npos);
+    EXPECT_EQ(out.find("file_write"), std::string::npos);
+}
+
+// 场景:模型态是 claude-sonnet-4,与完全不传模型态各构建一次。
+// 期望:两份输出逐字节相同 —— 非 GPT 模型的提示不受本 change 影响。
+// 回归:任何把模型族段泄漏到默认分支的改动都会打破这条。
+TEST_F(SystemPromptTest, NonGptModelStateIsByteIdenticalToLegacyPrompt) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    register_probe_tools(tools, {"file_read", "file_edit", "file_write", "apply_patch", "bash"});
+    const acecode::SystemPromptModelState claude = gpt_model_state("claude-sonnet-4");
+
+    const std::string with_state = acecode::build_system_prompt(
+        tools, temp_home.string(), nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, true, nullptr, nullptr, &claude);
+    const std::string legacy = acecode::build_system_prompt(
+        tools, temp_home.string(), nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, true, nullptr, nullptr, nullptr);
+
+    EXPECT_EQ(with_state, legacy);
+    EXPECT_EQ(with_state.find("apply_patch"), std::string::npos);
+    EXPECT_NE(with_state.find("`file_edit` will error"), std::string::npos);
+}
+
+// 场景:同一 GPT 模型态重复构建。
+// 期望:逐字节相同 —— 模型族段只随模型切换变化,留在静态前缀里不打穿 prompt cache
+// (与 StaticSystemPromptIsByteStableAcrossCalls 守同一条不变量)。
+TEST_F(SystemPromptTest, GptPromptIsByteStableAcrossCalls) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    register_probe_tools(tools, {"file_read", "file_edit", "file_write", "apply_patch", "bash"});
+    const acecode::SystemPromptModelState gpt = gpt_model_state("gpt-5-codex");
+    const auto build = [&] {
+        return acecode::build_system_prompt(
+            tools, temp_home.string(), nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, true, nullptr, nullptr, &gpt);
+    };
+    const std::string first = build();
+    EXPECT_EQ(first, build());
+    EXPECT_NE(first.find("# Model-specific guidance"), std::string::npos);
+}
+
+// 场景:GPT 模型,但 expert 能力策略把 apply_patch 滤掉了(只允许 file_read /
+// file_edit / file_write)。
+// 期望:回退到 file_edit / file_write 指引 —— 与 AgentLoop 的裁表回退同口径,否则
+// 提示说用 apply_patch 而工具表里没有它。模型族行为段仍然给(它不依赖工具)。
+TEST_F(SystemPromptTest, GptStateWithoutApplyPatchToolKeepsFileEditGuidance) {
+    acecode::ScopedModelToolNameMappings none({});
+    acecode::ToolExecutor tools;
+    register_probe_tools(tools, {"file_read", "file_edit", "file_write", "apply_patch", "bash"});
+    const acecode::SystemPromptModelState gpt = gpt_model_state("gpt-5");
+    acecode::ToolCapabilityPolicy policy;
+    policy.builtin_tools = std::unordered_set<std::string>{"file_read", "file_edit", "file_write"};
+    policy.mcp_servers = std::unordered_set<std::string>{};
+
+    const std::string out = acecode::build_system_prompt(
+        tools, temp_home.string(), nullptr, nullptr, nullptr, nullptr, &policy,
+        nullptr, true, nullptr, nullptr, &gpt);
+
+    EXPECT_EQ(out.find("Use `apply_patch` for every file creation"), std::string::npos);
+    EXPECT_EQ(out.find("Always use `apply_patch`"), std::string::npos);
+    EXPECT_NE(out.find("`file_edit` will error"), std::string::npos);
+    EXPECT_NE(out.find("# Model-specific guidance"), std::string::npos);
 }

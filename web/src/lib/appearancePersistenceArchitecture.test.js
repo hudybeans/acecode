@@ -57,7 +57,7 @@ run('Settings retains durable theme controls after the top-bar shortcut is remov
 run('appearance writer queues complete snapshots and rolls back latest failure', () => {
   const helper = sourceFromSrc('lib/appearancePreferences.js');
   assert.match(helper, /queue = queue\s*\.then\(async \(\) => \{/);
-  assert.match(helper, /appearancePreferencesToApi\(target, scope\)/);
+  assert.match(helper, /appearancePreferencesToApi\(withoutDeletedTheme\(target\), scope\)/);
   assert.match(helper, /if \(changeRevision !== revision\) return;/);
   assert.match(helper, /visible = confirmed;\s*applyIfActive\(confirmed\);/);
 });

@@ -42,6 +42,7 @@ The default Skill bundle contains:
 - `acecode-tui-usage`
 - `acecode-desktop-usage`
 - `vision-image-reader`
+- `ai-theme`
 
 The expert bundle contains the OPC one-person-company team, its lead, and eight
 stage experts under the `opc-*` package IDs.
@@ -64,6 +65,15 @@ files remain on disk but are not executed as managed hooks.
 
 When the packaged seed bundle changes, update `assets/seed/seed.version` and keep
 the same revision in `assets/seed/MANIFEST.json`.
+
+The `ai-theme` Skill creates ACECode appearance themes through the native
+`theme_create` and `image_generate` tools. It asks the user to confirm the palette,
+then a preview that uses a separate background image, before installing a local
+theme. Its bundled homepage reference and palette example are copied with the
+Skill so the workflow also works outside a source checkout. Theme drafts belong
+to the current task; reopening a task resumes its recorded state rather than
+repeating image generation or treating earlier chat text as confirmation. See
+[themes.md](themes.md) for the theme storage and runtime contract.
 
 ## SKILL.md format
 

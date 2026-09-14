@@ -125,6 +125,8 @@ struct AskQuestionSnapshot {
     int total_questions = 0;
     int focused_option = 0;
     int scroll_offset = 0;
+    // Manual scrolling suspends focus tracking until the next navigation/edit.
+    bool follow_focus = true;
     bool editing_custom = false;
     bool feedback_locked = false;
     bool completed = false;
@@ -179,6 +181,7 @@ private:
     int current_question_ = 0;
     AskQuestionPage page_ = AskQuestionPage::Question;
     int scroll_offset_ = 0;
+    bool follow_focus_ = true;
     bool editing_custom_ = false;
     bool feedback_locked_ = false;
     bool finished_ = false;

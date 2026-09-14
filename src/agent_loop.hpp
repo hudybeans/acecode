@@ -13,6 +13,7 @@
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
 #include "pa/pa_overflow_rescue.hpp"
+#include "sandbox/sandbox_runtime.hpp"
 
 #include <vector>
 #include <string>
@@ -88,6 +89,7 @@ struct MemoryConfig;
 struct ProjectInstructionsConfig;
 struct ExpertDefinition;
 struct CompactResult;
+struct SystemPromptModelState;
 class AgentLoopDoomGuard;
 
 // Callbacks for the TUI to observe agent loop events
@@ -301,6 +303,12 @@ public:
     // project dir)不动 —— worktree 是同一个项目会话的临时工作区,不是新项目。
     // 只应在工具执行线程(turn 内)或会话未运行时调用。
     void set_cwd(const std::string& new_cwd);
+    void set_sandbox_config(const SandboxConfig& config);
+    void set_exec_rules(sandbox::ExecRules rules) { exec_rules_ = std::move(rules); }
+    void set_sandbox_availability_for_tests(std::optional<bool> value) {
+        sandbox_runtime_.set_availability_override_for_tests(value);
+    }
+    std::string sandbox_command(const std::string& args);
 
     void set_context_window(int cw) {
         context_window_.store(cw, std::memory_order_relaxed);
@@ -517,6 +525,10 @@ private:
     // true(与 LlmProvider::supports_vision 默认同口径)。模型切换发生在回合
     // 边界,所以同一回合内多次调用的结果一致,不会打穿 prompt cache 前缀。
     bool active_model_can_read_images() const;
+    // 当前 provider 的模型族信息(openspec add-gpt-apply-patch-adaptation):
+    // 决定系统提示的工具指引分支与模型侧工具表里给 apply_patch 还是
+    // file_edit / file_write。与视觉那一位同口径:只随模型切换变化。
+    SystemPromptModelState system_prompt_model_state() const;
     void initialize_compact_window_state();
     void apply_compact_result(const CompactResult& result,
                               const std::string& trigger,
@@ -690,6 +702,13 @@ private:
     std::mutex active_provider_mu_;
     std::weak_ptr<LlmProvider> active_provider_;
     std::string cwd_;
+    mutable sandbox::SandboxRuntime sandbox_runtime_;
+    sandbox::ExecRules exec_rules_;
+    std::atomic<bool> sandbox_session_disabled_{false};
+    void reload_exec_rules();
+    std::string sandbox_prompt_description() const;
+    mutable std::mutex sandbox_prompt_mutex_;
+    mutable std::optional<std::pair<PermissionMode, std::string>> sandbox_prompt_snapshot_;
     PermissionManager& permissions_;
     PathValidator path_validator_;
     std::atomic<int> context_window_{128000};

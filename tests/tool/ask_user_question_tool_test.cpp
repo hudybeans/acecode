@@ -661,3 +661,38 @@ TEST(TuiAskChannelTest, AbortBeforeOpeningReturnsCancelled) {
     std::lock_guard<std::mutex> lk(state.mu);
     EXPECT_FALSE(state.ask_pending);
 }
+
+TEST(TuiAskChannelTest, PreservesDistinctWireIdsForIdenticalDisplayText) {
+    acecode::TuiState state;
+    state.ask_config.selection_feedback_ms = 0;
+    auto screen = ftxui::ScreenInteractive::FitComponent();
+    std::atomic<bool> abort{false};
+    auto payload = single_question_payload();
+    payload[0]["id"] = "theme-palette-first";
+    payload.push_back(payload[0]);
+    payload[1]["id"] = "theme-palette-second";
+    auto future = std::async(std::launch::async, [&] {
+        return acecode::tui::ask_via_tui_overlay(
+            state, screen, payload, &abort, 5, "");
+    });
+    if (!wait_for_ask_overlay(state, std::chrono::seconds(2))) {
+        abort.store(true);
+        state.ask_cv.notify_all();
+        (void)future.get();
+        FAIL() << "Question overlay did not open";
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.mu);
+        state.ask_session->dispatch({acecode::tui::AskQuestionEventKind::ChooseNumber, 1});
+        state.ask_session->dispatch({acecode::tui::AskQuestionEventKind::ChooseNumber, 2});
+        state.ask_session->dispatch({acecode::tui::AskQuestionEventKind::SubmitFocused});
+    }
+    state.ask_cv.notify_all();
+    const auto response = future.get();
+    EXPECT_FALSE(response.value("cancelled", true));
+    ASSERT_EQ(response["answers"].size(), 2u);
+    EXPECT_EQ(response["answers"][0]["question_id"], "theme-palette-first");
+    EXPECT_EQ(response["answers"][1]["question_id"], "theme-palette-second");
+    EXPECT_EQ(response["answers"][0]["selected"][0], "A");
+    EXPECT_EQ(response["answers"][1]["selected"][0], "B");
+}

@@ -83,7 +83,7 @@ ftxui::Element build_custom_editor_line(const AskQuestionLayoutRow& row,
     if (selection.has_value()) {
         const std::size_t selected_begin = std::max(begin, selection->first);
         const std::size_t selected_end = std::min(end, selection->second);
-        const bool cursor_on_this_line = cursor >= begin && cursor <= end;
+        const bool cursor_on_this_line = row.has_cursor;
         if (selected_begin < selected_end && !cursor_on_this_line) {
             ftxui::Elements fragments;
             const auto append_fragment = [&](std::size_t from, std::size_t to,
@@ -104,7 +104,7 @@ ftxui::Element build_custom_editor_line(const AskQuestionLayoutRow& row,
             content = ftxui::hbox(std::move(fragments));
         }
     }
-    if (cursor >= begin && cursor <= end) {
+    if (row.has_cursor) {
         std::optional<std::size_t> anchor;
         if (snapshot.editor.selection_anchor.has_value()) {
             anchor =
@@ -332,13 +332,14 @@ ftxui::Element build_ask_question_panel(const AskQuestionPanelInput& input) {
                                               : colors.description));
     }
 
+    auto scrollbar = ftxui::vbox(std::move(bar_rows));
+    if (input.scrollbar_box) {
+        scrollbar = std::move(scrollbar) | ftxui::reflect(*input.scrollbar_box);
+    }
     auto body = ftxui::hbox({
         ftxui::vbox(std::move(content_rows)) | ftxui::flex,
-        ftxui::vbox(std::move(bar_rows)),
+        std::move(scrollbar),
     });
-    if (input.scrollbar_box) {
-        body = std::move(body) | ftxui::reflect(*input.scrollbar_box);
-    }
     // bgcolor only paints cell backgrounds; it never erases the characters
     // underneath. Without clear_under the chat text behind the panel shows
     // through every cell the panel did not write a glyph into (short option

@@ -69,6 +69,8 @@ struct AskQuestionLayoutRow {
     // Custom rows only: byte range of the editor text covered by this line.
     std::size_t text_byte_begin = 0;
     std::size_t text_byte_end = 0;
+    // A soft-wrap boundary belongs to exactly one visual editor row.
+    bool has_cursor = false;
     AskQuestionLayoutRect rect;
 };
 

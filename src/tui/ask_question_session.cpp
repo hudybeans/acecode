@@ -41,10 +41,11 @@ std::vector<AskQuestionEffect> AskQuestionSession::dispatch_internal(
 std::vector<AskQuestionEffect> AskQuestionSession::dispatch(
     const AskQuestionEvent& event, TimePoint now) {
     if (controller_.finished()) return {};
-    if (event.kind != AskQuestionEventKind::Escape) {
+    if (event.kind != AskQuestionEventKind::Escape &&
+        event.kind != AskQuestionEventKind::SetScrollOffset) {
         // The double-Esc rule applies to consecutive Esc presses. Any other
-        // interaction breaks that sequence instead of leaving a stale Esc
-        // armed until the one-second window expires.
+        // interaction breaks that sequence. Layout acknowledgment is a render
+        // effect, not a user interaction, and must leave the sequence intact.
         escape_armed_ = false;
         last_escape_.reset();
     }

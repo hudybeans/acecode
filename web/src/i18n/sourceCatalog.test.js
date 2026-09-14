@@ -152,7 +152,7 @@ const moduleScopeFixtures = [
   },
   {
     file: 'lib/permissionMode.js',
-    copy: ['默认权限', '写/执行操作前确认', '自动接收编辑', '文件编辑自动通过,命令仍确认', '完全访问权限', '跳过所有工具权限确认'],
+    copy: ['默认权限', '写/执行操作前确认', '自动模式', '自动编辑和运行沙盒内命令,危险操作与越界请求需确认', '完全访问权限', '跳过所有工具权限确认'],
   },
   {
     file: 'lib/settingsNavigation.js',

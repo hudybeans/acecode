@@ -44,7 +44,7 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Rollback manifest does not exist: $manifestPath"
 }
 $manifest = [System.IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
-if ($manifest.schema_version -ne 1) {
+if ($manifest.schema_version -notin @(1, 2)) {
     throw "Unsupported rollback manifest version: $($manifest.schema_version)"
 }
 
@@ -76,6 +76,25 @@ if (-not (Test-Path -LiteralPath $rootBackup -PathType Leaf) -or
     -not (Test-Path -LiteralPath $updateBackup -PathType Leaf)) {
     throw 'Rollback configuration backups are incomplete.'
 }
+$workshopDirectory = Join-Path $updateDirectory 'workshop'
+$workshopAssets = @()
+$createdAdminKey = $null
+if ($manifest.schema_version -eq 2) {
+    $allowedAssets = @('index.html', 'workshop.css', 'workshop.js', 'assets/acecode-logo.png', 'assets/acecode-light.png', 'assets/acecode-dark.png')
+    $workshopAssets = @($manifest.workshop_files)
+    if ($manifest.admin_key_created) {
+        $expectedKeyPath = Get-NormalizedPath (Join-Path (Split-Path -Parent $BackupDirectory) 'workshop-admin-key.txt')
+        if (-not (Get-NormalizedPath $manifest.admin_key_file).Equals($expectedKeyPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected admin key rollback path.' }
+        if ((Test-Path -LiteralPath $expectedKeyPath -PathType Leaf) -and
+            (Get-FileHash -LiteralPath $expectedKeyPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $manifest.admin_key_sha256) { $createdAdminKey = $expectedKeyPath }
+    }
+    foreach ($asset in $workshopAssets) {
+        if ($asset.relative_path -notin $allowedAssets) { throw 'Rollback manifest contains an unexpected workshop asset.' }
+        if ($asset.existed -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $BackupDirectory 'workshop') $asset.relative_path) -PathType Leaf)) {
+            throw 'Rollback workshop asset backup is incomplete.'
+        }
+    }
+}
 
 if (-not $PSCmdlet.ShouldProcess(
         $siteRoot,
@@ -95,8 +114,19 @@ if ([bool]$manifest.handler_assembly_existed) {
 } elseif (Test-Path -LiteralPath $handlerAssembly -PathType Leaf) {
     Remove-Item -LiteralPath $handlerAssembly -Force
 }
+foreach ($asset in $workshopAssets) {
+    $assetTarget = Join-Path $workshopDirectory $asset.relative_path
+    if ($asset.existed) {
+        Copy-FileAtomic -Source (Join-Path (Join-Path $BackupDirectory 'workshop') $asset.relative_path) -Destination $assetTarget
+    } elseif (Test-Path -LiteralPath $assetTarget -PathType Leaf) {
+        Remove-Item -LiteralPath $assetTarget -Force
+    }
+}
+
+if ($createdAdminKey) { Remove-Item -LiteralPath $createdAdminKey -Force }
 
 [pscustomobject]@{
+    AdminKeyRemoved = [bool]$createdAdminKey
     RestoredFrom = $BackupDirectory
     SiteRoot = $siteRoot
     FeedbackDirectoryUntouched = [string]$manifest.feedback_directory

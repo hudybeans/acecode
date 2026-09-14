@@ -5,11 +5,12 @@
 // 其余 section (MCP / 使用情况) 当前部分为 UI 占位
 // — 状态走本地 useState,提交按钮无网络副作用,待后端接口就绪后接入。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme.jsx';
 import { ThemeCards } from './ThemeCards.jsx';
-import { EVA_THEME_ID } from '../lib/themePackages.js';
+import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
+import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
@@ -41,6 +42,8 @@ import {
 import { Modal, Toggle } from './Modal.jsx';
 import { ModelSettingsSection } from './model-settings/ModelSettingsSection.jsx';
 import { ImageGenerationSettings } from './ImageGenerationSettings.jsx';
+import { SummaryGenerationSettings } from './SummaryGenerationSettings.jsx';
+import { ToolRewriteSettings } from './ToolRewriteSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
 import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
@@ -139,6 +142,7 @@ export function SettingsPage({
   onThemeChange,
   onColorThemeChange,
   themeDownloads,
+  onCreateAiTheme,
   onFontSizeChange = () => {},
   sidebarSessionTime = true,
   onSidebarSessionTimeChange = () => {},
@@ -163,6 +167,7 @@ export function SettingsPage({
   const [searchIndex, setSearchIndex] = useState(0);
   const [searchNavigation, setSearchNavigation] = useState(0);
   const contentRef = useRef(null);
+  const windowRef = useRef(null);
   const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
   const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
   const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
@@ -213,9 +218,31 @@ export function SettingsPage({
     closeTimerRef.current = setTimeout(onClose, 220);
   }, [onClose]);
 
+  // aria-modal 窗口打开时把焦点收进面板,关闭后还给原来的元素(与 Modal.jsx 同款)。
+  useLayoutEffect(() => {
+    const previouslyFocused = document.activeElement;
+    windowRef.current?.focus?.({ preventScroll: true });
+    return () => { previouslyFocused?.focus?.(); };
+  }, []);
+
+  // Esc 关闭设置窗口。设置窗口比它内部弹出的子对话框(模型编辑 / 主题删除 / 路径选择等
+  // Modal)先挂载,而 Modal 的 stopImmediatePropagation 只拦得住后注册的监听器,所以这里
+  // 必须自己确认上面没有 Modal 开着,否则一次 Esc 会把两层一起关掉。
+  // defaultPrevented 是给已经消费了这次 Esc 的浮层(菜单等)让路。
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (document.querySelector('[data-ace-modal-dialog="true"]')) return;
+      close();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [close]);
+
   const onMaskClick = (event) => {
     if (event.target === event.currentTarget) close();
   };
+  const toggleExpanded = () => setExpanded((value) => !value);
 
   return (
     <div
@@ -228,13 +255,15 @@ export function SettingsPage({
       )}
     >
       <div
+        ref={windowRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-window-title"
         data-settings-window="true"
         data-expanded={expanded ? 'true' : 'false'}
+        tabIndex={-1}
         className={clsx(
-          'ace-settings-panel flex overflow-hidden',
+          'ace-settings-panel flex overflow-hidden outline-none',
           show ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-2 scale-[0.985]',
         )}
       >
@@ -285,14 +314,19 @@ export function SettingsPage({
             );
           })}
         </nav>
-        <div className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col">
+        <div
+          className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col"
+          onDoubleClick={(event) => {
+            if (event.target === event.currentTarget) toggleExpanded();
+          }}
+        >
           <div className="ace-settings-window-actions flex items-center gap-1 select-none">
             <button
               type="button"
               title={expanded ? '还原' : '展开'}
               aria-label={expanded ? '还原' : '展开'}
               aria-pressed={expanded}
-              onClick={() => setExpanded((value) => !value)}
+              onClick={toggleExpanded}
               className="h-8 w-8 inline-flex items-center justify-center rounded-md text-fg-2 hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent transition"
             >
               <VsIcon name={expanded ? 'screenNormal' : 'screenFull'} size={15} />
@@ -324,6 +358,7 @@ export function SettingsPage({
               colorTheme={colorTheme}
               setColorTheme={setColorTheme}
               themeDownloads={themeDownloads}
+              onCreateAiTheme={onCreateAiTheme}
               fontSize={fontSize}
               onFontSizeChange={onFontSizeChange}
               sidebarSessionTime={sidebarSessionTime}
@@ -338,7 +373,7 @@ export function SettingsPage({
           {activeNavKey === 'models' && (
             <SectionModel onModelProfileUpdated={onModelProfileUpdated} />
           )}
-          {activeNavKey === 'tools' && <SectionTools onCheckUpdates={onCheckUpdates} />}
+          {activeNavKey === 'tools' && <SectionTools onCheckUpdates={onCheckUpdates} onModelProfileUpdated={onModelProfileUpdated} />}
           {activeNavKey === 'hooks' && <SectionHooks />}
           {activeNavKey === 'archived' && <SectionArchived />}
           {activeNavKey === 'usage' && <SectionUsage />}
@@ -1207,6 +1242,7 @@ function SectionAppearance({
   colorTheme,
   setColorTheme,
   themeDownloads,
+  onCreateAiTheme,
   fontSize,
   onFontSizeChange,
   sidebarSessionTime,
@@ -1216,11 +1252,13 @@ function SectionAppearance({
     <>
       <h2 className="text-xl font-bold mb-5">外观</h2>
 
-      <div className="text-[14px] font-semibold mb-1">主题</div>
-      <p className="text-[12px] text-fg-mute mb-3">选择界面的主色风格</p>
-      <ThemeCards options={COLOR_THEME_OPTIONS} selected={colorTheme} onSelect={setColorTheme} downloads={themeDownloads} />
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div><div className="text-[14px] font-semibold mb-1">主题</div><p className="text-[12px] text-fg-mute">选择界面的主色风格</p></div>
+        <ThemeLibraryActions downloads={themeDownloads} />
+      </div>
+      <ThemeCards options={COLOR_THEME_OPTIONS} selected={colorTheme} onSelect={setColorTheme} downloads={themeDownloads} onCreateAiTheme={onCreateAiTheme} />
 
-      {colorTheme !== EVA_THEME_ID && <>
+      {!isInstalledColorTheme(colorTheme) && <>
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
@@ -2219,7 +2257,7 @@ function SectionConnectors() {
 
 // ─── 工具 ──────────────────────────────────────────────────────────────────
 
-function SectionTools({ onCheckUpdates }) {
+function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
   const nativeBrowserAvailable = typeof globalThis?.aceDesktop_agentBrowserGetState === 'function';
 
   return (
@@ -2247,6 +2285,9 @@ function SectionTools({ onCheckUpdates }) {
       </div>
 
       <ImageGenerationSettings onCheckUpdates={onCheckUpdates} />
+      <SummaryGenerationSettings onCheckUpdates={onCheckUpdates} onModelProfileUpdated={onModelProfileUpdated} />
+
+      <ToolRewriteSettings onCheckUpdates={onCheckUpdates} />
     </>
   );
 }
@@ -2963,6 +3004,7 @@ function SectionArchived() {
                 </button>
                 <button
                   type="button"
+                  data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-danger/40 bg-danger-bg text-danger hover:opacity-80"
                   onClick={confirmPurge}
                 >

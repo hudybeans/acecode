@@ -266,7 +266,7 @@ TEST(SessionManagerResume, RestoresPlanRuntimeStateAndPlanFile) {
 
     auto meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, session_id));
     EXPECT_EQ(meta.permission_mode, "plan");
-    EXPECT_EQ(meta.pre_plan_permission_mode, "accept-edits");
+    EXPECT_EQ(meta.pre_plan_permission_mode, "auto");
 
     SessionManager reader;
     reader.start_session(cwd.string(), "test-provider", "test-model");
@@ -274,7 +274,7 @@ TEST(SessionManagerResume, RestoresPlanRuntimeStateAndPlanFile) {
     ASSERT_EQ(messages.size(), 1u);
 
     EXPECT_EQ(reader.current_permission_mode(), "plan");
-    EXPECT_EQ(reader.current_pre_plan_permission_mode(), "accept-edits");
+    EXPECT_EQ(reader.current_pre_plan_permission_mode(), "auto");
     EXPECT_EQ(reader.current_plan_file_path(), plan_path);
     EXPECT_EQ(reader.read_plan_file(), "1. Inspect\n2. Implement\n");
     EXPECT_TRUE(reader.is_plan_file_path(plan_path));

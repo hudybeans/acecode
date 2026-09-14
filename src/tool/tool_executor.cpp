@@ -1,4 +1,5 @@
 #include "tool_executor.hpp"
+#include "apply_patch_format.hpp"
 #include "tool_protocol_names.hpp"
 #include "../session/output_attachments.hpp"
 #include "utils/logger.hpp"
@@ -315,14 +316,18 @@ std::vector<ToolDef> ToolExecutor::get_tool_definitions_by_source(
     return defs;
 }
 
+// 翻译失败(重写映射与注册表在运行期产生冲突)时回退到原生定义,而不是
+// 返回空表 —— 空表意味着模型在零工具状态下静默运行,症状极难定位;原生名
+// 永远可被 resolve_model_tool_name_to_native 精确命中,功能不受影响。
 std::vector<ToolDef> ToolExecutor::get_model_tool_definitions(
     const ToolCapabilityPolicy* policy) const {
+    auto native = get_tool_definitions(policy);
     std::vector<ToolDef> definitions;
     std::string error;
-    if (!translate_tool_definitions_for_model(
-            get_tool_definitions(policy), definitions, &error)) {
-        LOG_ERROR("Unable to build model-facing tool definitions: " + error);
-        return {};
+    if (!translate_tool_definitions_for_model(native, definitions, &error)) {
+        LOG_ERROR("Unable to build model-facing tool definitions; "
+                  "falling back to native names: " + error);
+        return native;
     }
     return definitions;
 }
@@ -330,12 +335,13 @@ std::vector<ToolDef> ToolExecutor::get_model_tool_definitions(
 std::vector<ToolDef> ToolExecutor::get_model_tool_definitions_by_source(
     ToolSource source,
     const ToolCapabilityPolicy* policy) const {
+    auto native = get_tool_definitions_by_source(source, policy);
     std::vector<ToolDef> definitions;
     std::string error;
-    if (!translate_tool_definitions_for_model(
-            get_tool_definitions_by_source(source, policy), definitions, &error)) {
-        LOG_ERROR("Unable to build model-facing tool definitions by source: " + error);
-        return {};
+    if (!translate_tool_definitions_for_model(native, definitions, &error)) {
+        LOG_ERROR("Unable to build model-facing tool definitions by source; "
+                  "falling back to native names: " + error);
+        return native;
     }
     return definitions;
 }
@@ -480,6 +486,18 @@ std::string ToolExecutor::build_tool_call_preview(const std::string& tool_name,
                 // Tail-truncate long paths so the filename stays visible.
                 p = truncate_utf8_suffix(p, 40);
                 return tool_name + "  " + p;
+            }
+        } else if (tool_name == "apply_patch") {
+            // 补丁可能改多个文件:显示第一个文件 + 其余数量,只扫 header 行,
+            // 不做完整解析(预览不该因为补丁格式错误而消失)。
+            const auto headers = apply_patch::summarize_patch_headers(
+                apply_patch::patch_text_from_arguments(arguments_json));
+            if (!headers.empty()) {
+                std::string preview = truncate_utf8_suffix(headers.front().path, 40);
+                if (headers.size() > 1) {
+                    preview += " (+" + std::to_string(headers.size() - 1) + " more)";
+                }
+                return tool_name + "  " + preview;
             }
         } else if (tool_name == "grep" || tool_name == "glob") {
             if (j.contains("pattern") && j["pattern"].is_string()) {

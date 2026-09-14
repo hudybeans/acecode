@@ -10,8 +10,9 @@ using acecode::web::permission_mode_to_json;
 
 TEST(PermissionModeHandler, ParsesCanonicalAndLegacyNames) {
     EXPECT_EQ(parse_permission_mode_name("default"), PermissionMode::Default);
-    EXPECT_EQ(parse_permission_mode_name("accept-edits"), PermissionMode::AcceptEdits);
-    EXPECT_EQ(parse_permission_mode_name("acceptEdits"), PermissionMode::AcceptEdits);
+    EXPECT_EQ(parse_permission_mode_name("auto"), PermissionMode::Auto);
+    EXPECT_EQ(parse_permission_mode_name("accept-edits"), PermissionMode::Auto);
+    EXPECT_EQ(parse_permission_mode_name("acceptEdits"), PermissionMode::Auto);
     EXPECT_EQ(parse_permission_mode_name("plan"), PermissionMode::Plan);
     EXPECT_EQ(parse_permission_mode_name("yolo"), PermissionMode::Yolo);
     EXPECT_FALSE(parse_permission_mode_name("ask").has_value());
@@ -19,8 +20,8 @@ TEST(PermissionModeHandler, ParsesCanonicalAndLegacyNames) {
 }
 
 TEST(PermissionModeHandler, SerializesCanonicalModeName) {
-    auto j = permission_mode_to_json(PermissionMode::AcceptEdits);
-    EXPECT_EQ(j["mode"], "accept-edits");
+    auto j = permission_mode_to_json(PermissionMode::Auto);
+    EXPECT_EQ(j["mode"], "auto");
     EXPECT_TRUE(j.contains("description"));
 
     auto plan = permission_mode_to_json(PermissionMode::Plan);

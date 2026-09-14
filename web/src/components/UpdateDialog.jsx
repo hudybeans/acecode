@@ -229,6 +229,7 @@ export function UpdateDialog({
             </button>
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={onConfirm}
               disabled={starting}
               className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
@@ -240,6 +241,7 @@ export function UpdateDialog({
         {mode === 'up_to_date' && (
           <button
             type="button"
+            data-ace-dialog-primary="true"
             onClick={onClose}
             className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
           >
@@ -278,6 +280,7 @@ export function UpdateDialog({
               </button>
               <button
                 type="button"
+                data-ace-dialog-primary="true"
                 onClick={onRestart}
                 disabled={restarting}
                 className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
@@ -288,6 +291,7 @@ export function UpdateDialog({
           ) : (
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={onClose}
               className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
             >
@@ -306,6 +310,7 @@ export function UpdateDialog({
             </button>
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={onRetry}
               disabled={starting}
               className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
@@ -325,6 +330,7 @@ export function UpdateDialog({
             </button>
             <button
               type="button"
+              data-ace-dialog-primary="true"
               onClick={onRetry}
               disabled={starting}
               className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"

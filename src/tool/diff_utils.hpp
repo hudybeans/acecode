@@ -36,6 +36,9 @@ struct DiffHunk {
     int new_start = 0;
     int new_count = 0;
     std::vector<DiffLine> lines;
+    // 所属文件(绝对路径)。file_edit / file_write 单文件结果不填(空 = 沿用
+    // summary.object);apply_patch 一次结果可含多个文件,靠它分组渲染与聚合。
+    std::string file;
 };
 
 // 生成结构化 diff。内容完全相同时返回空向量。

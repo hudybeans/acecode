@@ -742,7 +742,6 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
                 placeholder="C:\Program Files\Git\bin\bash.exe"
                 value={bashPathInput}
                 onChange={(e) => { setBashPathInput(e.target.value); setBashError(''); }}
-                onKeyDown={(e) => { if (e.key === 'Enter') submitBashPath(); }}
               />
               {bashError && <div className="text-[12px] text-danger">{bashError}</div>}
               <div className="flex justify-end gap-2 pt-1">
@@ -755,6 +754,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
                 </button>
                 <button
                   type="button"
+                  data-ace-dialog-primary="true"
                   className="h-8 px-3 rounded-md bg-accent text-white text-[12px] font-medium hover:opacity-90"
                   onClick={submitBashPath}
                 >

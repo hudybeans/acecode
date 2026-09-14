@@ -608,6 +608,7 @@ export function DesktopContextMenu() {
                 </button>
                 <button
                   type="button"
+                  data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-danger/40 bg-danger-bg text-danger hover:opacity-80"
                   onClick={async () => {
                     const pending = pendingConfirm;

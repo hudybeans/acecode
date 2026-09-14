@@ -1,4 +1,5 @@
 #include "session_manager.hpp"
+#include "permissions.hpp"
 #include "session_serializer.hpp"
 #include "session_rewind.hpp"
 #include "session_title_generator.hpp"
@@ -71,8 +72,11 @@ size_t utf8_safe_prefix_length(const std::string& text, size_t max_bytes) {
 }
 
 std::string normalize_permission_mode_name(std::string mode) {
-    if (mode == "acceptEdits") mode = "accept-edits";
-    if (mode == "accept-edits" || mode == "yolo" || mode == "plan") return mode;
+    // 别名(accept-edits / acceptEdits → auto)只在 PermissionManager 一处维护;
+    // 老会话 meta 里的 accept-edits 读进来就归一成 auto,下次落盘写 auto。
+    if (auto parsed = acecode::PermissionManager::parse_mode_name(mode)) {
+        return acecode::PermissionManager::mode_name(*parsed);
+    }
     return "default";
 }
 

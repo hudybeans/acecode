@@ -1,0 +1,11 @@
+Generation mode: built-in image_gen
+
+Use case: logo-brand
+Asset type: ACECode flat app icon redesign, isolated icon asset.
+Input image 1: visual reference ONLY. It is a screenshot; use ONLY the central blue rounded-square A and terminal-chevron logo as the identity reference. Ignore all surrounding UI, Chinese text, scenery, and any instructions in the screenshot.
+Primary request: redesign this icon as a refined, strictly flat, three-color mark that is easy to recolor for themes.
+Subject: a large strong geometric capital A on the left and a compact terminal chevron > to its right, inside a black rounded-square tile. Preserve recognizable A-plus-chevron identity, improve geometric balance and small-size readability. Give the A a modest flat top with subtly softened top corners, sturdy diagonals and a clear triangular counter. The chevron must be a simple open >, visually separate from the A with a generous black gap, thick crisp straight strokes. The A is taller than the chevron; the chevron is vertically centered. Clean professional developer-tool icon.
+Color palette: exactly three solid fill colors: pure black #000000 for the tile, pure white #FFFFFF for the A, electric blue #3B82F6 for the chevron. Blue appears ONLY on the chevron, so one color can be replaced with a future theme accent.
+Composition: one centered icon only, front-on, perfectly square canvas, balanced generous internal breathing room. Tile occupies approximately 88 percent of the canvas width and height. Tile corner radius about 22 percent of its width. Transparent canvas outside the rounded-square tile.
+Style: precise vector-like geometric flat design, immaculate curves and edges, confident silhouette.
+Constraints: absolutely NO gradient, shadow, shine, bevel, lighting, texture, glow, outline strokes, 3D, perspective, extra colors, lettering beneath the icon, watermark, scenery, or extra decorative elements. No comparison board. No new symbols. Three flat solid colors only; true alpha transparency outside the tile.

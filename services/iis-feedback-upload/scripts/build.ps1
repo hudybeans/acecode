@@ -6,6 +6,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# A deployment dry run still builds and validates local artifacts.
+$WhatIfPreference = $false
 
 $componentRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
@@ -23,7 +25,7 @@ if (-not $compiler) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$handlerSource = Join-Path $componentRoot 'src\AcecodeFeedbackUploadHandler.cs'
+$handlerSources = @(Get-ChildItem -LiteralPath (Join-Path $componentRoot 'src') -Filter '*.cs' -File | ForEach-Object FullName)
 $testSource = Join-Path $componentRoot 'tests\AcecodeFeedbackUploadHandlerTests.cs'
 $handlerAssembly = Join-Path $OutputDirectory 'Acecode.FeedbackUpload.dll'
 $testExecutable = Join-Path $OutputDirectory 'Acecode.FeedbackUpload.Tests.exe'
@@ -33,7 +35,10 @@ $references = @(
     (Join-Path $frameworkDirectory 'System.dll'),
     (Join-Path $frameworkDirectory 'System.Core.dll'),
     (Join-Path $frameworkDirectory 'System.Configuration.dll'),
-    (Join-Path $frameworkDirectory 'System.Web.dll')
+    (Join-Path $frameworkDirectory 'System.Web.dll'),
+    (Join-Path $frameworkDirectory 'System.Web.Extensions.dll'),
+    (Join-Path $frameworkDirectory 'System.IO.Compression.dll'),
+    (Join-Path $frameworkDirectory 'System.Drawing.dll')
 )
 foreach ($reference in $references) {
     if (-not (Test-Path -LiteralPath $reference)) {
@@ -49,7 +54,7 @@ $libraryArguments = @(
     "/out:$handlerAssembly"
 )
 $libraryArguments += $references | ForEach-Object { "/reference:$_" }
-$libraryArguments += $handlerSource
+$libraryArguments += $handlerSources
 & $compiler @libraryArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Handler compilation failed with exit code $LASTEXITCODE."
@@ -74,6 +79,14 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) {
         throw "Policy tests failed with exit code $LASTEXITCODE."
     }
+    $workshopTests = Join-Path $OutputDirectory 'Acecode.Workshop.Tests.exe'
+    $workshopArguments = @('/nologo', '/target:exe', '/optimize+', '/warnaserror+', "/out:$workshopTests", "/reference:$handlerAssembly")
+    $workshopArguments += $references | ForEach-Object { "/reference:$_" }
+    $workshopArguments += (Join-Path $componentRoot 'tests\WorkshopTests.cs')
+    & $compiler @workshopArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Workshop test compilation failed.' }
+    & $workshopTests
+    if ($LASTEXITCODE -ne 0) { throw 'Workshop tests failed.' }
 }
 
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $handlerAssembly).Hash.ToLowerInvariant()

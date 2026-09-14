@@ -9,7 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { usePreference } from './lib/usePreference.js';
 import { api } from './lib/api.js';
-import { EVA_THEME_ID, themeCssProperties, validThemeDefinition } from './lib/themePackages.js';
+import { EVA_THEME_ID, applyInstalledTheme, releaseThemeResource, resolveThemeAppearance, validThemeDefinition } from './lib/themePackages.js';
 import { pushWindowBackgroundColor } from './lib/desktopWindowBackground.js';
 import { desktopTaskbarBadge } from './lib/desktopTaskbarBadge.js';
 import {
@@ -20,6 +20,7 @@ import {
   COLOR_THEME_STORAGE_KEY,
   DEFAULT_COLOR_THEME,
   effectiveColorTheme,
+  isInstalledColorTheme,
   isValidColorTheme,
 } from './lib/colorTheme.js';
 
@@ -27,10 +28,12 @@ const STORAGE_KEY = 'ace.theme';
 const ThemeCtx = createContext({
   theme: 'light',
   colorTheme: DEFAULT_COLOR_THEME,
+  appearance: null,
   toggle: () => {},
   set: () => {},
   setColorTheme: () => {},
   prepareTheme: async () => {},
+  forgetTheme: () => {},
 });
 
 function isValidTheme(v) { return v === 'system' || v === 'light' || v === 'dark'; }
@@ -50,32 +53,49 @@ export function ThemeProvider({ children }) {
     isValidColorTheme,
   );
   const [systemTheme, setSystemTheme] = useState(() => effectiveAppearanceTheme('system'));
-  const [installedTheme, setInstalledTheme] = useState(null);
+  const [installedThemes, setInstalledThemes] = useState({});
+  const installedTheme = installedThemes[colorTheme] || null;
   const themeCache = useRef(new Map());
   const themeReloadRequired = useRef(new Set());
   const mounted = useRef(true);
+  const forgetTheme = useCallback((id) => {
+    releaseThemeResource(themeCache.current, id);
+    themeReloadRequired.current.delete(id);
+    setInstalledThemes((current) => {
+      if (!current[id]) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
   const prepareTheme = useCallback(async (id, { refresh = false } = {}) => {
-    if (id !== EVA_THEME_ID) return null;
+    if (!isInstalledColorTheme(id)) return null;
     refresh = refresh || themeReloadRequired.current.has(id);
     const previous = refresh ? themeCache.current.get(id) : null;
     if (refresh || !themeCache.current.has(id)) {
       const pending = (async () => {
         const definition = await api.getTheme(id);
-        if (!validThemeDefinition(definition)) throw new Error('主题配色数据无效');
+        if (!validThemeDefinition(definition) || definition.id !== id) throw new Error('主题配色数据无效');
         const blob = await api.readThemeImage(id, 'background', definition.version);
         return { ...definition, backgroundUrl: URL.createObjectURL(blob) };
       })();
       themeCache.current.set(id, pending);
       // Keep the old image usable until its replacement is ready, then release
       // it even if the provider unmounts while either request is pending.
-      if (previous) pending.then(() => previous.then((item) => URL.revokeObjectURL(item.backgroundUrl))).catch(() => {});
+      if (previous) pending.then(() => previous.then((item) => URL.revokeObjectURL(item.backgroundUrl))).catch(() => {
+        // A deletion can evict a replacement while its image request fails.
+        // The old image then has no cache owner left to release it.
+        if (themeCache.current.get(id) !== pending && themeCache.current.get(id) !== previous) {
+          void previous.then((item) => URL.revokeObjectURL(item.backgroundUrl)).catch(() => {});
+        }
+      });
     }
     const pending = themeCache.current.get(id);
     try {
       const ready = await pending;
       if (mounted.current && themeCache.current.get(id) === pending) {
         themeReloadRequired.current.delete(id);
-        setInstalledTheme(ready);
+        setInstalledThemes((current) => ({ ...current, [id]: ready }));
       }
       return ready;
     } catch (error) {
@@ -101,7 +121,7 @@ export function ThemeProvider({ children }) {
     };
   }, []);
   useEffect(() => {
-    if (colorTheme === EVA_THEME_ID) void prepareTheme(colorTheme).catch(() => {});
+    if (isInstalledColorTheme(colorTheme)) void prepareTheme(colorTheme).catch(() => {});
   }, [colorTheme, prepareTheme]);
   useEffect(() => {
     const media = globalThis.matchMedia?.('(prefers-color-scheme: dark)');
@@ -111,26 +131,24 @@ export function ThemeProvider({ children }) {
     media.addEventListener?.('change', changed);
     return () => media.removeEventListener?.('change', changed);
   }, []);
-  const theme = colorTheme === EVA_THEME_ID ? 'light' : themeMode === 'system' ? systemTheme : themeMode;
+  const appearance = installedTheme ? resolveThemeAppearance(installedTheme) : null;
+  const theme = installedTheme?.mode || (colorTheme === EVA_THEME_ID ? 'light' : themeMode === 'system' ? systemTheme : themeMode);
 
   useLayoutEffect(() => {
     const root = document.documentElement;
     root.setAttribute('data-theme', theme);
     root.setAttribute('data-color-theme', colorTheme);
-    const properties = installedTheme?.id === colorTheme
-      ? themeCssProperties(installedTheme, installedTheme.backgroundUrl) : {};
-    for (const [key, value] of Object.entries(properties)) root.style.setProperty(key, value);
-    if (installedTheme?.id === colorTheme) root.setAttribute('data-installed-theme', colorTheme);
-    else root.removeAttribute('data-installed-theme');
+    const clearInstalledTheme = applyInstalledTheme(
+      root,
+      installedTheme?.id === colorTheme ? installedTheme : null,
+      installedTheme?.backgroundUrl,
+    );
     // 两个主题维度落地后 --ace-bg 的 computed 值同步可读;把 body 底色推给
     // 桌面壳,native 换窗口打底色(快速 resize 的新暴露区域随主题,不闪黑/白)。
     // 非桌面壳环境内部 no-op。
     pushWindowBackgroundColor();
     desktopTaskbarBadge.refresh();
-    return () => {
-      for (const key of Object.keys(properties)) root.style.removeProperty(key);
-      root.removeAttribute('data-installed-theme');
-    };
+    return clearInstalledTheme;
   }, [colorTheme, theme, installedTheme]);
 
   const toggle = useCallback(() => setTheme(theme === 'dark' ? 'light' : 'dark'), [setTheme, theme]);
@@ -141,7 +159,7 @@ export function ThemeProvider({ children }) {
   );
 
   return (
-    <ThemeCtx.Provider value={{ theme, themeMode, colorTheme, toggle, set, setColorTheme, prepareTheme }}>
+    <ThemeCtx.Provider value={{ theme, themeMode, colorTheme, appearance, toggle, set, setColorTheme, prepareTheme, forgetTheme }}>
       {children}
     </ThemeCtx.Provider>
   );

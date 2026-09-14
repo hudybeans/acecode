@@ -1,6 +1,7 @@
 // routes_models.cpp — Route registrations extracted from server.cpp
 #include "../server_impl.hpp"
 #include "../handlers/model_catalog_handler.hpp"
+#include "../handlers/model_connection_test_handler.hpp"
 #include "../../config/settings_mutations.hpp"
 #include "../../provider/models_dev_registry.hpp"
 #include "../../utils/models_dev_catalog.hpp"
@@ -12,6 +13,33 @@ namespace acecode::web {
 using nlohmann::json;
 
 void WebServer::Impl::register_models() {
+        CROW_ROUTE(app, "/api/models/test").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/models/test").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (!deps.app_config) return crow::response(503);
+
+            const auto body = json::parse(req.body, nullptr, false);
+            if (body.is_discarded()) {
+                crow::response response(400);
+                response.add_header("Content-Type", "application/json");
+                response.body = json{{"error", "BAD_JSON"}}.dump();
+                return with_cors(req, std::move(response));
+            }
+            AppConfig snapshot;
+            {
+                std::shared_lock<std::shared_mutex> config_lock(app_config_mu);
+                snapshot = *deps.app_config;
+            }
+            const auto result = test_model_connection(body, std::move(snapshot));
+            crow::response response(result.status);
+            response.add_header("Content-Type", "application/json");
+            response.body = result.body.dump();
+            return with_cors(req, std::move(response));
+        });
         CROW_ROUTE(app, "/api/models").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req) {
             return cors_preflight(req);

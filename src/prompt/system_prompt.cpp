@@ -50,10 +50,10 @@ static std::string get_default_shell() {
 // 这里枚举高频 cmd.exe vs POSIX 分歧让 LLM 写出正确语法。POSIX 平台返回空串。
 // PowerShell 家族的指引:bash 工具经 -EncodedCommand 运行 PowerShell,LLM 的 POSIX
 // 肌肉记忆(mkdir -p / rm -rf / $VAR / && )在这里同样会翻车,列出高频分歧。
-static std::string get_powershell_guidance(bool file_write_allowed,
+// multiline_tool:多行脚本建议经哪个文件工具落盘(模型侧名;GPT 系是
+// apply_patch,其余是 file_write);空 = 不给这条建议。
+static std::string get_powershell_guidance(const std::string& multiline_tool,
                                            const std::string& program) {
-    const std::string file_write_name =
-        model_tool_name_for_native("file_write");
     std::ostringstream out;
     out << "# Shell Command Guidance (PowerShell)\n\n"
         << "The `bash` tool runs commands through PowerShell (`" << program
@@ -76,9 +76,9 @@ static std::string get_powershell_guidance(bool file_write_allowed,
         << "containing spaces or special characters, or use `--%` to pass the rest verbatim.\n"
         << "- Use `$env:ACECODE_TMPDIR` for temporary scripts; ACECode rejects this placeholder "
         << "if no active session scratch directory is available.\n";
-    if (file_write_allowed) {
+    if (!multiline_tool.empty()) {
         out << "- For complex or multi-line scripts, prefer creating a real `.ps1` via `"
-            << file_write_name << "` and running it with `& PATH`.\n";
+            << multiline_tool << "` and running it with `& PATH`.\n";
     }
     out << "\n";
     return out.str();
@@ -102,9 +102,7 @@ static std::string get_git_bash_guidance(const std::string& program) {
 // POSIX 例子压倒性多,光在 # Environment 标 "Shell: cmd.exe" 不足以压住肌肉
 // 记忆 — 用户实测 `mkdir -p testfolder1` 会建出 `-p` 和 `testfolder1` 两个目录。
 // 这里枚举高频 cmd.exe vs POSIX 分歧让 LLM 写出正确语法。
-static std::string get_cmd_guidance(bool file_write_allowed) {
-    const std::string file_write_name =
-        model_tool_name_for_native("file_write");
+static std::string get_cmd_guidance(const std::string& multiline_tool) {
     std::ostringstream out;
     out << "# Shell Command Guidance (Windows)\n\n"
         << "The `bash` tool runs commands through `cmd.exe /c`, NOT through a POSIX shell. "
@@ -117,17 +115,17 @@ static std::string get_cmd_guidance(bool file_write_allowed) {
         << "- Variables: `%VAR%` (not `$VAR`). Set with `set VAR=value` (not `export`).\n"
         << "- Quoting: use double quotes for arguments containing spaces; cmd.exe does NOT strip "
         << "single quotes — they become literal characters.\n";
-    if (file_write_allowed) {
+    if (!multiline_tool.empty()) {
         out << "- No heredocs. To write multi-line content, prefer the `"
-            << file_write_name << "` tool.\n";
+            << multiline_tool << "` tool.\n";
     }
     out << "- Sequencing: `&&` (run if previous succeeded) and `||` (run if previous failed) work. "
         << "Use `&` for unconditional sequencing (not `;`).\n"
         << "- Lookups: `where X` (not `which`), `dir` (not `ls`), `type` (not `cat`).\n"
         << "- In `bash` commands, use `%ACECODE_TMPDIR%` for temporary scripts; ACECode rejects this placeholder if no active session scratch directory is available.\n";
-    if (file_write_allowed) {
+    if (!multiline_tool.empty()) {
         out << "- For complex persistent scripts, prefer creating a real `.bat` or `.ps1` via `"
-            << file_write_name << "` and "
+            << multiline_tool << "` and "
             << "running that, rather than fighting cmd.exe's quoting in a one-liner.\n";
     }
     out << "\n";
@@ -138,7 +136,7 @@ static std::string get_cmd_guidance(bool file_write_allowed) {
 // 行为:Windows 给 cmd 指引,POSIX 不给。
 static std::string get_shell_guidance(const SystemPromptEnvironment* environment,
                                       bool bash_allowed,
-                                      bool file_write_allowed) {
+                                      const std::string& multiline_tool) {
     if (!bash_allowed) return "";
     std::string family = environment ? environment->terminal_family : std::string{};
     const std::string program = environment ? environment->terminal_program : std::string{};
@@ -149,9 +147,9 @@ static std::string get_shell_guidance(const SystemPromptEnvironment* environment
         return "";
 #endif
     }
-    if (family == "cmd") return get_cmd_guidance(file_write_allowed);
+    if (family == "cmd") return get_cmd_guidance(multiline_tool);
     if (family == "powershell") {
-        return get_powershell_guidance(file_write_allowed,
+        return get_powershell_guidance(multiline_tool,
                                        program.empty() ? std::string("pwsh") : program);
     }
     if (family == "bash") {
@@ -176,7 +174,9 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const ToolCapabilityPolicy* effective_tool_policy,
                                 const SystemPromptWorktreeState* worktree,
                                 bool active_model_can_read_images,
-                                const SystemPromptEnvironment* environment) {
+                                const SystemPromptEnvironment* environment,
+                                const SystemPromptSandboxState* sandbox,
+                                const SystemPromptModelState* model) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -187,9 +187,17 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         return effective_tool_policy == nullptr ||
                tools.is_allowed(name, effective_tool_policy);
     };
+    // GPT / Codex 系模型的编辑工具是 apply_patch:file_edit / file_write 不进
+    // 模型侧工具表(AgentLoop 按同一偏好裁定义表),指引整段换掉
+    // (openspec add-gpt-apply-patch-adaptation)。
+    const bool apply_patch_mode = model != nullptr && model->prefers_apply_patch &&
+                                  guidance_allows("apply_patch");
+    const bool gpt_family = model != nullptr &&
+                            (model->family == ModelFamily::Gpt ||
+                             model->family == ModelFamily::GptCodex);
     const bool file_read_allowed = guidance_allows("file_read");
-    const bool file_edit_allowed = guidance_allows("file_edit");
-    const bool file_write_allowed = guidance_allows("file_write");
+    const bool file_edit_allowed = !apply_patch_mode && guidance_allows("file_edit");
+    const bool file_write_allowed = !apply_patch_mode && guidance_allows("file_write");
     const bool ask_user_allowed = guidance_allows("AskUserQuestion");
     const bool task_complete_allowed = guidance_allows("task_complete");
     const bool bash_allowed = guidance_allows("bash");
@@ -203,6 +211,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         model_tool_name_for_native("file_edit");
     const std::string file_write_name =
         model_tool_name_for_native("file_write");
+    const std::string apply_patch_name =
+        model_tool_name_for_native("apply_patch");
 
     std::ostringstream oss;
 
@@ -253,6 +263,20 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         oss << "- Always use absolute file paths with file tools, except a supported ACECODE_TMPDIR alias may be the leading path component for a temporary file.\n"
             << "- Built-in file tools decode supported text to UTF-8/LF internally and preserve existing encoding/line endings on write.\n";
     }
+    if (apply_patch_mode) {
+        oss << "- Use `" << apply_patch_name
+            << "` for every file creation, edit, deletion, or rename. Paths inside the patch may be "
+            << "relative to the working directory or absolute. Include about 3 lines of unchanged "
+            << "context around each change and add an `@@` anchor (class/function header) when the "
+            << "context alone is ambiguous. Every section is verified before anything is written, so a "
+            << "failed section means no file changed.\n"
+            << "- Read the relevant lines before patching a file you have not seen in this conversation; "
+            << "context lines must match the current file content.\n"
+            << "- If `" << apply_patch_name
+            << "` reports that a section could not be found, re-read the current content and retry "
+            << "with corrected context lines instead of bypassing with shell, Python, or PowerShell "
+            << "writes. Do not use cat, echo, or heredocs to create or edit files.\n";
+    }
     if (file_read_allowed) {
         oss << "- Do not call `" << file_read_name
             << "` again for the same file/range when that content is already current in the conversation; repeated unchanged reads return a compact stub.\n"
@@ -297,6 +321,32 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
             << "`, then \"Now let me search.\" then exactly one search.\n";
     }
     oss << "\n";
+
+    // GPT / Codex 家族行为指引(取自 opencode gpt.txt / codex.txt 中与 ACECode 不
+    // 冲突的部分)。只随模型切换变化,留在静态前缀里;其它模型逐字节不变。
+    if (gpt_family) {
+        oss << "# Model-specific guidance\n\n"
+            << "You are running as a GPT-family model inside acecode. The following adjustments apply.\n\n"
+            << "## Autonomy and persistence\n\n"
+            << "- Unless the user explicitly asks for a plan, asks a question about the code, or is clearly brainstorming, assume they want you to make the change or run the tools that solve the problem. Do not stop at a proposed solution in prose; implement it.\n"
+            << "- Persist until the task is handled end-to-end within the current turn whenever feasible: do not stop at analysis or partial fixes; carry changes through implementation, verification, and a clear explanation of outcomes unless the user pauses or redirects you.\n"
+            << "- If you encounter challenges or blockers, attempt to resolve them yourself before asking. Never ask permission questions like \"Should I proceed?\" or \"Do you want me to run tests?\"; proceed with the most reasonable option and mention what you did.\n"
+            << "- Only ask when you are truly blocked after checking relevant context AND you cannot safely pick a reasonable default: the request is ambiguous in a way that materially changes the result, the action is destructive or irreversible, or you need a secret or value that cannot be inferred. Do all non-blocked work first, then ask exactly one targeted question with your recommended default.\n\n"
+            << "## Editing approach\n\n"
+            << "- The best changes are often the smallest correct changes. When weighing two correct approaches, prefer the more minimal one (fewer new names, helpers, and abstractions).\n";
+        if (apply_patch_mode) {
+            oss << "- Always use `" << apply_patch_name
+                << "` for manual code edits. Do not use cat, echo, heredocs, Python, or PowerShell to create or edit files. Formatting commands or bulk search-and-replace across a codebase may use shell tools.\n";
+        }
+        oss << "- Default to ASCII when editing or creating files. Only introduce non-ASCII characters when there is a clear justification and the file already uses them.\n"
+            << "- Add succinct code comments only where the code is not self-explanatory.\n"
+            << "- You may be in a dirty git worktree. NEVER revert, undo, or modify changes you did not make unless the user explicitly asks; if unrelated changes appear in files you touch, work with them rather than reverting. Do not amend commits unless asked. NEVER use destructive commands like `git reset --hard` or `git checkout --` unless the user explicitly requested them. Prefer non-interactive git commands.\n\n"
+            << "## Responses\n\n"
+            << "- Do not begin responses with conversational interjections or meta commentary (\"Done -\", \"Got it\", \"Great question\"). Lead with the outcome.\n"
+            << "- Match the length of the answer to the task: a one-liner for simple tasks, a short structured summary for large changes. Keep lists flat (no nested bullets), use `1.` style numbered markers, and inline code for commands, paths, and identifiers.\n"
+            << "- Never tell the user to \"save/copy this file\"; the user is on the same machine and has access to the same files.\n"
+            << "- If the user pastes an error or bug report, diagnose the root cause. If they ask for a \"review\", lead with findings ordered by severity with file/line references before any summary.\n\n";
+    }
 
     oss << "# Tone and style\n\n"
         << "- Be concise and direct.\n"
@@ -392,6 +442,11 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         }
         oss << "\n";
     }
+    if (sandbox) {
+        oss << "- Shell sandbox: " << sandbox->description << "\n"
+            << "- If a necessary command is denied by the sandbox, request approval with "
+               "with_escalated_permissions=true and a non-empty justification; do not bypass the boundary.\n";
+    }
     oss << "- Working directory: " << cwd << "\n"
         << "- Is directory a git repo: "
         << (gitinfo::is_inside_git_repo(cwd) ? "Yes" : "No") << "\n"
@@ -435,7 +490,10 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     }
     oss << "\n";
 
-    oss << get_shell_guidance(environment, bash_allowed, file_write_allowed);
+    const std::string multiline_tool =
+        apply_patch_mode ? apply_patch_name
+                         : (file_write_allowed ? file_write_name : std::string{});
+    oss << get_shell_guidance(environment, bash_allowed, multiline_tool);
 
     if (bash_allowed) {
         oss << "# User Shell Mode\n\n"
