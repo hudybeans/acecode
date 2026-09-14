@@ -89,6 +89,7 @@ struct MemoryConfig;
 struct ProjectInstructionsConfig;
 struct ExpertDefinition;
 struct CompactResult;
+struct SystemPromptModelState;
 class AgentLoopDoomGuard;
 
 // Callbacks for the TUI to observe agent loop events
@@ -524,6 +525,10 @@ private:
     // true(与 LlmProvider::supports_vision 默认同口径)。模型切换发生在回合
     // 边界,所以同一回合内多次调用的结果一致,不会打穿 prompt cache 前缀。
     bool active_model_can_read_images() const;
+    // 当前 provider 的模型族信息(openspec add-gpt-apply-patch-adaptation):
+    // 决定系统提示的工具指引分支与模型侧工具表里给 apply_patch 还是
+    // file_edit / file_write。与视觉那一位同口径:只随模型切换变化。
+    SystemPromptModelState system_prompt_model_state() const;
     void initialize_compact_window_state();
     void apply_compact_result(const CompactResult& result,
                               const std::string& trigger,

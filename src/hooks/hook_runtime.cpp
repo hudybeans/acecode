@@ -40,7 +40,11 @@ bool alias_matches(const std::string& matcher, const std::string& target) {
     if (m == "Bash") return t == "bash";
     if (m == "Edit") return t == "file_edit";
     if (m == "Write") return t == "file_write";
-    if (m == "apply_patch") return t == "file_edit" || t == "file_write";
+    // apply_patch 既是 Codex 风格的别名(命中 file_edit / file_write),
+    // 也是 GPT 系模型实际调用的原生工具名。
+    if (m == "apply_patch") {
+        return t == "file_edit" || t == "file_write" || t == "apply_patch";
+    }
     // 「工具重写」生效时模型说的是 public 名(read / write / ...),用户照着
     // 模型的叫法写 matcher 也要能命中原生工具。
     if (const auto native = native_tool_name_for_public_alias(m)) {

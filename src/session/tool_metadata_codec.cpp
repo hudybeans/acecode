@@ -85,6 +85,20 @@ nlohmann::json encode_tool_hunks(const std::vector<DiffHunk>& h) {
         obj["old_count"] = hunk.old_count;
         obj["new_start"] = hunk.new_start;
         obj["new_count"] = hunk.new_count;
+        // 多文件结果(apply_patch)才带 file,顺带给出该 hunk 的加删行数:
+        // 前端聚合器按文件分组时 message 级 +N/-M 无法归属到单个文件,只能
+        // 靠 per-hunk 统计。单文件结果不带这三个键,序列化逐字节不变。
+        if (!hunk.file.empty()) {
+            obj["file"] = hunk.file;
+            int additions = 0;
+            int deletions = 0;
+            for (const auto& line : hunk.lines) {
+                if (line.kind == DiffLineKind::Added) ++additions;
+                else if (line.kind == DiffLineKind::Removed) ++deletions;
+            }
+            obj["additions"] = additions;
+            obj["deletions"] = deletions;
+        }
 
         nlohmann::json lines_arr = nlohmann::json::array();
         for (const auto& line : hunk.lines) {
@@ -129,6 +143,9 @@ std::optional<std::vector<DiffHunk>> decode_tool_hunks(const nlohmann::json& j) 
         hunk.old_count = hj["old_count"].get<int>();
         hunk.new_start = hj["new_start"].get<int>();
         hunk.new_count = hj["new_count"].get<int>();
+        if (hj.contains("file") && hj["file"].is_string()) {
+            hunk.file = hj["file"].get<std::string>();
+        }
 
         for (const auto& lj : hj["lines"]) {
             if (!lj.is_object()) return std::nullopt;

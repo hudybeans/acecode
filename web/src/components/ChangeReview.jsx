@@ -518,7 +518,7 @@ export function ChangeReviewPanel({
       initialOpenFirst
       selectedFile={initialExpandedFile}
       emptyMessage="本会话暂无文件变更"
-      emptyDetail="仅显示 file_edit / file_write 工具的改动"
+      emptyDetail="仅显示 file_edit / file_write / apply_patch 工具的改动"
       onSelectFile={onSelectFile}
       onOpenFile={onOpenFile}
       getFileDiffText={getFileDiffText}

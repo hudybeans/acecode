@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../tool/model_family.hpp"
 #include "../tool/tool_executor.hpp"
 #include <cstddef>
 #include <set>
@@ -92,6 +93,16 @@ struct SystemPromptSandboxState {
     std::string description;
 };
 
+// 当前模型的族信息(openspec add-gpt-apply-patch-adaptation)。GPT / Codex 系
+// 模型的工具指引改为 apply_patch,并追加一段模型族行为指引。它只随模型切换
+// 变化,所以留在可缓存的静态前缀里;nullptr = 改动前行为(file_edit /
+// file_write 指引,输出逐字节不变)。
+struct SystemPromptModelState {
+    std::string model_id;
+    ModelFamily family = ModelFamily::Default;
+    bool prefers_apply_patch = false;
+};
+
 // Build the static system prompt with identity, stable environment info, and
 // behavior rules. Per-request context such as current time/CWD, mutable project
 // instructions, mutable memory index content, and full tool JSON schemas belong
@@ -109,7 +120,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const SystemPromptWorktreeState* worktree = nullptr,
                                 bool active_model_can_read_images = true,
                                 const SystemPromptEnvironment* environment = nullptr,
-                                const SystemPromptSandboxState* sandbox = nullptr);
+                                const SystemPromptSandboxState* sandbox = nullptr,
+                                const SystemPromptModelState* model = nullptr);
 
 // Build provider-visible, session-scoped context blocks. These are assembled
 // for the current API request only and must not be persisted into the visible

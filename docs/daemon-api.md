@@ -3735,6 +3735,16 @@ model-context budget still applies later. As with the existing result budget,
 if storage fails the original completed result is retained rather than discarded;
 the preview reduction is therefore not guaranteed during storage failures.
 
+`tool_end.hunks[]` entries carry `old_start`, `old_count`, `new_start`,
+`new_count` and `lines[]`. A multi-file result (the `apply_patch` tool used by
+GPT / Codex models) additionally sets `file` (absolute path), `additions` and
+`deletions` on every hunk so clients can group hunks per file; single-file
+results from `file_edit` / `file_write` omit these keys and clients keep using
+`summary.object` as the file name. `apply_patch` results also expose
+`metadata.files[]` with `path`, `type` (`add` | `update` | `delete` | `move`),
+optional `move_path` / `from_path`, `additions` and `deletions`. The same hunk
+shape is persisted under the tool message's `metadata.tool_hunks`.
+
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable
 across tool calls, model retries, and accepted steering input. For the terminal

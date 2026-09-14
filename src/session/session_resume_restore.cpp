@@ -6,6 +6,7 @@
 #include "tool_result_storage.hpp"
 #include "turn_timing.hpp"
 #include "../agent_loop.hpp"
+#include "../tool/apply_patch_format.hpp"
 #include "../tool/mtime_tracker.hpp"
 #include "../tool/tool_executor.hpp"
 #include "../tui_state.hpp"
@@ -74,6 +75,8 @@ struct FileToolUse {
     std::string path;
     std::string content;
     bool partial_read_request = false;
+    // apply_patch:补丁涉及的全部路径(含 Move 目标),已按 cwd 解析。
+    std::vector<std::string> patch_paths;
 };
 
 bool starts_with(const std::string& value, const char* prefix) {
@@ -94,7 +97,8 @@ std::optional<std::string> json_string_field(const nlohmann::json& object,
     return object[name].get<std::string>();
 }
 
-std::optional<FileToolUse> parse_file_tool_use(const nlohmann::json& tool_call) {
+std::optional<FileToolUse> parse_file_tool_use(const nlohmann::json& tool_call,
+                                               const std::string& cwd) {
     if (!tool_call.is_object() ||
         !tool_call.contains("function") || !tool_call["function"].is_object()) {
         return std::nullopt;
@@ -104,6 +108,13 @@ std::optional<FileToolUse> parse_file_tool_use(const nlohmann::json& tool_call) 
     auto name = json_string_field(fn, "name");
     auto arguments_text = json_string_field(fn, "arguments");
     if (!name || !arguments_text) return std::nullopt;
+    if (*name == "apply_patch") {
+        FileToolUse use;
+        use.name = *name;
+        use.patch_paths = apply_patch::extract_target_paths(*arguments_text, cwd);
+        if (use.patch_paths.empty()) return std::nullopt;
+        return use;
+    }
     if (*name != "file_read" && *name != "file_write" && *name != "file_edit") {
         return std::nullopt;
     }
@@ -193,12 +204,25 @@ void restore_file_tool_state(const FileToolUse& use, const ChatMessage& result) 
         if (read_result.success && !read_result.buffer.metadata.lossy) {
             MtimeTracker::instance().record_write(use.path, read_result.buffer.text);
         }
+        return;
+    }
+
+    if (use.name == "apply_patch") {
+        // 补丁写过的文件当作已有编辑基线(与 file_edit 同款),这样 resume 后
+        // 模型切回 file_edit 也不会被「未读过」挡住。被删除的文件读不到就跳过。
+        for (const auto& path : use.patch_paths) {
+            auto read_result = read_text_file_buffer(path);
+            if (read_result.success && !read_result.buffer.metadata.lossy) {
+                MtimeTracker::instance().record_write(path, read_result.buffer.text);
+            }
+        }
     }
 }
 
 } // namespace
 
-void restore_file_tool_state_from_messages(const std::vector<ChatMessage>& messages) {
+void restore_file_tool_state_from_messages(const std::vector<ChatMessage>& messages,
+                                           const std::string& cwd) {
     std::map<std::string, FileToolUse> file_tool_uses;
 
     for (const auto& msg : messages) {
@@ -208,7 +232,7 @@ void restore_file_tool_state_from_messages(const std::vector<ChatMessage>& messa
                 !tool_call.contains("id") || !tool_call["id"].is_string()) {
                 continue;
             }
-            auto use = parse_file_tool_use(tool_call);
+            auto use = parse_file_tool_use(tool_call, cwd);
             if (!use.has_value()) continue;
             file_tool_uses[tool_call["id"].get<std::string>()] = std::move(*use);
         }
@@ -226,7 +250,7 @@ void append_resumed_session_messages(const std::vector<ChatMessage>& messages,
                                      TuiState& state,
                                      AgentLoop& agent_loop,
                                      const ToolExecutor& tools) {
-    restore_file_tool_state_from_messages(messages);
+    restore_file_tool_state_from_messages(messages, agent_loop.cwd());
 
     agent_loop.clear_messages();
     if (auto checkpoint = latest_valid_compact_checkpoint(messages)) {

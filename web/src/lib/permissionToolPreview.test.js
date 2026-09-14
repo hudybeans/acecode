@@ -3,6 +3,7 @@ import {
   pascalCaseToolName,
   countLines,
   buildPermissionToolPreview,
+  patchFileHeaders,
 } from './permissionToolPreview.js';
 
 function run(name, fn) {
@@ -88,6 +89,46 @@ run('file_edit 摘要覆盖 替换/新建/删除/全量', () => {
     replace_all: true,
   });
   assert.equal(all.detail, '替换 1 行 → 1 行(所有匹配)');
+});
+
+// 场景:apply_patch(GPT / Codex 系模型的编辑工具)请求确认,一份补丁改多个文件。
+// 期望:kind='file';单文件时 filePath 是该文件,多文件时是「N 个文件」;detail
+// 逐行 A/M/D + 路径,Move 追加 -> 目标;不透出补丁正文。header 扫描不校验信封,
+// 缺信封的补丁也能出预览;patchText 别名同样识别;没有任何 header → 回退 json。
+run('apply_patch 列出补丁涉及的文件与操作', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Add File: new.txt',
+    '+hello',
+    '*** Update File: src/a.py',
+    '*** Move to: src/b.py',
+    '@@',
+    '-x',
+    '+y',
+    '*** Delete File: old.txt',
+    '*** End Patch',
+  ].join('\n');
+  assert.deepEqual(patchFileHeaders(patch), [
+    { kind: 'add', path: 'new.txt', movePath: '' },
+    { kind: 'update', path: 'src/a.py', movePath: 'src/b.py' },
+    { kind: 'delete', path: 'old.txt', movePath: '' },
+  ]);
+
+  const multi = buildPermissionToolPreview('apply_patch', { input: patch });
+  assert.equal(multi.toolLabel, 'ApplyPatch');
+  assert.equal(multi.kind, 'file');
+  assert.equal(multi.filePath, '3 个文件');
+  assert.equal(multi.detail, 'A new.txt\nM src/a.py -> src/b.py\nD old.txt');
+  assert.equal(multi.detail.includes('hello'), false);
+
+  const single = buildPermissionToolPreview('apply_patch', {
+    patchText: '*** Update File: only.txt\n-1\n+2\n',
+  });
+  assert.equal(single.kind, 'file');
+  assert.equal(single.filePath, 'only.txt');
+  assert.equal(single.detail, 'M only.txt');
+
+  assert.equal(buildPermissionToolPreview('apply_patch', { input: 'garbage' }).kind, 'json');
 });
 
 // 场景:bash 请求确认 —— 命令本身就是用户要审的内容。

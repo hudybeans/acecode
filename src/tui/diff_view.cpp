@@ -256,10 +256,20 @@ ftxui::Element render_diff_view(
     }
 
     Elements blocks;
+    std::string current_file;
     for (size_t i = 0; i < td.hunks.size(); ++i) {
-        if (i > 0) {
+        // 多文件结果(apply_patch):hunk 带 file,文件切换处插一行文件标题,
+        // 否则两个文件的 hunk 会背靠背连成一片。单文件结果 file 为空,不画。
+        const bool file_changed = !td.hunks[i].file.empty() &&
+                                  td.hunks[i].file != current_file;
+        if (i > 0 && !file_changed) {
             // hunk 之间的分隔线
             blocks.push_back(text(hunk_separator_glyph()) | color(tui::theme().diff.gutter) | dim);
+        }
+        if (file_changed) {
+            current_file = td.hunks[i].file;
+            blocks.push_back(text(hunk_separator_glyph() + std::string(" ") + current_file) |
+                             color(tui::theme().diff.gutter) | dim);
         }
         int hidden = (i < td.hidden_lines_per_hunk.size())
                          ? td.hidden_lines_per_hunk[i]

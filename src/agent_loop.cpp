@@ -28,7 +28,9 @@
 #include "session/turn_net_diff.hpp"
 #include "skills/skill_activation.hpp"
 #include "skills/skill_registry.hpp"
+#include "tool/apply_patch_format.hpp"
 #include "tool/ask_user_question_tool.hpp"
+#include "tool/model_family.hpp"
 #include "tool/mtime_tracker.hpp"
 #include "tool/tool_protocol_names.hpp"
 #include "web/message_payload.hpp"
@@ -1302,6 +1304,15 @@ bool AgentLoop::active_model_can_read_images() const {
     return provider->supports_vision();
 }
 
+SystemPromptModelState AgentLoop::system_prompt_model_state() const {
+    SystemPromptModelState state;
+    std::string provider_name;
+    active_model_identity(provider_name, state.model_id);
+    state.family = detect_model_family(state.model_id);
+    state.prefers_apply_patch = model_prefers_apply_patch(state.model_id);
+    return state;
+}
+
 std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
     std::vector<ChatMessage> context;
 
@@ -1317,13 +1328,14 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
     const acecode::SystemPromptEnvironment prompt_environment =
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
+    const SystemPromptModelState model_state = system_prompt_model_state();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state);
+        &prompt_environment, &sandbox_state, &model_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2364,13 +2376,14 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     const acecode::SystemPromptEnvironment prompt_environment =
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
+    const SystemPromptModelState model_state = system_prompt_model_state();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state);
+        &prompt_environment, &sandbox_state, &model_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -2384,11 +2397,13 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     if (emergency_profile) {
         // 这里拿到的已是模型侧定义,核心工具名必须经映射取,不能写死 read/write:
         // 「工具重写」关闭时它们叫 file_read / file_write,写死会把核心工具整个滤掉。
+        // apply_patch 也算核心:GPT 系模型的编辑工具就是它(下面按模型族再裁)。
         const std::vector<std::string> core_tool_names = {
             model_tool_name_for_native("bash"),
             model_tool_name_for_native("file_read"),
             model_tool_name_for_native("file_write"),
             model_tool_name_for_native("file_edit"),
+            model_tool_name_for_native("apply_patch"),
             model_tool_name_for_native("task_complete"),
         };
         const auto is_core_tool = [&core_tool_names](const ToolDef& definition) {
@@ -2413,6 +2428,10 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         bundle.tool_defs =
             tools_.get_model_tool_definitions(&tool_capability_policy_);
     }
+    // GPT / Codex 系模型只看到 apply_patch,其它模型只看到 file_edit / file_write
+    // (openspec add-gpt-apply-patch-adaptation)。三个工具始终注册,这里只裁
+    // 模型侧定义表;模型在回合内固定,所以裁完的表逐字节稳定,不打穿 prompt cache。
+    filter_tool_definitions_for_model(bundle.tool_defs, model_state.prefers_apply_patch);
     LOG_DEBUG("Registered tools: " + std::to_string(bundle.tool_defs.size()));
 
     // gitStatus 快照:每会话激活惰性采集一次,cwd 切换或外部失效(Web UI
@@ -4082,31 +4101,64 @@ bool AgentLoop::execute_tool_calls(
                     }
                 }
 
-                if (effective_tc.function_name == "file_write" || effective_tc.function_name == "file_edit") {
-                    auto path = path_from_utf8(ctx_path);
-                    if (path.is_relative()) path = path_from_utf8(cwd_) / path;
-                    std::error_code ec;
-                    const auto normalized = std::filesystem::weakly_canonical(path, ec);
-                    const auto global_rules = std::filesystem::weakly_canonical(path_from_utf8(get_acecode_dir()) / "rules", ec);
-                    const auto relative = normalized.lexically_relative(global_rules);
-                    if (sandbox::is_exec_rules_path(ctx_path) || sandbox::is_exec_rules_path(path_to_utf8(normalized)) ||
-                        (!relative.empty() && *relative.begin() != "..")) {
-                        return ToolResult{"[Permission denied] Exec rules must be edited by the user.", false};
+                // apply_patch 一份补丁涉及多条路径(Add / Update / Delete 与 Move
+                // 目标),规则 / 写边界 / 危险路径逐条评估,任一路径不过整份补丁
+                // 都不执行;其它工具沿用单个 ctx_path。空集合 = 该工具不带路径
+                // (bash 等),规则匹配按空路径走一次以保持旧语义。
+                std::vector<std::string> target_paths;
+                if (effective_tc.function_name == "apply_patch") {
+                    target_paths = apply_patch::extract_target_paths(
+                        effective_tc.function_arguments, cwd_);
+                } else if (!ctx_path.empty()) {
+                    target_paths.push_back(ctx_path);
+                }
+                const std::vector<std::string> rule_paths =
+                    target_paths.empty() ? std::vector<std::string>{std::string{}}
+                                         : target_paths;
+                const bool is_file_mutation_tool =
+                    effective_tc.function_name == "file_write" ||
+                    effective_tc.function_name == "file_edit" ||
+                    effective_tc.function_name == "apply_patch";
+
+                if (is_file_mutation_tool) {
+                    for (const auto& target : target_paths) {
+                        auto path = path_from_utf8(target);
+                        if (path.is_relative()) path = path_from_utf8(cwd_) / path;
+                        std::error_code ec;
+                        const auto normalized = std::filesystem::weakly_canonical(path, ec);
+                        const auto global_rules = std::filesystem::weakly_canonical(path_from_utf8(get_acecode_dir()) / "rules", ec);
+                        const auto relative = normalized.lexically_relative(global_rules);
+                        if (sandbox::is_exec_rules_path(target) || sandbox::is_exec_rules_path(path_to_utf8(normalized)) ||
+                            (!relative.empty() && *relative.begin() != "..")) {
+                            return ToolResult{"[Permission denied] Exec rules must be edited by the user.", false};
+                        }
                     }
                 }
-                if (!permissions_.is_dangerous() && permissions_.matched_rule(
-                        effective_tc.function_name, ctx_path, ctx_command) == RuleAction::Deny) {
-                    return ToolResult{"[Permission denied by configured rule]", false};
+                if (!permissions_.is_dangerous()) {
+                    for (const auto& rule_path : rule_paths) {
+                        if (permissions_.matched_rule(effective_tc.function_name, rule_path,
+                                                      ctx_command) == RuleAction::Deny) {
+                            return ToolResult{"[Permission denied by configured rule]", false};
+                        }
+                    }
                 }
 
                 const bool targets_active_plan_file =
                     permissions_.mode() == PermissionMode::Plan &&
                     session_manager_ &&
-                    (effective_tc.function_name == "file_write" ||
-                     effective_tc.function_name == "file_edit") &&
-                    session_manager_->is_plan_file_path(ctx_path);
-                bool auto_allow = permissions_.should_auto_allow(
-                    effective_tc.function_name, false, ctx_path, ctx_command);
+                    is_file_mutation_tool &&
+                    !target_paths.empty() &&
+                    std::all_of(target_paths.begin(), target_paths.end(),
+                                [this](const std::string& target) {
+                                    return session_manager_->is_plan_file_path(target);
+                                });
+                bool auto_allow = true;
+                for (const auto& rule_path : rule_paths) {
+                    if (!permissions_.should_auto_allow(
+                            effective_tc.function_name, false, rule_path, ctx_command)) {
+                        auto_allow = false;
+                    }
+                }
                 if (permissions_.mode() == PermissionMode::Plan) {
                     auto_allow = targets_active_plan_file || effective_tc.function_name == "TodoWrite";
                 }
@@ -4161,19 +4213,21 @@ bool AgentLoop::execute_tool_calls(
                     }
                 }
 
-                if (!ctx_path.empty() && effective_tc.function_name != "bash") {
-                    std::string path_error =
-                        path_validation_error(effective_tc.function_name, ctx_path);
-                    if (!path_error.empty()) {
-                        LOG_WARN("Path validation failed: " + path_error);
-                        return ToolResult{"[Error] " + path_error, false};
-                    }
-                    if (!targets_active_plan_file &&
-                        path_validator_.is_dangerous_path(ctx_path) && auto_allow &&
-                        !permissions_.is_dangerous() &&
-                        permissions_.mode() != PermissionMode::Yolo) {
-                        LOG_INFO("Dangerous path detected, forcing confirmation: " + ctx_path);
-                        auto_allow = false;
+                if (effective_tc.function_name != "bash") {
+                    for (const auto& target : target_paths) {
+                        std::string path_error =
+                            path_validation_error(effective_tc.function_name, target);
+                        if (!path_error.empty()) {
+                            LOG_WARN("Path validation failed: " + path_error);
+                            return ToolResult{"[Error] " + path_error, false};
+                        }
+                        if (!targets_active_plan_file &&
+                            path_validator_.is_dangerous_path(target) && auto_allow &&
+                            !permissions_.is_dangerous() &&
+                            permissions_.mode() != PermissionMode::Yolo) {
+                            LOG_INFO("Dangerous path detected, forcing confirmation: " + target);
+                            auto_allow = false;
+                        }
                     }
                 }
 

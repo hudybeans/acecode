@@ -10,6 +10,7 @@
 
 #include "../provider/llm_provider.hpp"
 
+#include <string>
 #include <vector>
 
 namespace acecode {
@@ -18,7 +19,10 @@ class AgentLoop;
 class ToolExecutor;
 struct TuiState;
 
-void restore_file_tool_state_from_messages(const std::vector<ChatMessage>& messages);
+// cwd:会话工作目录,apply_patch 历史调用里的相对路径按它解析后补
+// MtimeTracker 基线;空串 = 相对路径原样(只对绝对路径生效)。
+void restore_file_tool_state_from_messages(const std::vector<ChatMessage>& messages,
+                                           const std::string& cwd = std::string());
 
 void append_resumed_session_messages(const std::vector<ChatMessage>& messages,
                                      TuiState& state,

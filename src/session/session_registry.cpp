@@ -1111,7 +1111,7 @@ void SessionRegistry::restore_loop_history(
     SessionEntry& entry,
     const std::vector<ChatMessage>& messages) const {
     if (!entry.loop) return;
-    restore_file_tool_state_from_messages(messages);
+    restore_file_tool_state_from_messages(messages, entry.loop->cwd());
     entry.loop->clear_messages();
 
     if (auto checkpoint = latest_valid_compact_checkpoint(messages)) {

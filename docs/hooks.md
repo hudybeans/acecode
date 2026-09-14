@@ -87,7 +87,7 @@ An omitted matcher, an empty matcher, or `*` matches all events in that group. O
 Tool events match the canonical tool name plus Codex aliases:
 
 - `Bash` matches ACECode shell tool calls.
-- `apply_patch`, `Edit`, and `Write` match supported file edit and write paths.
+- `apply_patch`, `Edit`, and `Write` match supported file edit and write paths. `apply_patch` also matches the native `apply_patch` tool that GPT / Codex models use instead of `file_edit` / `file_write`.
 - MCP tools match their registered tool names.
 
 Compact hooks match `manual` or `auto`. `SessionStart` hooks match `startup`, `resume`, `clear`, or `compact`.
@@ -208,7 +208,8 @@ Runs only when ACECode would otherwise ask the user for permission. Deny wins ov
 ```
 
 Matcher aliases: `Bash`, `Edit`, `Write` and `apply_patch` map to the native
-`bash`, `file_edit` and `file_write` tools. When Settings > Tools > 工具重写 is
+`bash`, `file_edit` and `file_write` tools (`apply_patch` additionally matches
+the native `apply_patch` tool). When Settings > Tools > 工具重写 is
 enabled, the rewritten names (for example `read` or `write`) also match their
 native tool, so a matcher can use the same name the model uses.
 

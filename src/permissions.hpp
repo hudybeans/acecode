@@ -55,7 +55,7 @@ class PermissionManager {
 public:
     PermissionManager() {
         // 所有宿主与子会话共用内置保护,不能由模型自行写入免确认规则。
-        for (const char* tool : {"file_write", "file_edit"}) {
+        for (const char* tool : {"file_write", "file_edit", "apply_patch"}) {
             for (const char* path : {".acecode/rules/**", "**/.acecode/rules/**"}) {
                 rules_.push_back({tool, path, "", RuleAction::Deny, 1000});
             }
@@ -206,10 +206,12 @@ public:
             if (session_allowed_.count(tool_name)) return true;
         }
 
-        // Auto mode: auto-allow file tools. bash is decided by the exec policy
-        // in AgentLoop (src/sandbox/exec_decision), never here.
+        // Auto mode: auto-allow file tools (apply_patch is the GPT-family
+        // spelling of file_edit). bash is decided by the exec policy in
+        // AgentLoop (src/sandbox/exec_decision), never here.
         if (mode_.load(std::memory_order_relaxed) == PermissionMode::Auto) {
-            if (tool_name == "file_write" || tool_name == "file_edit") {
+            if (tool_name == "file_write" || tool_name == "file_edit" ||
+                tool_name == "apply_patch") {
                 return true;
             }
         }

@@ -14,11 +14,20 @@
  */
 export function hunksToUnifiedDiff(hunks, fallbackFile = 'change') {
   if (!Array.isArray(hunks) || hunks.length === 0) return '';
-  const file = hunks[0]?.file || fallbackFile;
   const out = [];
-  out.push(`--- a/${file}`);
-  out.push(`+++ b/${file}`);
+  // 多文件结果(apply_patch)每个 hunk 带 file:文件切换处重新输出
+  // `--- a/ +++ b/` 头,diff2html 原生按多文件渲染。单文件结果只有第一个
+  // 头(hunk 没 file 时沿用上一个文件,首个没 file 则用 fallbackFile)。
+  let currentFile = null;
   for (const h of hunks) {
+    const file = (h && typeof h.file === 'string' && h.file)
+      ? h.file
+      : (currentFile ?? fallbackFile);
+    if (file !== currentFile) {
+      currentFile = file;
+      out.push(`--- a/${file}`);
+      out.push(`+++ b/${file}`);
+    }
     const oldS = h.old_start ?? 1;
     const oldC = h.old_count ?? 0;
     const newS = h.new_start ?? 1;

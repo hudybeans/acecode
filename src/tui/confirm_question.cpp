@@ -25,6 +25,8 @@
 
 #include "tui/confirm_question.hpp"
 
+#include "tool/apply_patch_format.hpp"
+
 #include <nlohmann/json.hpp>
 
 namespace acecode::tui {
@@ -196,6 +198,34 @@ std::string build_confirm_question(const std::string& tool_name,
                     j.contains("new_string") && j["new_string"].is_string()) {
                     out += "\n  - " + truncate_first_line(j["old_string"].get<std::string>());
                     out += "\n  + " + truncate_first_line(j["new_string"].get<std::string>());
+                }
+                return out;
+            }
+        }
+
+        if (tool_name == "apply_patch") {
+            // 一份补丁可能改多个文件:列出每个文件与操作(A 新建 / M 修改 /
+            // D 删除,Move 单独标出),最多 6 行,其余折叠成计数。
+            const auto headers = apply_patch::summarize_patch_headers(
+                apply_patch::patch_text_from_arguments(j.dump()));
+            if (!headers.empty()) {
+                std::string out = "Do you want to apply a patch to " +
+                                  std::to_string(headers.size()) +
+                                  (headers.size() == 1 ? " file?" : " files?");
+                size_t shown = 0;
+                for (const auto& header : headers) {
+                    if (shown >= 6) {
+                        out += "\n  ... " + std::to_string(headers.size() - shown) + " more";
+                        break;
+                    }
+                    const char* marker =
+                        header.kind == apply_patch::HunkKind::Add ? "A" :
+                        header.kind == apply_patch::HunkKind::Delete ? "D" : "M";
+                    out += std::string("\n  ") + marker + " " + truncate_path(header.path);
+                    if (!header.move_path.empty()) {
+                        out += " -> " + truncate_path(header.move_path);
+                    }
+                    ++shown;
                 }
                 return out;
             }

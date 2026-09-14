@@ -270,6 +270,8 @@ void configure_permissions(PermissionManager& permissions,
     permissions.add_rule({"file_edit", "*.env", "", RuleAction::Deny, 100});
     permissions.add_rule({"file_write", ".git/**", "", RuleAction::Deny, 100});
     permissions.add_rule({"file_edit", ".git/**", "", RuleAction::Deny, 100});
+    permissions.add_rule({"apply_patch", "*.env", "", RuleAction::Deny, 100});
+    permissions.add_rule({"apply_patch", ".git/**", "", RuleAction::Deny, 100});
     permissions.add_rule({"bash", "", "rm -rf /", RuleAction::Deny, 100});
 }
 

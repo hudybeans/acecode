@@ -173,3 +173,25 @@ TEST(Permissions, SessionAllowStickyForTool) {
     EXPECT_FALSE(pm.has_session_allow("file_edit"));
     EXPECT_FALSE(pm.has_session_allow("bash"));
 }
+
+// 场景:apply_patch(GPT / Codex 系模型的编辑工具)在各模式下的权限语义
+// (openspec add-gpt-apply-patch-adaptation)。
+// 期望:与 file_edit 完全一致 —— Default 需确认,Auto 自动放行,Yolo 放行;
+// 内置的 .acecode/rules/** 保护对它同样生效(matched_rule 给 Deny)。
+// 回归:漏掉 Auto 分支时 GPT 用户在 Auto 模式下每次改文件都会被弹窗打断。
+TEST(Permissions, ApplyPatchFollowsFileEditSemantics) {
+    PermissionManager pm;
+    pm.set_mode(PermissionMode::Default);
+    EXPECT_FALSE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Auto);
+    EXPECT_TRUE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Yolo);
+    EXPECT_TRUE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Auto);
+    EXPECT_EQ(pm.matched_rule("apply_patch", "proj/.acecode/rules/exec.json"),
+              std::optional<RuleAction>(RuleAction::Deny));
+    EXPECT_FALSE(pm.should_auto_allow("apply_patch", false, "proj/.acecode/rules/exec.json"));
+}

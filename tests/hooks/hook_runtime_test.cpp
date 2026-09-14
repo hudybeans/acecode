@@ -54,6 +54,12 @@ TEST(HookRuntime, MatcherAliasesMapCodexNamesToAceCodeTools) {
         make_hook("h4", acecode::kCodexHookEventPreToolUse, "apply_patch"),
         acecode::kCodexHookEventPreToolUse,
         "file_write"));
+    // apply_patch 也是 GPT / Codex 系模型实际调用的原生工具名:同一个 matcher
+    // 必须同时命中它,否则用户为 Codex 写的 hooks 在 GPT 模型下静默失效。
+    EXPECT_TRUE(acecode::hook_matcher_matches(
+        make_hook("h4b", acecode::kCodexHookEventPreToolUse, "apply_patch"),
+        acecode::kCodexHookEventPreToolUse,
+        "apply_patch"));
 }
 
 // 场景:「工具重写」生效(file_write → write),用户照模型的叫法写 matcher "write"。
