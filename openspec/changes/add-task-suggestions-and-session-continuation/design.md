@@ -1,0 +1,27 @@
+## Context
+
+See proposal.md. ThreadService already creates persistent sessions and queues first input. Web session routes can attach structured source-session references and create a worktree before the first input. AgentLoop persists summary checkpoints but current window numbers also interact with repair/fork; normal @ references only include a bounded recent visible transcript.
+
+## Goals / Non-Goals
+
+The domain service owns suggestion state, execution location and startup receipts. Web/Desktop are the interactive card surfaces; in-process AI tools can propose or withdraw suggestions. Existing direct thread tools and subagent orchestration remain distinct. This change does not build general multi-agent scheduling, automatically merge side work, copy uncommitted changes into new worktrees, or publish a release.
+
+## Decisions
+
+1. A project-local SQLite suggestion store uses stable source/target IDs, bounded validated text, deduplication, and atomic acceptance. States are pending, queued, starting, started, failed and dismissed. Runtime callbacks must not own raw short-lived HTTP/service objects. Record a target ID before provisioning, and reuse it after recoverable failure. Initial input carries the suggestion identity so recovery can recognize already accepted input.
+2. A shared service serves tools and authenticated session HTTP routes. Tools only propose/dismiss; user acceptance selects current/worktree. The source scope and actual execution directory are resolved by the host, not model arguments. Current-directory launches queue at an idle worker boundary; known busy sessions/descendants sharing the directory defer launch. Worktree launches use a verified source commit and cannot fall back to shared execution. Source and target worktree ownership must not cause shared-directory deletion.
+3. Successful auto/manual summary checkpoints determine compaction count, excluding repair/mechanical fallback and honoring fork reset boundaries. Threshold defaults to three, zero disables it. Once a continuation suggestion exists for a source, no repeat reminder is generated. Persisted suggestions remain authoritative across restarts; no counting UI warning rows.
+4. Handoff captures the latest state at the safe worker boundary using the latest semantic summary plus bounded recent state. Repair checkpoints and hidden automatic goal inputs do not replace that summary or user constraints. Include source reference metadata and bounded goals/todos/constraints/workspace/evidence, with on-demand read_thread access. Preserve effective model, permission and expert settings, and independently construct production providers for concurrent tasks. Source automatic goal continuation is paused once its successor has accepted the first input. Background tasks and pending user input must not be silently dropped or run concurrently with the transferred main work.
+5. GET session suggestions returns persisted records, source/workspace busy and worktree availability. Accept/dismiss POST returns a suggestion envelope. Host lifecycle work handles queued acceptance independently of tab focus; reconnect also recovers interrupted phases. Expected failures are shown on the card with retry against the same target.
+6. A compact non-modal card is attached to the chat's upper right, uses theme tokens, supports keyboard and narrow screens, and never steals focus. Side tasks expose a split location action and stay in the source view; continuation starts in the same directory and navigates to its successor. Polling is bounded/single-flight and source-scoped, with stale responses ignored. Unsupported old backends silently omit this optional surface.
+
+## Risks / Trade-offs
+
+- A shared directory can also be modified by external editors or processes. Serialize known session work and tell the user the location is shared; existing file read guards still apply.
+- A frozen commit does not include uncommitted changes. Show this beside worktree selection and require the new task to verify its assumptions in its actual checkout.
+- Summary generation can fail or omit evidence. Preserve both conversations, make failures retryable, retain original user constraints and source reference access, and instruct the new session to verify live state.
+- Restart can occur between provisioning and input submission. Persist target identity and accepted input intent, recognize the durable user-message receipt, and recover missing delivery to the same target. Hiding a started card does not cancel its accepted input.
+
+## Migration Plan
+
+Additive project-local storage initializes lazily. Existing successful checkpoints provide the reminder baseline. Existing sessions and ordinary thread APIs keep their behavior until a suggestion is accepted. API docs describe new routes, lifecycle states, the threshold, and actual execution-location semantics.
