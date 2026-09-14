@@ -6,6 +6,7 @@ import {
   parseLegacyToolCall,
 } from './toolSummaryFallback.js';
 import { isImageAttachment, normalizeAttachmentList } from './messageAttachments.js';
+import { questionFeedbackForItem } from './questionFeedback.js';
 
 function isUserMessage(item) {
   return item?.kind === 'msg' && item.role === 'user';
@@ -32,9 +33,7 @@ function isToolItem(item) {
 }
 
 function isAskUserQuestionResultTool(item) {
-  return isToolItem(item)
-    && Array.isArray(item.tool?.askUserQuestionResult?.items)
-    && item.tool.askUserQuestionResult.items.length > 0;
+  return questionFeedbackForItem(item) !== null;
 }
 
 function isAskUserQuestionTool(item) {

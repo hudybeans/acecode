@@ -1,4 +1,6 @@
 import './questionPicker.test.js';
+import './questionFeedback.test.js';
+import './questionFeedbackPersistence.test.js';
 import './pendingQuestions.test.js';
 import './expertMenuPosition.test.js';
 import './anchoredMenuPosition.test.js';

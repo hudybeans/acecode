@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "tool/tool_executor.hpp"
+#include "tool/ask_user_question_tool.hpp"
 
 TEST(ToolResultAttachments, FormatToolResultCarriesAttachmentContentParts) {
     acecode::ToolResult result;
@@ -53,4 +54,18 @@ TEST(ToolResultAttachments, FormatToolResultCarriesUiMetadata) {
     ASSERT_EQ(items.size(), 1u);
     EXPECT_EQ(items[0]["question"], "Q?");
     EXPECT_EQ(items[0]["answer"], "A");
+}
+
+TEST(ToolResultAttachments, CancelledAskResultPersistsFeedbackWithoutChangingOutput) {
+    const auto result = acecode::make_rejected_ask_result();
+    const auto message = acecode::ToolExecutor::format_tool_result("call-cancel", result);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(message.role, "tool");
+    EXPECT_EQ(message.tool_call_id, "call-cancel");
+    EXPECT_EQ(message.content, "[Error] User declined to answer questions.");
+    ASSERT_TRUE(message.metadata.contains("ask_user_question_result"));
+    EXPECT_EQ(message.metadata.at("ask_user_question_result"),
+              (nlohmann::json{{"cancelled", true}, {"items", nlohmann::json::array()}}));
+    EXPECT_TRUE(acecode::format_ask_user_question_result_display(message.metadata).empty());
 }

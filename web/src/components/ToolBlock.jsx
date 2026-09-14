@@ -20,6 +20,7 @@ import { highlightSourceForFile } from '../lib/sourceCodeHighlight.js';
 import { fallbackToolSummary } from '../lib/toolSummaryFallback.js';
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { normalizeTaskCompleteMarkdown } from '../lib/taskCompleteSummary.js';
+import { questionFeedbackForTool } from '../lib/questionFeedback.js';
 import {
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
@@ -193,7 +194,7 @@ function AskUserQuestionResultCard({ result, toolContextAttrs }) {
   const fullText = askUserQuestionText({ items });
 
   return (
-    <div className={clsx('ace-qa-card my-0.5', collapsed && 'is-collapsed')} {...toolContextAttrs}>
+    <div className={clsx('ace-qa-card my-0.5', collapsed && 'is-collapsed')} data-question-feedback="submit" {...toolContextAttrs}>
       <button
         type="button"
         className="ace-qa-card-header"
@@ -395,10 +396,21 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
   }, [onReviewToggle]);
 
-  if (isDone && success !== false && askUserQuestionResult?.items?.length > 0) {
+  const questionFeedback = questionFeedbackForTool(entry);
+  if (questionFeedback?.kind === 'cancel') {
+    return (
+      <div className="ace-qa-card my-0.5" data-question-feedback="cancel" {...toolContextAttrs} data-desktop-tool-toggle="false">
+        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2 text-[12px] text-fg-mute">
+          <VsIcon name="close" size={14} />
+          <span>已取消全部回答</span>
+        </div>
+      </div>
+    );
+  }
+  if (questionFeedback?.kind === 'submit') {
     return (
       <AskUserQuestionResultCard
-        result={askUserQuestionResult}
+        result={questionFeedback}
         toolContextAttrs={toolContextAttrs}
       />
     );

@@ -293,6 +293,9 @@ ToolResult make_rejected_ask_result() {
     ToolResult r;
     r.output = "[Error] User declined to answer questions.";
     r.success = false;
+    r.metadata = {{"ask_user_question_result", {
+        {"cancelled", true}, {"items", nlohmann::json::array()}
+    }}};
     return r;
 }
 

@@ -79,7 +79,7 @@ TEST(HookRuntime, MatcherAcceptsModelFacingAliasWhenRewriteActive) {
     }
     // 映射关闭时 "write" 不再是别名:canonical 值原样返回(matcher 本身仍可能
     // 按正则子串命中 file_write,那是既有的正则语义,不在本用例范围内)。
-    acecode::ScopedModelToolNameMappings none({});
+    acecode::ScopedModelToolNameMappings none(acecode::ToolProtocolNameMappings{});
     EXPECT_EQ(acecode::canonical_hook_match_value("write"), "write");
     EXPECT_EQ(acecode::canonical_hook_match_value("Write"), "file_write");
 }

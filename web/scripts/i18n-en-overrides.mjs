@@ -1,6 +1,7 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '已取消全部回答': 'All answers cancelled',
   '仅显示 file_edit / file_write / apply_patch 工具的改动': 'Show only changes made by the file_edit / file_write / apply_patch tools',
   '国庆节': 'National Day',
   '下载国庆节主题': 'Download National Day theme',

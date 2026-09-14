@@ -502,6 +502,11 @@ TEST(AskUserQuestionUnattendedTest, AsyncToolStillPromptsWithoutActiveGoal) {
     auto r = tool.execute(args, ctx);
     EXPECT_TRUE(prompter_called);
     EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.output, "[Error] User declined to answer questions.");
+    ASSERT_TRUE(r.metadata.contains("ask_user_question_result"));
+    const auto& feedback = r.metadata.at("ask_user_question_result");
+    EXPECT_EQ(feedback.at("cancelled"), true);
+    EXPECT_EQ(feedback.at("items"), nlohmann::json::array());
 }
 
 TEST(AskUserQuestionTimeoutTest, NoRecommendedOptionRemainsNotAnswered) {

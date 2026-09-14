@@ -3867,6 +3867,15 @@ close event.
 }
 ```
 
+Completed AskUserQuestion results carry UI-only
+`metadata.ask_user_question_result` in `tool_end` events and persisted tool
+messages. Successful answers contain ordered `items` with `question` and
+`answer` text. Explicit rejection contains `{"cancelled":true,"items":[]}`;
+its `success` remains `false` and its provider-visible output remains
+`[Error] User declined to answer questions.`. Clients can use this namespaced
+marker to retain cancellation feedback after reloading history. A generic
+tool's unrelated `metadata.cancelled` flag is not question-result metadata.
+
 #### AskUserQuestion answer policy (`agent_loop.question_policy`)
 
 `question_request` / `question_closed` behavior depends on the configured
