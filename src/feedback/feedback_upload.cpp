@@ -290,7 +290,6 @@ std::vector<FeedbackLogSource> collect_runtime_log_sources(const fs::path& logs_
     const std::pair<const char*, const char*> wanted[] = {
         {"desktop", "logs/desktop.log.tail.txt"},
         {"daemon", "logs/daemon.log.tail.txt"},
-        {"upgrade", "logs/upgrade.log.tail.txt"},
     };
     std::vector<FeedbackLogSource> sources;
     for (const auto& [base, entry_name] : wanted) {
@@ -302,6 +301,42 @@ std::vector<FeedbackLogSource> collect_runtime_log_sources(const fs::path& logs_
         }
     }
     return sources;
+}
+
+std::optional<FeedbackLogBundle> collect_recent_upgrade_log_bundle(
+    const fs::path& logs_dir, std::chrono::hours window) {
+    std::error_code ec;
+    if (!fs::is_directory(logs_dir, ec)) return std::nullopt;
+
+    const auto cutoff = fs::file_time_type::clock::now() - window;
+    std::vector<std::pair<fs::file_time_type, fs::path>> recent;
+    for (const auto& entry : fs::directory_iterator(logs_dir, ec)) {
+        if (ec) break;
+        std::error_code stat_ec;
+        if (!entry.is_regular_file(stat_ec) || stat_ec) continue;
+        const auto path = entry.path();
+        if (!is_rotated_log_filename(path, "upgrade")) continue;
+        const auto modified = entry.last_write_time(stat_ec);
+        if (stat_ec || modified < cutoff) continue;
+        recent.emplace_back(modified, path);
+    }
+    if (recent.empty()) return std::nullopt;
+
+    // 从旧到新:合并后就是一条时间线,超限时最老的先被裁掉。修改时间相同按文件名
+    // 定序,让结果与目录枚举顺序无关。
+    std::sort(recent.begin(), recent.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first < b.first;
+        return a.second.filename() < b.second.filename();
+    });
+
+    FeedbackLogBundle bundle;
+    bundle.entry_name = "logs/upgrade.log.tail.txt";
+    bundle.paths.reserve(recent.size());
+    for (auto& [modified, path] : recent) {
+        (void)modified;
+        bundle.paths.push_back(std::move(path));
+    }
+    return bundle;
 }
 
 FeedbackPackageResult build_feedback_package(const FeedbackPackageRequest& request) {
@@ -381,6 +416,58 @@ FeedbackPackageResult build_feedback_package(const FeedbackPackageRequest& reque
             log_payloads.emplace_back(inclusion.entry_name, std::move(tail));
         }
         log_results.push_back(std::move(inclusion));
+    }
+
+    // 合并包:每个成员各读一段尾巴(单文件不超过上限),按调用方给的顺序拼接,再对
+    // 拼接结果整体取尾巴。顺序是从旧到新,所以超限时丢的总是最老的记录;裁掉的
+    // 字节按顺序摊回各成员,metadata 里每个文件的 tail_bytes 才是真正进包的数。
+    for (const auto& bundle : request.log_bundles) {
+        const std::size_t cap =
+            bundle.max_bytes != 0 ? bundle.max_bytes : request.max_log_bytes;
+        struct Piece {
+            std::string source_path;
+            bool ok = false;
+            std::string tail;
+        };
+        std::vector<Piece> pieces;
+        std::string merged;
+        for (const auto& path : bundle.paths) {
+            if (path.empty()) continue;
+            Piece piece;
+            piece.source_path = path_to_utf8(path);
+            piece.ok = read_tail(path, cap, &piece.tail, nullptr);
+            if (piece.ok) merged += piece.tail;
+            pieces.push_back(std::move(piece));
+        }
+        if (pieces.empty()) continue;
+
+        const bool any_readable = std::any_of(
+            pieces.begin(), pieces.end(), [](const Piece& piece) { return piece.ok; });
+        std::string entry_name = bundle.entry_name.empty()
+            ? default_log_entry_name(path_from_utf8(pieces.front().source_path))
+            : bundle.entry_name;
+        if (any_readable) entry_name = unique_entry_name(entry_name, used_entry_names);
+
+        std::size_t cut = merged.size() > cap ? merged.size() - cap : 0;
+        if (cut > 0) merged.erase(0, cut);
+        for (auto& piece : pieces) {
+            FeedbackLogInclusion inclusion;
+            inclusion.source_path = std::move(piece.source_path);
+            inclusion.included = piece.ok;
+            inclusion.entry_name = entry_name;
+            if (piece.ok) {
+                // 显式模板实参:这个 TU 里 windows.h 的 min 宏会吃掉裸 std::min(。
+                const std::size_t dropped = std::min<std::size_t>(cut, piece.tail.size());
+                cut -= dropped;
+                inclusion.tail_bytes = piece.tail.size() - dropped;
+            }
+            log_results.push_back(std::move(inclusion));
+        }
+        if (any_readable) {
+            log_included = true;
+            log_tail_bytes += merged.size();
+            log_payloads.emplace_back(entry_name, std::move(merged));
+        }
     }
 
     std::vector<std::string> included_files;

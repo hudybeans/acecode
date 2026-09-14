@@ -71,6 +71,62 @@ protected:
     }
 };
 
+TEST_F(ThemeDraftsTest, OptionalBackgroundsAndOpacitiesPreserveExistingAppearanceAndApprovals) {
+    palette["appearance"] = {{"logo_color", "#9B6DFF"}, {"home_title_color", "#FFFFFF"},
+        {"extend_to_titlebar", true}, {"home_composer_opacity", 0.7},
+        {"home_background_color", "#102030"}, {"home_background_opacity", 0.4},
+        {"session_background_opacity", 0.6}, {"user_message_background_opacity", 0.8}};
+    const auto id = run(palette).at("draft_id").get<std::string>();
+    auto request = prototype(id);
+    request["session_background_path"] = "background.png";
+    request["user_message_background_path"] = "preview.png";
+    EXPECT_TRUE(run(request)["confirmed"]);
+    const auto installed = run({{"action", "install"}, {"draft_id", id}});
+    ThemeStore store(root / "themes", "");
+    const auto definition = store.definition(installed.at("id"));
+    EXPECT_EQ(definition.at("appearance"), palette.at("appearance"));
+    EXPECT_EQ(store.image(installed.at("id"), "session-background"), png);
+    EXPECT_EQ(store.image(installed.at("id"), "user-message-background"), png);
+    EXPECT_EQ(theme_image_files(definition).size(), 4u);
+    EXPECT_EQ(run({{"action", "install"}, {"draft_id", id}}).at("id"), installed.at("id"));
+}
+
+TEST_F(ThemeDraftsTest, ExtraBackgroundChangesAndOmissionRequireCurrentPrototypeApproval) {
+    const auto id = run(palette).at("draft_id").get<std::string>();
+    auto request = prototype(id);
+    request["user_message_background_path"] = "background.png";
+    EXPECT_TRUE(run(request)["confirmed"]);
+    write(root / "themes/drafts" / id / "user-message-background.png", png + "changed");
+    EXPECT_THROW(run({{"action", "install"}, {"draft_id", id}}), ThemeError);
+    EXPECT_EQ(run({{"action", "status"}, {"draft_id", id}})["stage"], "prototype_pending");
+    EXPECT_TRUE(run(request)["confirmed"]);
+    EXPECT_FALSE(run(prototype(id), [](const json&) { return json{{"cancelled", true}}; })["confirmed"]);
+    EXPECT_FALSE(saved_draft(id).contains("user_message_background_sha256"));
+    EXPECT_THROW(run({{"action", "install"}, {"draft_id", id}}), ThemeError);
+    EXPECT_TRUE(run(prototype(id))["confirmed"]);
+    const auto installed = run({{"action", "install"}, {"draft_id", id}});
+    EXPECT_FALSE(ThemeStore(root / "themes", "").definition(installed.at("id")).contains("user_message_background"));
+}
+
+TEST_F(ThemeDraftsTest, OpacityRejectsInvalidValuesAndChangesInvalidateBothConfirmations) {
+    for (const auto& value : {json(-0.1), json(1.01), json("0.7"), json(true), json(nullptr)}) {
+        auto invalid = palette;
+        invalid["appearance"] = {{"home_composer_opacity", value}};
+        EXPECT_THROW(run(invalid), ThemeError) << value;
+    }
+    for (const auto& value : {json(0), json(1), json(0.3)})
+        EXPECT_TRUE(valid_theme_appearance({{"home_background_opacity", value}}));
+    palette["appearance"] = {{"logo_color", "#123456"}, {"extend_to_titlebar", true}, {"home_composer_opacity", 0.7}};
+    const auto id = ready();
+    auto revision = palette;
+    revision["draft_id"] = id;
+    revision["appearance"]["home_composer_opacity"] = 0.5;
+    EXPECT_FALSE(run(revision, [](const json&) { return json{{"cancelled", true}}; })["confirmed"]);
+    EXPECT_THROW(run({{"action", "install"}, {"draft_id", id}}), ThemeError);
+    EXPECT_EQ(saved_draft(id)["appearance"]["logo_color"], "#123456");
+    EXPECT_TRUE(saved_draft(id)["appearance"]["extend_to_titlebar"]);
+}
+
 TEST_F(ThemeDraftsTest, ExplicitConfirmationsInstallOfflineThemeAndShareableThreeFilePackage) {
     auto first = run(palette);
     EXPECT_TRUE(first["confirmed"]);

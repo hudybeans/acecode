@@ -111,8 +111,8 @@ names. The workflow verifies those names when configured, uses the application
 certificate fingerprint for `codesign`, and uses the Installer identity name
 for `productbuild`.
 
-The independent npm publication job requires `NPM_TOKEN` when npm publishing
-is desired.
+The independent npm publication job is disabled for tagged and manual runs.
+Platform packages, GitHub Releases, and updater packages continue to publish.
 
 ## Local Notarization Credentials
 
@@ -130,7 +130,8 @@ and [app-specific passwords](https://support.apple.com/zh-cn/102654).
 
 ## Dry Run
 
-Run **Actions > package > Run workflow** with `npm_version` empty.
+Run **Actions > package > Run workflow**. The reserved `npm_version` input has
+no effect while npm publication is disabled.
 
 - With all seven macOS secrets configured, the app and two architecture PKGs
   are signed, notarized, stapled, Gatekeeper-checked, and uploaded alongside

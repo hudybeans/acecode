@@ -158,7 +158,7 @@ function UserBubble({
         align="right"
       />
       {content ? (
-        <div className="ace-chat-message-content px-3.5 py-2 rounded-[14px] rounded-br-[4px] bg-accent-bg border border-accent-soft text-fg text-[13px] leading-[1.5] whitespace-pre-wrap break-words">
+        <div className="ace-user-message-bubble ace-chat-message-content px-3.5 py-2 rounded-[14px] rounded-br-[4px] bg-accent-bg border border-accent-soft text-fg text-[13px] leading-[1.5] whitespace-pre-wrap break-words">
           <UserMessageBody content={content} />
         </div>
       ) : null}

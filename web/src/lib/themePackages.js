@@ -20,7 +20,10 @@ export function validThemeHexColor(value) {
 export function validThemeAppearance(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.entries(value).every(([key, entry]) => {
-    if (key === 'logo_color' || key === 'home_title_color') return validThemeHexColor(entry);
+    if (['logo_color', 'home_title_color', 'home_background_color', 'session_background_color', 'user_message_background_color'].includes(key)) return validThemeHexColor(entry);
+    if (['home_composer_opacity', 'home_background_opacity', 'session_background_opacity', 'user_message_background_opacity'].includes(key)) {
+      return typeof entry === 'number' && Number.isFinite(entry) && entry >= 0 && entry <= 1;
+    }
     return key === 'extend_to_titlebar' && typeof entry === 'boolean';
   });
 }
@@ -33,7 +36,10 @@ export function validThemeDefinition(value) {
     && typeof value.version === 'string' && !!value.version && value.colors && typeof value.colors === 'object'
     && Object.keys(value.colors).length === THEME_COLOR_KEYS.length
     && THEME_COLOR_KEYS.every((key) => validThemeHexColor(value.colors[key]))
-    && (!Object.hasOwn(value, 'appearance') || validThemeAppearance(value.appearance));
+    && (!Object.hasOwn(value, 'appearance') || validThemeAppearance(value.appearance))
+    && ['session_background', 'user_message_background'].every((key) => !Object.hasOwn(value, key)
+      || (Number.isSafeInteger(value[key]?.bytes) && value[key].bytes > 0 && value[key].bytes <= 16 * 1024 * 1024
+        && typeof value[key].sha256 === 'string' && /^[a-f0-9]{64}$/i.test(value[key].sha256)));
 }
 
 export function resolveThemeAppearance(definition) {
@@ -49,7 +55,34 @@ export function resolveThemeAppearance(definition) {
   };
 }
 
-export function themeCssProperties(definition, backgroundUrl) {
+const BACKGROUND_RESOURCES = Object.freeze([
+  { key: 'background', kind: 'background', url: 'backgroundUrl', region: 'home', color: 'bg' },
+  { key: 'session_background', kind: 'session-background', url: 'sessionBackgroundUrl', region: 'session', color: 'bg' },
+  { key: 'user_message_background', kind: 'user-message-background', url: 'userMessageBackgroundUrl', region: 'user-message', color: 'accent-bg' },
+]);
+const rgb = (hex) => [1, 3, 5].map((start) => parseInt(hex.slice(start, start + 2), 16)).join(', ');
+
+export function revokeThemeResources(item, revoke = (url) => URL.revokeObjectURL(url)) {
+  const urls = new Set(BACKGROUND_RESOURCES.map((resource) => item?.[resource.url]).filter(Boolean));
+  for (const url of urls) revoke(url);
+}
+
+export async function loadThemeResources(definition, readImage, createUrl = (blob) => URL.createObjectURL(blob), revoke = (url) => URL.revokeObjectURL(url)) {
+  if (!validThemeDefinition(definition)) throw new Error('主题配色数据无效');
+  const item = { ...definition, backgroundUrl: null, sessionBackgroundUrl: null, userMessageBackgroundUrl: null };
+  const resources = BACKGROUND_RESOURCES.filter((resource) => resource.key === 'background' || Object.hasOwn(definition, resource.key));
+  // Wait for every request before cleanup: a late successful image must not leak
+  // its URL after another image has already failed.
+  const results = await Promise.allSettled(resources.map(async (resource) => {
+    const blob = await readImage(resource.kind);
+    item[resource.url] = createUrl(blob);
+  }));
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure) { revokeThemeResources(item, revoke); throw failure.reason; }
+  return item;
+}
+
+export function themeCssProperties(definition, backgroundUrl, extraUrls = {}) {
   if (!validThemeDefinition(definition)) throw new Error('主题配色数据无效');
   const result = {};
   for (const key of THEME_COLOR_KEYS) {
@@ -63,20 +96,33 @@ export function themeCssProperties(definition, backgroundUrl) {
     result['--ace-logo-color'] = appearance.logoColor;
     result['--ace-logo-color-rgb'] = [1, 3, 5].map((start) => parseInt(appearance.logoColor.slice(start, start + 2), 16)).join(', ');
   }
-  // Only application-created blob URLs may become CSS image values.
-  if (typeof backgroundUrl === 'string' && backgroundUrl.startsWith('blob:') && !/["()\s]/.test(backgroundUrl)) {
-    result['--ace-home-background-image'] = `url("${backgroundUrl}")`;
+  const overrides = definition.appearance || {};
+  if (overrides.home_composer_opacity !== undefined) result['--ace-home-composer-opacity'] = String(overrides.home_composer_opacity);
+  // Only application-created blob URLs may become CSS image values. Opacity
+  // blends artwork into its backdrop without fading any text or controls.
+  for (const resource of BACKGROUND_RESOURCES) {
+    if (resource.key !== 'background' && !Object.hasOwn(definition, resource.key)) continue;
+    const url = resource.key === 'background' ? backgroundUrl : extraUrls[resource.url];
+    const key = resource.region.replaceAll('-', '_') + '_background';
+    const color = overrides[`${key}_color`] ?? definition.colors[resource.color];
+    if (overrides[`${key}_color`] !== undefined) result[`--ace-${resource.region}-background-color`] = color;
+    if (typeof url !== 'string' || !url.startsWith('blob:') || /["()\s]/.test(url)) continue;
+    const opacity = overrides[`${key}_opacity`];
+    const veil = opacity === undefined ? '' : `linear-gradient(rgba(${rgb(color)}, ${1 - opacity}), rgba(${rgb(color)}, ${1 - opacity})), `;
+    result[`--ace-${resource.region}-background-image`] = `${veil}url("${url}")`;
   }
   return result;
 }
 
-export function applyInstalledTheme(root, definition, backgroundUrl) {
-  const properties = definition ? themeCssProperties(definition, backgroundUrl) : {};
+export function applyInstalledTheme(root, definition, backgroundUrl, extraUrls = {}) {
+  const properties = definition ? themeCssProperties(definition, backgroundUrl, extraUrls) : {};
   const appearance = definition ? resolveThemeAppearance(definition) : null;
   const hasBackground = !!properties['--ace-home-background-image'];
   const attributes = {
     'data-installed-theme': definition?.id,
     'data-theme-wallpaper': hasBackground ? 'true' : null,
+    'data-theme-session-background': properties['--ace-session-background-image'] ? 'true' : null,
+    'data-theme-user-message-background': properties['--ace-user-message-background-image'] ? 'true' : null,
     'data-theme-extend-to-titlebar': hasBackground ? String(appearance.extendToTitlebar) : null,
     'data-theme-titlebar-controls': hasBackground && appearance.whiteTitlebarControls ? 'white' : null,
     'data-theme-logo-color': appearance?.logoColor ? 'custom' : null,
@@ -141,7 +187,7 @@ export function localThemeEntries(catalog) {
 export function releaseThemeResource(cache, id, revoke = (url) => URL.revokeObjectURL(url)) {
   const pending = cache.get(id);
   cache.delete(id);
-  if (pending) Promise.resolve(pending).then((item) => revoke(item.backgroundUrl)).catch(() => {});
+  if (pending) Promise.resolve(pending).then((item) => revokeThemeResources(item, revoke)).catch(() => {});
 }
 
 // The controller outlives Settings. A later selection revokes an older

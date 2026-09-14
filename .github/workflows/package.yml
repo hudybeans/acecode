@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       npm_version:
-        description: npm version to backfill after a full package build (must match CMakeLists.txt)
+        description: Reserved npm version input (npm publication is currently disabled)
         required: false
         type: string
   push:
@@ -1239,7 +1239,8 @@ jobs:
 
   publish-npm:
     name: publish npm
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.npm_version != '')
+    # npm publication is paused for both tagged releases and manual backfills.
+    if: ${{ false }}
     needs:
       - build-and-package
     runs-on: ubuntu-latest

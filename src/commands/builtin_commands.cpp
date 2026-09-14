@@ -509,9 +509,13 @@ static void cmd_feedback(CommandContext& ctx, const std::string& raw_args) {
         tui_log.entry_name = "logs/acecode.log.tail.txt";
         package_req.logs.push_back(std::move(tui_log));
     }
-    for (auto& source :
-         acecode::feedback::collect_runtime_log_sources(path_from_utf8(get_logs_dir()))) {
+    const fs::path logs_dir = path_from_utf8(get_logs_dir());
+    for (auto& source : acecode::feedback::collect_runtime_log_sources(logs_dir)) {
         package_req.logs.push_back(std::move(source));
+    }
+    // 最近三天的升级记录合并成一个条目:「更新之后就不对了」这类反馈要看的就是它。
+    if (auto upgrade_logs = acecode::feedback::collect_recent_upgrade_log_bundle(logs_dir)) {
+        package_req.log_bundles.push_back(std::move(*upgrade_logs));
     }
 
     auto package = acecode::feedback::build_feedback_package(package_req);

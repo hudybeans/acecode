@@ -9,7 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { usePreference } from './lib/usePreference.js';
 import { api } from './lib/api.js';
-import { EVA_THEME_ID, applyInstalledTheme, releaseThemeResource, resolveThemeAppearance, validThemeDefinition } from './lib/themePackages.js';
+import { EVA_THEME_ID, applyInstalledTheme, loadThemeResources, releaseThemeResource, revokeThemeResources, resolveThemeAppearance, validThemeDefinition } from './lib/themePackages.js';
 import { pushWindowBackgroundColor } from './lib/desktopWindowBackground.js';
 import { desktopTaskbarBadge } from './lib/desktopTaskbarBadge.js';
 import {
@@ -76,17 +76,16 @@ export function ThemeProvider({ children }) {
       const pending = (async () => {
         const definition = await api.getTheme(id);
         if (!validThemeDefinition(definition) || definition.id !== id) throw new Error('主题配色数据无效');
-        const blob = await api.readThemeImage(id, 'background', definition.version);
-        return { ...definition, backgroundUrl: URL.createObjectURL(blob) };
+        return loadThemeResources(definition, (kind) => api.readThemeImage(id, kind, definition.version));
       })();
       themeCache.current.set(id, pending);
       // Keep the old image usable until its replacement is ready, then release
       // it even if the provider unmounts while either request is pending.
-      if (previous) pending.then(() => previous.then((item) => URL.revokeObjectURL(item.backgroundUrl))).catch(() => {
+      if (previous) pending.then(() => previous.then((item) => revokeThemeResources(item))).catch(() => {
         // A deletion can evict a replacement while its image request fails.
         // The old image then has no cache owner left to release it.
         if (themeCache.current.get(id) !== pending && themeCache.current.get(id) !== previous) {
-          void previous.then((item) => URL.revokeObjectURL(item.backgroundUrl)).catch(() => {});
+          void previous.then((item) => revokeThemeResources(item)).catch(() => {});
         }
       });
     }
@@ -115,7 +114,7 @@ export function ThemeProvider({ children }) {
     return () => {
       mounted.current = false;
       const cache = themeCache.current;
-      for (const pending of cache.values()) pending.then((item) => URL.revokeObjectURL(item.backgroundUrl)).catch(() => {});
+      for (const pending of cache.values()) pending.then((item) => revokeThemeResources(item)).catch(() => {});
       cache.clear();
       themeReloadRequired.current.clear();
     };
@@ -142,6 +141,7 @@ export function ThemeProvider({ children }) {
       root,
       installedTheme?.id === colorTheme ? installedTheme : null,
       installedTheme?.backgroundUrl,
+      installedTheme || {},
     );
     // 两个主题维度落地后 --ace-bg 的 computed 值同步可读;把 body 底色推给
     // 桌面壳,native 换窗口打底色(快速 resize 的新暴露区域随主题,不闪黑/白)。

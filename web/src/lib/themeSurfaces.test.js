@@ -8,11 +8,15 @@ import { DOMParser } from '@xmldom/xmldom';
 import { transformWithEsbuild } from 'vite';
 import {
   applyInstalledTheme, EVA_THEME_ID, THEME_COLOR_KEYS, resolveThemeAppearance,
-  themeCssProperties, validThemeAppearance, validThemeDefinition,
+  themeCssProperties, validThemeAppearance, validThemeDefinition, loadThemeResources, revokeThemeResources,
 } from './themePackages.js';
 import { themeLogoDataUrl, themeLogoPalette, themeLogoRgb } from './brandLogoColors.js';
 import * as logoPerformance from './interactiveHomeLogoPerformance.js';
 import { HOME_LOGO_SHADER_ENABLED } from './homeLogoEffectPolicy.js';
+import { renderMarkdownBlocks } from './markdown.js';
+import { assistantChromeState } from './assistantAvatarDisplay.js';
+import { buildCompactMessagePreview } from './compactMessagePreview.js';
+import { clsx } from './format.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -68,6 +72,66 @@ await run('theme appearance preserves legacy defaults and lets explicit titlebar
   assert.equal(css['--ace-logo-color-rgb'], '254, 1, 35');
   assert.equal(css['--ace-home-title-color'], '#ABCDEF');
   assert.equal(css['--ace-fg'], '#123456');
+});
+
+await run('background opacity is bounded and new fields preserve existing logo, title and titlebar behavior', () => {
+  const original = { logo_color: '#FE0123', home_title_color: '#ABCDEF', extend_to_titlebar: true };
+  const expanded = { ...original, home_composer_opacity: 0.7, home_background_opacity: 0,
+    home_background_color: '#102030', session_background_opacity: 0.5, user_message_background_opacity: 1 };
+  for (const value of [0, 0.3, 1]) assert.equal(validThemeAppearance({ home_composer_opacity: value }), true);
+  for (const value of [-0.1, 1.1, NaN, Infinity, '0.7', true, null]) {
+    for (const key of ['home_composer_opacity', 'home_background_opacity', 'session_background_opacity', 'user_message_background_opacity']) {
+      assert.equal(validThemeAppearance({ [key]: value }), false);
+    }
+  }
+  for (const mode of ['light', 'dark']) for (const extend of [false, true]) {
+    assert.deepEqual(resolveThemeAppearance(definition({ ...expanded, extend_to_titlebar: extend }, mode)),
+      resolveThemeAppearance(definition({ ...original, extend_to_titlebar: extend }, mode)));
+  }
+  const image = { bytes: 100, sha256: 'a'.repeat(64) };
+  const custom = { ...definition(expanded), session_background: image, user_message_background: image };
+  const css = themeCssProperties(custom, 'blob:home', { sessionBackgroundUrl: 'blob:session', userMessageBackgroundUrl: 'blob:user' });
+  assert.equal(css['--ace-home-composer-opacity'], '0.7');
+  assert.match(css['--ace-home-background-image'], /rgba\(16, 32, 48, 1\)/);
+  assert.match(css['--ace-session-background-image'], /0\.5\).*blob:session/);
+  assert.match(css['--ace-user-message-background-image'], /blob:user/);
+  assert.equal(css['--ace-logo-color'], original.logo_color);
+  assert.equal(css['--ace-home-title-color'], original.home_title_color);
+  const legacy = themeCssProperties(definition(original), 'blob:home', { sessionBackgroundUrl: 'blob:ignored' });
+  assert.equal(legacy['--ace-home-background-image'], 'url("blob:home")');
+  assert.equal(legacy['--ace-session-background-image'], undefined);
+  assert.equal(legacy['--ace-home-composer-opacity'], undefined);
+  assert.equal(themeCssProperties(custom, 'blob:home', { sessionBackgroundUrl: 'https://invalid.test/image' })['--ace-session-background-image'], undefined);
+  assert.equal(validThemeDefinition({ ...custom, session_background: { bytes: 0, sha256: 'a'.repeat(64) } }), false);
+});
+
+await run('all background URLs are released on success, failure and theme cleanup', async () => {
+  const image = { bytes: 100, sha256: 'a'.repeat(64) };
+  const custom = { ...definition({ extend_to_titlebar: true }), session_background: image, user_message_background: image };
+  const requests = [], revoked = [];
+  const loaded = await loadThemeResources(custom, async (kind) => { requests.push(kind); return kind; }, (kind) => 'blob:' + kind);
+  assert.deepEqual(requests, ['background', 'session-background', 'user-message-background']);
+  revokeThemeResources(loaded, (url) => revoked.push(url));
+  assert.equal(new Set(revoked).size, 3);
+  const styles = new Map(), attributes = new Map();
+  const root = { style: { setProperty: (key, value) => styles.set(key, value), removeProperty: (key) => styles.delete(key) },
+    setAttribute: (key, value) => attributes.set(key, value), removeAttribute: (key) => attributes.delete(key) };
+  const clear = applyInstalledTheme(root, loaded, loaded.backgroundUrl, loaded);
+  assert.equal(attributes.get('data-theme-titlebar-controls'), 'white');
+  assert.equal(attributes.get('data-theme-session-background'), 'true');
+  assert.equal(attributes.get('data-theme-user-message-background'), 'true');
+  clear(); assert.equal(styles.size, 0); assert.equal(attributes.size, 0);
+  const release = applyInstalledTheme(root, definition(), 'blob:old');
+  assert.equal(attributes.has('data-theme-session-background'), false);
+  assert.equal(attributes.has('data-theme-user-message-background'), false);
+  release();
+  const failedRevokes = [];
+  await assert.rejects(loadThemeResources(custom, async (kind) => {
+    if (kind === 'session-background') throw new Error('missing session');
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    return kind;
+  }, (kind) => 'blob:' + kind, (url) => failedRevokes.push(url)), /missing session/);
+  assert.deepEqual(failedRevokes.sort(), ['blob:background', 'blob:user-message-background']);
 });
 
 await run('installed theme application clears all appearance state on switching, removal and missing wallpaper', () => {
@@ -142,6 +206,27 @@ async function compiledComponent(relative, name) {
 }
 const brandComponent = await compiledComponent('../components/BrandLogo.jsx', 'BrandLogo');
 const homeComponent = await compiledComponent('../components/InteractiveHomeLogo.jsx', 'InteractiveHomeLogo');
+const messageComponent = await compiledComponent('../components/Message.jsx', 'Message');
+await run('actual messages restrict custom wallpaper to user text and preserve assistant, attachment and system surfaces', () => {
+  const Message = messageComponent({
+    useTranslation: () => ({}), useSlashCommands: () => ({ commands: [] }),
+    resolveLeadingSlashCommand: () => null, renderMarkdownBlocks, assistantChromeState,
+    buildCompactMessagePreview, clsx, VsIcon: () => null,
+    AttachmentStrip: ({ align }) => React.createElement('span', { 'data-attachment-align': align }, 'Attachment'),
+  });
+  const render = (role, content) => renderToStaticMarkup(React.createElement(Message, { role, content, showFooter: false }));
+  const user = new DOMParser().parseFromString(render('user', 'User text'), 'text/html');
+  const bubbles = Array.from(user.getElementsByTagName('div')).filter((node) => node.getAttribute('class')?.split(' ').includes('ace-user-message-bubble'));
+  assert.equal(bubbles.length, 1);
+  assert.equal(bubbles[0].textContent, 'User text');
+  assert.equal(bubbles[0].getElementsByTagName('span').length, 0, 'Attachments remain outside the wallpaper bubble');
+  assert.doesNotMatch(render('user', ''), /ace-user-message-bubble/);
+  for (const role of ['assistant', 'system', 'error', 'tool_result']) {
+    const markup = render(role, 'A visible message');
+    assert.match(markup, /A visible message/);
+    assert.doesNotMatch(markup, /ace-user-message-bubble/);
+  }
+});
 let activeTheme;
 const useTheme = () => activeTheme;
 const BrandLogo = brandComponent({ useTheme });

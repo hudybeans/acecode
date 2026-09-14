@@ -1,6 +1,6 @@
 # ACECode 主题数据与确认
 
-主题由独立背景、缩略图、28 色定义和可选外观设置组成。`theme_create` 负责会话草稿、人工确认、资源校验、安装与打包；技能只负责设计和调用工具。
+主题由主页独立背景、缩略图、28 色定义、可选会话/用户消息背景和外观设置组成。`theme_create` 负责会话草稿、人工确认、资源校验、安装与打包；技能只负责设计和调用工具。
 
 ## 颜色
 
@@ -41,7 +41,7 @@
 
 ## 图标、首页标题与通顶
 
-`appearance` 与 `colors` 同级，是可选对象，只允许下列三个可选键。不要把它们加入 28 色对象，也不要传 `null`、未知键、CSS 或字符串形式的布尔值；空对象 `{}` 表示不提供覆盖。
+`appearance` 与 `colors` 同级，是可选对象。原有三个参数保留，并增加下文的背景/透明度参数。不要把它们加入 28 色对象，也不要传 `null`、未知键、CSS 或字符串形式的布尔/数值；空对象 `{}` 表示不提供覆盖。
 
 | 键 | 类型与效果 | 省略时 |
 | --- | --- | --- |
@@ -53,6 +53,19 @@
 
 色系确认同时绑定这些参数。修改、增加或移除参数都需要重新确认色系并制作匹配的原型；`palette` 是整份替换，省略 `appearance` 会移除此前的全部覆盖。
 
+## 背景与透明度
+
+以下参数同样放入 appearance；所有 opacity 是有限 0..1 数值（0 完全透明、1 不透明）。问用户的是透明度百分比，写入前转换为 `1 - 百分比/100`。文字、图标和按钮不随背景变透明。
+
+| 参数 | 用途与缺省 |
+| --- | --- |
+| `home_composer_opacity` | 首页文本框底色，缺省 0.95，与旧主题相同 |
+| `home_background_color` / `home_background_opacity` | 首页背景底色/图片不透明度，缺省 colors.bg / 1 |
+| `session_background_color` / `session_background_opacity` | 会话背景底色/图片不透明度，缺省 colors.bg / 1 |
+| `user_message_background_color` / `user_message_background_opacity` | 仅用户消息气泡底色/图片不透明度，缺省 colors.accent-bg / 1 |
+
+三个背景色为 #RRGGBB。会话/用户消息未提供独立素材时不增加背景效果，旧主题保持原样。修改任一新参数时必须保留未修改的 logo_color、home_title_color、extend_to_titlebar，并重走确认。
+
 ## 调用顺序
 
 所有示例中的占位 ID 和路径要替换成工具实际结果。`colors` 使用完整对象，不要发送省略号。
@@ -60,13 +73,14 @@
 1. `{"action":"status"}`：查看本任务草稿；有 ID 时可传 `draft_id` 精确查询。
 2. `palette`：传 `action`、`name`、`mode`、完整 `colors` 及已展示的可选 `appearance`；仅更新已有草稿时传 `draft_id`。先展示色表、图标主色、首页标题色和通顶设置，工具再通过原生问答请求「确认色系」或「修改」。修改颜色或外观设置会使原来的确认失效。
 3. `{"action":"prototype","draft_id":"实际 ID","background_path":"背景绝对路径","preview_path":"界面原型绝对路径"}`：已确认色系后才可调用；先展示图片，再让工具请求「确认原型并生成」或「修改」。工具保存本次资源副本和校验和。
+   高级/深度附加 `session_background_path`，深度附加 `user_message_background_path`。素材是全量替换，未提交的可选背景会移除；只修改一张图时也要带回其它需保留的素材。所有素材参与原型确认，变更后不能复用旧确认。
 4. `{"action":"install","draft_id":"实际 ID"}`：只使用已确认的资源。安装时不接受替换图片、颜色或 `confirmed`。同一已安装草稿重试返回已有主题。
 
 任何一步都以工具的 `stage`、`next_action` 和确认结果为准。`palette`、`prototype` 返回的 `confirmed` 只可读取，不可作为输入；普通工具调用成功不等于用户已确认。取消、修改、超时和无人值守都不能用聊天中的自述代替确认。
 
 ## 文件边界
 
-- `background_path` 是无 UI、可独立使用的背景原图；`preview_path` 是带 ACECode 布局的效果图。优先使用 PNG 或 JPEG。最终 PNG 转换和缩略图由安装工具处理；格式不被接受时按工具错误说明修正，不能只改文件扩展名。
+- `background_path` 是无 UI、可独立使用的主页背景；会话和用户消息素材同样不得含示意控件。`preview_path` 是带布局的效果图，也可为 HTML 在 Browser 中的真实截图。SVG/CSS 先用 Browser 渲染为 PNG；不直接提交 HTML/SVG 或只改扩展名。最终 PNG 转换和缩略图由安装工具处理。
 - 主题标识由工具生成在 `ai-` 命名空间，保留 `blue`、`orange`、`eva-01` 等现有主题。
-- 安装包为 `theme.json`、`background.png`、`thumbnail.png` 三个根文件。不要自己组装 ZIP、计算安装版本或写主题目录。
+- 基础包仍为 `theme.json`、`background.png`、`thumbnail.png` 三个根文件；可选增加 `session-background.png` 和 `user-message-background.png`，分别由 theme.json 的 session_background、user_message_background 描述大小和 SHA-256。只有声明的资源可入包，总体不超过 16 MiB。不要自己组装 ZIP、计算安装版本或写主题目录。
 - 安装结果包含实际位置及 `theme_created` 元数据。实时 Web/Desktop 任务使用该事件刷新并应用，打开历史记录不会再次应用主题。

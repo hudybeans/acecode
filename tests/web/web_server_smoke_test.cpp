@@ -8298,6 +8298,66 @@ TEST(WebServerHttp, DesktopFeedbackUploadsDaemonLogWhenDesktopShellIsAbsent) {
     std::filesystem::remove(received_zip, ec);
 }
 
+// 触发场景:Desktop / Web 提交反馈时 logs 目录里有多天的升级诊断日志
+// (每个进程一个 upgrade-<date>-<pid>.log)。
+// 期望行为:路由把最近三天内写过的升级日志按时间从旧到新合并成
+// logs/upgrade.log.tail.txt 一个条目,更早的不带;响应与 feedback.json 的 logs[]
+// 为每个合并成员各记一行(共用条目名)。这是路由接线的端到端守卫 —— 合并逻辑本身
+// 由 feedback_upload_test 覆盖。
+TEST(WebServerHttp, DesktopFeedbackMergesRecentUpgradeLogs) {
+    std::filesystem::path received_zip;
+    LocalUpdateServer upload_server([&](httplib::Server& s) {
+        s.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
+            auto file = req.get_file_value("file");
+            received_zip = std::filesystem::temp_directory_path() /
+                           ("acecode_desktop_feedback_upgrade_logs_" +
+                            std::to_string(std::chrono::steady_clock::now()
+                                               .time_since_epoch()
+                                               .count()) + ".zip");
+            write_text(received_zip, file.content);
+            res.set_content(R"({"success":true})", "application/json");
+        });
+    });
+
+    WebServerFixture fx;
+    fx.cfg.upgrade.base_url = upload_server.base_url();
+    write_text(fx.logs_dir / "daemon-2026-09-15.log", "daemon latest log");
+    const auto stale = fx.logs_dir / "upgrade-2026-09-01-100.log";
+    const auto older = fx.logs_dir / "upgrade-2026-09-13-200.log";
+    const auto newer = fx.logs_dir / "upgrade-2026-09-15-300.log";
+    write_text(stale, "{\"event\":\"stale\"}\n");
+    write_text(older, "{\"event\":\"older\"}\n");
+    write_text(newer, "{\"event\":\"newer\"}\n");
+    const auto now = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(stale, now - std::chrono::hours(24 * 10));
+    std::filesystem::last_write_time(older, now - std::chrono::hours(40));
+    std::filesystem::last_write_time(newer, now - std::chrono::minutes(1));
+
+    auto r = cpr::Post(cpr::Url{fx.url("/api/feedback/desktop")},
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::Body{json{{"feedback_text", "broken after update"}}.dump()});
+    ASSERT_EQ(r.status_code, 200) << r.text;
+    auto body = json::parse(r.text);
+    EXPECT_TRUE(body["ok"].get<bool>());
+    EXPECT_EQ(read_zip_entry(received_zip, "logs/upgrade.log.tail.txt"),
+              "{\"event\":\"older\"}\n{\"event\":\"newer\"}\n");
+    ASSERT_EQ(body["logs"].size(), 3u);
+    EXPECT_EQ(body["logs"][0]["entry_name"], "logs/daemon.log.tail.txt");
+    EXPECT_EQ(body["logs"][1]["entry_name"], "logs/upgrade.log.tail.txt");
+    EXPECT_EQ(body["logs"][1]["path"], acecode::path_to_utf8(older));
+    EXPECT_EQ(body["logs"][2]["entry_name"], "logs/upgrade.log.tail.txt");
+    EXPECT_EQ(body["logs"][2]["path"], acecode::path_to_utf8(newer));
+    EXPECT_TRUE(body["logs"][2]["available"].get<bool>());
+    ASSERT_EQ(body["included_files"].size(), 3u);
+    EXPECT_EQ(body["included_files"][1], "logs/upgrade.log.tail.txt");
+
+    auto metadata = json::parse(read_zip_entry(received_zip, "feedback.json"));
+    ASSERT_EQ(metadata["logs"].size(), 3u);
+    EXPECT_EQ(metadata["logs"][2]["path"], acecode::path_to_utf8(newer));
+    std::error_code ec;
+    std::filesystem::remove(received_zip, ec);
+}
+
 TEST(WebServerHttp, DesktopFeedbackUploadsSelectedSessionOnly) {
     const std::string sid = "20260618-030000-abcf";
     std::filesystem::path received_zip;

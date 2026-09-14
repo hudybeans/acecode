@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -9,6 +10,11 @@
 namespace acecode::feedback {
 
 constexpr std::size_t kDefaultLogTailBytes = 512 * 1024;
+
+// 反馈附带的升级记录窗口:「最近三天」按文件最后修改时间算,72 小时。
+// 用修改时间而不是文件名里的日期,是因为文件名日期是 UTC 起始日,跨午夜的操作
+// 与东八区用户的「今天」对不上;修改时间只看这份日志最近有没有写过。
+constexpr std::chrono::hours kRecentUpgradeLogWindow{72};
 
 // 一个待打包的日志文件。诊断一次 desktop 问题通常要同时看 desktop 壳日志与
 // 处理该请求的 daemon 日志,所以打包层接受任意多个来源而不是单个文件。
@@ -20,10 +26,24 @@ struct FeedbackLogSource {
     std::size_t max_bytes = 0;
 };
 
+// 一组按顺序拼接进同一个 zip 条目的日志文件。升级诊断日志每个进程一个文件
+// (upgrade-<date>-<pid>.log),三天里能攒几十个,逐个打包读起来很碎;合并后
+// 按时间顺序读就是一条完整的升级时间线(每条记录自带 operation_id = pid + 起始时间,
+// 不需要额外的分隔行也能对回原文件)。
+struct FeedbackLogBundle {
+    // 拼接顺序。调用方按时间从旧到新排,超过字节上限时先裁掉的就是最老的记录。
+    std::vector<std::filesystem::path> paths;
+    std::string entry_name;
+    // 整个合并结果的上限(取尾巴);0 = 沿用 FeedbackPackageRequest::max_log_bytes。
+    std::size_t max_bytes = 0;
+};
+
 struct FeedbackLogInclusion {
     std::string entry_name;
     std::string source_path;
     bool included = false;
+    // 单文件来源:进包的尾巴字节数。合并包成员:该文件在合并结果里实际保留的字节数,
+    // 被整体上限整个裁掉时为 0(included 仍为 true,表示文件本身可读)。
     std::size_t tail_bytes = 0;
 };
 
@@ -34,6 +54,8 @@ struct FeedbackPackageRequest {
     std::filesystem::path session_jsonl_path;
     std::string workspace_hash;
     std::vector<FeedbackLogSource> logs;
+    // 单文件来源之后处理;每个 bundle 产出一个条目、按成员逐个记 metadata。
+    std::vector<FeedbackLogBundle> log_bundles;
     std::filesystem::path output_dir;
     std::string created_at;
     std::string acecode_version;
@@ -82,9 +104,18 @@ std::optional<std::filesystem::path> latest_desktop_log_path(
     const std::filesystem::path& logs_dir);
 
 // daemon / desktop 反馈默认附带的运行时日志:desktop 壳日志 + daemon 日志,
-// 各取最近一个滚动文件,缺失的静默跳过。
+// 各取最近一个滚动文件,缺失的静默跳过。升级日志不在这里 —— 它按窗口取多个,
+// 走 collect_recent_upgrade_log_bundle。
 std::vector<FeedbackLogSource> collect_runtime_log_sources(
     const std::filesystem::path& logs_dir);
+
+// 找 logs_dir 下最近 window 内写过的全部 "upgrade-<date>-<pid>.log",按修改时间
+// 从旧到新排成一个合并包(条目名固定 logs/upgrade.log.tail.txt)。窗口内一个都
+// 没有返回 nullopt:更早的升级记录不做兜底,反馈里没有升级条目就意味着这三天
+// 没跑过升级。
+std::optional<FeedbackLogBundle> collect_recent_upgrade_log_bundle(
+    const std::filesystem::path& logs_dir,
+    std::chrono::hours window = kRecentUpgradeLogWindow);
 
 FeedbackPackageResult build_feedback_package(const FeedbackPackageRequest& request);
 FeedbackUploadResult upload_feedback_package(const FeedbackUploadRequest& request);

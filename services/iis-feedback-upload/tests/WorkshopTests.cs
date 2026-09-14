@@ -36,7 +36,8 @@ internal static class WorkshopTests
             { "thumbnail", new Dictionary<string, object> { { "bytes", image.Length }, { "sha256", WorkshopPackage.Hash(image) } } }
         };
     }
-    private static byte[] Zip(Dictionary<string, object> definition, byte[] image, string backgroundName = "background.png", bool extra = false)
+    private static byte[] Zip(Dictionary<string, object> definition, byte[] image, string backgroundName = "background.png", bool extra = false,
+                              Dictionary<string, byte[]> backgrounds = null)
     {
         using (MemoryStream output = new MemoryStream())
         {
@@ -45,6 +46,7 @@ internal static class WorkshopTests
                 Add(archive, "theme.json", Encoding.UTF8.GetBytes(WorkshopPackage.Serializer().Serialize(definition)));
                 Add(archive, backgroundName, image); Add(archive, "thumbnail.png", image);
                 if (extra) Add(archive, "run.aspx", Encoding.UTF8.GetBytes("not allowed"));
+                if (backgrounds != null) foreach (var entry in backgrounds) Add(archive, entry.Key, entry.Value);
             }
             return output.ToArray();
         }
@@ -61,6 +63,25 @@ internal static class WorkshopTests
             WorkshopPackage package = WorkshopPackage.Parse(zip);
             Check((string)package.Definition["mode"] == "dark" && package.Key == WorkshopPackage.Hash(zip), "valid dark ZIP preserves metadata and digest");
             Check((bool)WorkshopPackage.Object(package.Definition["appearance"])["extend_to_titlebar"], "appearance parameters survive package parsing");
+            var expanded = Definition(image);
+            expanded["session_background"] = expanded["background"];
+            expanded["user_message_background"] = expanded["background"];
+            var expandedAppearance = WorkshopPackage.Object(expanded["appearance"]);
+            expandedAppearance["home_composer_opacity"] = 0.7;
+            expandedAppearance["session_background_opacity"] = 0;
+            expandedAppearance["user_message_background_opacity"] = 1;
+            expandedAppearance["home_background_color"] = "#102030";
+            var backgrounds = new Dictionary<string, byte[]> { { "session-background.png", image }, { "user-message-background.png", image } };
+            var expandedPackage = WorkshopPackage.Parse(Zip(expanded, image, backgrounds: backgrounds));
+            var preserved = WorkshopPackage.Object(expandedPackage.Definition["appearance"]);
+            Check((string)preserved["logo_color"] == "#9870E2" && (string)preserved["home_title_color"] == "#F3EDFA" && (bool)preserved["extend_to_titlebar"],
+                "multi-background theme preserves original logo, title and titlebar settings");
+            Reject(() => WorkshopPackage.Parse(Zip(expanded, image)), 422, "declared background cannot be missing");
+            Reject(() => WorkshopPackage.Parse(Zip(definition, image, backgrounds: backgrounds)), 422, "undeclared backgrounds are rejected");
+            foreach (object invalid in new object[] { -0.1, 1.1, "0.7", true, null }) {
+                expandedAppearance["home_composer_opacity"] = invalid;
+                Reject(() => WorkshopPackage.Parse(Zip(expanded, image, backgrounds: backgrounds)), 422, "invalid opacity is rejected");
+            }
             Reject(() => WorkshopPackage.Parse(Encoding.UTF8.GetBytes("not a zip")), 422, "non-ZIP is rejected");
             Reject(() => WorkshopPackage.Parse(Zip(definition, image, "../background.png")), 422, "traversal entry is rejected");
             Reject(() => WorkshopPackage.Parse(Zip(definition, image, "theme.json")), 422, "duplicate entry is rejected");

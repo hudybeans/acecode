@@ -5057,7 +5057,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       ) : (
       <div
         className={clsx(
-          'ace-chat-file-drop-scope flex-1 flex flex-col min-w-0 relative',
+          'ace-session-panel ace-chat-file-drop-scope flex-1 flex flex-col min-w-0 relative',
           previewPanelMaximized && 'hidden',
         )}
         data-chat-file-drop-scope="true"

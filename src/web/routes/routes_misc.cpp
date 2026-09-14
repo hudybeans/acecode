@@ -541,6 +541,11 @@ void WebServer::Impl::register_feedback() {
                 ? path_from_utf8(get_logs_dir())
                 : path_from_utf8(deps.logs_dir);
             package_req.logs = acecode::feedback::collect_runtime_log_sources(logs_dir);
+            // 最近三天的升级记录合并成一个条目:「更新之后就不对了」这类反馈要看的就是它。
+            if (auto upgrade_logs =
+                    acecode::feedback::collect_recent_upgrade_log_bundle(logs_dir)) {
+                package_req.log_bundles.push_back(std::move(*upgrade_logs));
+            }
 
             std::string selected_session_id = *session_id;
             std::string selected_workspace_hash = *workspace_hash;

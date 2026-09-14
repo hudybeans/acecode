@@ -71,6 +71,30 @@ TEST_F(ThemeExportTest, ReusesOnlyValidatedZipAndRebuildsMissingOrStalePackages)
     EXPECT_EQ(store.definition("ai-example"), definition);
 }
 
+TEST_F(ThemeExportTest, RebuiltMultiBackgroundPackageRoundTripsAllResourcesAndOriginalAppearance) {
+    definition["session_background"] = definition["background"];
+    definition["user_message_background"] = definition["background"];
+    definition["appearance"] = {{"logo_color", "#9864ED"}, {"home_title_color", "#EEEEFF"},
+        {"extend_to_titlebar", true}, {"home_composer_opacity", 0.7}, {"session_background_opacity", 0.4}};
+    ThemeStore store(root, "");
+    const auto installed = store.install_local(definition, png, png,
+        {{"session-background.png", png}, {"user-message-background.png", png}});
+    fs::remove(acecode::path_from_utf8(installed.at("package_path")));
+    const auto completed = finish(store, store.start_export("ai-example"));
+    ASSERT_EQ(completed["state"], "completed") << completed;
+    EXPECT_FALSE(completed["reused"]);
+    const auto bytes = store.export_download(completed.at("job_id"));
+    ThemeStore imported(root / "imported", "");
+    const auto preview = imported.preview_import(bytes);
+    EXPECT_EQ(preview.at("theme"), definition);
+    imported.import_archive(bytes, preview.at("package_sha256"));
+    EXPECT_EQ(imported.definition("ai-example"), definition);
+    EXPECT_EQ(imported.image("ai-example", "session-background"), png);
+    EXPECT_EQ(imported.image("ai-example", "user-message-background"), png);
+    EXPECT_TRUE(imported.remove_local("ai-example")["deleted"]);
+    EXPECT_FALSE(imported.installed("ai-example"));
+}
+
 TEST_F(ThemeExportTest, AppearanceRoundTripsAndInvalidatesAnOtherwiseMatchingCachedPackage) {
     definition["appearance"] = {{"logo_color", "#9B6DFF"}, {"home_title_color", "#FFFFFF"},
         {"extend_to_titlebar", true}};

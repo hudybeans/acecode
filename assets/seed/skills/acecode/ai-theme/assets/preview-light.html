@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>ACECode 主题框图 · 浅色</title>
+<style>
+/*
+  AI 定制入口：只调整下方三个区域的背景变量即可制作示意。
+  图片用 url("本地图片路径")；无图片时保留 none 并修改背景色。
+  这份 HTML 是示意模板，不会修改 ACECode 的实际设置。
+*/
+:root {
+  --home-background-image: none;
+  --session-background-image: none;
+  --chat-card-background-image: none;
+  --home-background-color: #edf5fc;
+  --session-background-color: #f3f0fb;
+  --chat-card-background-color: #fff5e8;
+  --paper: #f5f5f4;
+  --surface: #ffffff;
+  --sidebar: #fafaf9;
+  --ink: #252a32;
+  --muted: #656b74;
+  --line: #c9cdd3;
+  --placeholder: #dde1e6;
+  --home-marker: #22649b;
+  --session-marker: #6b4e9d;
+  --card-marker: #9d5b16;
+  --label-bg: #ffffff;
+}
+html[data-mode="dark"] {
+  --home-background-color: #182735;
+  --session-background-color: #241f31;
+  --chat-card-background-color: #32291f;
+  --paper: #131518;
+  --surface: #1d2025;
+  --sidebar: #191c20;
+  --ink: #e5e8ed;
+  --muted: #afb6c0;
+  --line: #545c67;
+  --placeholder: #3a424c;
+  --home-marker: #91c9f4;
+  --session-marker: #c7b0ef;
+  --card-marker: #f0c188;
+  --label-bg: #1d2025;
+}
+* { box-sizing: border-box; }
+html { scrollbar-color: var(--line) var(--paper); scroll-behavior: auto; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.5; }
+::selection { color: var(--surface); background: var(--ink); }
+a { color: inherit; text-underline-offset: 4px; }
+a:focus-visible { outline: 2px solid var(--home-marker); outline-offset: 4px; }
+.page { width: min(1120px, calc(100% - 48px)); margin: 26px auto 32px; }
+.page-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; }
+h1 { margin: 0; font-size: 23px; font-weight: 650; letter-spacing: -.02em; }
+.subtitle { margin: 5px 0 0; font-size: 13px; color: var(--muted); }
+.modes { display: flex; gap: 16px; white-space: nowrap; font-size: 13px; }
+.modes [aria-current="page"] { font-weight: 650; text-decoration-thickness: 2px; }
+figure { margin: 0; }
+figure + figure { margin-top: 24px; }
+figcaption { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin: 0 0 9px; }
+figcaption h2 { margin: 0; font-size: 16px; font-weight: 650; }
+figcaption p { margin: 0; font-size: 12px; color: var(--muted); }
+.window { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.titlebar { height: 29px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 12px; color: var(--muted); font-size: 11px; }
+.window-tools { display: flex; gap: 13px; align-items: center; }
+.window-tools i { display: block; width: 9px; height: 7px; border: 1px solid var(--muted); }
+.window-tools i:first-child { border-width: 0 0 1px; height: 1px; }
+.window-tools i:last-child { border: 0; position: relative; }
+.window-tools i:last-child::before, .window-tools i:last-child::after { content: ""; position: absolute; width: 10px; height: 1px; background: var(--muted); transform: rotate(45deg); top: 3px; }
+.window-tools i:last-child::after { transform: rotate(-45deg); }
+.window-body { height: 325px; display: grid; grid-template-columns: 17% minmax(0, 1fr); }
+.sidebar { border-right: 1px solid var(--line); padding: 18px 14px; background: var(--sidebar); display: flex; flex-direction: column; gap: 12px; font-size: 11px; color: var(--muted); }
+.brand { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+.brand-mark { width: 21px; height: 21px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 4px; font-size: 13px; }
+.sidebar-divider { height: 1px; background: var(--line); margin: 4px 0; }
+.side-line { height: 6px; border-radius: 2px; background: var(--placeholder); width: 88%; }
+.side-line.short { width: 62%; }
+.sidebar-end { margin-top: auto; }
+.region { position: relative; min-width: 0; background-position: center; background-size: cover; background-repeat: no-repeat; }
+.home-region { background-color: var(--home-background-color); background-image: var(--home-background-image); outline: 2px dashed var(--home-marker); outline-offset: -7px; }
+.session-region { background-color: var(--session-background-color); background-image: var(--session-background-image); outline: 2px dashed var(--session-marker); outline-offset: -7px; }
+.region-label { position: absolute; z-index: 1; display: inline-flex; align-items: center; gap: 6px; top: 13px; left: 15px; padding: 2px 7px 2px 3px; border-radius: 4px; background: var(--label-bg); font-size: 12px; font-weight: 650; line-height: 23px; }
+.number { display: inline-grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; border: 1px solid currentColor; border-radius: 50%; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.home-color { color: var(--home-marker); }
+.session-color { color: var(--session-marker); }
+.card-color { color: var(--card-marker); }
+.home-content { width: min(580px, 77%); margin: 51px auto 0; text-align: center; }
+.home-logo { width: 34px; height: 34px; border: 1px solid var(--line); background: var(--surface); border-radius: 7px; display: grid; place-items: center; margin: auto; font-size: 20px; font-weight: 650; }
+.home-title { font-size: 19px; margin: 8px 0 14px; font-weight: 500; }
+.composer { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; height: 62px; text-align: left; color: var(--muted); font-size: 11px; display: flex; flex-direction: column; justify-content: space-between; }
+.composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.composer-bottom .side-line { width: 45px; height: 4px; }
+.send { width: 13px; height: 13px; border: 1px solid var(--muted); border-radius: 50%; }
+.home-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 10px; text-align: left; font-size: 11px; }
+.shortcut { background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 7px 10px; color: var(--muted); }
+.conversation { width: min(620px, 78%); margin: 51px auto 0; }
+.user-message { margin-left: auto; font-size: 11px; }
+.chat-card { padding: 39px 15px 12px; width: 64%; min-width: 220px; border: 2px dashed var(--card-marker); border-radius: 7px; background-color: var(--chat-card-background-color); background-image: var(--chat-card-background-image); min-height: 77px; }
+.chat-card .region-label { top: 7px; left: 8px; }
+.assistant-message { margin-top: 14px; padding: 0 2px; width: 88%; min-height: 48px; }
+.reply-title { font-size: 11px; margin: 0 0 9px; }
+.reply-line { height: 5px; border-radius: 2px; width: 84%; background: var(--placeholder); }
+.reply-line + .reply-line { margin-top: 7px; width: 63%; }
+.chat-composer { margin-top: 17px; height: 51px; padding: 9px 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 27px; border-top: 1px solid var(--line); margin-top: 22px; padding-top: 16px; font-size: 12px; }
+.legend-item { display: flex; align-items: center; gap: 7px; }
+.legend-item span:last-child { color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; margin: 13px 0 0; }
+@media (max-width: 600px) {
+  .page { width: calc(100% - 24px); margin: 18px auto 24px; }
+  .page-header { align-items: flex-start; gap: 12px; }
+  h1 { font-size: 19px; }
+  .subtitle { font-size: 11px; max-width: 24em; }
+  .modes { gap: 9px; font-size: 12px; padding-top: 4px; }
+  figcaption p { font-size: 11px; }
+  .window-body { grid-template-columns: 74px minmax(0, 1fr); height: 325px; }
+  .sidebar { padding: 15px 8px; font-size: 11px; gap: 13px; }
+  .brand { font-size: 11px; gap: 0; }
+  .brand-mark { display: none; }
+  .home-content, .conversation { width: calc(100% - 30px); }
+  .home-title { font-size: 16px; }
+  .region-label { left: 10px; font-size: 11px; gap: 4px; padding-right: 4px; }
+  .shortcut { padding: 7px 5px; font-size: 11px; }
+  .chat-card { width: 100%; padding-left: 10px; }
+  .chat-card .region-label { left: 5px; }
+  .legend { display: grid; gap: 11px; }
+  .legend-item { flex-wrap: wrap; }
+}
+@media print {
+  .page { width: 100%; margin: 0; }
+  .modes { display: none; }
+  figure { break-inside: avoid; }
+  * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="page-header">
+    <div><h1>ACECode 主题背景示意</h1><p class="subtitle">浅色模板 · 上方主页，下方聊天页</p></div>
+    <nav class="modes" aria-label="模板配色"><a href="preview-light.html" aria-current="page">浅色</a><a href="preview-dark.html" >深色</a></nav>
+  </header>
+
+  <figure aria-labelledby="home-heading">
+    <figcaption><h2 id="home-heading">主页</h2><p>新建任务时看到的页面</p></figcaption>
+    <div class="window">
+      <div class="titlebar" aria-hidden="true"><span>ACECode</span><span class="window-tools"><i></i><i></i><i></i></span></div>
+      <div class="window-body">
+        <aside class="sidebar" aria-label="主页侧栏示意">
+          <div class="brand"><span class="brand-mark">A</span>ACECode</div>
+          <span>新建任务</span><span>定时任务</span><span>扩展</span>
+          <div class="sidebar-divider"></div><span>任务列表</span>
+          <div class="side-line"></div><div class="side-line short"></div><div class="side-line"></div>
+          <span class="sidebar-end">设置</span>
+        </aside>
+        <!-- ① 主页背景：修改 --home-background-image / --home-background-color。 -->
+        <section id="home-background" class="region home-region" data-theme-region="home-background" aria-label="可定制区域1：主页背景图">
+          <div class="region-label home-color"><span class="number">1</span>主页背景图</div>
+          <div class="home-content">
+            <div class="home-logo" aria-label="ACECode 图标占位">A</div>
+            <div class="home-title">我们该做什么？</div>
+            <div class="composer" aria-label="主页输入区示意"><span>向 ACECode 描述任务…</span><div class="composer-bottom" aria-hidden="true"><span class="side-line"></span><span class="send"></span></div></div>
+            <div class="home-shortcuts" aria-label="首页功能卡片示意"><div class="shortcut">编辑代码</div><div class="shortcut">探索代码库</div><div class="shortcut">运行命令</div><div class="shortcut">使用 Skills</div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </figure>
+
+  <figure aria-labelledby="session-heading">
+    <figcaption><h2 id="session-heading">聊天页</h2><p>进入会话后看到的页面</p></figcaption>
+    <div class="window">
+      <div class="titlebar" aria-hidden="true"><span>ACECode · 会话示意</span><span class="window-tools"><i></i><i></i><i></i></span></div>
+      <div class="window-body">
+        <aside class="sidebar" aria-label="聊天页侧栏示意">
+          <div class="brand"><span class="brand-mark">A</span>ACECode</div>
+          <span>新建任务</span><span>定时任务</span><span>扩展</span>
+          <div class="sidebar-divider"></div><span>当前会话</span>
+          <div class="side-line"></div><div class="side-line short"></div><div class="side-line"></div>
+          <span class="sidebar-end">设置</span>
+        </aside>
+        <!-- ② 会话页底层背景：修改 --session-background-image / --session-background-color。 -->
+        <section id="session-background" class="region session-region" data-theme-region="session-background" aria-label="可定制区域2：会话页背景图">
+          <div class="region-label session-color"><span class="number">2</span>会话页背景图</div>
+          <div class="conversation">
+            <!-- ③ 只影响用户发送的消息背景：修改 --chat-card-background-image / --chat-card-background-color。 -->
+            <article id="chat-card-background" class="region user-message chat-card" data-theme-region="chat-card-background" data-message-role="user" aria-label="可定制区域3：用户发送的消息背景图">
+              <div class="region-label card-color"><span class="number">3</span>聊天卡片背景图</div>
+              <span>用户发送的消息</span>
+            </article>
+            <article class="assistant-message" data-message-role="assistant" aria-label="AI 回复示意">
+              <p class="reply-title">AI 的回复内容</p>
+              <div class="reply-line" aria-hidden="true"></div><div class="reply-line" aria-hidden="true"></div>
+            </article>
+            <div class="composer chat-composer" aria-label="聊天输入区示意"><span>继续对话…</span><div class="composer-bottom" aria-hidden="true"><span class="side-line"></span><span class="send"></span></div></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </figure>
+
+  <footer>
+    <div class="legend" aria-label="三个定制区域说明">
+      <div class="legend-item home-color"><span class="number">1</span><strong>主页背景</strong><span>首页内容后方</span></div>
+      <div class="legend-item session-color"><span class="number">2</span><strong>会话页背景</strong><span>聊天区域的底层</span></div>
+      <div class="legend-item card-color"><span class="number">3</span><strong>聊天卡片背景</strong><span>只影响用户发送的消息</span></div>
+    </div>
+    <p class="note">定制时可按 1、2、3 描述想要的图片或颜色；没有图片时，也可以使用纯色背景。</p>
+  </footer>
+</main>
+</body>
+</html>

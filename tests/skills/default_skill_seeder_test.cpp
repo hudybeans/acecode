@@ -1282,6 +1282,11 @@ TEST(DefaultSkillSeedRegistryTest, PackagedManifestVersionAndHashesAgree) {
     std::set<std::string> manifest_names;
     for (const auto& item : manifest["skills"]) {
         const std::string name = item["name"].get<std::string>();
+        const auto& seeds = acecode::default_skill_seeds();
+        const auto seed = std::find_if(seeds.begin(), seeds.end(),
+            [&](const auto& entry) { return entry.name == name; });
+        ASSERT_NE(seed, seeds.end()) << name;
+        EXPECT_EQ(seed->source_id, item.at("source_id").get<std::string>()) << name;
         const std::string relative_path =
             item["relative_path"].get<std::string>();
         const fs::path skill_md =

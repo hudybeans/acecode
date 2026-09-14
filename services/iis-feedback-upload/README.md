@@ -24,9 +24,12 @@ pending. Administrators can preview, approve and reject themes. Pending and
 rejected records, images and ZIPs are not publicly accessible. Rejecting an
 approved theme also removes it from public access.
 
-Packages are custom `ai-*` ACECode ZIPs up to 16 MiB, containing exactly
-`theme.json`, `background.png`, `thumbnail.png`. Validation covers the existing
-schema, 28 colors, optional appearance settings, PNG dimensions, byte counts and
+Packages are custom `ai-*` ACECode ZIPs up to 16 MiB, containing
+`theme.json`, `background.png`, `thumbnail.png` and optionally declared
+`session-background.png` / `user-message-background.png` (three to five root files).
+Legacy three-file packages remain supported. Validation covers the existing
+schema, 28 colors, optional appearance settings (including logo/title colors,
+title-bar extension, background colors and numeric opacities), PNG dimensions, byte counts and
 SHA-256. Definitions are limited to 32 KiB and thumbnails to 256 KiB. No uploaded
 paths, scripts, HTML or CSS are executed. Identical submissions are idempotent;
 an existing ID/version with different content returns a conflict. Corrected or

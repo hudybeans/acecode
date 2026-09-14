@@ -24,6 +24,10 @@ namespace Acecode.Workshop
     {
         public const int MaxPackageBytes = 16 * 1024 * 1024;
         public const int MaxThumbnailBytes = 256 * 1024;
+        private static readonly Dictionary<string, string> OptionalImages = new Dictionary<string, string> {
+            { "session_background", "session-background.png" },
+            { "user_message_background", "user-message-background.png" }
+        };
         public static readonly string[] ColorKeys = {
             "bg", "surface", "surface-alt", "surface-hi", "shell-hi", "shell-bg",
             "border", "border-soft", "fg", "fg-2", "fg-mute", "accent", "accent-bg",
@@ -105,17 +109,20 @@ namespace Acecode.Workshop
                 using (MemoryStream input = new MemoryStream(archiveBytes, false))
                 using (ZipArchive zip = new ZipArchive(input, ZipArchiveMode.Read))
                 {
-                    if (zip.Entries.Count != 3) Invalid("主题 ZIP 必须包含 theme.json、background.png 和 thumbnail.png 三个根文件。");
+                    if (zip.Entries.Count < 3 || zip.Entries.Count > 5) Invalid("主题 ZIP 必须包含基础资源及配置声明的可选背景，共 3 至 5 个根文件。");
+                    long totalBytes = 0;
                     foreach (ZipArchiveEntry entry in zip.Entries)
                     {
                         string name = entry.FullName;
-                        if (name != "theme.json" && name != "background.png" && name != "thumbnail.png")
+                        if (name != "theme.json" && name != "background.png" && name != "thumbnail.png" && !OptionalImages.ContainsValue(name))
                             Invalid("主题包包含不允许的文件或路径。");
                         int unixType = (entry.ExternalAttributes >> 16) & 0xf000;
                         if ((unixType != 0 && unixType != 0x8000) || (entry.ExternalAttributes & 0x10) != 0 || files.ContainsKey(name))
                             Invalid("主题包包含链接、目录或重复文件。");
                         int limit = name == "theme.json" ? 32 * 1024 : name == "thumbnail.png" ? MaxThumbnailBytes : MaxPackageBytes;
                         if (entry.Length <= 0 || entry.Length > limit) Invalid("主题包内文件大小不符合要求。");
+                        totalBytes += entry.Length;
+                        if (totalBytes > MaxPackageBytes) Invalid("主题包解压后的资源超过 16 MB。");
                         using (Stream stream = entry.Open()) files.Add(name, ReadBounded(stream, limit));
                         if (files[name].LongLength != entry.Length) Invalid("主题包内文件不完整。");
                     }
@@ -125,6 +132,12 @@ namespace Acecode.Workshop
                 ValidateDefinition(definition);
                 ValidateImage(files["background.png"], Object(Required(definition, "background")));
                 ValidateImage(files["thumbnail.png"], Object(Required(definition, "thumbnail")));
+                foreach (KeyValuePair<string, string> entry in OptionalImages)
+                {
+                    if (definition.ContainsKey(entry.Key) != files.ContainsKey(entry.Value))
+                        Invalid("可选背景文件必须与主题配置中的声明一致。");
+                    if (files.ContainsKey(entry.Value)) ValidateImage(files[entry.Value], Object(definition[entry.Key]));
+                }
                 return new WorkshopPackage {
                     Archive = archiveBytes, Definition = definition, Background = files["background.png"],
                     Thumbnail = files["thumbnail.png"], Key = Hash(archiveBytes)
@@ -160,8 +173,18 @@ namespace Acecode.Workshop
             {
                 foreach (KeyValuePair<string, object> item in Object(appearanceValue))
                 {
-                    if (item.Key == "logo_color" || item.Key == "home_title_color")
-                    { if (!Matches(item.Value as string, "#[0-9a-fA-F]{6}")) Invalid("图标色或首页标题色无效。"); }
+                    if (item.Key == "logo_color" || item.Key == "home_title_color" ||
+                        item.Key == "home_background_color" || item.Key == "session_background_color" || item.Key == "user_message_background_color")
+                    { if (!Matches(item.Value as string, "#[0-9a-fA-F]{6}")) Invalid("主题外观颜色无效。"); }
+                    else if (item.Key == "home_composer_opacity" || item.Key == "home_background_opacity" ||
+                             item.Key == "session_background_opacity" || item.Key == "user_message_background_opacity")
+                    {
+                        if (!(item.Value is int) && !(item.Value is long) && !(item.Value is double) && !(item.Value is decimal))
+                            Invalid("主题透明度必须是 0 到 1 的数值。");
+                        double opacity = Convert.ToDouble(item.Value, CultureInfo.InvariantCulture);
+                        if (Double.IsNaN(opacity) || Double.IsInfinity(opacity) || opacity < 0 || opacity > 1)
+                            Invalid("主题透明度必须是 0 到 1 的数值。");
+                    }
                     else if (item.Key != "extend_to_titlebar" || !(item.Value is bool)) Invalid("主题包含不支持的外观参数。");
                 }
             }

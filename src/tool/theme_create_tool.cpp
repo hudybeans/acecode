@@ -14,11 +14,15 @@ ToolImpl create_theme_create_tool(std::filesystem::path theme_root) {
     impl.definition.name = "theme_create";
     impl.definition.description =
         "Create and install an ACECode background/color theme with mandatory human approval. "
-        "First show all 28 palette colors and any logo/title colors and title-bar background setting, "
+        "First use the ai-theme skill to ask customization level, artwork mode and light/dark/free preference. "
+        "Then show all 28 palette colors and any logo/title colors, title-bar settings, background colors and opacities, "
         "then call action=palette with name, mode, colors and optional appearance; "
-        "continue only when confirmed=true. Then generate a standalone background and an ACECode UI "
-        "prototype using image_generate, show both to the user, and call action=prototype with "
-        "draft_id, background_path and preview_path. Only after confirmed=true call action=install "
+        "continue only when confirmed=true. Prepare standalone backgrounds and an ACECode UI prototype: "
+        "use image_generate only for the selected bitmap mode, or local SVG/user-provided images without generation. "
+        "If image generation is unavailable, preview with HTML and ACECode Browser and capture a PNG preview. "
+        "Show the result and call action=prototype with draft_id, background_path, preview_path and optional "
+        "session_background_path/user_message_background_path. Message artwork affects only user messages. "
+        "Only after confirmed=true call action=install "
         "with draft_id alone. install packages and applies the approved theme; previous themes remain available. "
         "Use action=status with draft_id to resume, or omit draft_id to list this session's drafts. "
         "Never replace real user approval with a boolean or auto-answer. Pending confirmation means stop "
@@ -41,9 +45,19 @@ ToolImpl create_theme_create_tool(std::filesystem::path theme_root) {
                     {"home_title_color", {{"type", "string"}, {"pattern", "^#[0-9A-Fa-f]{6}$"},
                         {"description", "Home greeting title color. Other headings and body text retain the palette."}}},
                     {"extend_to_titlebar", {{"type", "boolean"},
-                        {"description", "Extend the home background behind the main-column title bar. Dark mode uses white right-side controls."}}}
+                        {"description", "Extend the home background behind the main-column title bar. Dark mode uses white right-side controls."}}},
+                    {"home_composer_opacity", {{"type", "number"}, {"minimum", 0}, {"maximum", 1},
+                        {"description", "Home input background opacity; text/icons remain opaque. 1 means opaque, 0 transparent."}}},
+                    {"home_background_opacity", {{"type", "number"}, {"minimum", 0}, {"maximum", 1}}},
+                    {"session_background_opacity", {{"type", "number"}, {"minimum", 0}, {"maximum", 1}}},
+                    {"user_message_background_opacity", {{"type", "number"}, {"minimum", 0}, {"maximum", 1}}},
+                    {"home_background_color", {{"type", "string"}, {"pattern", "^#[0-9A-Fa-f]{6}$"}}},
+                    {"session_background_color", {{"type", "string"}, {"pattern", "^#[0-9A-Fa-f]{6}$"}}},
+                    {"user_message_background_color", {{"type", "string"}, {"pattern", "^#[0-9A-Fa-f]{6}$"}}}
                 }}}},
             {"background_path", {{"type", "string"}, {"description", "Prototype action: local standalone background image shown to user."}}},
+            {"session_background_path", {{"type", "string"}, {"description", "Prototype action: optional standalone conversation background image."}}},
+            {"user_message_background_path", {{"type", "string"}, {"description", "Prototype action: optional background for user-sent message bubbles only; never assistant replies."}}},
             {"preview_path", {{"type", "string"}, {"description", "Prototype action: local ACECode UI prototype shown to user."}}}
         }}
     };

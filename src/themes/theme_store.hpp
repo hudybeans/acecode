@@ -31,6 +31,8 @@ bool valid_theme_definition(const nlohmann::json& definition);
 bool valid_theme_colors(const nlohmann::json& colors);
 bool valid_theme_appearance(const nlohmann::json& appearance);
 bool valid_theme_catalog(const nlohmann::json& catalog);
+// Fixed resource names only; optional images must also be declared in the definition.
+std::map<std::string, std::string> theme_image_files(const nlohmann::json& definition);
 
 struct ThemeTransport {
     std::function<upgrade::HttpTextResult(const std::string&)> fetch;
@@ -61,7 +63,8 @@ public:
     // immutable versions and the installed pointer use the remote store layout.
     nlohmann::json install_local(const nlohmann::json& definition,
                                 const std::string& background_png,
-                                const std::string& thumbnail_png);
+                                const std::string& thumbnail_png,
+                                const std::map<std::string, std::string>& extra_images = {});
     nlohmann::json preview_import(const std::string& archive_bytes) const;
     nlohmann::json import_archive(const std::string& archive_bytes, const std::string& confirmed_sha256);
     // The picker is trusted native UI, never a destination supplied by HTTP.

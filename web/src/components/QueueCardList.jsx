@@ -88,17 +88,10 @@ function QueueCard({ card, onCancel, onRetry, onGuide, onEdit, guideDisabled }) 
       role="listitem"
       data-queue-card-state={statusKind}
       className={clsx(
-        'ace-queue-card relative flex items-center gap-2 pl-4 pr-2 py-2 text-[13px]',
+        'ace-queue-card relative flex shrink-0 items-center gap-2 pl-3 pr-2 py-2 text-[13px]',
         dimmed && 'ace-queue-card-dimmed',
       )}
     >
-      <span
-        aria-hidden="true"
-        className={clsx(
-          'ace-queue-card-indicator',
-          statusKind === 'failed' ? 'is-failed' : 'is-queued',
-        )}
-      />
       <span
         className="ace-queue-card-content flex-1 min-w-0 truncate"
         title={content}
@@ -173,7 +166,7 @@ export function QueueCardList({ items, onCancel, onRetry, onGuide, onSaveEdit, g
       <div
         role="list"
         aria-label="排队中的待发送消息"
-        className="ace-queue-card-strip flex flex-col gap-1.5 px-2.5 pt-2 max-h-[30vh] overflow-y-auto"
+        className="ace-queue-card-strip flex flex-col gap-1.5 px-2.5 pt-2 pb-1.5 max-h-[30vh] overflow-y-auto"
       >
         {cards.map((card) => (
           <QueueCard

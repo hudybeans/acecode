@@ -1210,7 +1210,7 @@ const std::vector<DefaultSkillSeed>& default_skill_seeds() {
          "acecode:vision-image-reader@2026-05-28",
          fs::path("acecode") / "vision-image-reader"},
         {"ai-theme",
-         "acecode:ai-theme@2026-09-12",
+         "acecode:ai-theme@2026-09-15",
          fs::path("acecode") / "ai-theme"},
     };
     return seeds;

@@ -2745,7 +2745,7 @@ body {
   content: "";
   position: absolute;
   inset: 0 0 0 var(--ace-home-sidebar-width, 0px);
-  background-color: var(--ace-bg);
+  background-color: var(--ace-home-background-color, var(--ace-bg));
   background-image: var(--ace-home-background-image);
   background-position: right top;
   background-size: cover;
@@ -2771,6 +2771,31 @@ body {
 [data-installed-theme] .ace-home-hint-card,
 [data-installed-theme] .ace-inputbar-hero-card,
 [data-installed-theme] .ace-home-project-row { background-color: rgba(var(--ace-surface-rgb), .95); }
+[data-installed-theme] .ace-home-composer .ace-inputbar-hero-card {
+  background-color: rgba(var(--ace-surface-rgb), var(--ace-home-composer-opacity, .95));
+}
+[data-theme-session-background="true"] .ace-session-panel {
+  isolation: isolate;
+  background-color: var(--ace-session-background-color, var(--ace-bg));
+}
+[data-theme-session-background="true"] .ace-session-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--ace-session-background-image);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+[data-theme-user-message-background="true"] .ace-user-message-bubble {
+  background-color: var(--ace-user-message-background-color, var(--ace-accent-bg));
+  background-image: var(--ace-user-message-background-image);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
 [data-theme-extend-to-titlebar="false"] .ace-app-shell[data-home-wallpaper="true"]::before { top: var(--ace-topbar-height); }
 [data-theme-extend-to-titlebar="false"] .ace-app-shell[data-home-wallpaper="true"] .ace-topbar { background-color: rgba(var(--ace-surface-rgb), .95); }
 [data-installed-theme] .ace-sidebar .bg-accent-bg {
@@ -6219,8 +6244,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 }
 
 /* Queue card list (above InputBar): 排队中的待发送消息卡片栈。
- * 背景对齐「查看变更」玻璃 dock:半透明 + backdrop-filter 毛玻璃。
- * 卡片左侧 3px 状态指示条 absolute 定位。 */
+ * 背景对齐「查看变更」玻璃 dock:半透明 + backdrop-filter 毛玻璃。 */
 .ace-queue-card {
   position: relative;
   isolation: isolate;
@@ -6257,22 +6281,6 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 }
 .ace-queue-card-dimmed {
   opacity: 0.6;
-}
-.ace-queue-card-indicator {
-  position: absolute;
-  left: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 3px;
-  border-top-left-radius: 6px;
-  border-bottom-left-radius: 6px;
-  z-index: 1;
-}
-.ace-queue-card-indicator.is-queued {
-  background: rgba(var(--ace-fg-mute-rgb), 0.60);
-}
-.ace-queue-card-indicator.is-failed {
-  background: var(--ace-danger);
 }
 .ace-queue-card-content {
   color: var(--ace-fg);

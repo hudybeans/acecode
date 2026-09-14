@@ -95,6 +95,13 @@ TEST_F(AiThemeSeedTest, PreviousUserVersionReceivesDiscoverableThemeAndResources
         "assets/acecode-home-reference.jpg",
         "assets/acecode-home-light.png",
         "assets/acecode-home-dark.png",
+        "assets/preview-light.html",
+        "assets/preview-dark.html",
+        "scripts/render_preview.py",
+        "scripts/preview.js",
+        "scripts/preview.css",
+        "references/customization-questions.md",
+        "references/browser-preview.md",
         "references/image-prompts.md",
         "references/palette-example.json",
         "references/theme-contract.md",
@@ -176,11 +183,20 @@ TEST_F(AiThemeSeedTest, SurfaceRevisionUpdatesPreviouslyManagedThemeSkillAndRefe
     ASSERT_TRUE(initial.version_written);
     ASSERT_EQ(read_bytes(home_ / relative / "SKILL.md"), previous_skill);
 
+    // An installed official copy keeps its ownership when the source ID advances.
+    auto previous_state = nlohmann::json::parse(read_bytes(initial.state_path));
+    for (auto& entry : previous_state.at("skills"))
+        if (entry.at("name") == "ai-theme")
+            entry["source_id"] = "acecode:ai-theme@2026-09-12";
+    write(initial.state_path, previous_state.dump(2));
+
     const auto updated = acecode::reconcile_default_global_skills(home_, packaged_ / "skills");
     ASSERT_TRUE(updated.error.empty()) << updated.error;
     ASSERT_TRUE(updated.version_written);
     const auto* outcome = theme_outcome(updated);
     ASSERT_NE(outcome, nullptr);
+    EXPECT_EQ(outcome->result, "updated");
+    EXPECT_NE(outcome->source_id, "acecode:ai-theme@2026-09-12");
     EXPECT_TRUE(outcome->acecode_owned);
     EXPECT_EQ(outcome->source_tree_sha256, outcome->installed_tree_sha256);
     EXPECT_EQ(read_bytes(home_ / relative / "SKILL.md"), read_bytes(packaged_ / relative / "SKILL.md"));

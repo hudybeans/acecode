@@ -120,6 +120,8 @@ await run('real ThemeProvider callbacks discard late image results and release b
   const api = { getTheme: async () => definition, readThemeImage: async () => 'old' };
   const context = { themeCache, themeReloadRequired, mounted: { current: true }, api,
     isInstalledColorTheme, validThemeDefinition: packages.validThemeDefinition, releaseThemeResource: (cache, id) => packages.releaseThemeResource(cache, id, (url) => revoked.push(url)),
+    loadThemeResources: (theme, readImage) => packages.loadThemeResources(theme, readImage, (value) => `blob:${value}`, (url) => revoked.push(url)),
+    revokeThemeResources: (item) => packages.revokeThemeResources(item, (url) => revoked.push(url)),
     URL: { createObjectURL: (value) => `blob:${value}`, revokeObjectURL: (url) => revoked.push(url) },
     setInstalledThemes(update) { installed = update(installed); } };
   const prepare = vm.runInNewContext(`(${callback('prepareTheme')})`, context);

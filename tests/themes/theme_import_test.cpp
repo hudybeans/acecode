@@ -59,6 +59,23 @@ TEST_F(ThemeImportTest, ChangedBytesRequireFreshConfirmation) {
     EXPECT_FALSE(store.installed("ai-example"));
 }
 
+TEST_F(ThemeImportTest, OptionalImagesMustBeDeclaredPresentAndIntact) {
+    ThemeStore store(root / "themes", "");
+    ThemePackageFiles files = {{"theme.json", definition.dump()}, {"background.png", png},
+        {"thumbnail.png", png}, {"session-background.png", png}};
+    EXPECT_THROW(store.preview_import(package(files)), ThemeError);
+    definition["session_background"] = definition["background"];
+    files["theme.json"] = definition.dump();
+    EXPECT_NO_THROW(store.preview_import(package(files)));
+    files.erase("session-background.png");
+    EXPECT_THROW(store.preview_import(package(files)), ThemeError);
+    files["session-background.png"] = png + "changed";
+    EXPECT_THROW(store.preview_import(package(files)), ThemeError);
+    EXPECT_THROW(store.install_local(definition, png, png), ThemeError);
+    EXPECT_THROW(store.install_local(definition, png, png, {{"../session-background.png", png}}), ThemeError);
+    EXPECT_FALSE(store.installed("ai-example"));
+}
+
 TEST_F(ThemeImportTest, RejectsInvalidArchivesResourcesAndBuiltins) {
     ThemeStore store(root / "themes", "https://unused.invalid");
     EXPECT_THROW(store.preview_import("not a zip"), ThemeError);

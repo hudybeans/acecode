@@ -17,6 +17,10 @@ namespace fs = std::filesystem;
 using nlohmann::json;
 namespace {
 constexpr std::size_t kImageLimit = 16 * 1024 * 1024;
+const std::map<std::string, std::string> kExtraBackgrounds = {
+    {"session_background", "session-background.png"},
+    {"user_message_background", "user-message-background.png"},
+};
 
 std::shared_ptr<std::mutex> draft_mutex(const fs::path& path) {
     static std::mutex guard;
@@ -54,8 +58,12 @@ std::string palette_digest(const json& draft) {
 }
 
 std::string prototype_digest(const json& draft) {
-    return sha256_hex(json{{"palette", palette_digest(draft)},
-        {"background", draft.at("background_sha256")}, {"preview", draft.at("preview_sha256")}}.dump());
+    json prototype = {{"palette", palette_digest(draft)},
+        {"background", draft.at("background_sha256")}, {"preview", draft.at("preview_sha256")}};
+    // Absent optional resources preserve the digest of previously approved drafts.
+    for (const auto& [kind, filename] : kExtraBackgrounds)
+        if (draft.contains(kind + "_sha256")) prototype[kind] = draft.at(kind + "_sha256");
+    return sha256_hex(prototype.dump());
 }
 
 bool palette_approved(const json& draft) {
@@ -76,7 +84,7 @@ json describe(const json& draft) {
     } else if (draft.value("prototype_approval", "").empty() ||
                draft.at("prototype_approval") != prototype_digest(draft)) {
         result["stage"] = "prototype_pending";
-        result["next_action"] = "Generate and show background and UI preview, then call prototype for user confirmation.";
+        result["next_action"] = "Prepare and show the selected backgrounds and UI preview (HTML/browser is supported), then call prototype for user confirmation.";
     } else {
         result["stage"] = "ready";
         result["next_action"] = "install";
@@ -118,7 +126,7 @@ std::string input_png(const fs::path& path, int max_edge = 0, std::size_t limit 
 void check_keys(const json& args, const std::string& action) {
     std::set<std::string> allowed = {"action", "draft_id"};
     if (action == "palette") allowed.insert({"name", "mode", "colors", "appearance"});
-    else if (action == "prototype") allowed.insert({"background_path", "preview_path"});
+    else if (action == "prototype") allowed.insert({"background_path", "preview_path", "session_background_path", "user_message_background_path"});
     else if (action != "install" && action != "status")
         throw ThemeError(400, "THEME_INVALID_ACTION", "Unknown theme_create action");
     for (const auto& item : args.items()) {
@@ -179,7 +187,7 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
         const auto mode = args.at("mode").get<std::string>();
         if (args.contains("appearance") && !valid_theme_appearance(args.at("appearance")))
             throw ThemeError(422, "THEME_INVALID_APPEARANCE",
-                "Appearance accepts only optional logo_color/home_title_color HEX colors and boolean extend_to_titlebar");
+                "Appearance accepts supported HEX colors, boolean extend_to_titlebar and numeric opacity values from 0 to 1");
         if (name.empty() || name.size() > 256 || name.find_first_not_of(" \t\r\n") == std::string::npos ||
             std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; }) ||
             (mode != "light" && mode != "dark") || !valid_theme_colors(args.at("colors")))
@@ -193,6 +201,7 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
         draft["prototype_approval"] = "";
         draft.erase("background_sha256");
         draft.erase("preview_sha256");
+        for (const auto& [kind, filename] : kExtraBackgrounds) draft.erase(kind + "_sha256");
         save(path, draft.dump(2));
         const auto question_id = "theme-palette-" + id;
         const auto response = ask(confirm, question_id, "确认「" + name + "」当前展示的色系？", "确认色系");
@@ -212,7 +221,7 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
     }
     if (!palette_approved(draft)) throw ThemeError(409, "THEME_PALETTE_CONFIRMATION_REQUIRED", "Confirm the current palette first");
     if (action == "prototype") {
-        const auto resolve = [&](const char* key) {
+        const auto resolve = [&](const std::string& key) {
             auto file = path_from_utf8(args.at(key).get<std::string>());
             if (file.empty()) throw ThemeError(400, "THEME_INVALID_ARGUMENT", std::string(key) + " is required");
             if (file.is_relative()) file = path_from_utf8(cwd) / file;
@@ -220,12 +229,28 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
         };
         const auto background = input_png(resolve("background_path"));
         const auto preview = input_png(resolve("preview_path"));
+        std::map<std::string, std::string> extra;
+        std::size_t total = background.size();
+        for (const auto& [kind, filename] : kExtraBackgrounds) {
+            if (!args.contains(kind + "_path")) continue;
+            auto bytes = input_png(resolve(kind + "_path"));
+            total += bytes.size();
+            if (total > kImageLimit) throw ThemeError(422, "THEME_INVALID_IMAGE", "Combined theme backgrounds exceed 16 MiB");
+            extra.emplace(kind, std::move(bytes));
+        }
         draft["prototype_approval"] = "";
         save(path, draft.dump(2));
         save(directory / "background.png", background);
         save(directory / "preview.png", preview);
         draft["background_sha256"] = sha256_hex(background);
         draft["preview_sha256"] = sha256_hex(preview);
+        for (const auto& [kind, filename] : kExtraBackgrounds) {
+            draft.erase(kind + "_sha256");
+            const auto found = extra.find(kind);
+            if (found == extra.end()) continue;
+            save(directory / filename, found->second);
+            draft[kind + "_sha256"] = sha256_hex(found->second);
+        }
         save(path, draft.dump(2));
         const auto question_id = "theme-prototype-" + id;
         const auto response = ask(confirm, question_id, "确认「" + draft.at("name").get<std::string>() +
@@ -248,8 +273,16 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
         draft.at("prototype_approval") != prototype_digest(draft))
         throw ThemeError(409, "THEME_PROTOTYPE_CONFIRMATION_REQUIRED", "Confirm the current prototype first");
     const auto background = read_bytes(directory / "background.png", kImageLimit);
-    if (sha256_hex(background) != draft.at("background_sha256") ||
-        sha256_hex(read_bytes(directory / "preview.png", kImageLimit)) != draft.at("preview_sha256")) {
+    std::map<std::string, std::string> extra;
+    bool resources_changed = sha256_hex(background) != draft.at("background_sha256") ||
+        sha256_hex(read_bytes(directory / "preview.png", kImageLimit)) != draft.at("preview_sha256");
+    for (const auto& [kind, filename] : kExtraBackgrounds) {
+        if (!draft.contains(kind + "_sha256")) continue;
+        auto bytes = read_bytes(directory / filename, kImageLimit);
+        if (sha256_hex(bytes) != draft.at(kind + "_sha256")) resources_changed = true;
+        extra.emplace(filename, std::move(bytes));
+    }
+    if (resources_changed) {
         draft["prototype_approval"] = "";
         save(path, draft.dump(2));
         throw ThemeError(409, "THEME_PROTOTYPE_CHANGED", "Prototype resources changed; show and confirm them again");
@@ -263,6 +296,10 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
             installed.value("appearance", json{}) != draft.value("appearance", json{}) ||
             installed.at("background").at("sha256") != draft.at("background_sha256"))
             throw ThemeError(409, "THEME_VERSION_CONFLICT", "Installed theme differs from the approved draft");
+        for (const auto& [kind, filename] : kExtraBackgrounds)
+            if (installed.contains(kind) != draft.contains(kind + "_sha256") ||
+                (installed.contains(kind) && installed.at(kind).at("sha256") != draft.at(kind + "_sha256")))
+                throw ThemeError(409, "THEME_VERSION_CONFLICT", "Installed background differs from the approved draft");
         if (fs::is_regular_file(path_from_utf8(result.at("package_path").get<std::string>()))) return describe(draft);
     }
     const auto thumbnail = input_png(directory / "background.png", 240, 256 * 1024);
@@ -271,7 +308,9 @@ json ThemeDraftStore::execute(const json& args, const std::string& session_id,
         {"background", {{"bytes", background.size()}, {"sha256", sha256_hex(background)}}},
         {"thumbnail", {{"bytes", thumbnail.size()}, {"sha256", sha256_hex(thumbnail)}}}};
     if (draft.contains("appearance")) definition["appearance"] = draft.at("appearance");
-    draft["installed"] = store.install_local(definition, background, thumbnail);
+    for (const auto& [kind, filename] : kExtraBackgrounds)
+        if (extra.count(filename)) definition[kind] = {{"bytes", extra.at(filename).size()}, {"sha256", draft.at(kind + "_sha256")}};
+    draft["installed"] = store.install_local(definition, background, thumbnail, extra);
     save(path, draft.dump(2));
     return describe(draft);
 }
