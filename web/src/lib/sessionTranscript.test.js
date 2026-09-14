@@ -1094,7 +1094,7 @@ run('history load 将带 tool_hunks metadata 的 tool message 恢复为 tool ite
   assert.deepEqual(loaded.items[1].tool.hunks, [hunk]);
 });
 
-run('history load 后 Created tool result 可在工具名缺失时从安全 hunk 恢复源码', () => {
+run('history load 后 Created tool result 从匹配调用恢复工具名并保留安全 hunk 源码', () => {
   const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
     messages: [
       { id: 'u1', role: 'user', content: 'create file', ts: 1 },
@@ -1137,7 +1137,7 @@ run('history load 后 Created tool result 可在工具名缺失时从安全 hunk
   const activity = projected.find((item) => item.kind === 'activity_summary');
   const tool = activity?.collapsedItems?.find((item) => item.kind === 'tool')?.tool;
   assert.ok(tool);
-  assert.equal(tool.tool, '');
+  assert.equal(tool.tool, 'file_write');
   assert.equal(tool.args, null);
   assert.deepEqual(createdFileSource(tool), {
     path: 'src/index.html',
@@ -1195,7 +1195,7 @@ run('history load 将 AskUserQuestion metadata 恢复为确认卡片工具项', 
   assert.equal(loaded.items[1].kind, 'tool');
   assert.equal(loaded.items[1].tool.toolCallId, 'call-ask');
   assert.deepEqual(loaded.items[1].tool.askUserQuestionResult.items, [
-    { question: '希望我直接修改还是先给出方案让你确认?', answer: '直接修改并补测试' },
+    { question: '希望我直接修改还是先给出方案让你确认?', answer: '直接修改并补测试', multiSelect: false },
   ]);
 });
 
@@ -1362,6 +1362,76 @@ run('history load 同名并行 persisted tool_calls 按 tool_call_id 匹配各�
   assert.match(summary.collapsedItems[1].tool.output, /\[Tool: grep\] \{"q":"B"\}/);
   assert.match(summary.collapsedItems[1].tool.output, /工具返回\nB result/);
   assert.equal(JSON.stringify(projected).includes('请求未记录'), false);
+});
+
+run('history load 跨回合复用 tool_call_id 时只绑定当前调用', () => {
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'run command', ts: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        tool_calls: [persistedToolCall('reused-call', 'shell_command', '{"command":"pwd"}', 0)],
+        ts: 2,
+      },
+      { id: 't1', role: 'tool', content: 'C:/repo', tool_call_id: 'reused-call', ts: 3 },
+      { id: 'u2', role: 'user', content: 'answer questions', ts: 4 },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: '',
+        tool_calls: [persistedToolCall('reused-call', 'AskUserQuestion', '{}', 0)],
+        ts: 5,
+      },
+      {
+        id: 't2',
+        role: 'tool',
+        content: 'answered',
+        tool_call_id: 'reused-call',
+        ts: 6,
+        metadata: {
+          ask_user_question_result: { items: [{ question: 'Q?', answer: 'A' }] },
+        },
+      },
+    ],
+    events: [],
+  }).state;
+
+  assert.deepEqual(loaded.items
+    .filter((item) => item.kind === 'tool' || item.role === 'tool')
+    .map((item) => item.tool?.tool || item.tool_name), [
+    'shell_command',
+    'AskUserQuestion',
+  ]);
+});
+
+run('history load 对未来才出现的 tool_call 不进行猜测匹配', () => {
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      {
+        id: 't1',
+        role: 'tool',
+        content: 'answered',
+        tool_call_id: 'future-call',
+        ts: 1,
+        metadata: {
+          ask_user_question_result: { items: [{ question: 'Q?', answer: 'A' }] },
+        },
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        tool_calls: [persistedToolCall('future-call', 'AskUserQuestion', '{}', 0)],
+        ts: 2,
+      },
+    ],
+    events: [],
+  }).state;
+
+  assert.equal(loaded.items[0].tool_name, undefined);
+  assert.equal(loaded.items[0].tool?.tool, '');
 });
 
 run('history load 对确实缺少请求的 tool result 保留请求未记录 fallback', () => {

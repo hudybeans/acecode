@@ -324,14 +324,19 @@ function normalizePersistedToolSummary(metadata) {
 function normalizeAskUserQuestionResult(metadataOrResult) {
   const raw = metadataOrResult?.ask_user_question_result || metadataOrResult?.askUserQuestionResult || metadataOrResult;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  // cancelled=true 是「用户拒绝作答」的落盘标记。它没有 items,但同样要在
+  // 消息流里恢复成 tool item,否则「已取消全部回答」卡无从锚定、无法持久展示。
+  const cancelled = raw.cancelled === true;
   const items = Array.isArray(raw.items) ? raw.items : [];
   const normalized = items
     .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
     .map((item) => ({
       question: String(item.question ?? item.q ?? ''),
       answer: String(item.answer ?? item.a ?? ''),
+      multiSelect: item.multi_select === true || item.multiSelect === true,
     }))
     .filter((item) => item.question || item.answer);
+  if (cancelled) return { cancelled: true, items: normalized };
   return normalized.length > 0 ? { items: normalized } : null;
 }
 
@@ -493,6 +498,26 @@ function normalizePersistedToolCall(raw, fallbackIndex) {
   };
 }
 
+// REST 历史把工具名放在 assistant.tool_calls,把结果放在后续 role:tool
+// 消息。按消息顺序只保留尚未消费的调用,避免跨回合复用 call id 时串名。
+function rememberPersistedToolNames(message, namesByCallId) {
+  if (message?.role !== 'assistant') return;
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  for (let i = 0; i < toolCalls.length; i += 1) {
+    const call = normalizePersistedToolCall(toolCalls[i], i);
+    if (call.toolCallId && call.name && !namesByCallId.has(call.toolCallId)) {
+      namesByCallId.set(call.toolCallId, call.name);
+    }
+  }
+}
+
+function withPersistedToolName(message, namesByCallId) {
+  if (message?.role !== 'tool' || message.tool || message.tool_name) return message;
+  const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
+  const toolName = toolCallId ? namesByCallId.get(toolCallId) : '';
+  return toolName ? { ...message, tool: toolName } : message;
+}
+
 function persistedToolCallMessageId(message, messageIndex, call) {
   const parentId = String(message?.id || `message-${messageIndex}`);
   const suffix = call.toolCallId || `index-${call.toolIndex}`;
@@ -577,7 +602,7 @@ function historyItemFromMessage(next, m, messageOrdinal = null) {
           isTaskComplete: false,
           isDone: true,
           success,
-          tool: m.tool || '',
+          tool: m.tool || m.tool_name || '',
           toolCallId: m.tool_call_id || m.toolCallId || '',
           toolIndex: m.tool_index ?? m.toolIndex ?? null,
           args: null,
@@ -610,7 +635,7 @@ function historyItemFromMessage(next, m, messageOrdinal = null) {
           isTaskComplete: false,
           isDone: true,
           success: true,
-          tool: m.tool || '',
+          tool: m.tool || m.tool_name || '',
           toolCallId: m.tool_call_id || m.toolCallId || '',
           toolIndex: m.tool_index ?? m.toolIndex ?? null,
           args: null,
@@ -674,8 +699,17 @@ function historyItemsFromMessage(next, m, messageIndex) {
 
 function historyItemsFromMessages(next, messages) {
   const items = [];
+  const toolNamesByCallId = new Map();
   for (let i = 0; i < messages.length; i += 1) {
-    items.push(...historyItemsFromMessage(next, messages[i], i));
+    const rawMessage = messages[i];
+    const message = withPersistedToolName(rawMessage, toolNamesByCallId);
+    items.push(...historyItemsFromMessage(next, message, i));
+    if (message?.role === 'tool') {
+      const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
+      if (toolCallId) toolNamesByCallId.delete(toolCallId);
+    } else {
+      rememberPersistedToolNames(message, toolNamesByCallId);
+    }
   }
   return items;
 }

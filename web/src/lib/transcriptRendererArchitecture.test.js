@@ -89,6 +89,24 @@ run('shared renderer is the only chat surface that dispatches projected item kin
   }
 });
 
+run('top-level feedback extension renders immediately after its transcript item', () => {
+  const chat = source('components/ChatView.jsx');
+  const renderer = source('components/TranscriptItems.jsx');
+
+  assert.match(chat, /renderAfterItem=\{renderFeedbackAfterQuestion\}/);
+  assert.match(renderer, /const after = !nested \? renderAfterItem\?\.\(item\) : null;/);
+
+  const mapStart = renderer.indexOf('return list.map((item, index) => {');
+  const itemStart = renderer.indexOf('<TranscriptItem', mapStart);
+  const itemEnd = renderer.indexOf('/>', itemStart);
+  const after = renderer.indexOf('{after}', itemEnd);
+  const fragmentEnd = renderer.indexOf('</Fragment>', after);
+  assert.ok(mapStart >= 0 && itemStart > mapStart);
+  assert.ok(itemEnd > itemStart && after > itemEnd);
+  assert.match(renderer.slice(itemEnd + 2, after), /^\s*$/);
+  assert.ok(fragmentEnd > after);
+});
+
 run('sub-agent transcript uses full collapse projection with explicit read-only capabilities', () => {
   const panel = source('components/SubagentPanel.jsx');
   const helper = source('lib/subagentTranscript.js');
