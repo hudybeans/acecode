@@ -228,8 +228,12 @@ TEST(AgentLoopAutoMode, AdditionalPermissionsStaySandboxedAndCanBeKeptForSession
 // 提供 scoped 选项。
 TEST(AgentLoopAutoMode, ScopedApprovalGrantsOnlyTheDeniedDirectory) {
     AutoHarness h;
-    // 被拒目录必须在工作区(harness cwd = tree.root)之外,否则它本来就可写,
-    // 不构成「被拒」,也就不会给出 scoped 选项。
+    // Both fixtures live in the system temp directory, which is writable by
+    // default on POSIX. Exclude it so the simulated denial is valid everywhere.
+    SandboxConfig config;
+    config.exclude_tmpdir = true;
+    h.loop->set_sandbox_config(config);
+    // 被拒目录必须在工作区(harness cwd = tree.root)之外。
     test::TempTree elsewhere;
     const auto outside = elsewhere.dir("outside");
     ToolResult denied{"sh: " + path_to_utf8(outside / "x.txt") + ": Permission denied", false};
@@ -239,6 +243,9 @@ TEST(AgentLoopAutoMode, ScopedApprovalGrantsOnlyTheDeniedDirectory) {
     h.next_result = denied;
     ASSERT_TRUE(h.run({{"command", "pnpm install"}}));
     EXPECT_TRUE(h.prompts.empty());
+    ASSERT_EQ(h.policies.size(), 1u);
+    ASSERT_TRUE(h.policies[0].has_value());
+    ASSERT_FALSE(h.policies[0]->can_write(path_to_utf8(outside)));
     h.answer = PermissionResult::AllowScoped;
     ASSERT_TRUE(h.run({{"command", "pnpm install"}, {"sandbox_permissions", "require_escalated"},
                       {"justification", "write the report"}}));
