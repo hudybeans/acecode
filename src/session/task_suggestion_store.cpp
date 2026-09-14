@@ -345,7 +345,9 @@ std::optional<json> TaskSuggestionStore::propose(const std::string& source,
     std::size_t pending = 0;
     for (const auto& record : records) {
         if (record.value("kind", "") == draft["kind"] &&
-            record.value("dedupe_key", "") == key) return record;
+            record.value("dedupe_key", "") == key) {
+            return std::optional<json>(std::in_place, record);
+        }
         const auto status = record.value("status", "pending");
         if (record.value("kind", "") == "side_task" &&
             status != "started" && status != "dismissed") ++pending;
@@ -428,7 +430,7 @@ std::optional<json> TaskSuggestionStore::update(
     }
     const auto previous = *record;
     try {
-        if (!mutate(*record)) return previous;
+        if (!mutate(*record)) return std::optional<json>(std::in_place, previous);
         for (const auto* key : {"id", "source_session_id", "kind", "dedupe_key", "created_at_ms"}) {
             if (!record->contains(key) || (*record)[key] != previous[key]) {
                 set_error(error, "suggestion identity cannot be changed");
