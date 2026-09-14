@@ -74,6 +74,7 @@ import './goalStatusBarArchitecture.test.js';
 import './chatInputQueue.test.js';
 import './chatInputQueueIntegrity.test.js';
 import './turnInterruptionArchitecture.test.js';
+import './composerEditabilityArchitecture.test.js';
 import './activityExpansionAnchor.test.js';
 import './chatScrollFollow.test.js';
 import './transcriptItemPresentation.test.js';

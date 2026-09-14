@@ -45,9 +45,15 @@ struct AskUserQuestionAnswer {
 // timed_out=true 表示配置的等待窗口到期且用户未回答(add-ask-question-policy
 // 的 timeout 策略路径):此时 cancelled 保持 false,answers 为空,由工具侧
 // 合成「自动采纳每题第一选项」的结果。
+// interjected=true 表示用户没有作答,而是在提问挂起期间直接发了一条文本
+// (AgentLoop::interject_question):cancelled 同时为 true,这样只认得
+// cancelled 的旧调用方(image_generate 的费用确认等)把它当普通拒绝;
+// AskUserQuestion 工具自己优先看这一位,给模型的是「用户改为直接输入,
+// 看下一条 user 消息」而不是 declined 错误。
 struct AskUserQuestionResponse {
     bool                                  cancelled = false;
     bool                                  timed_out = false;
+    bool                                  interjected = false;
     std::vector<AskUserQuestionAnswer>    answers;
 };
 

@@ -327,6 +327,9 @@ function normalizeAskUserQuestionResult(metadata) {
   // cancelled=true 是「用户拒绝作答」的落盘标记。即使没有回答项,也要在
   // 消息流里恢复成 tool item,否则「已取消全部回答」卡无从锚定、无法持久展示。
   const cancelled = raw.cancelled === true;
+  // interjected=true 是「用户改为直接输入」(插话取消作答)的落盘标记,同理要
+  // 恢复成 tool item,否则历史页里那条问题看起来像是没有下文。
+  const interjected = raw.interjected === true;
   const items = Array.isArray(raw.items) ? raw.items : [];
   const normalized = items
     .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
@@ -337,6 +340,7 @@ function normalizeAskUserQuestionResult(metadata) {
     }))
     .filter((item) => item.question || item.answer);
   if (cancelled) return { cancelled: true, items: normalized };
+  if (interjected) return { interjected: true, items: normalized };
   return normalized.length > 0 ? { items: normalized } : null;
 }
 

@@ -111,6 +111,9 @@ enum class TurnSteerStatus {
     NonSteerable,
     TurnMismatch,
     QueueFull,
+    // interject_question 专用:request_id 对应的问题已不再挂起(已回答 /
+    // 超时 / 关闭 / 会话没有异步提问通道)。输入未被提交,调用方退回普通路径。
+    NoPendingQuestion,
 };
 
 struct TurnSteerResult {
@@ -371,6 +374,27 @@ public:
         };
     }
 
+    // 提问挂起时的用户插话:把 request_id 对应的 AskUserQuestion 以「用户
+    // 改为直接输入」收掉,并把 input 作为同回合 steering 输入排在该工具
+    // 结果之后提交(AgentLoop::interject_question)。不 abort、不开新回合。
+    // 问题已不再挂起 → NoPendingQuestion,输入未提交。默认实现报不可用,
+    // 保持远程 / 旧客户端源码兼容。
+    virtual TurnSteerResult interject_question(
+        const std::string& session_id,
+        const std::string& request_id,
+        const UserInput& input,
+        const std::string& expected_turn_id = {}) {
+        (void)session_id;
+        (void)request_id;
+        (void)input;
+        (void)expected_turn_id;
+        return {
+            TurnSteerStatus::NonSteerable,
+            {},
+            "question interjection is unavailable",
+        };
+    }
+
     // Execute a daemon-owned builtin command, currently limited to `/init` and
     // `/compact`. This is intentionally separate from send_input so command
     // text is not skill-expanded or sent to the model as an ordinary message.
@@ -453,6 +477,7 @@ inline const char* to_string(TurnSteerStatus status) {
         case TurnSteerStatus::NonSteerable:   return "non_steerable";
         case TurnSteerStatus::TurnMismatch:   return "turn_mismatch";
         case TurnSteerStatus::QueueFull:      return "queue_full";
+        case TurnSteerStatus::NoPendingQuestion: return "no_pending_question";
     }
     return "no_active_turn";
 }

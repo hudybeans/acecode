@@ -226,6 +226,11 @@ WebServer::Impl::parse_session_user_input_request(
             result.expected_turn_id =
                 payload["expected_turn_id"].get<std::string>();
         }
+        if (payload.contains("request_id") &&
+            payload["request_id"].is_string()) {
+            result.question_request_id =
+                payload["request_id"].get<std::string>();
+        }
         if (payload.contains("worktree") &&
             payload["worktree"].is_object()) {
             const auto& worktree = payload["worktree"];
@@ -618,6 +623,10 @@ crow::response WebServer::Impl::handle_turn_input_request(
         status = 429;
         code = "TURN_STEER_QUEUE_FULL";
         break;
+    case TurnSteerStatus::NoPendingQuestion:
+        // steer / interrupt 不会返回它;只为让 switch 完整。
+        code = "NO_PENDING_QUESTION";
+        break;
     }
 
     crow::response response(status);
@@ -627,6 +636,120 @@ crow::response WebServer::Impl::handle_turn_input_request(
             {"turn_id", result.turn_id},
         };
         if (interrupting) body["interrupting"] = true;
+        if (parsed.input.metadata.is_object()) {
+            const std::string client_message_id =
+                parsed.input.metadata.value(
+                    "client_message_id", std::string{});
+            if (!client_message_id.empty()) {
+                body["client_message_id"] = client_message_id;
+            }
+        }
+        response.body = body.dump();
+    } else {
+        json body = {
+            {"error", code},
+            {"message", result.message.empty()
+                ? std::string(to_string(result.status))
+                : result.message},
+        };
+        if (!result.turn_id.empty()) {
+            body["active_turn_id"] = result.turn_id;
+        }
+        response.body = body.dump();
+    }
+    response.add_header("Content-Type", "application/json");
+    return with_cors(req, std::move(response));
+}
+
+// 提问挂起时的用户插话:body 与 turn/steer 同构(text / attachments /
+// contexts / client_message_id / 可选 expected_turn_id),多一个必填的
+// request_id(question_request.request_id)。接受即表示:该问题已以
+// 「用户改为直接输入」收掉,输入会作为同回合 user 消息紧跟在工具结果之后
+// 提交;问题已不再挂起时返回 409 NO_PENDING_QUESTION,输入未提交,前端
+// 应退回普通发送 / 排队路径。
+crow::response WebServer::Impl::handle_question_interject_request(
+    const crow::request& req,
+    const std::string& session_id) {
+    if (auto rejection = require_auth(req)) {
+        return std::move(*rejection);
+    }
+    if (!deps.session_client) {
+        crow::response response(503);
+        response.body = json{
+            {"error", "SESSION_CLIENT_UNAVAILABLE"},
+            {"message", "session client unavailable"},
+        }.dump();
+        response.add_header("Content-Type", "application/json");
+        return with_cors(req, std::move(response));
+    }
+
+    auto parsed = parse_session_user_input_request(
+        req.body, session_id, /*allow_worktree=*/false);
+    if (!parsed.ok) {
+        crow::response response(parsed.status);
+        const bool unknown_session =
+            parsed.status == 404 && parsed.error == "unknown session";
+        response.body = json{
+            {"error", unknown_session
+                ? "UNKNOWN_SESSION"
+                : "INVALID_TURN_INPUT"},
+            {"message", parsed.error},
+        }.dump();
+        response.add_header("Content-Type", "application/json");
+        return with_cors(req, std::move(response));
+    }
+    if (parsed.question_request_id.empty()) {
+        crow::response response(400);
+        response.body = json{
+            {"error", "QUESTION_REQUEST_ID_REQUIRED"},
+            {"message", "request_id is required"},
+        }.dump();
+        response.add_header("Content-Type", "application/json");
+        return with_cors(req, std::move(response));
+    }
+
+    const auto result = deps.session_client->interject_question(
+        session_id, parsed.question_request_id, parsed.input,
+        parsed.expected_turn_id);
+    int status = 409;
+    std::string code;
+    switch (result.status) {
+    case TurnSteerStatus::Accepted:
+        status = 202;
+        break;
+    case TurnSteerStatus::InvalidInput:
+        status = 400;
+        code = "INVALID_TURN_INPUT";
+        break;
+    case TurnSteerStatus::UnknownSession:
+        status = 404;
+        code = "UNKNOWN_SESSION";
+        break;
+    case TurnSteerStatus::NoActiveTurn:
+        code = "NO_ACTIVE_TURN";
+        break;
+    case TurnSteerStatus::NonSteerable:
+        code = "TURN_NOT_STEERABLE";
+        break;
+    case TurnSteerStatus::TurnMismatch:
+        code = "TURN_MISMATCH";
+        break;
+    case TurnSteerStatus::QueueFull:
+        status = 429;
+        code = "TURN_STEER_QUEUE_FULL";
+        break;
+    case TurnSteerStatus::NoPendingQuestion:
+        code = "NO_PENDING_QUESTION";
+        break;
+    }
+
+    crow::response response(status);
+    if (result.accepted()) {
+        json body = {
+            {"accepted", true},
+            {"turn_id", result.turn_id},
+            {"request_id", parsed.question_request_id},
+        };
         if (parsed.input.metadata.is_object()) {
             const std::string client_message_id =
                 parsed.input.metadata.value(
@@ -686,6 +809,10 @@ void WebServer::Impl::register_sessions() {
             return cors_preflight(req);
         });
         CROW_ROUTE(app, "/api/sessions/<string>/turn/interrupt").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/sessions/<string>/questions/interject").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
         });
@@ -1765,6 +1892,14 @@ void WebServer::Impl::register_sessions() {
         CROW_ROUTE(app, "/api/sessions/<string>/turn/interrupt").methods(crow::HTTPMethod::POST)
         ([this](const crow::request& req, const std::string& id) {
             return handle_turn_input_request(req, id, /*interrupting=*/true);
+        });
+
+        // Question interjection: resolve the pending AskUserQuestion as
+        // "answered by a free-form message" and commit that message as
+        // same-turn steering input right after the tool result.
+        CROW_ROUTE(app, "/api/sessions/<string>/questions/interject").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& id) {
+            return handle_question_interject_request(req, id);
         });
 
         // POST /api/sessions/:id/commands: daemon-owned builtin slash command

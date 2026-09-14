@@ -280,7 +280,10 @@ TEST(KeepaliveDecider, HealthProbeDueAfterInterval) {
 #include "permissions.hpp"
 #include "session/local_session_client.hpp"
 #include "session/session_registry.hpp"
+#include "tool/ask_user_question_tool.hpp"
 #include "tool/tool_executor.hpp"
+
+#include "../agent_loop/stub_provider.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -2569,4 +2572,83 @@ TEST(SessionChannelBinderIntegration,
     store->throw_load = false;
     binder.execute_command(session, "off");
     hx.registry.destroy(session);
+}
+
+// 行为③的补丁场景:问题挂起时 IM 端发来一句**没带 /aq 的普通文本**。
+// 修复前它直接 send_input,排在被 AskUserQuestion 阻塞的回合后面,问题却还
+// 在等 —— 用户以为答过了,双方互相等到超时。
+// 期望:binder 先把队首批次标成插话提交,经 interject_question 把问题以
+// 「用户改为直接输入」收掉;IM 端收到「已取消作答…插话」回执;文本作为同回合
+// user 消息紧跟工具结果进入下一次模型请求;回合不中断、不新开回合。
+TEST(SessionChannelBinderIntegration,
+     PlainTextDuringPendingQuestionInterjectsInsteadOfQueueing) {
+    BinderHarness hx("question-interject");
+    // 本用例真的要跑一个回合:会话 cwd 必须存在(其它用例只发事件,不建目录)。
+    fs::create_directories(hx.root / "ws");
+    hx.tools.register_tool(acecode::create_ask_user_question_tool_async());
+    acecode::rc::SessionChannelBinder binder(hx.binder_deps());
+    const auto sid = hx.client.create_session({});
+    auto bind = binder.execute_command(sid, "");
+    ASSERT_TRUE(bind.ok) << bind.message;
+    auto sender = std::make_shared<CaptureSender>();
+    hx.service.hub().set_outbound_sender(sender);
+
+    auto entry = hx.registry.acquire(sid);
+    ASSERT_TRUE(entry && entry->loop && entry->model_binding);
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    const nlohmann::json ask_args = {
+        {"questions", nlohmann::json::array({{
+            {"question", "Choose the implementation?"},
+            {"header", "Impl"},  // header 上限 12 字符,校验在工具入口
+            {"options", nlohmann::json::array({
+                {{"label", "Alpha"}, {"description", "First approach"}},
+                {{"label", "Beta"}, {"description", "Second approach"}},
+            })},
+        }})},
+    };
+    provider->push_tool_call("AskUserQuestion", ask_args.dump(), "ask-rc");
+    provider->push_text("continuing with the interjection");
+    {
+        const auto state = entry->model_binding->state_snapshot();
+        entry->model_binding->install_runtime_snapshot(
+            provider, state, entry->model_binding->applied_revision());
+    }
+
+    // 直接经 loop 提交:harness 没挂 config,走 client.send_input 会先报一条
+    // 「model profile reload failed」的告警系统消息,与本用例无关。
+    entry->loop->submit("start the task");
+    ASSERT_TRUE(wait_for_outbound_text(sender, "Choose the implementation?"));
+
+    ASSERT_TRUE(hx.service.hub().handle_inbound(
+        "别选了,两种都不要,直接用现成的 Gamma 库", hx.cfg.remote_control.token).ok());
+    EXPECT_TRUE(wait_for_outbound_text(sender, "已取消作答"));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (entry->loop->is_busy() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(entry->loop->is_busy());
+    EXPECT_EQ(provider->turn_count(), 2)
+        << "插话必须在同一回合继续,不能作为排队消息开出第三次模型调用";
+
+    const auto second = provider->messages_for_turn(1);
+    ASSERT_FALSE(second.empty());
+    EXPECT_EQ(second.back().role, "user");
+    EXPECT_EQ(second.back().content, "别选了,两种都不要,直接用现成的 Gamma 库");
+    EXPECT_TRUE(second.back().metadata.value("question_interjection", false));
+    bool saw_interjected_tool_result = false;
+    for (const auto& message : second) {
+        if (message.role == "tool" &&
+            message.content.find("[User interjected]") != std::string::npos) {
+            saw_interjected_tool_result = true;
+        }
+    }
+    EXPECT_TRUE(saw_interjected_tool_result);
+    // 之后再发 /aq 应报没有待回答的问题(批次已被插话收掉)。
+    ASSERT_TRUE(hx.service.hub().handle_inbound(
+        "/aq 1", hx.cfg.remote_control.token).ok());
+    EXPECT_TRUE(wait_for_outbound_text(sender, "当前没有待回答的问题"));
+
+    binder.execute_command(sid, "off");
+    hx.registry.destroy(sid);
 }

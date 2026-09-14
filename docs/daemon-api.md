@@ -282,6 +282,7 @@ update their transcript presentation.
 | POST | `/api/sessions/:id/messages` | queue user input |
 | POST | `/api/sessions/:id/turn/steer` | append input to the matching active turn |
 | POST | `/api/sessions/:id/turn/interrupt` | interrupt the matching active turn and start a priority replacement turn |
+| POST | `/api/sessions/:id/questions/interject` | resolve a pending AskUserQuestion with a free-form message and continue the same turn |
 | POST | `/api/sessions/:id/attachments` | upload a session snapshot or create a Desktop source reference |
 | GET | `/api/sessions/:id/attachments/:attachment_id/blob` | download attachment bytes |
 | POST | `/api/sessions/:id/commands` | run daemon builtin slash command |
@@ -1264,6 +1265,49 @@ The endpoint uses the same structured error codes as `/turn/steer`. Existing
 clients that want same-turn delivery at the next model boundary should continue
 using `/turn/steer`; Desktop/Web interjection and `/turn` use this immediate
 endpoint.
+
+### `POST /api/sessions/:id/questions/interject`
+
+Resolves a pending `question_request` with a free-form user message instead of
+an answer. This is what Desktop/Web sends when the user types into the composer
+while an AskUserQuestion picker is open, and what the remote-control channel
+sends for plain (non-`/aq`) text while a question is pending. The body is the
+`/turn/steer` shape plus the required `request_id` of the pending question;
+`expected_turn_id` is optional and validated when present:
+
+```json
+{
+  "text": "Neither, use the built-in client",
+  "request_id": "question-request-uuid",
+  "client_message_id": "queued-session-id-3",
+  "expected_turn_id": "initial-user-message-uuid"
+}
+```
+
+Acceptance is atomic with the question: the question closes with
+`question_closed` `reason:"interjected"`, its tool result becomes a successful
+`[User interjected] …` message telling the model the user's real instruction
+follows, and the input is committed as a same-turn visible user message
+immediately after that tool result (`metadata.turn_steer=true`,
+`metadata.question_interjection=true`, `metadata.question_request_id`). The
+turn is not aborted and no replacement turn is created; the model simply
+continues from the interjection at the next model boundary. Success returns
+`202`:
+
+```json
+{
+  "accepted": true,
+  "turn_id": "initial-user-message-uuid",
+  "request_id": "question-request-uuid",
+  "client_message_id": "queued-session-id-3"
+}
+```
+
+If the question is no longer pending (already answered from another client,
+timed out, or closed), the endpoint returns `409 NO_PENDING_QUESTION` and the
+input is **not** committed; clients should fall back to the ordinary send or
+queue path. `400 QUESTION_REQUEST_ID_REQUIRED` is returned when `request_id`
+is missing. All other codes match `/turn/steer`.
 
 ### `POST /api/sessions/:id/side-question`
 
@@ -2743,7 +2787,7 @@ Schema version 1 definitions may also include an `appearance` object:
 {"appearance":{"logo_color":"#9B6DFF","home_title_color":"#F5F0FF","extend_to_titlebar":true}}
 ```
 
-All three members are optional. `logo_color` and `home_title_color` accept only
+All members are optional. `logo_color` and `home_title_color` accept only
 `#RRGGBB`; `extend_to_titlebar` accepts only a JSON boolean. Unknown members,
 null, non-object appearance and wrong member types are rejected. Omitting the
 object preserves legacy behavior: original logo colors, `colors.fg` for the
@@ -2752,6 +2796,22 @@ and white right-side controls for EVA. Explicit members override defaults.
 Dark themes with extension enabled use white right-side title-bar controls
 while the homepage wallpaper is visible. Full definitions and exported ZIPs
 preserve the optional object; the 28-member `colors` object is unchanged.
+
+Additional optional `appearance` members are `home_background_color`,
+`session_background_color`, and `user_message_background_color` (all `#RRGGBB`),
+and `home_composer_opacity`, `home_background_opacity`,
+`session_background_opacity`, `user_message_background_opacity` (finite JSON
+numbers from 0 to 1, where 1 is opaque). Defaults remain 0.95 for the home
+composer and 1 for artwork. Artwork overlays use the corresponding background
+color, falling back to `colors.bg` or `colors.accent-bg` for user messages.
+These controls never reduce text opacity or replace the original three settings.
+
+Optional top-level `session_background` and `user_message_background` descriptors
+use the same byte-count/SHA-256 schema as `background`, with fixed paths
+`session-background.png` and `user-message-background.png`. Only declared files
+may be present. Their authenticated image routes use `images/session-background`
+and `images/user-message-background`; all returned images are PNG. The latter
+applies only to user-sent message bubbles, never assistant replies.
 
 `POST /api/themes/<id>/install` requires the exact metadata displayed by the
 confirmation dialog:
@@ -2789,7 +2849,7 @@ modifying preferences. This also protects later choices made in another window.
 Manual downloads continue to require confirmation and display normal errors.
 
 The daemon verifies archive bytes, SHA-256, allowed ZIP entries, the fixed
-palette schema, and both images before publishing an installed version. An
+palette schema, and all declared images before publishing an installed version. An
 interrupted download does not alter the active preference; a damaged local
 installation can be repaired by confirming and downloading it again.
 `GET /api/themes/eva-01` returns the validated installed `theme.json` without
@@ -2837,8 +2897,9 @@ of treating a filename prefix as sufficient proof.
 `GET /api/themes/exports/<job_id>/download` returns the completed ZIP as
 `application/zip` with an attachment filename, `no-store`, and `nosniff`.
 Clients may use an authenticated Blob download, without placing daemon
-credentials in a download URL. The ZIP contains exactly `theme.json`,
-`background.png`, and `thumbnail.png`. Unknown, cancelled, failed, or
+credentials in a download URL. The ZIP contains `theme.json`, `background.png`,
+and `thumbnail.png`, plus any declared `session-background.png` and
+`user-message-background.png` (three to five root files). Unknown, cancelled, failed, or
 unfinished jobs cannot download a partial package.
 
 `DELETE /api/themes/<id>` returns `{id,deleted:true,ui_preferences}`. Deleting
@@ -2876,8 +2937,13 @@ optionally `draft_id` to revise a draft. Each palette call replaces the whole
 proposal; omitting `appearance` removes a previous override. It persists the
 draft under `themes/drafts`, then uses the
 native question channel for explicit palette approval. `prototype` accepts
-`draft_id`, `background_path` and `preview_path`; it decodes and copies both
-images before asking for prototype approval. A draft is owned by its creating
+`draft_id`, `background_path`, `preview_path`, and optional
+`session_background_path` / `user_message_background_path`; it decodes and
+copies all supplied images before asking for prototype approval. Each prototype
+call replaces the complete image set, so omitting an optional path removes that
+region from the draft. Its approved digest covers every supplied image.
+`preview_path` may be a screenshot of the local HTML in ACECode Browser; neither
+HTML nor SVG paths are accepted as image inputs. A draft is owned by its creating
 session, and an update invalidates earlier approvals. Headless mode, deny
 policy, unattended goals, cancellation, timeout and custom feedback never count
 as approval. No `confirmed` input can bypass these gates.
@@ -2890,7 +2956,7 @@ Invalid palette appearance returns `422/THEME_INVALID_APPEARANCE` before
 replacing a draft or requesting approval.
 
 `install` accepts only `draft_id`, verifies approved checksums, generates the
-thumbnail and three-file ZIP, and publishes the immutable version and installed
+thumbnail and three-to-five-file ZIP, and publishes the immutable version and installed
 pointer. Successful tool output includes `installed_path` and `package_path`
 (under `themes/exports`); metadata includes
 `theme_created:{id,version,name,apply:true}`. The current live UI can refresh and
@@ -3267,8 +3333,13 @@ progress is sampled at most once every five seconds. URL credentials, queries,
 and fragments are redacted; configuration objects and response bodies are not
 logged. Logs survive cancellation, retries, and process restart. Desktop restart
 preflight, shutdown, and replacement launch remain in `logs/desktop-<date>.log`.
-User-triggered diagnostic feedback bundles include the most recent upgrade log
-as `logs/upgrade.log.tail.txt`, subject to the existing log-tail size limit.
+User-triggered diagnostic feedback bundles (TUI `/feedback` and
+`POST /api/feedback/desktop`) merge every upgrade log written during the last
+three days (72 hours by file modification time) into one
+`logs/upgrade.log.tail.txt` entry, concatenated oldest to newest so the entry
+reads as a timeline. The existing log-tail size limit applies to the merged
+result, dropping the oldest records first. When no upgrade log was written in
+that window the entry is absent; older logs are not used as a fallback.
 
 Check and job responses include `log_path` when a log was created, and
 `log_error` if diagnostics are unavailable or incomplete. Logging failures do
@@ -3442,8 +3513,13 @@ into the logs directory: the desktop shell (`desktop-<date>.log`) and the daemon
 that serves the request (`daemon-<date>.log`). Each is truncated to its last
 512 KiB and stored as `logs/desktop.log.tail.txt` / `logs/daemon.log.tail.txt`.
 A runtime with no log file present is skipped silently, so a browser-only
-deployment uploads the daemon log alone. If `session_id` is empty, the package
-contains those logs only. The upload target is derived from `upgrade.base_url`.
+deployment uploads the daemon log alone. Upgrade diagnostics
+(`upgrade-<date>-<pid>.log`, one file per process) are handled as a window
+rather than a single newest file: every upgrade log modified within the last
+three days (72 hours) is merged oldest-first into `logs/upgrade.log.tail.txt`,
+truncated as a whole to the same 512 KiB tail; with no upgrade activity in that
+window the entry is omitted. If `session_id` is empty, the package contains
+those logs only. The upload target is derived from `upgrade.base_url`.
 
 Success:
 
@@ -3475,8 +3551,12 @@ Success:
 
 `log_included` is true when at least one log made it into the archive, and
 `log_tail_bytes` is the sum across all of them; `logs[]` reports each requested
-source, including the ones that were unavailable. The same array is mirrored
-into the archive's `feedback.json` under `logs`.
+source, including the ones that were unavailable. Upgrade log files merged into
+`logs/upgrade.log.tail.txt` each get their own `logs[]` row sharing that
+`entry_name`; a row's `tail_bytes` is what that file contributed after the
+merged tail was truncated (0 when the cap dropped it entirely while
+`available` stays true), and `included_files` lists the merged entry once. The
+same array is mirrored into the archive's `feedback.json` under `logs`.
 
 `feedback_text` accepts at most 10,000 Unicode code points, including spaces and
 line breaks. Oversized text returns HTTP 400 with `FEEDBACK_TOO_LONG` before any
@@ -3906,6 +3986,10 @@ its `success` remains `false` and its provider-visible output remains
 `[Error] User declined to answer questions.`. Clients can use this namespaced
 marker to retain cancellation feedback after reloading history. A generic
 tool's unrelated `metadata.cancelled` flag is not question-result metadata.
+A question resolved by a free-form interjection carries
+`{"interjected":true,"items":[]}` with `success:true`; its provider-visible
+output starts with `[User interjected]` and the interjection itself is the
+next persisted user message.
 
 #### AskUserQuestion answer policy (`agent_loop.question_policy`)
 
@@ -3930,8 +4014,9 @@ regardless of the configured timeout value, then auto-adopts the first
 (recommended) option.
 
 `question_closed.reason` values: `answered`, `cancelled`, `aborted`,
-`timeout`. Frontends must dismiss the question modal on any
-`question_closed` for the pending `request_id`.
+`timeout`, `interjected` (resolved through
+`POST /api/sessions/:id/questions/interject`). Frontends must dismiss the
+question modal on any `question_closed` for the pending `request_id`.
 
 When more than one session is subscribed, session-targeted messages should
 include `payload.session_id`.

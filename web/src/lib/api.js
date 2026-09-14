@@ -433,6 +433,17 @@ export function createApi(base = null) {
         : { text: payload },
       base,
     ),
+    // 提问挂起时的插话:把 request_id 对应的 AskUserQuestion 以「用户改为直接
+    // 输入」收掉,文本作为同回合 user 消息紧跟工具结果提交;问题已结束 → 409
+    // NO_PENDING_QUESTION(输入未提交,调用方退回普通发送 / 排队)。
+    interjectQuestion: (id, payload)  => request(
+      'POST',
+      `/api/sessions/${encodeURIComponent(id)}/questions/interject`,
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload
+        : { text: payload },
+      base,
+    ),
     uploadSessionAttachment: (id, attachment) =>
       request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base),
     createSessionAttachmentReference: (id, attachment) =>

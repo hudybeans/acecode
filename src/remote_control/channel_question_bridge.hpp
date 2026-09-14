@@ -62,6 +62,13 @@ public:
         const std::string& text,
         Clock::time_point now = Clock::now());
 
+    // 非 /aq 的普通文本在有问题挂起时视为插话(用户没作答,直接说了别的):
+    // 把队首批次标成提交中并返回它的 request_id,由 binder 在锁外调
+    // SessionClient::interject_question,再用 complete_submission 回填结果。
+    // 没有挂起批次、队首已超时或已在提交中 → nullopt,binder 走普通 send_input。
+    std::optional<std::string> begin_interjection(
+        Clock::time_point now = Clock::now());
+
     ChannelQuestionAction close_request(
         const std::string& request_id,
         const std::string& reason,
@@ -105,6 +112,7 @@ private:
         std::size_t current_question = 0;
         SubmissionPhase submission_phase = SubmissionPhase::None;
         bool submitted_cancelled = false;
+        bool submitted_interjected = false;
         std::optional<std::string> deferred_close_reason;
     };
 

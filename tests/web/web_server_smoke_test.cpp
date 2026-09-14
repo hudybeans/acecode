@@ -52,9 +52,11 @@
 #include "skills/skill_registry.hpp"
 #include "themes/theme_store.hpp"
 #include "../themes/theme_test_resources.hpp"
+#include "tool/ask_user_question_tool.hpp"
 #include "tool/mtime_tracker.hpp"
 #include "tool/tool_executor.hpp"
 #include "upgrade/manifest.hpp"
+#include "../agent_loop/stub_provider.hpp"
 #include "utils/encoding.hpp"
 #include "utils/cwd_hash.hpp"
 #include "utils/state_file.hpp"
@@ -6122,6 +6124,127 @@ TEST(WebServerHttp, TurnInterruptAbortsAndStartsPriorityReplacementTurn) {
     ASSERT_FALSE(ordinary_request.empty());
     EXPECT_EQ(ordinary_request.back().role, "user");
     EXPECT_EQ(ordinary_request.back().content, "ordinary queued input");
+}
+
+// 场景:AskUserQuestion 挂起时,前端把输入框里的普通文本 POST 到
+// /questions/interject。期望:202 回执带 turn_id / request_id /
+// client_message_id;问题被收掉后同一 request_id 再插话 → 409
+// NO_PENDING_QUESTION;文本作为同回合 user 消息紧跟工具结果进入第二次
+// 模型请求,不开新回合。缺 request_id → 400,未知会话 → 404。
+TEST(WebServerHttp, QuestionInterjectResolvesPendingQuestionInSameTurn) {
+    WebServerFixture fx;
+    ASSERT_TRUE(fx.tools.register_tool(
+        acecode::create_ask_user_question_tool_async()));
+    auto create = cpr::Post(
+        cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({})"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const std::string sid =
+        json::parse(create.text)["session_id"].get<std::string>();
+
+    auto missing_request = cpr::Post(
+        cpr::Url{fx.url("/api/sessions/" + sid + "/questions/interject")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"text":"use fetch"})"});
+    ASSERT_EQ(missing_request.status_code, 400) << missing_request.text;
+    EXPECT_EQ(json::parse(missing_request.text)["error"],
+              "QUESTION_REQUEST_ID_REQUIRED");
+
+    auto unknown = cpr::Post(
+        cpr::Url{fx.url("/api/sessions/missing-session/questions/interject")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"text":"use fetch","request_id":"rid-1"})"});
+    ASSERT_EQ(unknown.status_code, 404) << unknown.text;
+    EXPECT_EQ(json::parse(unknown.text)["error"], "UNKNOWN_SESSION");
+
+    auto idle = cpr::Post(
+        cpr::Url{fx.url("/api/sessions/" + sid + "/questions/interject")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"text":"use fetch","request_id":"rid-1"})"});
+    ASSERT_EQ(idle.status_code, 409) << idle.text;
+    EXPECT_EQ(json::parse(idle.text)["error"], "NO_ACTIVE_TURN");
+
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry && entry->loop && entry->ask_prompter);
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    const json ask_args = {
+        {"questions", json::array({{
+            {"question", "Which http client?"},
+            {"header", "Library"},
+            {"options", json::array({
+                {{"label", "axios"}, {"description", "popular"}},
+                {{"label", "fetch"}, {"description", "native"}},
+            })},
+        }})},
+    };
+    provider->push_tool_call("AskUserQuestion", ask_args.dump(), "ask-http");
+    provider->push_text("continuing");
+    install_test_provider(*entry, provider);
+    entry->loop->submit("start");
+
+    std::string request_id;
+    const auto ask_deadline = std::chrono::steady_clock::now() + 3s;
+    while (request_id.empty() &&
+           std::chrono::steady_clock::now() < ask_deadline) {
+        const auto pending = entry->ask_prompter->snapshot_pending_requests();
+        if (!pending.empty()) {
+            request_id = pending.front().value("request_id", std::string{});
+        } else {
+            std::this_thread::sleep_for(10ms);
+        }
+    }
+    ASSERT_FALSE(request_id.empty()) << "AskUserQuestion should be pending";
+    const std::string turn_id = entry->loop->active_turn_id();
+    ASSERT_FALSE(turn_id.empty());
+
+    auto accepted = cpr::Post(
+        cpr::Url{fx.url("/api/sessions/" + sid + "/questions/interject")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{
+            {"text", "neither, use the built-in client"},
+            {"request_id", request_id},
+            {"expected_turn_id", turn_id},
+            {"client_message_id", "interject-http-1"},
+        }.dump()});
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    const auto body = json::parse(accepted.text);
+    EXPECT_TRUE(body["accepted"].get<bool>());
+    EXPECT_EQ(body["turn_id"], turn_id);
+    EXPECT_EQ(body["request_id"], request_id);
+    EXPECT_EQ(body["client_message_id"], "interject-http-1");
+
+    auto duplicate = cpr::Post(
+        cpr::Url{fx.url("/api/sessions/" + sid + "/questions/interject")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{
+            {"text", "second thoughts"},
+            {"request_id", request_id},
+        }.dump()});
+    ASSERT_EQ(duplicate.status_code, 409) << duplicate.text;
+    EXPECT_EQ(json::parse(duplicate.text)["error"], "NO_PENDING_QUESTION");
+
+    const auto done_deadline = std::chrono::steady_clock::now() + 5s;
+    while (entry->loop->is_busy() &&
+           std::chrono::steady_clock::now() < done_deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_FALSE(entry->loop->is_busy());
+    ASSERT_EQ(provider->turn_count(), 2)
+        << "the interjection must continue the same turn";
+
+    const auto second_request = provider->messages_for_turn(1);
+    ASSERT_FALSE(second_request.empty());
+    EXPECT_EQ(second_request.back().role, "user");
+    EXPECT_EQ(second_request.back().content, "neither, use the built-in client");
+    EXPECT_EQ(second_request.back().metadata.value("client_message_id", ""),
+              "interject-http-1");
+    EXPECT_TRUE(second_request.back().metadata.value("question_interjection", false));
+    EXPECT_EQ(second_request.back().metadata.value("question_request_id", ""),
+              request_id);
+    for (const auto& message : entry->loop->messages()) {
+        EXPECT_NE(message.content, "second thoughts");
+    }
 }
 
 TEST(WebServerHttp, UploadAttachmentAndSubmitContentParts) {

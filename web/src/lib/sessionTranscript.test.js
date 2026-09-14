@@ -1199,6 +1199,51 @@ run('history load 将 AskUserQuestion metadata 恢复为确认卡片工具项', 
   ]);
 });
 
+// 触发场景:用户在提问挂起时直接输入插话,daemon 落盘的工具消息没有问答项,
+// 只有 interjected 标记,紧跟其后的是插话本身(user 消息)。
+// 期望:历史加载仍把这条工具消息恢复成 tool item 并保留 interjected 标记
+// (否则「已改为直接输入」卡在重载后消失,问题看起来像没有下文),插话 user
+// 消息照常作为普通气泡出现在它之后。
+run('history load 保留 AskUserQuestion 的 interjected 标记与其后的插话消息', () => {
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'pick a library', ts: 1 },
+      {
+        id: 't1',
+        role: 'tool',
+        content: '[User interjected] The user did not answer these questions.',
+        tool_call_id: 'call-ask',
+        success: true,
+        ts: 2,
+        metadata: {
+          ask_user_question_result: { interjected: true, items: [] },
+        },
+      },
+      {
+        id: 'u2',
+        role: 'user',
+        content: '别问了,直接用 fetch',
+        ts: 3,
+        metadata: { turn_steer: true, question_interjection: true, question_request_id: 'rid-1' },
+      },
+    ],
+    events: [],
+  }).state;
+  const toolItem = loaded.items.find((item) => item.kind === 'tool');
+  assert.ok(toolItem, '插话结果必须恢复成 tool item');
+  assert.equal(toolItem.tool.toolCallId, 'call-ask');
+  assert.deepEqual(toolItem.tool.askUserQuestionResult, { interjected: true, items: [] });
+  const userTexts = loaded.items
+    .filter((item) => item.role === 'user' || item.kind === 'user')
+    .map((item) => item.content);
+  assert.ok(userTexts.includes('别问了,直接用 fetch'));
+  assert.ok(
+    loaded.items.indexOf(toolItem) <
+      loaded.items.findIndex((item) => item.content === '别问了,直接用 fetch'),
+    '插话消息要排在工具结果之后',
+  );
+});
+
 run('history load 将带 output attachment 的 tool message 恢复为 tool item', () => {
   const attachment = {
     id: 'att-img',

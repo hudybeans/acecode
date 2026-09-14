@@ -110,6 +110,25 @@ TurnSteerResult LocalSessionClient::interrupt_turn(
     return entry->loop->interrupt_turn(expected_turn_id, input);
 }
 
+TurnSteerResult LocalSessionClient::interject_question(
+    const std::string& session_id,
+    const std::string& request_id,
+    const UserInput& input,
+    const std::string& expected_turn_id) {
+    auto entry = registry_.acquire(session_id);
+    if (!entry || !entry->loop) {
+        LOG_WARN("[client] interject_question on unknown session " + session_id);
+        return {
+            TurnSteerStatus::UnknownSession,
+            {},
+            "unknown session",
+        };
+    }
+    // 与 steer_input 同款:同回合内的输入不触发模型档案的懒重载,
+    // 它面向的是当前回合已经捕获的 provider。
+    return entry->loop->interject_question(request_id, input, expected_turn_id);
+}
+
 BuiltinCommandResult LocalSessionClient::execute_builtin_command(
     const std::string& session_id,
     const BuiltinCommandRequest& request) {

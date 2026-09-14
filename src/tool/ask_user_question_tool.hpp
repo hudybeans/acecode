@@ -55,6 +55,15 @@ std::string format_ask_user_question_result_display(
 // output="[Error] User declined to answer questions."
 ToolResult make_rejected_ask_result();
 
+// 插话路径(AgentLoop::interject_question):用户没作答,而是在提问挂起期间
+// 直接发了一条文本。success=true —— 这不是失败,问题是被用户的新指令
+// 取代了;output 告诉模型「用户改为直接输入,内容紧跟在本工具结果之后的
+// user 消息里,按那条继续,别原样重问」。文本本身不重复塞进 output:它
+// 由同回合 steering 机制作为真正的 user 消息提交(可带附件 / 上下文),
+// 顺序由 AgentLoop 保证。metadata 携带
+// ask_user_question_result={interjected:true, items:[]} 供转录行标注。
+ToolResult make_interjected_ask_result();
+
 // Headless(-p / --print)模式的自动应答 ToolResult:success=true,文案指示
 // 模型在 print 模式下自行决策并继续(openspec add-headless-print-mode)。
 ToolResult make_headless_ask_result();

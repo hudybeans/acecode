@@ -37,6 +37,10 @@ public:
     TurnSteerResult interrupt_turn(const std::string& session_id,
                                    const std::string& expected_turn_id,
                                    const UserInput& input) override;
+    TurnSteerResult interject_question(const std::string& session_id,
+                                       const std::string& request_id,
+                                       const UserInput& input,
+                                       const std::string& expected_turn_id = {}) override;
     BuiltinCommandResult execute_builtin_command(
         const std::string& session_id,
         const BuiltinCommandRequest& request) override;

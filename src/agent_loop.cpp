@@ -1104,6 +1104,95 @@ TurnSteerResult AgentLoop::steer_input(
     };
 }
 
+TurnSteerResult AgentLoop::interject_question(
+    const std::string& request_id,
+    const UserInput& input,
+    const std::string& expected_turn_id) {
+    if (request_id.empty()) {
+        return {
+            TurnSteerStatus::InvalidInput,
+            {},
+            "question request id is required",
+        };
+    }
+    if (!has_meaningful_user_input(input)) {
+        return {
+            TurnSteerStatus::InvalidInput,
+            {},
+            "interjection input is empty",
+        };
+    }
+    if (!ask_prompter_) {
+        // TUI 走 overlay 通道,提问期间 composer 根本不可达,没有这条路径。
+        return {
+            TurnSteerStatus::NoPendingQuestion,
+            {},
+            "this session has no asynchronous question channel",
+        };
+    }
+
+    // 锁序:只持 active_turn_mu_ 再进 prompter 的锁。prompter 的 prompt()
+    // 跑在工具线程上,从不反过来拿 active_turn_mu_;worker 主线程的
+    // drain_active_turn_inputs 要拿 active_turn_mu_,但它必须等工具批次
+    // 收割完 —— 而收割又要等这里的 notify_response 把问题收掉。所以
+    // 在释放锁之前把插话压进 pending_turn_inputs_,排序就是确定的。
+    std::lock_guard<std::mutex> lk(active_turn_mu_);
+    if (!active_turn_accepting_ || active_turn_id_.empty()) {
+        return {
+            busy_.load()
+                ? TurnSteerStatus::NonSteerable
+                : TurnSteerStatus::NoActiveTurn,
+            {},
+            busy_.load()
+                ? "the busy operation is not steerable"
+                : "no active turn",
+        };
+    }
+    if (!expected_turn_id.empty() && expected_turn_id != active_turn_id_) {
+        return {
+            TurnSteerStatus::TurnMismatch,
+            active_turn_id_,
+            "expected turn does not match the active turn",
+        };
+    }
+    if (pending_turn_inputs_.size() >= kMaxPendingTurnSteers) {
+        return {
+            TurnSteerStatus::QueueFull,
+            active_turn_id_,
+            "active turn steering queue is full",
+        };
+    }
+
+    // 先收问题再压输入:notify_response 是 first-wins,问题已被别的客户端
+    // 回答 / 已超时 / 已关闭时返回 false,此时不能把文本静默变成普通 steer
+    // —— 调用方拿到 NoPendingQuestion 后自己决定走排队还是直接发送。
+    AskUserQuestionResponse response;
+    response.cancelled = true;
+    response.interjected = true;
+    if (!ask_prompter_->notify_response(request_id, response)) {
+        return {
+            TurnSteerStatus::NoPendingQuestion,
+            active_turn_id_,
+            "the question is no longer pending",
+        };
+    }
+
+    UserInput steer = input;
+    if (!steer.metadata.is_object()) {
+        steer.metadata = nlohmann::json::object();
+    }
+    steer.metadata["question_interjection"] = true;
+    steer.metadata["question_request_id"] = request_id;
+    pending_turn_inputs_.push_back(std::move(steer));
+    LOG_INFO("[turn/interject] question " + request_id +
+             " resolved by user interjection on turn " + active_turn_id_);
+    return {
+        TurnSteerStatus::Accepted,
+        active_turn_id_,
+        "accepted; question resolved by interjection",
+    };
+}
+
 TurnSteerResult AgentLoop::interrupt_turn(
     const std::string& expected_turn_id,
     const UserInput& input) {
@@ -3766,6 +3855,9 @@ bool AgentLoop::execute_tool_calls(
                     // timeout 策略到期(add-ask-question-policy):工具侧据此
                     // 合成「自动采纳每题第一选项」的结果。
                     out["timed_out"] = resp.timed_out;
+                    // 用户在提问挂起时直接发文本(interject_question):
+                    // 工具侧据此给模型「改为直接输入,看下一条 user 消息」。
+                    out["interjected"] = resp.interjected;
                     nlohmann::json arr = nlohmann::json::array();
                     for (const auto& a : resp.answers) {
                         nlohmann::json item;

@@ -587,6 +587,28 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subagentTasks = useSubagentTasks(sid, {
     onSpawnStart: openSubagentPanelForSpawn,
   });
+  // 放在 submit 之前:提问挂起时的插话分支要读 questionForView,useCallback 的
+  // deps 在渲染期求值,memo 必须先于它声明(否则 TDZ)。
+  const questionForView = useMemo(() => {
+    if (!questionRequest) return null;
+    const reqSid = questionRequest.session_id || '';
+    const ownerSid = questionRequest.owner_session_id || '';
+    if (sid && ownerSid === sid) return questionRequest;
+    if (!reqSid || (sid && reqSid === sid)) return questionRequest;
+    // 后台任务(spawn_subagent 子会话)的 AskUserQuestion 冒泡到主会话回答,
+    // transcript 窄条不承载交互(答案 payload 自带 session_id,路由回子会话)。
+    if (sid && subagentTasks.tasks.some((t) => t.id === reqSid)) return questionRequest;
+    return null;
+  }, [questionRequest, sid, subagentTasks.tasks]);
+
+  const questionOriginLabel = useMemo(() => {
+    if (questionForView?.origin_label) return questionForView.origin_label;
+    const reqSid = questionForView?.session_id || '';
+    if (!reqSid || reqSid === sid) return '';
+    const task = subagentTasks.tasks.find((t) => t.id === reqSid);
+    return task ? `来自后台任务:${taskDisplayTitle(task)}` : '';
+  }, [questionForView, sid, subagentTasks.tasks]);
+
   const [trajectoryOpen, setTrajectoryOpen] = useState(false);
   // 聊天流「调用了 N 个智能体」分组点某个智能体 → 打开面板并定位其 transcript。
   // focus.n 单调递增,让同一 sessionId 的重复点击也能触发 SubagentPanel 内 effect。
@@ -2696,10 +2718,27 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       queuedId,
       { turnId: expectedTurnId },
     ));
-    return api.interruptTurn(targetSid, {
+    // AskUserQuestion 挂起时,排队卡片的「插话」同样走提问插话而不是打断:问题
+    // 以「用户改为直接输入」收掉,消息紧跟工具结果进入同一回合,不 abort。
+    // 问题已在别处结束(NO_PENDING_QUESTION)再退回立即打断。
+    const pendingQuestion = questionForView?.request_id
+      ? { sid: questionForView.session_id || targetSid, requestId: questionForView.request_id }
+      : null;
+    const interruptNow = () => api.interruptTurn(targetSid, {
       ...requestPayload,
       expected_turn_id: expectedTurnId,
-    })
+    });
+    const submitGuidance = pendingQuestion
+      ? api.interjectQuestion(pendingQuestion.sid, {
+          ...requestPayload,
+          request_id: pendingQuestion.requestId,
+        }).catch((e) => {
+          if (e?.code !== 'NO_PENDING_QUESTION') throw e;
+          onQuestionResolve?.();
+          return interruptNow();
+        })
+      : interruptNow();
+    return submitGuidance
       .then((result) => {
         updateQueueState((prev) => markQueuedGuidanceAccepted(
           prev,
@@ -2717,7 +2756,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         toast({ kind: 'err', text: '插话提交失败:' + (e?.message || '未知错误') });
         return false;
       });
-  }, [activeTurnId, api, busy, queueStore, updateQueueState]);
+  }, [activeTurnId, api, busy, onQuestionResolve, questionForView, queueStore, updateQueueState]);
 
   const executeBuiltinCommand = useCallback((targetSid, command) => (
     api.executeCommand(targetSid, command).then((result) => {
@@ -2899,6 +2938,66 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       // 本轮产生新变更 / todo 更新后按签名机制重现。
       dockAutoDismissRef.current();
     }
+    // AskUserQuestion 挂起时直接输入 = 插话:不是排队、不是打断。daemon 把
+    // 问题以「用户改为直接输入」收掉,这条消息紧跟工具结果进入同一回合,模型
+    // 据此继续。问题若已在别处结束(409 NO_PENDING_QUESTION)则退回普通路径。
+    // 后台任务(子会话)的问题:payload 自带 session_id,插话也路由回子会话。
+    if (sid && !isBuiltin && questionForView?.request_id) {
+      if (composerSubmitting) return;
+      const targetSid = questionForView.session_id || sid;
+      const requestId = questionForView.request_id;
+      const interjectPayload = {
+        ...payload,
+        request_id: requestId,
+        client_message_id:
+          `interject-${targetSid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      };
+      const fallbackToOrdinaryPath = () => {
+        if (busy) {
+          enqueueInput(payload);
+          clearCurrentSessionDraft({ expectedText: submittedComposerText });
+          clearComposerExtras();
+          toast({ kind: 'ok', text: '问题已结束，消息已加入排队' });
+          return;
+        }
+        applyEvent({ type: 'busy_changed', payload: { busy: true } }, { emitEffects: false });
+        sendInputOrBuiltin(sid, payload)
+          .then(() => {
+            if (payload.text.trim()) recordInputHistory(payload.text);
+            clearCurrentSessionDraft({ expectedText: submittedComposerText });
+            clearComposerExtras();
+          })
+          .catch((e) => {
+            toast({ kind: 'err', text: '发送失败:' + (e.message || '') });
+            applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
+          });
+      };
+      setComposerSubmitting(true);
+      api.interjectQuestion(targetSid, interjectPayload)
+        .then(() => {
+          if (payload.text.trim()) recordInputHistory(payload.text);
+          clearCurrentSessionDraft({ expectedText: submittedComposerText });
+          clearComposerExtras();
+          // 服务端会随 question_closed(interjected) 收掉问题;这里先本地收起,
+          // 免得 WS 往返期间再次提交撞上同一个 request_id。
+          onQuestionResolve?.();
+        })
+        .catch((e) => {
+          if (e?.code === 'NO_PENDING_QUESTION') {
+            onQuestionResolve?.();
+            fallbackToOrdinaryPath();
+            return;
+          }
+          toast({ kind: 'err', text: '插话失败:' + (e?.message || '未知错误') });
+        })
+        .finally(() => {
+          setComposerSubmitting(false);
+          // focusChatInput 在 questionRequest 仍存在时会让位给 picker;插话后
+          // picker 正在收起,直接把焦点还给输入框(与 resolveQuestion 同款)。
+          requestAnimationFrame(() => inputRef.current?.focus());
+        });
+      return;
+    }
     if (!sid) {
       // 自动新建会话。普通消息由 daemon auto_start 接管;builtin 先创建
       // 空会话,再走专门 command endpoint。
@@ -3049,7 +3148,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftAccepted, questionForView, onQuestionResolve, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -4251,26 +4350,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     if (sid) setTodoDockSuppression({ sessionKey: sid, signature: todoSignature });
   }, [completedTurnResultVisible, dismissChangeDock, sid, todoSignature]);
 
-  const questionForView = useMemo(() => {
-    if (!questionRequest) return null;
-    const reqSid = questionRequest.session_id || '';
-    const ownerSid = questionRequest.owner_session_id || '';
-    if (sid && ownerSid === sid) return questionRequest;
-    if (!reqSid || (sid && reqSid === sid)) return questionRequest;
-    // 后台任务(spawn_subagent 子会话)的 AskUserQuestion 冒泡到主会话回答,
-    // transcript 窄条不承载交互(答案 payload 自带 session_id,路由回子会话)。
-    if (sid && subagentTasks.tasks.some((t) => t.id === reqSid)) return questionRequest;
-    return null;
-  }, [questionRequest, sid, subagentTasks.tasks]);
-
-  const questionOriginLabel = useMemo(() => {
-    if (questionForView?.origin_label) return questionForView.origin_label;
-    const reqSid = questionForView?.session_id || '';
-    if (!reqSid || reqSid === sid) return '';
-    const task = subagentTasks.tasks.find((t) => t.id === reqSid);
-    return task ? `来自后台任务:${taskDisplayTitle(task)}` : '';
-  }, [questionForView, sid, subagentTasks.tasks]);
-
   const conversationActivity = useMemo(() => selectConversationActivity({
     foregroundBusy: busy,
     foregroundActivity: activity,
@@ -5356,9 +5435,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             {...composerInputProps}
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
-            disabled={!!questionForView}
             submitting={composerSubmitting}
-            placeholder={questionForView ? '请先回答上方问题…' : undefined}
+            // AskUserQuestion 挂起期间输入框不再禁用:直接输入 = 插话,daemon 把问题
+            // 以「用户改为直接输入」收掉并让模型按这条消息在同一回合继续。
+            // (文案不能提到模块顶层常量:i18n babel 插件要求翻译串懒解析。)
+            placeholder={questionForView ? '回答上方问题，或直接输入插话（将取消作答，交给 AI 继续）' : undefined}
             sessionControls={{
               model: currentModelLabel,
               modelOptions: displayedModelOptions,

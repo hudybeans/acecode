@@ -299,6 +299,21 @@ ToolResult make_rejected_ask_result() {
     return r;
 }
 
+ToolResult make_interjected_ask_result() {
+    ToolResult r;
+    r.success = true;
+    r.output =
+        "[User interjected] The user did not answer these questions. Instead "
+        "they sent a new message while the questions were pending; it follows "
+        "this tool result as the next user message. Treat that message as the "
+        "user's actual instruction and continue from it. Do not ask these "
+        "questions again unless that message leaves them genuinely unresolved.";
+    r.metadata = {{"ask_user_question_result", {
+        {"interjected", true}, {"items", nlohmann::json::array()}
+    }}};
+    return r;
+}
+
 // Headless(-p / --print)模式的自动应答。success=true 防止模型当失败重问。
 ToolResult make_headless_ask_result() {
     ToolResult r;
@@ -612,6 +627,13 @@ ToolImpl create_ask_user_question_tool_async(int max_questions) {
             return make_timeout_adopted_ask_result(
                 *parsed, question_order, policy.timeout_seconds,
                 &adopted_answers, &adopted_auto_selected_questions);
+        }
+
+        // 插话先于 cancelled 判:两位同时为 true(见 AskUserQuestionResponse),
+        // 这里要给模型的是「看下一条 user 消息」,不是 declined 错误。
+        if (resp.value("interjected", false)) {
+            LOG_INFO("[AskUserQuestion] resolved by user interjection");
+            return make_interjected_ask_result();
         }
 
         bool cancelled = resp.value("cancelled", false);

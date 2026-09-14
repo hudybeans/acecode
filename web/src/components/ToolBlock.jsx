@@ -407,6 +407,16 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
       </div>
     );
   }
+  if (questionFeedback?.kind === 'interject') {
+    return (
+      <div className="ace-qa-card my-0.5" data-question-feedback="interject" {...toolContextAttrs} data-desktop-tool-toggle="false">
+        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2 text-[12px] text-fg-mute">
+          <VsIcon name="send" size={14} />
+          <span>已改为直接输入，取消作答</span>
+        </div>
+      </div>
+    );
+  }
   if (questionFeedback?.kind === 'submit') {
     return (
       <AskUserQuestionResultCard

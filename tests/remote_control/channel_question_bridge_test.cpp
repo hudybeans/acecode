@@ -357,3 +357,62 @@ TEST(ChannelQuestionBridge, DefersCloseUntilSubmissionWinnerIsKnown) {
         rejected, "问题已在 ACECode 页面完成，本端草稿已清除"));
     EXPECT_EQ(web_wins.pending_count(), 0u);
 }
+
+// 场景:问题挂起时用户在 IM 里直接发了一句普通文本(没带 /aq)。
+// 修复前这条文本被当普通输入排在被问题阻塞的回合后面,问题却还在等 ——
+// 用户以为答过了,双方互相等到超时。现在 binder 先调 begin_interjection
+// 把队首批次标成提交中,再在锁外走 SessionClient::interject_question。
+// 期望:返回队首 request_id;提交中再来的 /aq 报「等待问题关闭」;
+// Accepted 回填时给出插话专属文案;随后 QuestionClosed(interjected) 静默
+// 移除批次(phase 已是 Accepted,不再重复播报)。
+TEST(ChannelQuestionBridge, PlainTextInterjectionMarksFrontBatchAndAnnouncesOnce) {
+    ChannelQuestionBridge bridge;
+    const auto now = ChannelQuestionBridge::Clock::time_point{} + 10s;
+    bridge.add_request(
+        make_request("req-1", 1, {question("Which plan?", "Plan")}), now);
+
+    const auto request_id = bridge.begin_interjection(now);
+    ASSERT_TRUE(request_id.has_value());
+    EXPECT_EQ(*request_id, "req-1");
+    EXPECT_FALSE(bridge.begin_interjection(now).has_value())
+        << "提交中的批次不能被第二次插话抢占";
+    const auto blocked = bridge.handle_input("/aq 1", now);
+    EXPECT_TRUE(contains_text(blocked, "等待问题关闭"));
+
+    const auto accepted = bridge.complete_submission(
+        "req-1", QuestionResponseStatus::Accepted, now);
+    EXPECT_TRUE(contains_text(accepted, "已取消作答"));
+    EXPECT_TRUE(contains_text(accepted, "插话"));
+    EXPECT_FALSE(contains_text(accepted, "已取消当前整批问题"));
+
+    const auto closed = bridge.close_request("req-1", "interjected", now);
+    EXPECT_TRUE(closed.outbound_texts.empty());
+    EXPECT_EQ(bridge.pending_count(), 0u);
+}
+
+// 场景:没有挂起问题 / 队首已超时时 begin_interjection 必须返回 nullopt,
+// binder 据此退回普通 send_input;插话在 daemon 侧被拒(问题已被网页端
+// 抢先回答)时 complete_submission(Closed) 不播报,由随后的 QuestionClosed
+// 说明问题去向。
+TEST(ChannelQuestionBridge, InterjectionFallsBackWhenNothingPendingOrRejected) {
+    ChannelQuestionBridge bridge;
+    const auto now = ChannelQuestionBridge::Clock::time_point{} + 10s;
+    EXPECT_FALSE(bridge.begin_interjection(now).has_value());
+
+    auto expired = make_request("late", 1, {question("Which plan?", "Plan")}, now);
+    expired.deadline = now + 5s;
+    bridge.add_request(std::move(expired), now);
+    EXPECT_FALSE(bridge.begin_interjection(now + 6s).has_value())
+        << "已超时的队首不能再被插话";
+    bridge.close_request("late", "timeout", now + 6s);
+
+    bridge.add_request(
+        make_request("req-2", 2, {question("Which plan?", "Plan")}), now);
+    ASSERT_TRUE(bridge.begin_interjection(now).has_value());
+    const auto rejected = bridge.complete_submission(
+        "req-2", QuestionResponseStatus::Closed, now);
+    EXPECT_TRUE(rejected.outbound_texts.empty());
+    const auto closed = bridge.close_request("req-2", "interjected", now);
+    EXPECT_TRUE(contains_text(closed, "改为直接输入"));
+    EXPECT_EQ(bridge.pending_count(), 0u);
+}

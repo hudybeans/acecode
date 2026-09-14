@@ -134,6 +134,11 @@ session_status 帧(未知 busy 会话)            → refetch   ← wait=true �
   放宽为「activeId 或 activeId 的子任务」;ChatView 经 `onSubagentTasksChange` 上报
   子任务 id→标题映射给 App。
 - PermissionModal / QuestionPicker 增可选 `originLabel`(「来自后台任务:〈标题〉」)。
+- 子任务的问题挂起时用户直接在主会话输入框打字 = 插话:ChatView 把文本 POST 到
+  **子会话**的 `/api/sessions/<child>/questions/interject`(payload 自带 session_id),
+  子会话的 AskUserQuestion 以「用户改为直接输入」收掉、文本作为子会话同回合的 user
+  消息紧跟工具结果提交,子代理据此继续;主会话 transcript 不会出现这条文本(它是
+  给子代理的回复)。问题已结束(409 NO_PENDING_QUESTION)则退回主会话普通发送 / 排队。
 
 ## 5. TUI 支持
 

@@ -27,6 +27,20 @@ function focusSoon(ref) {
   requestAnimationFrame(() => ref.current?.focus());
 }
 
+// 提问期间输入框不再禁用(直接输入 = 插话)。用户正在输入框里打字时,picker
+// 挂载不能抢焦点 —— 否则接下来敲的数字 / Enter 会变成选项选择与提交。
+// 输入框为空时照旧把焦点给 picker,保证键盘答题(数字 / 方向键 / Enter)可用。
+function composerIsMidTyping(active = typeof document !== 'undefined' ? document.activeElement : null) {
+  if (!active) return false;
+  const tag = active.tagName;
+  const editable = active.isContentEditable || tag === 'TEXTAREA' || tag === 'INPUT';
+  if (!editable) return false;
+  const text = tag === 'TEXTAREA' || tag === 'INPUT'
+    ? String(active.value || '')
+    : String(active.textContent || '');
+  return text.trim().length > 0;
+}
+
 export function QuestionPicker({ request, onResolve, originLabel = '' }) {
   const normalized = useMemo(() => normalizeQuestionRequest(request), [request]);
   const { questions } = normalized;
@@ -42,7 +56,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
     setCurrentIndex(0);
     setFocusIndex(0);
     setCollapsed(false);
-    focusSoon(rootRef);
+    if (!composerIsMidTyping()) focusSoon(rootRef);
   }, [normalized.requestId, questions]);
 
   const question = questions[currentIndex];

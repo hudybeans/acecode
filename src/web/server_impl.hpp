@@ -150,6 +150,8 @@ struct ParsedSessionUserInputRequest {
     std::string worktree_name;
     std::string worktree_branch;
     std::string expected_turn_id;
+    // 提问插话路由专用:body.request_id,对应 question_request.request_id。
+    std::string question_request_id;
 };
 
 // =====================================================================
@@ -390,6 +392,9 @@ struct WebServer::Impl {
     crow::response handle_turn_input_request(const crow::request& req,
                                              const std::string& session_id,
                                              bool interrupting);
+    // POST /api/sessions/:id/questions/interject:提问挂起时的用户插话。
+    crow::response handle_question_interject_request(const crow::request& req,
+                                                     const std::string& session_id);
     // parent_filter 语义:空 = 常规列表,排除所有 spawn_subagent 子会话;
     // 非空 = 后台任务查询,只返回 parent_session_id == parent_filter 的子会话
     // (active 部分不做 workspace 过滤,子会话跟随父会话归属)。

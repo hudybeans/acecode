@@ -668,6 +668,22 @@ ChannelQuestionAction ChannelQuestionBridge::handle_input(
     return action;
 }
 
+std::optional<std::string> ChannelQuestionBridge::begin_interjection(
+    Clock::time_point now) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (batches_.empty()) return std::nullopt;
+    auto& batch = batches_.front();
+    if (batch.request.deadline.has_value() &&
+        now >= *batch.request.deadline) {
+        return std::nullopt;
+    }
+    if (batch.submission_phase != SubmissionPhase::None) return std::nullopt;
+    batch.submission_phase = SubmissionPhase::Submitting;
+    batch.submitted_cancelled = false;
+    batch.submitted_interjected = true;
+    return batch.request.request_id;
+}
+
 ChannelQuestionAction ChannelQuestionBridge::finalize_close_locked(
     std::size_t index,
     const std::string& reason,
@@ -686,6 +702,9 @@ ChannelQuestionAction ChannelQuestionBridge::finalize_close_locked(
         if (reason == "answered") {
             action.outbound_texts.push_back(
                 "问题已在 ACECode 页面完成，本端草稿已清除");
+        } else if (reason == "interjected") {
+            action.outbound_texts.push_back(
+                "用户已在 ACECode 页面改为直接输入，问题已结束，本端草稿已清除");
         } else if (reason == "timeout") {
             action.outbound_texts.push_back("问题已超时，本端草稿已清除");
         } else {
@@ -748,9 +767,11 @@ ChannelQuestionAction ChannelQuestionBridge::complete_submission(
     ChannelQuestionAction action;
     if (status == QuestionResponseStatus::Accepted) {
         action.outbound_texts.push_back(
-            it->submitted_cancelled
-                ? "已取消当前整批问题"
-                : "答案已提交，继续执行");
+            it->submitted_interjected
+                ? "已取消作答，你的消息已作为插话交给 AI 继续处理"
+                : it->submitted_cancelled
+                    ? "已取消当前整批问题"
+                    : "答案已提交，继续执行");
     }
     if (!it->deferred_close_reason.has_value()) return action;
 

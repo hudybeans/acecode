@@ -617,6 +617,39 @@ SessionChannelBinder::bind_session(const std::string& session_id,
                 }
             }
             if (!action.handled) {
+                // 提问挂起时的普通文本 = 插话:先把问题以「用户改为直接
+                // 输入」收掉,文本再作为同回合输入紧跟工具结果交给模型。
+                // 直接 send_input 会让这条消息排在被问题阻塞的回合后面,
+                // 而问题还在等 —— 用户以为答过了,双方互相等到超时。
+                std::optional<std::string> interject_request_id;
+                {
+                    std::lock_guard<std::mutex> action_lock(context->action_mu);
+                    interject_request_id =
+                        context->questions->begin_interjection();
+                }
+                if (interject_request_id.has_value()) {
+                    UserInput interjection;
+                    interjection.text = text;
+                    // 与 respond_question 同款:锁外调用,QuestionClosed
+                    // 可能同步/并发回流到上面的 listener。
+                    const auto result = inbound_client->interject_question(
+                        context->session_id,
+                        *interject_request_id,
+                        interjection);
+                    {
+                        std::lock_guard<std::mutex> action_lock(context->action_mu);
+                        auto completion = context->questions->complete_submission(
+                            *interject_request_id,
+                            result.accepted()
+                                ? QuestionResponseStatus::Accepted
+                                : QuestionResponseStatus::Closed);
+                        emit_question_texts(context, hub, completion);
+                    }
+                    if (result.accepted()) return;
+                    LOG_INFO("[remote-control] question interjection not accepted (" +
+                             std::string(to_string(result.status)) +
+                             "); falling back to ordinary input");
+                }
                 inbound_client->send_input(context->session_id, text);
                 return;
             }

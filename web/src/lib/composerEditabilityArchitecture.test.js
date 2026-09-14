@@ -52,19 +52,77 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
     'homeSubmitting 进 disabled 会让主页输入框在建会话期间变成只读',
   );
 
-  // 两处 composer 的 disabled 只剩「有待回答的问题」这一个来源,它自带可见的
-  // QuestionPicker 卡片 + 明确的 placeholder,不是静默状态。
+  // 主页 composer 的 disabled 只剩「有待回答的问题」这一个来源(没有会话可以
+  // 承接插话);会话 composer 在提问挂起时**不再禁用** —— 直接输入 = 插话,
+  // daemon 把问题以「用户改为直接输入」收掉并让模型在同一回合继续。旧行为
+  // (禁用 + 「请先回答上方问题」)正是时序问题的根源:用户只能先取消作答,
+  // 模型带着「用户拒答」先跑一截,那句话要等本回合结束才作为新回合送达。
   assert.equal(
     (chatView.match(/disabled=\{!!questionForView\}/g) || []).length,
-    2,
-    '主页与会话两处 composer 都只由 questionForView 决定只读',
+    1,
+    '只有主页 composer 由 questionForView 决定只读',
+  );
+  const sessionComposer = chatView.match(/<div className="ace-composer-dock">\s*<InputBar[\s\S]*?\/>/)?.[0] || '';
+  assert.ok(sessionComposer, '未找到会话 composer 挂载点');
+  assert.doesNotMatch(
+    sessionComposer,
+    /disabled=\{/,
+    '会话 composer 不能因待回答的问题变成只读,否则用户无法插话',
   );
   assert.match(chatView, /submitting=\{composerSubmitting\}/);
   assert.match(chatView, /submitting=\{homeSubmitting\}/);
   assert.match(
     chatView,
-    /placeholder=\{questionForView \? '请先回答上方问题…' : undefined\}/,
-    '唯一的只读来源必须给出可读的原因',
+    /placeholder=\{questionForView \? '回答上方问题，或直接输入插话（将取消作答，交给 AI 继续）' : undefined\}/,
+    '提问挂起时 placeholder 要说明「直接输入 = 插话并取消作答」',
+  );
+  assert.doesNotMatch(chatView, /请先回答上方问题/);
+});
+
+run('提问挂起时的提交走插话端点,问题已结束才退回普通路径', () => {
+  const chatView = source('components/ChatView.jsx');
+  const submit = chatView.slice(
+    chatView.indexOf('const submit = useCallback((text) => {'),
+    chatView.indexOf('const drainQueuedInput = useCallback('),
+  );
+  assert.ok(submit, '未找到 submit');
+  // 结束锚点用「自动新建会话」注释:submit 里前面的 desktop_feedback 分支也有
+  // 一处 `if (!sid) {`,直接搜它会切到插话分支之前。
+  const homeCreateIndex = submit.indexOf('// 自动新建会话');
+  assert.ok(homeCreateIndex > 0, '未找到新建会话分支');
+  const interject = submit.slice(
+    submit.indexOf('if (sid && !isBuiltin && questionForView?.request_id) {'),
+    homeCreateIndex,
+  );
+  assert.ok(interject, '未找到提问插话分支');
+  // 插话必须发到问题所属会话(后台任务的问题路由回子会话),携带 request_id。
+  assert.ok(interject.includes("const targetSid = questionForView.session_id || sid;"));
+  assert.ok(interject.includes('api.interjectQuestion(targetSid, interjectPayload)'));
+  assert.ok(interject.includes('request_id: requestId,'));
+  // 绝不能走打断(会 abort 回合、丢 <turn_aborted> 标记)或普通排队。
+  assert.ok(!interject.includes('api.interruptTurn('));
+  assert.ok(!interject.includes('api.steerTurn('));
+  // 只有 NO_PENDING_QUESTION(问题已在别处结束)才退回普通路径,其它错误提示用户。
+  assert.ok(interject.includes("if (e?.code === 'NO_PENDING_QUESTION') {"));
+  assert.ok(interject.includes('fallbackToOrdinaryPath();'));
+  assert.ok(
+    interject.indexOf('fallbackToOrdinaryPath();') > interject.indexOf("e?.code === 'NO_PENDING_QUESTION'"),
+    '退回普通路径只能在 NO_PENDING_QUESTION 分支里',
+  );
+  // 插话分支要先于「无会话 → 新建会话」与「busy → 排队」两个分支。
+  assert.ok(submit.indexOf('questionForView?.request_id') < homeCreateIndex);
+  assert.ok(submit.indexOf('questionForView?.request_id') < submit.indexOf('if (busy && !isBuiltin) {'));
+
+  // 排队卡片的「插话」在提问挂起时同样走提问插话,只有问题已结束才退回立即打断。
+  const guideFlow = chatView.slice(
+    chatView.indexOf('const guideQueued = useCallback((queuedId) => {'),
+    chatView.indexOf('const executeBuiltinCommand = useCallback('),
+  );
+  assert.ok(guideFlow.includes('api.interjectQuestion(pendingQuestion.sid, {'));
+  assert.ok(guideFlow.includes("if (e?.code !== 'NO_PENDING_QUESTION') throw e;"));
+  assert.ok(
+    guideFlow.indexOf('api.interjectQuestion(') < guideFlow.indexOf('return interruptNow();'),
+    '提问挂起时先插话,退回打断只能在 NO_PENDING_QUESTION 之后',
   );
 });
 

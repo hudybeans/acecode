@@ -150,6 +150,36 @@ TEST(AskUserQuestionPrompter, CancelledResponsePropagated) {
     d.unsubscribe(closed_sub);
 }
 
+// 场景: 用户在提问挂起时直接发文本(AgentLoop::interject_question 构造的
+// cancelled+interjected 响应)。prompt 必须把 interjected 位原样带回给工具,
+// 且 QuestionClosed.reason 是 "interjected" 而不是 "cancelled" —— 前端与 IM
+// 通道靠这个 reason 区分「用户按了取消」和「用户改为直接输入」。
+TEST(AskUserQuestionPrompter, InterjectedResponseClosesWithInterjectedReason) {
+    EventDispatcher d;
+    AskUserQuestionPrompter prompter(d);
+
+    AskUserQuestionResponse canned;
+    canned.cancelled = true;
+    canned.interjected = true;
+
+    ResponderState state;
+    ClosedState closed;
+    auto sub = subscribe_responder(d, prompter, canned, state);
+    auto closed_sub = subscribe_closed(d, closed);
+
+    auto resp = prompter.prompt(sample_questions(), nullptr);
+    EXPECT_TRUE(resp.interjected);
+    EXPECT_TRUE(resp.cancelled) << "只认 cancelled 的旧调用方要把插话当拒绝";
+    EXPECT_FALSE(resp.timed_out);
+    EXPECT_EQ(resp.answers.size(), 0u);
+    ASSERT_EQ(closed.items.size(), 1u);
+    EXPECT_EQ(closed.items[0].first, state.request_id);
+    EXPECT_EQ(closed.items[0].second, "interjected");
+    EXPECT_EQ(prompter.pending_count(), 0u);
+    d.unsubscribe(sub);
+    d.unsubscribe(closed_sub);
+}
+
 // 场景: 默认构造不再有被动超时。无人回答时 prompt 应保持 pending,
 // 直到 abort_flag 显式拉起。
 TEST(AskUserQuestionPrompter, DefaultHasNoPassiveTimeout) {

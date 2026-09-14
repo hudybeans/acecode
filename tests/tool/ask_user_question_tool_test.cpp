@@ -509,6 +509,35 @@ TEST(AskUserQuestionUnattendedTest, AsyncToolStillPromptsWithoutActiveGoal) {
     EXPECT_EQ(feedback.at("items"), nlohmann::json::array());
 }
 
+// 场景:通道返回 cancelled+interjected(用户在提问挂起时直接发了文本,
+// AgentLoop::interject_question 构造的响应)。
+// 期望:interjected 先于 cancelled 判定 —— 工具 success=true、output 以
+// "[User interjected]" 开头并指向「下一条 user 消息」,metadata 标 interjected,
+// 绝不能落到 "[Error] User declined" 的拒绝分支(那会让模型以为用户拒答、
+// 自作主张继续,正是本功能要修的时序问题)。
+TEST(AskUserQuestionInterjectedTest, InterjectedResponseWinsOverCancelled) {
+    auto tool = acecode::create_ask_user_question_tool_async();
+    acecode::ToolContext ctx;
+    ctx.ask_user_questions = [&](const nlohmann::json&) {
+        return nlohmann::json{{"cancelled", true}, {"interjected", true}};
+    };
+    ctx.goal_unattended_active = [] { return false; };
+
+    auto r = tool.execute(kInteractiveQuestionArgs, ctx);
+    EXPECT_TRUE(r.success) << r.output;
+    EXPECT_EQ(r.output.rfind("[User interjected]", 0), 0u) << r.output;
+    EXPECT_NE(r.output.find("next user message"), std::string::npos) << r.output;
+    EXPECT_EQ(r.output.find("User declined"), std::string::npos);
+    ASSERT_TRUE(r.metadata.contains("ask_user_question_result"));
+    const auto& feedback = r.metadata.at("ask_user_question_result");
+    EXPECT_EQ(feedback.at("interjected"), true);
+    EXPECT_EQ(feedback.at("items"), nlohmann::json::array());
+    EXPECT_FALSE(feedback.contains("cancelled"))
+        << "插话不是拒答,前端不能把它渲染成「已取消全部回答」";
+    // 插话结果没有问答对可展示,display 文本留空,转录行回退到 output 原文。
+    EXPECT_TRUE(format_ask_user_question_result_display(r.metadata).empty());
+}
+
 TEST(AskUserQuestionTimeoutTest, NoRecommendedOptionRemainsNotAnswered) {
     const auto question = [] {
         AskQuestion q;

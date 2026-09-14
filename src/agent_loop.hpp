@@ -260,6 +260,17 @@ public:
     // provider response to reach its next model boundary.
     TurnSteerResult interrupt_turn(const std::string& expected_turn_id,
                                    const UserInput& input);
+    // 提问挂起时的用户插话(daemon 路径):把 request_id 对应的
+    // AskUserQuestion 以「用户改为直接输入」收掉,并把 input 作为同回合
+    // steering 输入排在该工具结果之后提交 —— 不 abort、不开新回合。
+    // 两步在 active_turn_mu_ 下一起完成:worker 要等工具返回后才会
+    // drain,所以模型看到的顺序恒为 tool_call → tool_result → user 插话。
+    // expected_turn_id 可空;非空时与 steer_input 一样校验。
+    // 问题已被回答 / 超时 / 关闭 → NoPendingQuestion,input 不会被提交,
+    // 调用方应退回普通发送路径。
+    TurnSteerResult interject_question(const std::string& request_id,
+                                       const UserInput& input,
+                                       const std::string& expected_turn_id = {});
     std::string active_turn_id() const;
 
     // Legacy cancel alias

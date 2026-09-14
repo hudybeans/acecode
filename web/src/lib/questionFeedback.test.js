@@ -89,3 +89,29 @@ run('工具改名或缺少调用名时结构化取消仍可渲染', () => {
     assert.match(renderQuestionToolForTest(entry), /data-question-feedback="cancel"/);
   }
 });
+
+// 触发场景:AskUserQuestion 挂起时用户直接输入插话,daemon 落盘
+// ask_user_question_result={interjected:true, items:[]} 且 success=true。
+// 期望:渲染「已改为直接输入,取消作答」卡而不是取消卡,也不是 Q/A 确认卡;
+// 历史页重载后(工具改名、无调用名)同样可恢复。
+run('共享 ToolBlock 为插话取消作答渲染专属反馈卡', () => {
+  const entry = {
+    isDone: true, success: true, tool: 'AskUserQuestion',
+    askUserQuestionResult: { interjected: true, items: [] },
+  };
+  assert.deepEqual(questionFeedbackForTool(entry), { kind: 'interject', items: [] });
+  const html = renderQuestionToolForTest(entry);
+  assert.equal((html.match(/data-question-feedback="interject"/g) || []).length, 1);
+  assert.ok(html.includes('已改为直接输入'));
+  assert.doesNotMatch(html, /data-question-feedback="cancel"|data-question-feedback="submit"|已取消全部回答/);
+  assert.match(html, /data-desktop-tool-toggle="false"/);
+  for (const tool of ['', 'request_input']) {
+    const renamed = { ...entry, tool };
+    assert.equal(questionFeedbackForItem({ kind: 'tool', tool: renamed })?.kind, 'interject');
+  }
+  // 显式取消优先级仍高于插话标记(两者不会同时落盘,守住判定顺序即可)。
+  assert.equal(
+    questionFeedbackForTool({ ...entry, askUserQuestionResult: { cancelled: true, interjected: true, items: [] } })?.kind,
+    'cancel',
+  );
+});

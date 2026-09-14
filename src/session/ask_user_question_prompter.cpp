@@ -52,7 +52,12 @@ AskUserQuestionPrompter::prompt(const nlohmann::json& questions_payload,
         if (got) {
             result = pending->response;
             pending->accepting = false;
-            close_reason = result.cancelled ? "cancelled" : "answered";
+            // interjected 先于 cancelled 判:插话响应两位同时为 true,
+            // question_closed.reason 要让前端 / IM 通道分得清「用户按了取消」
+            // 和「用户改为直接输入」。
+            close_reason = result.interjected ? "interjected"
+                         : result.cancelled  ? "cancelled"
+                                             : "answered";
             break;
         }
         if (abort_flag && abort_flag->load()) {

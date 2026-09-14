@@ -1819,6 +1819,58 @@ await run('interruptTurn posts structured input to the immediate interrupt endpo
   }
 });
 
+// 触发场景:AskUserQuestion 挂起时用户直接在输入框提交文本(插话)。
+// 期望:POST 到问题插话端点,body 原样携带 request_id / client_message_id;
+// 409 NO_PENDING_QUESTION 要以 ApiError.code 暴露,ChatView 据此退回普通路径。
+await run('interjectQuestion posts to the question interject endpoint and exposes NO_PENDING_QUESTION', async () => {
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  let status = 202;
+  globalThis.fetch = async (url, opts = {}) => {
+    calls.push({ url, opts });
+    if (status === 202) {
+      return {
+        ok: true,
+        status,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ accepted: true, turn_id: 'turn-1', request_id: 'rid-1' }),
+      };
+    }
+    return {
+      ok: false,
+      status,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'NO_PENDING_QUESTION', message: 'the question is no longer pending' }),
+      text: async () => JSON.stringify({ error: 'NO_PENDING_QUESTION', message: 'the question is no longer pending' }),
+    };
+  };
+  try {
+    const client = createApi({ origin: 'http://127.0.0.1:4567', token: 'tok' });
+    const payload = {
+      text: 'neither, use the built-in client',
+      request_id: 'rid-1',
+      client_message_id: 'interject-s-1',
+    };
+    const accepted = await client.interjectQuestion('s/a', payload);
+    assert.equal(accepted.request_id, 'rid-1');
+    assert.equal(
+      calls[0].url,
+      'http://127.0.0.1:4567/api/sessions/s%2Fa/questions/interject',
+    );
+    assert.equal(calls[0].opts.method, 'POST');
+    assert.equal(calls[0].opts.headers['X-ACECode-Token'], 'tok');
+    assert.deepEqual(JSON.parse(calls[0].opts.body), payload);
+
+    status = 409;
+    await assert.rejects(
+      () => client.interjectQuestion('s/a', payload),
+      (error) => error.code === 'NO_PENDING_QUESTION' && error.status === 409,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 // 触发场景：刷新包含路径字符的会话；期望：编码路径、鉴权头和响应信封均保持完整。
 await run('reloadSessionModel posts to the encoded session route with auth and returns the envelope', async () => {
   const previousFetch = globalThis.fetch;
