@@ -148,6 +148,9 @@ struct SessionOptions {
     std::string cwd;
     std::string workspace_hash;
     bool no_workspace = false;
+    // Internal continuation launch: keep the source task's actual workspace
+    // and storage scope. Ordinary API creation always allocates its own cache.
+    bool reuse_no_workspace_cwd = false;
 
     // 可选 model override(对应 saved_models.name)。
     // 留空 = 用 daemon 启动时的 default。

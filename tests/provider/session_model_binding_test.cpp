@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "provider/session_model_binding.hpp"
+#include "provider/openai_provider.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -77,6 +78,65 @@ TEST(SessionModelBinding, EqualRevisionUsesNoWorkFastPathAfterInitialization) {
               acecode::SessionModelReloadOutcome::AlreadyCurrent);
     EXPECT_EQ(resolver_calls, 0);
     EXPECT_EQ(binding.provider_snapshot(), provider);
+}
+
+TEST(SessionModelBinding, ClonesSessionLocalProviderWithExactConstructionSettings) {
+    acecode::AppConfig cfg;
+    auto profile = profile_named("(session:source)", "private-model");
+    profile.base_url = "https://gateway.example/custom/completions";
+    profile.endpoint_mode = "full_url";
+    profile.max_output_tokens = 3210;
+    profile.context_window = 64000;
+    profile.capabilities = {"vision", "tool_use"};
+    acecode::SessionModelBinding source;
+    ASSERT_TRUE(install_initial(source, target_for(profile, cfg, 41)).ok);
+    std::string error;
+    auto clone = source.clone_runtime_snapshot(profile.name, &error);
+    ASSERT_TRUE(clone) << error;
+    EXPECT_NE(clone->provider, source.provider_snapshot());
+    EXPECT_EQ(clone->state.name, profile.name);
+    EXPECT_EQ(clone->state.context_window, 64000);
+    EXPECT_EQ(clone->revision, 41u);
+    auto provider = std::dynamic_pointer_cast<acecode::OpenAiCompatProvider>(clone->provider);
+    ASSERT_TRUE(provider);
+    EXPECT_EQ(provider->model(), "private-model");
+    EXPECT_EQ(provider->request_url(), profile.base_url);
+    EXPECT_EQ(provider->request_options().max_output_tokens, 3210);
+    EXPECT_TRUE(provider->supports_vision());
+    provider->set_model("target-only-change");
+    EXPECT_EQ(source.provider_snapshot()->model(), "private-model");
+}
+
+TEST(SessionModelBinding, ClonedBindingCanIndependentlyContinueAgain) {
+    acecode::AppConfig cfg;
+    auto profile = profile_named("(session:source)");
+    acecode::SessionModelBinding source;
+    ASSERT_TRUE(install_initial(source, target_for(profile, cfg, 42)).ok);
+    auto first = source.clone_runtime_snapshot(profile.name);
+    ASSERT_TRUE(first);
+    acecode::SessionModelBinding successor;
+    successor.install_cloned_snapshot(std::move(*first));
+    auto second = successor.clone_runtime_snapshot(profile.name);
+    ASSERT_TRUE(second);
+    EXPECT_NE(second->provider, source.provider_snapshot());
+    EXPECT_NE(second->provider, successor.provider_snapshot());
+    EXPECT_EQ(second->provider->model(), source.provider_snapshot()->model());
+}
+
+TEST(SessionModelBinding, CloneRejectsChangedSelectionAndUncloneableRuntimeProvider) {
+    acecode::AppConfig cfg;
+    auto profile = profile_named("original");
+    cfg.saved_models = {profile};
+    acecode::SessionModelBinding source;
+    ASSERT_TRUE(install_initial(source, target_for(profile, cfg, 43)).ok);
+    std::string error;
+    EXPECT_FALSE(source.clone_runtime_snapshot("stale-name", &error));
+    EXPECT_EQ(error, "source model selection changed");
+    const auto provider = source.provider_snapshot();
+    const auto state = source.state_snapshot();
+    source.install_runtime_snapshot(provider, state, 44);
+    EXPECT_FALSE(source.clone_runtime_snapshot(profile.name, &error));
+    EXPECT_EQ(error, "source provider cannot be independently cloned");
 }
 
 // 触发场景:同名 profile 的有效 API key/model 被编辑;期望下一次 future turn

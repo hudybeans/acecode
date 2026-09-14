@@ -35,6 +35,7 @@ class McpManager;
 class PtySessionRegistry;
 class SessionClient;
 class SessionRegistry;
+class TaskSuggestionService;
 class SkillRegistry;
 class SkillUsageStore;
 class ExpertRegistry;
@@ -82,6 +83,7 @@ struct WebServerDeps {
     int                        desktop_protocol_version = 0;
     SessionClient*             session_client = nullptr;
     SessionRegistry*           session_registry = nullptr;
+    std::shared_ptr<TaskSuggestionService> task_suggestions;
     ExpertRegistry*            expert_registry = nullptr;
     HookManager*               hook_manager = nullptr;
     ToolExecutor*              tools = nullptr;

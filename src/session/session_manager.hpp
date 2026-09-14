@@ -127,6 +127,9 @@ public:
 
     // Get current session ID (empty if no active session)
     std::string current_session_id() const;
+    // Storage remains anchored to the original project when execution enters
+    // a worktree. Callers must not derive this directory from the live cwd.
+    std::string current_project_dir() const;
 
     bool has_active_session() const;
 

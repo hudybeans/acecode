@@ -50,6 +50,9 @@ struct WorktreeCreateOptions {
     // 分支必须存在(rev-parse --verify refs/heads/<name>),否则创建失败。
     // 与 pr_number 互斥,pr_number 优先。空 = 默认 origin/<默认分支> 策略。
     std::string base_branch;
+    // A pinned full commit ID for accepted task suggestions. Takes precedence
+    // over branch/PR selection and never fetches or falls back to another ref.
+    std::string base_commit;
 };
 
 struct WorktreeCreateResult {

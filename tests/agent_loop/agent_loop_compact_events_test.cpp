@@ -8,6 +8,7 @@
 #include "session/compact_notice.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_storage.hpp"
+#include "session/task_suggestion_store.hpp"
 #include "skills/skill_registry.hpp"
 #include "tool/skill_view_tool.hpp"
 #include "tool/skills_tool.hpp"
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -262,13 +264,12 @@ TEST(AgentLoopCompactEvents, QueuedCompactAppendsCodexMarkerWithoutTranscriptRep
         }));
     EXPECT_TRUE(has_system_event(events, "--- [Compact Checkpoint] ---"));
     EXPECT_TRUE(has_system_event(events, "[Conversation summary]"));
-    EXPECT_TRUE(has_system_event(events, "Long threads and multiple compactions"));
+    EXPECT_FALSE(has_system_event(events, "Long threads and multiple compactions"));
     const auto notices = compact_notices(events);
-    ASSERT_EQ(notices.size(), 4u);
+    ASSERT_EQ(notices.size(), 3u);
     EXPECT_EQ(notices[0].stage, "progress");
     EXPECT_EQ(notices[1].stage, "checkpoint");
     EXPECT_EQ(notices[2].stage, "summary");
-    EXPECT_EQ(notices[3].stage, "warning");
     ASSERT_EQ(notices[0].id.size(), 36u);
     EXPECT_EQ(notices[0].id[14], '7');
     for (const auto& notice : notices) {
@@ -276,8 +277,7 @@ TEST(AgentLoopCompactEvents, QueuedCompactAppendsCodexMarkerWithoutTranscriptRep
     }
     EXPECT_FALSE(notices[0].complete);
     EXPECT_FALSE(notices[1].complete);
-    EXPECT_FALSE(notices[2].complete);
-    EXPECT_TRUE(notices[3].complete);
+    EXPECT_TRUE(notices[2].complete);
     ASSERT_FALSE(loop.messages().empty());
     EXPECT_EQ(loop.messages().back().role, "user");
     EXPECT_EQ(loop.messages().back().content,
@@ -285,6 +285,223 @@ TEST(AgentLoopCompactEvents, QueuedCompactAppendsCodexMarkerWithoutTranscriptRep
                   "\nCompacted event summary.");
     EXPECT_TRUE(request_contains(loop.messages(), "old user 0"));
     EXPECT_FALSE(request_contains(loop.messages(), "old assistant 0"));
+}
+
+TEST(AgentLoopCompactEvents, ThreeSuccessfulCompactionsCreateOneDurableSuggestion) {
+    auto provider = std::make_shared<CompactEventProvider>();
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    const auto cwd = make_temp_cwd("compact_suggestion");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    acecode::SessionManager session;
+    session.start_session(cwd.string(), "stub", "stub");
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, cwd.string(), permissions);
+    loop.set_session_manager(&session);
+    acecode::TaskSuggestionStore store(project_dir);
+    for (int i = 0; i < 3; ++i) {
+        add_history(loop, 2);
+        wait_for_done(loop, [&] { loop.submit_compact(); });
+        const auto records = store.list(session.current_session_id());
+        EXPECT_EQ(records.size(), i == 2 ? 1u : 0u);
+    }
+    auto records = store.list(session.current_session_id());
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records.front()["successful_compactions"], 3);
+    ASSERT_TRUE(store.dismiss(session.current_session_id(), records.front()["id"]));
+    add_history(loop, 2);
+    wait_for_done(loop, [&] { loop.submit_compact(); });
+    records = store.list(session.current_session_id());
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records.front()["status"], "dismissed");
+    EXPECT_EQ(acecode::count_successful_compactions(session.load_active_messages()), 4u);
+    loop.shutdown();
+    session.finalize();
+    std::error_code error;
+    std::filesystem::remove_all(project_dir, error);
+    std::filesystem::remove_all(cwd, error);
+}
+
+TEST(AgentLoopCompactEvents, ZeroThresholdSuppressesSuggestionAndFailedSummaryDoesNotCount) {
+    auto provider = std::make_shared<CompactEventProvider>();
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    const auto cwd = make_temp_cwd("compact_suggestion_disabled");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    acecode::SessionManager session;
+    session.start_session(cwd.string(), "stub", "stub");
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, cwd.string(), permissions);
+    loop.set_session_manager(&session);
+    loop.set_task_suggestion_compact_threshold(0);
+    add_history(loop, 2);
+    wait_for_done(loop, [&] { loop.submit_compact(); });
+    provider->fail_compact = true;
+    wait_for_done(loop, [&] { loop.submit_compact(); });
+    EXPECT_EQ(acecode::count_successful_compactions(session.load_active_messages()), 1u);
+    acecode::TaskSuggestionStore store(project_dir);
+    EXPECT_TRUE(store.list(session.current_session_id()).empty());
+    loop.shutdown();
+    session.finalize();
+    std::error_code error;
+    std::filesystem::remove_all(project_dir, error);
+    std::filesystem::remove_all(cwd, error);
+}
+
+TEST(AgentLoopTaskHandoff, RemovesOnlyAutomaticGoalContinuationAndPersistsPause) {
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    acecode::ToolExecutor tools;
+    acecode::ToolImpl goal_tool;
+    goal_tool.definition.name = "update_goal";
+    goal_tool.definition.description = "Test goal registration";
+    goal_tool.definition.parameters = {{"type", "object"}};
+    tools.register_tool(goal_tool);
+    acecode::PermissionManager permissions;
+    const auto cwd = make_temp_cwd("task_handoff_goal");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    acecode::SessionManager session;
+    session.start_session(cwd.string(), "stub", "stub");
+    const auto source = session.ensure_active_session_id();
+    auto* goals = session.goal_store();
+    ASSERT_NE(goals, nullptr);
+    ASSERT_TRUE(goals->replace_thread_goal(source, "Complete remaining work", std::nullopt,
+                                          acecode::ThreadGoalStatus::Active));
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, cwd.string(), permissions);
+    loop.set_session_manager(&session);
+    bool input_accepted = false;
+    std::string handoff_error;
+    auto receipt = loop.enqueue_control([&] {
+        // This queues a hidden continuation behind the currently executing
+        // control. The handoff must remove it before the worker can pick it up.
+        loop.maybe_continue_goal();
+        return loop.complete_task_handoff("target-session", [&] {
+            input_accepted = true;
+            return true;
+        }, &handoff_error);
+    });
+    ASSERT_TRUE(receipt.wait_for_completion(5s));
+    EXPECT_TRUE(receipt.succeeded()) << handoff_error;
+    EXPECT_TRUE(input_accepted);
+    loop.shutdown();
+    EXPECT_EQ(provider->turn_count(), 0);
+    const auto goal = goals->get_thread_goal(source);
+    ASSERT_TRUE(goal);
+    EXPECT_EQ(goal->status, acecode::ThreadGoalStatus::Paused);
+    EXPECT_TRUE(request_contains(session.load_active_messages(), "target-session"));
+    session.finalize();
+    std::error_code error;
+    std::filesystem::remove_all(project_dir, error);
+    std::filesystem::remove_all(cwd, error);
+}
+
+TEST(AgentLoopTaskHandoff, FailedTargetAcceptanceRestoresActiveGoal) {
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    const auto cwd = make_temp_cwd("task_handoff_failure");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    acecode::SessionManager session;
+    session.start_session(cwd.string(), "stub", "stub");
+    const auto source = session.ensure_active_session_id();
+    auto* goals = session.goal_store();
+    ASSERT_NE(goals, nullptr);
+    ASSERT_TRUE(goals->replace_thread_goal(source, "Keep doing the current work", std::nullopt,
+                                          acecode::ThreadGoalStatus::Active));
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, cwd.string(), permissions);
+    loop.set_session_manager(&session);
+    std::string handoff_error;
+    auto receipt = loop.enqueue_control([&] {
+        return loop.complete_task_handoff("target-session", [] { return false; }, &handoff_error);
+    });
+    ASSERT_TRUE(receipt.wait_for_completion(5s));
+    EXPECT_FALSE(receipt.succeeded());
+    EXPECT_EQ(handoff_error, "target input was not accepted");
+    EXPECT_EQ(goals->get_thread_goal(source)->status, acecode::ThreadGoalStatus::Active);
+    EXPECT_FALSE(request_contains(session.load_active_messages(), "Continued in session"));
+    loop.shutdown();
+    session.finalize();
+    std::error_code error;
+    std::filesystem::remove_all(project_dir, error);
+    std::filesystem::remove_all(cwd, error);
+}
+
+TEST(AgentLoopTaskHandoff, DefersForQueuedUserInputWithoutDroppingIt) {
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    provider->push_text("Handled the queued user update.");
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    const auto cwd = make_temp_cwd("task_handoff_user_queue");
+    const auto project_dir = acecode::SessionStorage::get_project_dir(cwd.string());
+    acecode::SessionManager session;
+    session.start_session(cwd.string(), "stub", "stub");
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, cwd.string(), permissions);
+    loop.set_session_manager(&session);
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto entered_future = entered.get_future();
+    auto release_future = release.get_future();
+    auto blocking = loop.enqueue_control([&] {
+        entered.set_value();
+        return release_future.wait_for(5s) == std::future_status::ready;
+    });
+    ASSERT_EQ(entered_future.wait_for(5s), std::future_status::ready);
+    bool callback_ran = false;
+    std::string handoff_error;
+    auto handoff = loop.enqueue_control([&] {
+        return loop.complete_task_handoff("target-session", [&] {
+            callback_ran = true;
+            return true;
+        }, &handoff_error);
+    });
+    loop.submit("Please incorporate this latest correction first.");
+    EXPECT_TRUE(loop.has_queued_user_work());
+    wait_for_done(loop, [&] { release.set_value(); });
+    ASSERT_TRUE(handoff.wait_for_completion(5s));
+    EXPECT_FALSE(handoff.succeeded());
+    EXPECT_FALSE(callback_ran);
+    EXPECT_EQ(handoff_error, "source session has pending user input");
+    EXPECT_TRUE(request_contains(session.load_active_messages(), "latest correction first"));
+    loop.shutdown();
+    session.finalize();
+    std::error_code error;
+    std::filesystem::remove_all(project_dir, error);
+    std::filesystem::remove_all(cwd, error);
+}
+
+TEST(AgentLoopTaskHandoff, ConcurrentSuggestionInputIsAcceptedOnlyOnceInRuntime) {
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    provider->push_text("Executed the single accepted suggestion.");
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    acecode::AgentLoop loop(
+        [&]() -> std::shared_ptr<acecode::LlmProvider> { return provider; },
+        tools, {}, "/tmp/suggestion-runtime-receipt", permissions);
+    acecode::UserInput input;
+    input.text = "Execute this accepted suggestion once.";
+    std::atomic<int> accepted{0};
+    wait_for_done(loop, [&] {
+        std::vector<std::thread> requests;
+        for (int i = 0; i < 8; ++i) {
+            requests.emplace_back([&] {
+                if (loop.submit_task_suggestion_input(input, "suggestion-1")) ++accepted;
+            });
+        }
+        for (auto& request : requests) request.join();
+    });
+    EXPECT_EQ(accepted.load(), 8);
+    EXPECT_EQ(provider->turn_count(), 1);
+    EXPECT_TRUE(loop.has_task_suggestion_input("suggestion-1"));
+    EXPECT_FALSE(loop.has_task_suggestion_input("other-suggestion"));
+    loop.shutdown();
+    EXPECT_FALSE(loop.submit_task_suggestion_input(input, "suggestion-2"));
 }
 
 TEST(AgentLoopSkillContext,

@@ -95,6 +95,7 @@ import './singleWriterOwnershipArchitecture.test.js';
 import './previewRootArchitecture.test.js';
 import './sessionChanges.test.js';
 import './sessionFork.test.js';
+import './taskSuggestions.test.js';
 import './previewRefresh.test.js';
 import './turnFileList.test.js';
 import './gitSessionPill.test.js';

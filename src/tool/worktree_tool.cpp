@@ -114,6 +114,11 @@ ToolResult execute_enter_worktree(const std::string& arguments_json,
     }
     if (const auto current = ctx.session_manager->active_worktree(); current.active()) {
         if (current.inherited) {
+            if (ctx.session_manager->current_parent_session_id().empty()) {
+                return tool_error(
+                    "This session shares a retained worktree at " + current.worktree_path +
+                    ". Use ExitWorktree with action=keep to leave it without deleting the shared directory.");
+            }
             return tool_error(
                 "This session already shares the parent session's worktree at " +
                 current.worktree_path +
@@ -205,7 +210,7 @@ ToolResult execute_exit_worktree(const std::string& arguments_json,
             "it will not touch worktrees created manually or in a previous session. "
             "No filesystem changes were made.");
     }
-    if (info.inherited) {
+    if (info.inherited && !ctx.session_manager->current_parent_session_id().empty()) {
         // 子会话只是共享父会话的 worktree,不拥有它:退出会把子会话切回主
         // checkout(父会话期望结果落在 worktree 里),remove 更会删掉父会话
         // 正在用的目录。
@@ -235,6 +240,12 @@ ToolResult execute_exit_worktree(const std::string& arguments_json,
     }
     if (action != "keep" && action != "remove") {
         return tool_error("action must be \"keep\" or \"remove\"");
+    }
+    if (info.inherited && action == "remove") {
+        return tool_error(
+            "This worktree is retained because multiple conversations share it. "
+            "Use action=keep to leave this conversation's worktree without deleting "
+            "the directory or branch. No filesystem changes were made.");
     }
 
     // 变更计数既做 remove 的安全门,也进最终消息。fail-closed:数不清

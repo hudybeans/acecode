@@ -266,6 +266,8 @@ SessionModelReloadResult SessionModelBinding::install_target_locked(
                     stale_revision = true;
                 } else {
                     state_ = target.state;
+                    construction_plan_ = std::make_shared<PreparedProviderConstruction>(
+                        std::move(*latest_prepared));
                     applied_revision_.store(target.revision,
                                             std::memory_order_release);
                 }
@@ -370,6 +372,8 @@ SessionModelReloadResult SessionModelBinding::install_target_locked(
             provider_ = std::move(construction->provider);
             state_ = target.state;
             fingerprint_ = construction->fingerprint;
+            construction_plan_ = std::make_shared<PreparedProviderConstruction>(
+                std::move(*latest_prepared));
             applied_revision_.store(target.revision, std::memory_order_release);
         }
 
@@ -411,9 +415,58 @@ void SessionModelBinding::install_runtime_snapshot(
     std::lock_guard<std::mutex> state_lock(state_mu_);
     ++selected_generation_;
     provider_ = std::move(provider);
+    construction_plan_.reset();
     state_ = std::move(state);
     fingerprint_.reset();
     applied_revision_.store(revision, std::memory_order_release);
+}
+
+std::optional<SessionModelRuntimeSnapshot> SessionModelBinding::clone_runtime_snapshot(
+    const std::string& expected_name, std::string* error) const {
+    if (error) error->clear();
+    auto fail = [error](const char* message) -> std::optional<SessionModelRuntimeSnapshot> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    SessionModelRuntimeSnapshot snapshot;
+    std::shared_ptr<LlmProvider> original;
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        if (state_.name != expected_name || state_.deleted) return fail("source model selection changed");
+        if (!provider_ || !construction_plan_) return fail("source provider cannot be independently cloned");
+        original = provider_;
+        snapshot.state = state_;
+        snapshot.revision = applied_revision_.load(std::memory_order_acquire);
+        snapshot.construction_plan = construction_plan_;
+    }
+    try {
+        snapshot.provider = snapshot.construction_plan->construct().provider;
+        if (!snapshot.provider) return fail("could not construct the target provider");
+        if (!authenticate_after_construction(snapshot.provider).empty()) {
+            return fail("target provider authentication failed");
+        }
+    } catch (...) {
+        return fail("could not construct the target provider");
+    }
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        if (provider_ != original || state_.name != expected_name || state_.deleted) {
+            return fail("source model changed while preparing the target provider");
+        }
+    }
+    return snapshot;
+}
+
+void SessionModelBinding::install_cloned_snapshot(SessionModelRuntimeSnapshot snapshot) {
+    std::lock_guard<std::mutex> operation_lock(operation_mu_);
+    std::lock_guard<std::mutex> state_lock(state_mu_);
+    ++selected_generation_;
+    provider_ = std::move(snapshot.provider);
+    state_ = std::move(snapshot.state);
+    construction_plan_ = std::move(snapshot.construction_plan);
+    if (construction_plan_) fingerprint_ = construction_plan_->fingerprint();
+    else fingerprint_.reset();
+    applied_revision_.store(snapshot.revision, std::memory_order_release);
 }
 
 bool SessionModelBinding::synchronize_context_window(

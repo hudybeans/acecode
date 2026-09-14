@@ -28,6 +28,7 @@
 #include <deque>
 #include <queue>
 #include <map>
+#include <set>
 #include <optional>
 #include <utility>
 #include <limits>
@@ -250,6 +251,18 @@ public:
 
     // Migration must also wait for submitted work not yet picked up by the worker.
     bool has_pending_work();
+    bool has_queued_user_work();
+    bool submit_task_suggestion_input(const UserInput& input,
+                                      const std::string& suggestion_id);
+    bool has_task_suggestion_input(const std::string& suggestion_id);
+    bool try_start_side_task(const std::function<bool()>& accept_target_input,
+                              std::string* error = nullptr);
+    // Called from this loop's worker control boundary. Submission of the
+    // successor's first input is serialized with incoming source input. The
+    // callback may only submit to the target; it must not call this loop.
+    bool complete_task_handoff(const std::string& target_session_id,
+                               const std::function<bool()>& accept_target_input,
+                               std::string* error = nullptr);
 
     // Append input to the active regular turn. The expected id check and FIFO
     // append happen under one lock, matching Codex turn/steer race semantics.
@@ -332,6 +345,10 @@ public:
     // main.cpp at startup (and could be called again if config reloads).
     // A fresh-default AgentLoopConfig is used when this setter is never called.
     void set_agent_loop_config(AgentLoopConfig cfg) { loop_cfg_ = cfg; }
+    void set_task_suggestion_compact_threshold(int threshold) {
+        task_suggestion_compact_threshold_.store(
+            threshold > 0 ? threshold : 0, std::memory_order_relaxed);
+    }
 
     // Per-session policy used only by daemon-owned LOOP runs. It is installed
     // before the first submit and may be updated once worktree creation adds
@@ -456,6 +473,7 @@ public:
 
 private:
     void worker_main();
+    bool has_queued_user_work_locked() const;
     void join_side_question_threads();
     void run_agent(const std::string& user_message);
     void run_agent_with_input(const UserInput& input,
@@ -754,6 +772,7 @@ private:
     // 模型请求,先把已经缩好的请求发出去;下一次采样再照常压缩。
     bool skip_auto_compact_once_ = false;
     std::atomic<int> compact_generation_{0};
+    std::atomic<int> task_suggestion_compact_threshold_{3};
     bool compact_window_initialized_ = false;
     std::uint64_t compact_window_number_ = 0;
     std::string compact_first_window_id_;
@@ -818,6 +837,7 @@ private:
     // FIFOs preserve both urgent and ordinary relative ordering.
     std::queue<WorkerTask> priority_task_queue_;
     std::queue<WorkerTask> task_queue_;
+    std::set<std::string> task_suggestion_input_ids_;
     bool shutdown_requested_ = false;
     bool worker_task_active_ = false;
     WorkerTask::Kind worker_task_kind_ = WorkerTask::Kind::Control;

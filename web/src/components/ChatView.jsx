@@ -42,6 +42,7 @@ import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { ExpertPickerDialog } from './ExpertCatalog.jsx';
 import { QueueCardList } from './QueueCardList.jsx';
 import { SideQuestionCard } from './SideQuestionCard.jsx';
+import { TaskSuggestionCards } from './TaskSuggestionCards.jsx';
 import { SideQuestionComposer } from './SideQuestionComposer.jsx';
 import { GitSessionPill } from './GitSessionPill.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
@@ -4990,6 +4991,16 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         onDrop={handleChatFileDrop}
         style={chatColumnStyle}
       >
+      {sid && !readOnlyExternalSession && transcriptLoadState === 'loaded' && (
+        <TaskSuggestionCards
+          key={`${ref?.workspaceHash || ''}:${sid}`}
+          api={api}
+          sessionId={sid}
+          sourceRef={ref}
+          busy={busy}
+          onOpenSession={onSessionPromoted}
+        />
+      )}
       <div className="h-9 px-3 flex items-center justify-between bg-surface shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="flex min-w-0 items-center gap-1.5">

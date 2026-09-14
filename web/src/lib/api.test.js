@@ -35,6 +35,26 @@ await run('local import sends original binary ZIP with authentication and previe
   } finally { globalThis.fetch = originalFetch; }
 });
 
+await run('suggestion HTTP helpers encode both IDs, authenticate and use explicit acceptance locations', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({}) };
+  };
+  try {
+    const api = createApi({ origin: 'http://suggestion.test', token: 'test-token' });
+    await api.listTaskSuggestions('source /');
+    await api.acceptTaskSuggestion('source /', 'suggestion /', 'current_branch');
+    await api.dismissTaskSuggestion('source /', 'suggestion /');
+    assert.equal(calls[0].url, 'http://suggestion.test/api/sessions/source%20%2F/suggestions');
+    assert.equal(calls[1].url, 'http://suggestion.test/api/sessions/source%20%2F/suggestions/suggestion%20%2F/accept');
+    assert.equal(calls[1].options.headers['X-ACECode-Token'], 'test-token');
+    assert.deepEqual(JSON.parse(calls[1].options.body), { location: 'current_branch' });
+    assert.ok(calls[2].url.endsWith('/dismiss'));
+  } finally { globalThis.fetch = original; }
+});
+
 function run(name, fn) {
   try {
     const ret = fn();

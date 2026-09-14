@@ -6,6 +6,7 @@
 #include "../utils/utf8_path.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -204,6 +205,14 @@ WorktreeCreateResult get_or_create_worktree(const std::string& repo_root,
     result.worktree_path = worktree_path_for(repo_root, slug);
     result.worktree_branch = worktree_branch_name(slug);
 
+    if (!options.base_commit.empty() &&
+        ((options.base_commit.size() != 40 && options.base_commit.size() != 64) ||
+         !std::all_of(options.base_commit.begin(), options.base_commit.end(),
+                      [](unsigned char c) { return std::isxdigit(c) != 0; }))) {
+        result.error = "Base commit must be a full hexadecimal commit ID";
+        return result;
+    }
+
     // Fast resume:worktree 已存在(HEAD 可解析)时跳过 fetch 与创建。
     std::error_code ec;
     if (fs::exists(path_from_utf8(result.worktree_path) / ".git", ec)) {
@@ -225,7 +234,16 @@ WorktreeCreateResult get_or_create_worktree(const std::string& repo_root,
 
     std::string base_ref;
     std::string base_sha;
-    if (options.pr_number.has_value()) {
+    if (!options.base_commit.empty()) {
+        auto verify = run_git({"rev-parse", "--verify", "--quiet",
+                               options.base_commit + "^{commit}"}, repo_root);
+        if (!verify.ok()) {
+            result.error = "The task's base commit is unavailable in this repository";
+            return result;
+        }
+        base_ref = options.base_commit;
+        base_sha = trim(verify.out);
+    } else if (options.pr_number.has_value()) {
         auto pr_fetch = run_git(
             {"fetch", "origin", "pull/" + std::to_string(*options.pr_number) + "/head"},
             repo_root, /*timeout_ms=*/120000, /*no_prompt=*/true);

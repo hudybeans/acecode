@@ -5791,6 +5791,8 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
                 timeout_seconds, origin_label);
         });
     agent_loop.set_context_window(config.context_window);
+    agent_loop.set_task_suggestion_compact_threshold(
+        config.task_suggestion_compact_threshold);
     agent_loop.set_no_model_config_prompt(
         u8"请先配置大模型服务。TUI 可运行 acecode configure 或使用 /model add 添加模型。");
     agent_loop.set_agent_loop_config(config.agent_loop);
