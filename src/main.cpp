@@ -189,7 +189,7 @@
 using namespace ftxui;
 using namespace acecode;
 
-struct acecode::TuiState;
+namespace acecode { struct TuiState; }
 static std::string clipboard_copy_status_message(
     acecode::ClipboardTextWriteResult::Status status);
 static void set_transient_status_line_locked(TuiState& state,
