@@ -526,7 +526,9 @@ TEST(AskUserQuestionInterjectedTest, InterjectedResponseWinsOverCancelled) {
     auto r = tool.execute(kInteractiveQuestionArgs, ctx);
     EXPECT_TRUE(r.success) << r.output;
     EXPECT_EQ(r.output.rfind("[User interjected]", 0), 0u) << r.output;
-    EXPECT_NE(r.output.find("next user message"), std::string::npos) << r.output;
+    // 请求里最后一条真实 user 消息之前可能插着 session-context 块(也是 user
+    // 角色),所以文案说的是「next real user message」而不是「下一条 user 消息」。
+    EXPECT_NE(r.output.find("next real user message"), std::string::npos) << r.output;
     EXPECT_EQ(r.output.find("User declined"), std::string::npos);
     ASSERT_TRUE(r.metadata.contains("ask_user_question_result"));
     const auto& feedback = r.metadata.at("ask_user_question_result");

@@ -304,9 +304,9 @@ ToolResult make_interjected_ask_result() {
     r.success = true;
     r.output =
         "[User interjected] The user did not answer these questions. Instead "
-        "they sent a new message while the questions were pending; it follows "
-        "this tool result as the next user message. Treat that message as the "
-        "user's actual instruction and continue from it. Do not ask these "
+        "they sent a new message while the questions were pending; it is the "
+        "next real user message after this tool result. Treat that message as "
+        "the user's actual instruction and continue from it. Do not ask these "
         "questions again unless that message leaves them genuinely unresolved.";
     r.metadata = {{"ask_user_question_result", {
         {"interjected", true}, {"items", nlohmann::json::array()}
