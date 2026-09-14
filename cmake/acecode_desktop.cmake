@@ -119,6 +119,20 @@ if(WIN32)
     )
 endif()
 
+if(UNIX AND NOT APPLE)
+    set(ACECODE_LINUX_ICON "${CMAKE_SOURCE_DIR}/web/public/acecode-logo.png")
+    # Refresh the adjacent window/tray artwork even when only the icon changes.
+    set_property(TARGET acecode-desktop APPEND PROPERTY LINK_DEPENDS
+        "${ACECODE_LINUX_ICON}")
+    add_custom_command(TARGET acecode-desktop POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ACECODE_LINUX_ICON}"
+            "$<TARGET_FILE_DIR:acecode-desktop>/acecode-logo.png"
+        COMMENT "Copying the ACECode application icon beside the Linux desktop executable"
+        VERBATIM
+    )
+endif()
+
 if(APPLE)
     target_link_libraries(acecode-desktop PRIVATE
         "-framework AppKit"

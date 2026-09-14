@@ -83,6 +83,25 @@ TEST(ConfigAskLoader, ClampsValuesOutsideSupportedRange) {
     }
 }
 
+TEST(ConfigAskLoader, ClampsWideIntegersBeforeNarrowing) {
+    const nlohmann::json values[] = {
+        4294967296LL, 18446744073709551615ULL, -4294967296LL};
+    for (const auto& value : values) {
+        const auto path = temp_config_path("wide-integer");
+        write_json(path, {
+            {"ask", {{"max_questions", value}}},
+            {"tui", {{"question_min_visible_rows", value},
+                     {"question_selection_feedback_ms", value}}},
+        });
+        const auto cfg = acecode::load_config_from_path(path.string());
+        const bool positive = value > 0;
+        EXPECT_EQ(cfg.ask.max_questions, positive ? 50 : 1) << value;
+        EXPECT_EQ(cfg.tui.question_min_visible_rows, positive ? 12 : 2) << value;
+        EXPECT_EQ(cfg.tui.question_selection_feedback_ms, positive ? 1000 : 0) << value;
+        remove_file(path);
+    }
+}
+
 TEST(ConfigAskLoader, InvalidTypesAndSectionKeepDefault) {
     for (const auto& ask_value : {
              nlohmann::json{{"max_questions", "10"}},

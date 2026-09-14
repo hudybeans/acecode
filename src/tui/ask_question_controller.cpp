@@ -73,6 +73,7 @@ AskQuestionSnapshot AskQuestionController::snapshot() const {
     result.current_question = current_question_;
     result.total_questions = static_cast<int>(questions_.size());
     result.scroll_offset = scroll_offset_;
+    result.follow_focus = follow_focus_;
     result.editing_custom = editing_custom_;
     result.feedback_locked = feedback_locked_;
     result.completed = finished_;
@@ -332,6 +333,7 @@ std::vector<AskQuestionEffect> AskQuestionController::handle(
         return effects;
     }
     if (event.kind == AskQuestionEventKind::ScrollLines) {
+        follow_focus_ = false;
         scroll_offset_ = std::max(0, scroll_offset_ + event.line_delta);
         if (event.max_scroll_offset >= 0) {
             scroll_offset_ = std::min(scroll_offset_, event.max_scroll_offset);
@@ -356,6 +358,11 @@ std::vector<AskQuestionEffect> AskQuestionController::handle(
         }
         effects.push_back({AskQuestionEffectKind::Redraw, {}});
         return effects;
+    }
+    if (event.kind != AskQuestionEventKind::CopyFocused &&
+        event.kind != AskQuestionEventKind::CopySelection &&
+        event.kind != AskQuestionEventKind::CutSelection) {
+        follow_focus_ = true;
     }
     if (page_ == AskQuestionPage::Summary) {
         switch (event.kind) {
@@ -421,16 +428,16 @@ std::vector<AskQuestionEffect> AskQuestionController::handle(
         case AskQuestionEventKind::ToggleFocused:
         case AskQuestionEventKind::ToggleFocusedWithoutSubmit:
             if (state.focused_option == custom) {
-                if (state.custom_selected) {
-                if (event.kind == AskQuestionEventKind::ToggleFocusedWithoutSubmit &&
-                    !editing_custom_) {
-                    clear_current_selection();
+                if (state.custom_selected &&
+                    event.kind == AskQuestionEventKind::ToggleFocusedWithoutSubmit) {
+                    // Only this option is toggled; keep the draft and any other
+                    // selected answers in a multi-select question.
+                    state.custom_selected = false;
+                    state.auto_selected = false;
+                    editing_custom_ = false;
                 } else {
                     activate_custom(true);
                 }
-            } else {
-                activate_custom(true);
-            }
             } else if (multi_select()) {
                 select_preset(state.focused_option, false);
             } else {

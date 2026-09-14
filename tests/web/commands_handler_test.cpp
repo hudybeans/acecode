@@ -94,7 +94,7 @@ TEST_F(CommandsHandlerTest, NoWorkspaceCwdOmitsSkillsField) {
     EXPECT_FALSE(payload.contains("skills")) << "缺 workspace_cwd 不应输出 skills 字段";
     EXPECT_FALSE(payload.contains("commands")) << "缺 workspace_cwd 不应输出 commands 字段";
 
-    ASSERT_EQ(payload["builtins"].size(), 8u);
+    ASSERT_EQ(payload["builtins"].size(), 9u);
     EXPECT_EQ(payload["builtins"][0]["name"].get<std::string>(), "init");
     EXPECT_EQ(payload["builtins"][1]["name"].get<std::string>(), "compact");
     EXPECT_EQ(payload["builtins"][2]["name"].get<std::string>(), "feedback");
@@ -104,8 +104,9 @@ TEST_F(CommandsHandlerTest, NoWorkspaceCwdOmitsSkillsField) {
     // 回归:B-Task 8 复审发现 rc/remote-control 只进了可执行白名单
     // (builtin_command_handler / 前端 parseExecutableBuiltinCommand),
     // builtins payload 漏加 → Web 输入框打 /r 没有下拉补全。
-    EXPECT_EQ(payload["builtins"][6]["name"].get<std::string>(), "rc");
-    EXPECT_EQ(payload["builtins"][7]["name"].get<std::string>(), "remote-control");
+    EXPECT_EQ(payload["builtins"][6]["name"].get<std::string>(), "sandbox");
+    EXPECT_EQ(payload["builtins"][7]["name"].get<std::string>(), "rc");
+    EXPECT_EQ(payload["builtins"][8]["name"].get<std::string>(), "remote-control");
     for (const auto& builtin : payload["builtins"]) {
         EXPECT_FALSE(builtin["description"].get<std::string>().empty());
     }
@@ -226,8 +227,10 @@ TEST_F(CommandsHandlerTest, BuiltinDescriptionsMatchTuiRegistration) {
     // rc / remote-control 的描述与 src/commands/remote_control_command.cpp
     // 的 TUI 注册文案保持一致。
     EXPECT_EQ(payload["builtins"][6]["description"].get<std::string>(),
-              "Alias for /remote-control");
+              "Show the bash sandbox status, or /sandbox off|on for this session");
     EXPECT_EQ(payload["builtins"][7]["description"].get<std::string>(),
+              "Alias for /remote-control");
+    EXPECT_EQ(payload["builtins"][8]["description"].get<std::string>(),
               "Activate a configured channel plugin or manage manual remote-control webhooks");
 }
 

@@ -44,10 +44,10 @@ test('standalone expert page dispatches to the real new-task composer without re
   assert.match(app, /onDispatchToNewTask=\{dispatchExpertToNewTask\}/);
   assert.match(app, /onInitialDraftConsumed=\{consumeInitialDraftText\}/);
   assert.match(chat, /const stagedExpertDraft = expertDispatchDraftFromRef\(ref\)/);
-  assert.match(
-    chat,
-    /if \(!targetSid \|\| !targetKey\) \{[\s\S]{0,300}stagedExpertDraft\.present[\s\S]{0,150}currentHomeDraftText;[\s\S]{0,200}setComposerValue\(homeText\);[\s\S]{0,300}onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, stagedExpertDraft\.text\);[\s\S]{0,100}onInitialDraftConsumed\?\.\(\)/,
-  );
+  assert.match(chat, /if \(sid \|\| !stagedExpertDraft\.present\) return/);
+  assert.match(chat, /setComposerValue\(stagedExpertDraft\.text\)/);
+  assert.match(chat, /onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, stagedExpertDraft\.text\)/);
+  assert.match(chat, /onInitialDraftConsumed\?\.\(\)/);
   assert.doesNotMatch(page, /api\.setSessionDraft/);
   assert.doesNotMatch(page, /<InputBar|data-composer|模拟聊天|悬浮输入/);
   assert.doesNotMatch(page, /window\.confirm|window\.alert/);

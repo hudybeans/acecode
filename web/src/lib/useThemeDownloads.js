@@ -2,14 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api.js';
 import { createThemeDownloadController } from './themePackages.js';
 
-export function useThemeDownloads({ enabled, prepare, apply }) {
-  const callbacks = useRef({ prepare, apply });
-  callbacks.current = { prepare, apply };
-  const [state, setState] = useState({ entry: null, loading: false, error: '', job: { state: 'idle' } });
+export function useThemeDownloads({ enabled, prepare, apply, remove, forget }) {
+  const callbacks = useRef({ prepare, apply, remove, forget });
+  callbacks.current = { prepare, apply, remove, forget };
+  const [state, setState] = useState({ entry: null, localEntries: [], deletingId: '', loading: false, error: '', job: { state: 'idle' } });
   const controller = useMemo(() => createThemeDownloadController({
     api,
     prepare: (id, options) => callbacks.current.prepare(id, options),
-    apply: (id) => callbacks.current.apply(id),
+    apply: (id, options) => callbacks.current.apply(id, options),
+    remove: (id) => callbacks.current.remove(id),
+    forget: (id) => callbacks.current.forget(id),
     onChange: setState,
   }), []);
   useEffect(() => {

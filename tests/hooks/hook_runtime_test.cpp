@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "tool/tool_protocol_names.hpp"
 
 #include "hooks/hook_manager.hpp"
 #include "hooks/hook_runtime.hpp"
@@ -53,6 +54,33 @@ TEST(HookRuntime, MatcherAliasesMapCodexNamesToAceCodeTools) {
         make_hook("h4", acecode::kCodexHookEventPreToolUse, "apply_patch"),
         acecode::kCodexHookEventPreToolUse,
         "file_write"));
+    // apply_patch 也是 GPT / Codex 系模型实际调用的原生工具名:同一个 matcher
+    // 必须同时命中它,否则用户为 Codex 写的 hooks 在 GPT 模型下静默失效。
+    EXPECT_TRUE(acecode::hook_matcher_matches(
+        make_hook("h4b", acecode::kCodexHookEventPreToolUse, "apply_patch"),
+        acecode::kCodexHookEventPreToolUse,
+        "apply_patch"));
+}
+
+// 场景:「工具重写」生效(file_write → write),用户照模型的叫法写 matcher "write"。
+// 期望:命中原生 file_write;映射关闭时 "write" 只是个不存在的工具名,不命中。
+// 回归:改动前 hooks 只认 Claude Code 风格的 Write / Edit 别名,不认模型侧名,
+// 三套命名词汇并存时用户写的 matcher 静默失效。
+TEST(HookRuntime, MatcherAcceptsModelFacingAliasWhenRewriteActive) {
+    {
+        acecode::ScopedModelToolNameMappings scoped({{"file_write", "write"}});
+        EXPECT_TRUE(acecode::hook_matcher_matches(
+            make_hook("h5", acecode::kCodexHookEventPreToolUse, "write"),
+            acecode::kCodexHookEventPreToolUse,
+            "file_write"));
+        EXPECT_EQ(acecode::canonical_hook_match_value("write"), "file_write");
+        EXPECT_EQ(acecode::canonical_hook_match_value("Write"), "file_write");
+    }
+    // 映射关闭时 "write" 不再是别名:canonical 值原样返回(matcher 本身仍可能
+    // 按正则子串命中 file_write,那是既有的正则语义,不在本用例范围内)。
+    acecode::ScopedModelToolNameMappings none({});
+    EXPECT_EQ(acecode::canonical_hook_match_value("write"), "write");
+    EXPECT_EQ(acecode::canonical_hook_match_value("Write"), "file_write");
 }
 
 TEST(HookRuntime, InvalidRegexProducesDiagnostic) {

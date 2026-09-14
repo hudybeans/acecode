@@ -3,6 +3,7 @@
 #include "../session/session_manager.hpp"
 #include "../session/todo_state.hpp"
 #include "tool_icons.hpp"
+#include "tool_protocol_names.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -98,13 +99,15 @@ ToolResult execute_todo_write(const std::string& arguments_json, const ToolConte
         return tool_error(std::string("invalid JSON: ") + e.what());
     }
     if (!args.is_object()) {
-        return tool_error("TodoWrite arguments must be an object");
+        return tool_error(model_tool_name_for_native("TodoWrite") +
+                          " arguments must be an object");
     }
 
     const bool has_todos = args.contains("todos") && !args["todos"].is_null();
     const bool merge = args.value("merge", false);
     if (has_todos && !args["todos"].is_array()) {
-        return tool_error("TodoWrite todos must be an array when provided");
+        return tool_error(model_tool_name_for_native("TodoWrite") +
+                          " todos must be an array when provided");
     }
 
     const std::string session_id = ctx.session_manager->ensure_active_session_id();

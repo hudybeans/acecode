@@ -1,4 +1,5 @@
 #include "headless_options.hpp"
+#include "permissions.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -19,7 +20,8 @@ bool is_dangerous_flag(const std::string& t) {
 }
 
 bool valid_permission_mode(const std::string& m) {
-    return m == "default" || m == "accept-edits" || m == "plan" || m == "yolo";
+    // auto 的旧名 accept-edits / acceptEdits 仍接受(脚本兼容)。
+    return PermissionManager::parse_mode_name(m).has_value();
 }
 
 // "--flag=value" 形式的拆分。命中前缀返回 true 并写 value(可为空串,由
@@ -178,7 +180,7 @@ HeadlessCliOptions parse_headless_cli_options(const std::vector<std::string>& to
         } else if (split_eq(t, "--output-format", eq_value)) {
             o.output_format = eq_value;
         } else if (t == "--permission-mode") {
-            if (i + 1 >= tokens.size()) return fail("--permission-mode requires a value (default|accept-edits|plan|yolo)");
+            if (i + 1 >= tokens.size()) return fail("--permission-mode requires a value (default|auto|plan|yolo)");
             o.permission_mode = tokens[++i];
         } else if (split_eq(t, "--permission-mode", eq_value)) {
             o.permission_mode = eq_value;
@@ -226,7 +228,7 @@ HeadlessCliOptions parse_headless_cli_options(const std::vector<std::string>& to
 
     if (!o.permission_mode.empty() && !valid_permission_mode(o.permission_mode)) {
         return fail("invalid --permission-mode: " + o.permission_mode +
-                    " (expected default|accept-edits|plan|yolo)");
+                    " (expected default|auto|plan|yolo)");
     }
     // 会话 id 是文件名(<id>.jsonl):字符集校验挡住路径穿越("../x")与
     // 忘带 id 时把 prompt 误当 id 的情况(prompt 几乎必含空格/标点)。
@@ -317,7 +319,7 @@ std::string print_mode_help() {
         "  --model <name>           Use a saved model by name\n"
         "                           (new sessions: configured default; resume keeps\n"
         "                           its saved model unless this option is supplied)\n"
-        "  --permission-mode <m>    default | accept-edits | plan | yolo\n"
+        "  --permission-mode <m>    default | auto | plan | yolo (accept-edits = auto)\n"
         "                           (default: default; also applies on resume)\n"
         "  --max-turns <n>          Cap agent-loop iterations (default: unlimited)\n"
         "  --disable-tools <names>  Disable exact system tool names (default: none)\n"

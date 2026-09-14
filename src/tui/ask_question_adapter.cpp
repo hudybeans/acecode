@@ -38,6 +38,7 @@ AskQuestionHit hit_test_ask_question_frame(const AskQuestionFrame& frame,
                 return {AskQuestionHitKind::Custom, layout_row.question_index,
                         layout_row.option_index};
             case AskQuestionLayoutKind::Summary:
+            case AskQuestionLayoutKind::SummaryAnswer:
                 return {AskQuestionHitKind::SummaryQuestion,
                         layout_row.question_index, -1};
             default:

@@ -2,6 +2,7 @@
 
 #include "../config/config.hpp"
 #include "agent_browser/browser_tools.hpp"
+#include "apply_patch_tool.hpp"
 #include "bash_tool.hpp"
 #include "file_edit_tool.hpp"
 #include "file_read_tool.hpp"
@@ -14,6 +15,7 @@
 #include "plan_mode_tool.hpp"
 #include "show_image_tool.hpp"
 #include "task_complete_tool.hpp"
+#include "theme_create_tool.hpp"
 #include "todo_write_tool.hpp"
 #include "tool_executor.hpp"
 #include "vision_subagent_tool.hpp"
@@ -28,10 +30,14 @@ inline void register_session_builtin_tools(ToolExecutor& tools, const AppConfig&
     tools.register_tool(create_file_read_tool());
     tools.register_tool(create_file_write_tool());
     tools.register_tool(create_file_edit_tool());
+    // GPT / Codex 系模型的编辑工具。三个编辑工具始终注册;每次请求按当前模型
+    // 只把其中一套放进模型侧工具表(model_family::filter_tool_definitions_for_model)。
+    tools.register_tool(create_apply_patch_tool());
     tools.register_tool(create_show_image_tool());
     tools.register_tool(create_grep_tool());
     tools.register_tool(create_glob_tool());
     tools.register_tool(create_task_complete_tool());
+    tools.register_tool(create_theme_create_tool());
     tools.register_tool(create_todo_write_tool());
     tools.register_tool(create_get_goal_tool());
     tools.register_tool(create_create_goal_tool());

@@ -29,6 +29,8 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
     title,
     body,
     primaryLabel,
+    allowSessionLabel,
+    justification,
   } = planPermissionPresentation(request);
   const status = request?.status || PERMISSION_REQUEST_STATUS.PENDING;
   const pending = status === PERMISSION_REQUEST_STATUS.PENDING;
@@ -86,6 +88,7 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
           </div>
         )}
         <p className="m-0 text-[12px] leading-relaxed text-fg-2">{body}</p>
+        {justification && <p className="m-0 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">{justification}</p>}
         {(isPlanApproval || isPlanEnter) && planFilePath && (
           <div className="break-all text-[11px] text-fg-mute">{planFilePath}</div>
         )}
@@ -143,7 +146,7 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
             onClick={() => decide('allow_session')}
             className="h-8 rounded-md border border-accent bg-transparent px-3 text-[12px] font-medium text-accent transition hover:bg-accent-bg disabled:cursor-wait disabled:opacity-50"
           >
-            本次会话允许
+            {allowSessionLabel}
           </button>
         )}
         <button

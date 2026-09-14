@@ -1203,19 +1203,19 @@ TEST(SessionRegistry, DefaultPermissionModeAppliesToNewSessionsOnly) {
     TestFixture fx;
 
     EXPECT_EQ(fx.registry.default_permission_mode(), PermissionMode::Default);
-    fx.registry.set_default_permission_mode(PermissionMode::AcceptEdits);
-    EXPECT_EQ(fx.registry.default_permission_mode(), PermissionMode::AcceptEdits);
+    fx.registry.set_default_permission_mode(PermissionMode::Auto);
+    EXPECT_EQ(fx.registry.default_permission_mode(), PermissionMode::Auto);
 
     auto first = fx.registry.create(SessionOptions{});
     ASSERT_TRUE(fx.registry.permission_mode(first).has_value());
-    EXPECT_EQ(*fx.registry.permission_mode(first), PermissionMode::AcceptEdits);
+    EXPECT_EQ(*fx.registry.permission_mode(first), PermissionMode::Auto);
     auto* first_entry = fx.registry.lookup(first);
     ASSERT_NE(first_entry, nullptr);
     ASSERT_NE(first_entry->sm, nullptr);
-    EXPECT_EQ(first_entry->sm->current_permission_mode(), "accept-edits");
+    EXPECT_EQ(first_entry->sm->current_permission_mode(), "auto");
 
     fx.registry.set_default_permission_mode(PermissionMode::Yolo);
-    EXPECT_EQ(*fx.registry.permission_mode(first), PermissionMode::AcceptEdits);
+    EXPECT_EQ(*fx.registry.permission_mode(first), PermissionMode::Auto);
 
     auto second = fx.registry.create(SessionOptions{});
     ASSERT_TRUE(fx.registry.permission_mode(second).has_value());
@@ -1310,18 +1310,36 @@ TEST(SessionRegistry, LoopPermissionAndQuestionPolicyAreSessionScoped) {
 }
 
 // 场景: 切换权限模式会清掉此前"本次会话允许"的 sticky allow,避免
-// 从 Yolo / AcceptEdits 切回 Default 后仍沿用旧的免确认记录。
+// 从 Yolo / Auto 切回 Default 后仍沿用旧的免确认记录。
 TEST(SessionRegistry, SetPermissionModeClearsSessionAllows) {
     TestFixture fx;
     auto id = fx.registry.create(SessionOptions{});
     auto* entry = fx.registry.lookup(id);
     ASSERT_NE(entry, nullptr);
-    entry->perm->add_session_allow("bash");
-    ASSERT_TRUE(entry->perm->has_session_allow("bash"));
+    entry->perm->add_session_command_allow("pnpm test", true);
+    ASSERT_FALSE(entry->perm->session_command_allows().empty());
 
-    ASSERT_TRUE(fx.registry.set_permission_mode(id, PermissionMode::AcceptEdits));
-    EXPECT_FALSE(entry->perm->has_session_allow("bash"));
+    ASSERT_TRUE(fx.registry.set_permission_mode(id, PermissionMode::Auto));
+    EXPECT_TRUE(entry->perm->session_command_allows().empty());
 
+    fx.registry.destroy(id);
+}
+
+TEST(SessionRegistry, SandboxBuiltinChangesOnlyThisSessionsGate) {
+    TestFixture fx;
+    const auto id = fx.registry.create(SessionOptions{});
+    auto* entry = fx.registry.lookup(id);
+    ASSERT_NE(entry, nullptr);
+    entry->perm->add_session_command_allow("pnpm test", true);
+    acecode::BuiltinCommandRequest request;
+    request.name = "sandbox";
+    request.args = "off";
+    EXPECT_EQ(fx.registry.execute_builtin_command(id, request).status, acecode::BuiltinCommandStatus::Accepted);
+    EXPECT_TRUE(entry->perm->session_command_allows().empty());
+    EXPECT_NE(entry->loop->sandbox_command("").find("disabled for this session"), std::string::npos);
+    request.args = "on";
+    EXPECT_EQ(fx.registry.execute_builtin_command(id, request).status, acecode::BuiltinCommandStatus::Accepted);
+    EXPECT_EQ(entry->loop->sandbox_command("").find("disabled for this session"), std::string::npos);
     fx.registry.destroy(id);
 }
 
@@ -2646,12 +2664,12 @@ TEST(SessionRegistry, ResumeDiskSessionRestoresPermissionMode) {
     ASSERT_TRUE(registry.resume(id));
     auto mode = registry.permission_mode(id);
     ASSERT_TRUE(mode.has_value());
-    EXPECT_EQ(*mode, PermissionMode::AcceptEdits);
+    EXPECT_EQ(*mode, PermissionMode::Auto);
 
     auto* entry = registry.lookup(id);
     ASSERT_NE(entry, nullptr);
     ASSERT_NE(entry->sm, nullptr);
-    EXPECT_EQ(entry->sm->current_permission_mode(), "accept-edits");
+    EXPECT_EQ(entry->sm->current_permission_mode(), "auto");
 
     std::filesystem::remove_all(project_dir);
     std::filesystem::remove_all(cwd);

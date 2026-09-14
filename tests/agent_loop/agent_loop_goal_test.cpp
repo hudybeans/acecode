@@ -6,8 +6,10 @@
 #include "session/session_storage.hpp"
 #include "session/thread_goal_store.hpp"
 #include "stub_provider.hpp"
+#include "tool/bash_tool.hpp"
 #include "tool/goal_tool.hpp"
 #include "tool/tool_executor.hpp"
+#include "sandbox/exec_rules.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -584,4 +586,79 @@ TEST(AgentLoopGoal, ContinuationPromptCoversAuditAndUnattendedSections) {
     EXPECT_NE(continuation.find("Fidelity:"), std::string::npos);
     EXPECT_NE(continuation.find("The user has 30 seconds to answer"), std::string::npos);
     EXPECT_NE(continuation.find("treat completion as unproven"), std::string::npos);
+}
+
+// 场景:auto 模式 + Active goal + 沙盒可用,模型调用 bash 执行危险命令
+// (`rm -rf build`)。期望:确认回调一次都不触发(goal 无人值守承诺),
+// 命令照常执行,但执行上下文里的沙盒仍是决策表给出的批准后沙盒
+// (workspace-write),不会因为无人值守就升级成完整访问。
+// 回归:一版实现把 bash 排除在 goal 自动放行之外,daemon 里 AsyncPrompter
+// 会空等 5 分钟再 Deny,goal 回合被一条 rm 卡死。
+TEST(AgentLoopGoal, UnattendedGoalAutoApprovesDangerousBashInsideSandbox) {
+    AgentLoopGoalHarness h("bash_sandbox");
+    h.permissions().set_mode(acecode::PermissionMode::Auto);
+    h.loop().set_exec_rules({});
+    h.loop().set_sandbox_availability_for_tests(true);
+
+    std::vector<acecode::sandbox::SandboxMode> executions;
+    std::mutex executions_mu;
+    auto bash = acecode::create_bash_tool();
+    bash.execute = [&](const std::string&, const acecode::ToolContext& ctx) {
+        std::lock_guard<std::mutex> lk(executions_mu);
+        executions.push_back(ctx.exec_sandbox ? ctx.exec_sandbox->policy.mode
+                                              : acecode::sandbox::SandboxMode::FullAccess);
+        return acecode::ToolResult{"ok", true};
+    };
+    ASSERT_TRUE(h.tools().register_tool(bash));
+    h.create_goal();
+
+    h.provider().push_tool_call("bash", R"({"command":"rm -rf build"})", "call-rm");
+    h.provider().push_tool_call("update_goal", R"({"status":"complete"})", "goal-done");
+
+    ASSERT_TRUE(h.submit_and_wait("start", 10s));
+    ASSERT_TRUE(h.wait_until([&h] {
+        auto goal = h.goal();
+        return goal.has_value() &&
+            goal->status == acecode::ThreadGoalStatus::Complete;
+    }, 10s));
+    EXPECT_EQ(h.confirm_requests(), 0);
+    std::lock_guard<std::mutex> lk(executions_mu);
+    ASSERT_EQ(executions.size(), 1u);
+    EXPECT_EQ(executions[0], acecode::sandbox::SandboxMode::WorkspaceWrite);
+}
+
+// 对照场景:同样的危险命令命中 forbidden 规则。期望:goal 无人值守不能越过
+// forbidden —— 不弹确认、也不执行,工具直接返回被规则禁止。
+TEST(AgentLoopGoal, UnattendedGoalCannotOverrideForbiddenExecRule) {
+    AgentLoopGoalHarness h("bash_forbidden");
+    h.permissions().set_mode(acecode::PermissionMode::Auto);
+    acecode::sandbox::ExecRules rules;
+    auto parsed = acecode::sandbox::parse_rules_text(
+        "prefix_rule(pattern=[\"rm\"], decision=\"forbidden\")",
+        acecode::sandbox::RuleScope::Global, "global.rules");
+    ASSERT_TRUE(parsed.error.empty()) << parsed.error;
+    rules.add_rule(parsed.rules.front());
+    h.loop().set_exec_rules(std::move(rules));
+    h.loop().set_sandbox_availability_for_tests(true);
+
+    std::atomic<int> executed{0};
+    auto bash = acecode::create_bash_tool();
+    bash.execute = [&](const std::string&, const acecode::ToolContext&) {
+        executed.fetch_add(1);
+        return acecode::ToolResult{"ok", true};
+    };
+    ASSERT_TRUE(h.tools().register_tool(bash));
+    h.create_goal();
+
+    h.provider().push_tool_call("bash", R"({"command":"rm -rf build"})", "call-rm");
+    h.provider().push_tool_call("update_goal", R"({"status":"complete"})", "goal-done");
+
+    ASSERT_TRUE(h.submit_and_wait("start", 10s));
+    ASSERT_TRUE(h.wait_until([&h] {
+        auto goal = h.goal();
+        return goal.has_value() &&
+            goal->status == acecode::ThreadGoalStatus::Complete;
+    }, 10s));
+    EXPECT_EQ(h.confirm_requests(), 0);
+    EXPECT_EQ(executed.load(), 0);
 }

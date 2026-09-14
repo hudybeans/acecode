@@ -25,6 +25,8 @@
 
 #include "tui/confirm_question.hpp"
 
+#include "tool/apply_patch_format.hpp"
+
 #include <nlohmann/json.hpp>
 
 namespace acecode::tui {
@@ -153,6 +155,21 @@ std::string build_confirm_question(const std::string& tool_name,
 
         if (tool_name == "bash") {
             std::string out = "Do you want to run this command?";
+            if (j.contains("permission") && j["permission"].is_object()) {
+                const auto& permission = j["permission"];
+                const auto reason = permission.value("reason", std::string{});
+                if (reason == "dangerous_command") out = "模型要执行一条危险命令";
+                else if (reason == "escalation_requested") out = "模型申请在沙盒外执行";
+                else if (reason == "unknown_command_without_sandbox") out = "本平台没有可用沙盒,未知命令需要确认";
+                else if (reason == "rule_prompt") out = "执行规则要求确认这条命令";
+                if (j.value("with_escalated_permissions", false)) {
+                    out += "\n执行范围:沙盒外";
+                }
+                const auto justification = j.value("justification", std::string{});
+                if (!justification.empty()) out += "\n" + format_command_block(justification);
+                const auto prefix = permission.value("always_allow_prefix", std::string{});
+                if (!prefix.empty()) out += "\n本次会话允许的前缀: " + truncate_command_line(prefix);
+            }
             if (j.contains("command") && j["command"].is_string()) {
                 std::string cmd = j["command"].get<std::string>();
                 if (!cmd.empty()) out += "\n" + format_command_block(cmd);
@@ -181,6 +198,34 @@ std::string build_confirm_question(const std::string& tool_name,
                     j.contains("new_string") && j["new_string"].is_string()) {
                     out += "\n  - " + truncate_first_line(j["old_string"].get<std::string>());
                     out += "\n  + " + truncate_first_line(j["new_string"].get<std::string>());
+                }
+                return out;
+            }
+        }
+
+        if (tool_name == "apply_patch") {
+            // 一份补丁可能改多个文件:列出每个文件与操作(A 新建 / M 修改 /
+            // D 删除,Move 单独标出),最多 6 行,其余折叠成计数。
+            const auto headers = apply_patch::summarize_patch_headers(
+                apply_patch::patch_text_from_arguments(j.dump()));
+            if (!headers.empty()) {
+                std::string out = "Do you want to apply a patch to " +
+                                  std::to_string(headers.size()) +
+                                  (headers.size() == 1 ? " file?" : " files?");
+                size_t shown = 0;
+                for (const auto& header : headers) {
+                    if (shown >= 6) {
+                        out += "\n  ... " + std::to_string(headers.size() - shown) + " more";
+                        break;
+                    }
+                    const char* marker =
+                        header.kind == apply_patch::HunkKind::Add ? "A" :
+                        header.kind == apply_patch::HunkKind::Delete ? "D" : "M";
+                    out += std::string("\n  ") + marker + " " + truncate_path(header.path);
+                    if (!header.move_path.empty()) {
+                        out += " -> " + truncate_path(header.move_path);
+                    }
+                    ++shown;
                 }
                 return out;
             }

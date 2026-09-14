@@ -359,7 +359,7 @@ TEST_F(ConfigFirstInitTest, SaveConfigPersistsExplicitEmptySavedModels) {
     ASSERT_TRUE(j["saved_models"].is_array());
     EXPECT_TRUE(j["saved_models"].empty());
     EXPECT_FALSE(j.contains("default_model_name"));
-    EXPECT_EQ(j["default_permission_mode"], "accept-edits");
+    EXPECT_EQ(j["default_permission_mode"], "auto");
 }
 
 TEST_F(ConfigFirstInitTest, HooksFeatureFlagDefaultsEnabled) {

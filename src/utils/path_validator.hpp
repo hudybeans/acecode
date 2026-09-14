@@ -77,6 +77,29 @@ public:
         return false;
     }
 
+    // 敏感文件名 / 目录名名单。命令分类器(src/sandbox/command_classifier)也
+    // 用这份名单判「只读命令是否碰了机密」,两处必须同源,所以公开出来。
+    static const std::vector<std::string>& dangerous_files() {
+        static const std::vector<std::string> files = {
+            ".env", ".env.local", ".env.production",
+            ".gitconfig", ".bashrc", ".bash_profile", ".zshrc",
+            ".npmrc", ".yarnrc",
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "*.pem", "*.key", "*.p12", "*.pfx",
+            "authorized_keys", "known_hosts",
+            ".netrc", ".pgpass",
+        };
+        return files;
+    }
+
+    static const std::vector<std::string>& dangerous_directories() {
+        static const std::vector<std::string> dirs = {
+            ".git", ".ssh", ".gnupg", ".vscode",
+            ".aws", ".azure", ".kube",
+        };
+        return dirs;
+    }
+
 private:
     static std::string normalize(const std::string& path) {
         std::string result = path;
@@ -138,27 +161,6 @@ private:
         // After matching the prefix, the next char must be / or end of string
         if (str.size() > prefix.size() && str[prefix.size()] != '/') return false;
         return true;
-    }
-
-    static const std::vector<std::string>& dangerous_files() {
-        static const std::vector<std::string> files = {
-            ".env", ".env.local", ".env.production",
-            ".gitconfig", ".bashrc", ".bash_profile", ".zshrc",
-            ".npmrc", ".yarnrc",
-            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-            "*.pem", "*.key", "*.p12", "*.pfx",
-            "authorized_keys", "known_hosts",
-            ".netrc", ".pgpass",
-        };
-        return files;
-    }
-
-    static const std::vector<std::string>& dangerous_directories() {
-        static const std::vector<std::string> dirs = {
-            ".git", ".ssh", ".gnupg", ".vscode",
-            ".aws", ".azure", ".kube",
-        };
-        return dirs;
     }
 
     std::string working_dir_;

@@ -7,6 +7,9 @@
 #include "utils/stream_processing.hpp"
 #include "utils/tool_errors.hpp"
 #include "utils/utf8_path.hpp"
+#include "sandbox/exec_permission.hpp"
+#include "sandbox/sandbox_backend.hpp"
+#include "sandbox/sandbox_denial.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -18,6 +21,7 @@
 #include <set>
 #include <system_error>
 #include <cstdlib>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,6 +32,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <errno.h>
+extern char** environ;
 #endif
 
 namespace acecode {
@@ -110,23 +115,28 @@ static bool starts_with_env_name_ci(const std::wstring& value,
 }
 
 static std::vector<wchar_t> build_environment_block_with_var(
-    const std::wstring& name,
-    const std::wstring& value) {
+    const std::vector<std::pair<std::string, std::string>>& variables) {
     std::vector<std::wstring> entries;
-    const std::wstring prefix = env_name_prefix(name);
     LPWCH env = GetEnvironmentStringsW();
     if (env) {
         for (LPWCH p = env; *p != L'\0'; ) {
             std::wstring entry(p);
             const size_t entry_len = entry.size();
-            if (!starts_with_env_name_ci(entry, prefix)) {
+            bool replaced = false;
+            for (const auto& variable : variables) {
+                if (starts_with_env_name_ci(entry, env_name_prefix(utf8_to_wide(variable.first)))) replaced = true;
+            }
+            if (!replaced) {
                 entries.push_back(std::move(entry));
             }
             p += entry_len + 1;
         }
         FreeEnvironmentStringsW(env);
     }
-    entries.push_back(prefix + value);
+    for (const auto& variable : variables) entries.push_back(utf8_to_wide(variable.first + "=" + variable.second));
+    std::sort(entries.begin(), entries.end(), [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) < 0;
+    });
 
     std::vector<wchar_t> block;
     for (const auto& entry : entries) {
@@ -164,6 +174,8 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     try {
         auto args = nlohmann::json::parse(arguments_json);
+        const auto error = sandbox::validate_escalation_arguments(args);
+        if (!error.empty()) return ToolResult{"[Error] " + error, false};
         command = args.value("command", "");
         timeout_ms = args.value("timeout_ms", DEFAULT_TIMEOUT_MS);
         cwd = args.value("cwd", "");
@@ -184,6 +196,27 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         cwd = ctx.cwd;
     }
 
+    const bool sandboxed = ctx.exec_sandbox && ctx.exec_sandbox->policy.mode != sandbox::SandboxMode::FullAccess;
+    auto sandbox_failure = [&](const std::string& message) {
+        ToolResult result{"[Sandbox unavailable] " + message + ". The command was not executed.", false};
+        result.metadata["sandbox_unavailable"] = true;
+        // 单行原因给 AgentLoop 记进 /sandbox 状态与 system prompt;正文里的
+        // 引导句只给模型看。
+        result.metadata["sandbox_unavailable_reason"] = message;
+        result.output += "\nRequest with_escalated_permissions=true with a non-empty justification if full access is needed.";
+        return result;
+    };
+    if (sandboxed && ctx.exec_sandbox->backend == sandbox::BackendKind::None) {
+        return sandbox_failure("No sandbox backend selected");
+    }
+    std::vector<std::pair<std::string, std::string>> child_environment;
+    if (!ctx.scratch_dir.empty()) child_environment.emplace_back("ACECODE_TMPDIR", ctx.scratch_dir);
+    if (sandboxed) {
+        const auto additions = sandbox::sandbox_environment(ctx.exec_sandbox->backend,
+            ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced);
+        child_environment.insert(child_environment.end(), additions.begin(), additions.end());
+    }
+
     auto t_start = std::chrono::steady_clock::now();
     auto make_summary = [&](const std::string& cmd, long long duration_ms,
                             size_t total_bytes_out, int exit_code,
@@ -194,6 +227,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         s.object = truncate_utf8_prefix(cmd, 60);
         s.metrics.emplace_back("time", format_duration_compact(duration_ms));
         s.metrics.emplace_back("bytes", format_bytes_compact(total_bytes_out));
+        if (sandboxed) s.metrics.emplace_back("sandbox", sandbox::sandbox_mode_name(ctx.exec_sandbox->policy.mode));
         if (!is_success && exit_code != 0) {
             s.metrics.emplace_back("exit", std::to_string(exit_code));
         }
@@ -304,6 +338,14 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
     // but silently ignored (see proposal — deferred to future MCP work).
     (void)stdin_inputs;
 
+    if (sandboxed) {
+        if (ctx.exec_sandbox->backend != sandbox::BackendKind::WindowsRestrictedToken) {
+            return sandbox_failure("Invalid backend for Windows");
+        }
+        std::string error;
+        if (!sandbox::ensure_windows_acl_grants(ctx.exec_sandbox->policy, &error)) return sandbox_failure(error);
+    }
+
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -326,7 +368,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
     // 默认终端(openspec: agent-default-terminal):运行时已解析出可用终端就按其家族
     // 构造命令行(cmd / PowerShell EncodedCommand / Git Bash -c);未 bootstrap 或
     // 全部候选不可用时维持改动前的 `cmd.exe /c`。
-    std::string windows_command_line = "cmd.exe /c " + command;
+    std::string windows_command_line = "cmd.exe /d /c " + command;
     if (terminal_snapshot) {
         windows_command_line = acecode::environment::build_shell_command_line(
             terminal_snapshot->resolved, command).windows_command_line;
@@ -343,26 +385,33 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     std::vector<wchar_t> env_block;
     void* env_ptr = nullptr;
-    if (!scratch_dir.empty()) {
-        env_block = build_environment_block_with_var(
-            L"ACECODE_TMPDIR", utf8_to_wide(scratch_dir));
+    if (!child_environment.empty()) {
+        env_block = build_environment_block_with_var(child_environment);
         env_ptr = env_block.data();
     }
 
-    BOOL ok = CreateProcessW(
-        nullptr,
-        full_cmd_buffer.data(),
-        nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW | (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0),
-        env_ptr,
-        cwd_ptr,
-        &si, &pi
-    );
+    BOOL ok = FALSE;
+    std::string sandbox_error;
+    if (sandboxed) {
+        HANDLE token = static_cast<HANDLE>(sandbox::create_restricted_token(ctx.exec_sandbox->policy, &sandbox_error));
+        if (token) {
+            std::wstring desktop = L"winsta0\\default";
+            si.lpDesktop = desktop.data();
+            ok = CreateProcessAsUserW(token, nullptr, full_cmd_buffer.data(), nullptr, nullptr, TRUE,
+                CREATE_NO_WINDOW | (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0), env_ptr, cwd_ptr, &si, &pi);
+            if (!ok) sandbox_error = "CreateProcessAsUserW failed: " + std::to_string(GetLastError());
+            CloseHandle(token);
+        }
+    } else {
+        ok = CreateProcessW(nullptr, full_cmd_buffer.data(), nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW | (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0), env_ptr, cwd_ptr, &si, &pi);
+    }
 
     CloseHandle(hWritePipe);
 
     if (!ok) {
         CloseHandle(hReadPipe);
+        if (sandboxed) return sandbox_failure(sandbox_error);
         return ToolResult{"[Error] Failed to execute command.", false};
     }
 
@@ -465,20 +514,81 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         shell_program = line.program;
         shell_argv = line.argv;
     }
+    if (sandboxed) {
+        std::vector<std::string> prefix;
+        if (ctx.exec_sandbox->backend == sandbox::BackendKind::MacosSeatbelt) {
+            prefix = sandbox::build_seatbelt_argv(ctx.exec_sandbox->policy);
+        } else if (ctx.exec_sandbox->backend == sandbox::BackendKind::LinuxBwrap) {
+            if (ctx.exec_sandbox->backend_executable.empty()) {
+                close(pipefd[0]); close(pipefd[1]); close(stdin_pipefd[0]); close(stdin_pipefd[1]);
+                return sandbox_failure("No verified bubblewrap executable");
+            }
+            prefix = sandbox::build_bwrap_argv(ctx.exec_sandbox->policy);
+            prefix.front() = ctx.exec_sandbox->backend_executable;
+        } else {
+            close(pipefd[0]); close(pipefd[1]); close(stdin_pipefd[0]); close(stdin_pipefd[1]);
+            return sandbox_failure("Invalid backend for POSIX");
+        }
+        prefix.insert(prefix.end(), shell_argv.begin(), shell_argv.end());
+        shell_argv = std::move(prefix);
+        shell_program = shell_argv.front();
+    }
     std::vector<char*> shell_argv_c;
     shell_argv_c.reserve(shell_argv.size() + 1);
     for (auto& arg : shell_argv) shell_argv_c.push_back(const_cast<char*>(arg.c_str()));
     shell_argv_c.push_back(nullptr);
 
+    // 在父进程准备环境和可执行路径。多线程 daemon fork 后只能调用异步信号安全 API。
+    std::vector<std::string> environment_storage;
+    for (char** variable = environ; variable && *variable; ++variable) {
+        std::string value(*variable);
+        const auto separator = value.find('=');
+        const auto name = value.substr(0, separator);
+        const bool overridden = std::any_of(child_environment.begin(), child_environment.end(),
+            [&](const auto& entry) { return entry.first == name; });
+        if (!overridden) environment_storage.push_back(std::move(value));
+    }
+    for (const auto& entry : child_environment) environment_storage.push_back(entry.first + "=" + entry.second);
+    std::vector<char*> environment_pointers;
+    for (auto& variable : environment_storage) environment_pointers.push_back(variable.data());
+    environment_pointers.push_back(nullptr);
+    if (shell_program.find('/') == std::string::npos) {
+        const char* raw_path = std::getenv("PATH");
+        const std::string search_path = raw_path ? raw_path : "/usr/bin:/bin";
+        std::size_t start = 0;
+        while (start <= search_path.size()) {
+            const auto end = search_path.find(':', start);
+            auto directory = search_path.substr(start, end == std::string::npos ? end : end - start);
+            if (directory.empty()) directory = cwd.empty() ? "." : cwd;
+            const auto candidate = directory + "/" + shell_program;
+            if (access(candidate.c_str(), X_OK) == 0) { shell_program = candidate; break; }
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+    }
+    // CLOEXEC 让父进程区分后端根本没启动与已运行命令自行返回 127。
+    int exec_error_pipe[2];
+    if (pipe(exec_error_pipe) == -1) {
+        close(pipefd[0]); close(pipefd[1]); close(stdin_pipefd[0]); close(stdin_pipefd[1]);
+        return ToolResult{"[Error] Failed to create launch status pipe.", false};
+    }
+    if (fcntl(exec_error_pipe[1], F_SETFD, FD_CLOEXEC) == -1 ||
+        fcntl(exec_error_pipe[0], F_SETFL, O_NONBLOCK) == -1) {
+        close(pipefd[0]); close(pipefd[1]); close(stdin_pipefd[0]); close(stdin_pipefd[1]);
+        close(exec_error_pipe[0]); close(exec_error_pipe[1]);
+        return ToolResult{"[Error] Failed to configure launch status pipe.", false};
+    }
     pid_t pid = fork();
     if (pid == -1) {
         close(pipefd[0]); close(pipefd[1]);
         close(stdin_pipefd[0]); close(stdin_pipefd[1]);
+        close(exec_error_pipe[0]); close(exec_error_pipe[1]);
         return ToolResult{"[Error] Failed to fork.", false};
     }
 
     if (pid == 0) {
         // Child
+        close(exec_error_pipe[0]);
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
@@ -493,18 +603,19 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
         if (!cwd.empty()) {
             if (chdir(cwd.c_str()) != 0) {
+                const int launch_error = errno;
+                (void)write(exec_error_pipe[1], &launch_error, sizeof(launch_error));
                 _exit(127);
             }
         }
-        if (!scratch_dir.empty()) {
-            setenv("ACECODE_TMPDIR", scratch_dir.c_str(), 1);
-        }
-
-        execvp(shell_program.c_str(), shell_argv_c.data());
+        execve(shell_program.c_str(), shell_argv_c.data(), environment_pointers.data());
+        const int launch_error = errno;
+        (void)write(exec_error_pipe[1], &launch_error, sizeof(launch_error));
         _exit(127);
     }
 
     // Parent
+    close(exec_error_pipe[1]);
     close(pipefd[1]);
     close(stdin_pipefd[0]);
 
@@ -597,7 +708,18 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         stdin_writer.join();
     }
 
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    int launch_error = 0;
+    ssize_t launch_status;
+    do { launch_status = read(exec_error_pipe[0], &launch_error, sizeof(launch_error)); }
+    while (launch_status < 0 && errno == EINTR);
+    close(exec_error_pipe[0]);
+    if (launch_status == sizeof(launch_error) && launch_error != 0) {
+        const auto message = "Cannot start the shell/backend: " +
+            std::error_code(launch_error, std::generic_category()).message();
+        return sandboxed ? sandbox_failure(message) : ToolResult{"[Error] " + message, false};
+    }
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) :
+                   (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
 #endif
 
     // EOF reached: drain any bytes the decoder held back (incomplete trailing
@@ -672,6 +794,14 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     bool is_ok = (exit_code == 0);
     ToolResult r{full_output, is_ok};
+    r.metadata["exit_code"] = static_cast<int>(exit_code);
+    if (sandboxed) {
+        r.metadata["sandbox"] = sandbox::sandbox_mode_name(ctx.exec_sandbox->policy.mode);
+        if (sandbox::is_likely_sandbox_denied(static_cast<int>(exit_code), full_output)) {
+            r.output += sandbox::escalation_hint(ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced);
+            r.metadata["sandbox_denied"] = true;
+        }
+    }
     r.summary = make_summary(command, duration_ms, raw_bytes,
                              static_cast<int>(exit_code), is_ok,
                              was_truncated, false, false);
@@ -689,10 +819,18 @@ ToolImpl create_bash_tool() {
                       "Use this to run commands, check files, install packages, etc. "
                       "For programs that prompt for input (e.g. 'apt install' confirming, "
                       "'npm login' asking for credentials), pass stdin_inputs with the "
-                      "answers to pipe into the command's stdin in order.";
+                      "answers to pipe into the command's stdin in order. "
+                      "Commands may run in a filesystem/network sandbox. If a necessary command is denied, "
+                      "request approval with with_escalated_permissions=true and a non-empty justification.";
     def.parameters = nlohmann::json({
         {"type", "object"},
         {"properties", {
+            {"with_escalated_permissions", {
+                {"type", "boolean"}, {"description", "Request user approval to run outside the sandbox (default: false)"}
+            }},
+            {"justification", {
+                {"type", "string"}, {"description", "One sentence explaining why sandbox escalation is necessary"}
+            }},
             {"command", {
                 {"type", "string"},
                 {"description", "The shell command to execute"}

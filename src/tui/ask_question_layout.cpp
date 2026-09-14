@@ -534,9 +534,13 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
         }
         const int custom_width = std::max(
             1, layout.title_width + kColumnGap + layout.description_width);
+        // Keep one cell for the insertion cursor at the end of a full line;
+        // otherwise FTXUI places it in the adjacent scrollbar column.
+        const int custom_wrap_width = std::max(
+            1, custom_width - (snapshot.editing_custom ? 1 : 0));
         const auto custom_ranges = wrap_ranges_impl(
             snapshot.editing_custom ? snapshot.custom_text : custom_value,
-            custom_width);
+            custom_wrap_width);
         const auto ranges = custom_ranges.empty()
             ? std::vector<std::pair<std::size_t, std::size_t>>{{0, 0}}
             : custom_ranges;
@@ -551,7 +555,7 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
                        line == 0 ? custom_marker : "",
                        snapshot.editing_custom
                            ? snapshot.custom_text.substr(begin, end - begin)
-                           : custom_value,
+                           : custom_value.substr(begin, end - begin),
                        {}, {}, y++);
         }
     }
@@ -570,12 +574,27 @@ AskQuestionLayout build_ask_question_layout(const AskQuestionLayoutInput& input)
     int requested_scroll = snapshot.scroll_offset;
     int focused_begin = -1;
     int focused_end = -1;
+    int cursor_row = -1;
     for (int i = 0; i < layout.total_rows; ++i) {
-        if (!layout.rows[static_cast<std::size_t>(i)].focused) continue;
+        const auto& row = layout.rows[static_cast<std::size_t>(i)];
+        if (snapshot.editing_custom && row.kind == AskQuestionLayoutKind::Custom &&
+            snapshot.editor.cursor >= row.text_byte_begin &&
+            snapshot.editor.cursor <= row.text_byte_end) {
+            // Prefer the next row at a shared soft-wrap boundary, so both the
+            // renderer and scrolling use the same insertion point.
+            cursor_row = i;
+        }
+        if (!row.focused) continue;
         if (focused_begin < 0) focused_begin = i;
         focused_end = i;
     }
-    if (focused_begin >= 0 && layout.visible_rows > 0) {
+    if (cursor_row >= 0) {
+        layout.rows[static_cast<std::size_t>(cursor_row)].has_cursor = true;
+        focused_begin = focused_end = cursor_row;
+    }
+    if (snapshot.follow_focus && focused_begin >= 0 && layout.visible_rows > 0) {
+        // Long preset descriptions cannot fit at once; reveal their beginning.
+        focused_end = std::min(focused_end, focused_begin + layout.visible_rows - 1);
         if (focused_begin < requested_scroll) requested_scroll = focused_begin;
         if (focused_end >= requested_scroll + layout.visible_rows) {
             requested_scroll = focused_end - layout.visible_rows + 1;

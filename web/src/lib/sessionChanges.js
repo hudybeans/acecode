@@ -212,6 +212,11 @@ function successfulToolChangedPaths(item) {
     add(tool.args?.file_path);
     add(tool.args?.file);
   }
+  // apply_patch 无 hunk(纯删除等)时回退到 metadata.files 里的路径清单。
+  if (paths.length === 0 && tool.tool === 'apply_patch') {
+    const files = Array.isArray(tool.metadata?.files) ? tool.metadata.files : [];
+    for (const file of files) add(file?.path);
+  }
   return paths;
 }
 

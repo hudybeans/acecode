@@ -44,6 +44,38 @@ run('Settings uses a blocking mask and an accessible expandable dialog', () => {
   assert.doesNotMatch(settings, /<WindowControls/);
 });
 
+// 触发场景:设置窗口打开后按 Esc。
+// 期望行为:
+//   1. 设置窗口在 document 冒泡阶段监听 keydown 并调用 close()(与 Modal.jsx 同一层级,
+//      这样 window capture 层的 browserDefaults 守卫、AnchoredMenu 的 capture 拦截都先于它生效);
+//   2. 上面还开着子对话框([data-ace-modal-dialog])时让位,由子对话框自己关;
+//   3. 已被别的浮层 preventDefault 消费过的 Esc 不再处理;
+//   4. 面板本身可聚焦(tabIndex=-1)且打开时把焦点收进来,关闭时还回去。
+// 修复前的表现:设置窗口只能点遮罩或关闭按钮关闭,按 Esc 没有任何反应。
+run('Settings window closes on Escape but yields to nested modals', () => {
+  const settings = source('components/SettingsPage.jsx');
+  const escapeEffect = between(settings, "if (event.key !== 'Escape'", 'const onMaskClick');
+
+  assert.match(escapeEffect, /event\.defaultPrevented \|\| event\.isComposing\) return;/);
+  assert.match(escapeEffect, /document\.querySelector\('\[data-ace-modal-dialog="true"\]'\)\) return;/);
+  assert.match(escapeEffect, /close\(\);/);
+  assert.match(escapeEffect, /document\.addEventListener\('keydown', onKeyDown\);/);
+  assert.doesNotMatch(escapeEffect, /addEventListener\('keydown', onKeyDown, true\)/);
+  assert.match(settings, /ref=\{windowRef\}[\s\S]*role="dialog"[\s\S]*tabIndex=\{-1\}/);
+  assert.match(settings, /windowRef\.current\?\.focus\?\.\(\{ preventScroll: true \}\);/);
+  assert.match(settings, /return \(\) => \{ previouslyFocused\?\.focus\?\.\(\); \};/);
+});
+
+// 触发场景:焦点在设置搜索框里按 Esc。
+// 期望行为:搜索框有内容时只清空搜索并 stopPropagation(不关窗口);已经为空时不拦截,
+//   事件冒泡到 document 由设置窗口关闭 —— 与 VS Code 设置页「先清空、再关闭」的手感一致。
+// 修复前的表现:搜索框无条件 stopPropagation,焦点在搜索框时 Esc 永远关不掉设置窗口。
+run('Settings search only swallows Escape while it has a query to clear', () => {
+  const search = source('components/SettingsSearch.jsx');
+
+  assert.match(search, /if \(event\.key === 'Escape' && query\) \{ event\.stopPropagation\(\); onQuery\(''\); \}/);
+});
+
 run('Settings panel keeps normal caps and an exact 13px expanded inset', () => {
   const styles = source('styles/globals.css');
   const panel = between(styles, '.ace-settings-panel {', '/* Desktop shell');

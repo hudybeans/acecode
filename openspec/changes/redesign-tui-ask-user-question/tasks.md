@@ -60,6 +60,15 @@
 - [x] 7.3 帮助区保留固定最小行数（2 行），使进入/离开行内编辑、单选/多选切换不再改变聊天视口高度，从而不再带动面板位移。
 - [x] 7.4 回归测试：`PanelErasesChatContentUnderneath`（去掉 `clear_under` 时确认变红）、`PanelDoesNotRenderTheGlobalStatusLine`、`HelpLineHeightIsStableAcrossInteractionStates`、`ToggleFocusedClearsSelectedSingleChoiceOption`、`ToggleWithoutSubmitOnCustomRowStartsInlineEditing`、`CustomRowIsTheClickTargetForInlineEditing`。
 
+## 8. PR #48 审查修复
+
+- [x] 8.1 补充自定义项点击取消、多选保留、多行显示、手动滚动、长文本光标、首行空行和窄屏汇总点击的回归测试并修复。
+- [x] 8.2 用真实 FTXUI 渲染几何验证滚动条命中区域，确保溢出面板内的选项仍可点击。
+- [x] 8.3 保留 TUI channel 的 wire question ID，覆盖显示文本相同但 ID 不同的请求，兼容主题确认。
+- [x] 8.4 验证并修复重绘打断双击 Esc、超大整数配置在钳制前溢出的边界情况。
+- [x] 8.5 完成定向和全量 C++ 测试、TUI 构建、OpenSpec 严格验证与差异检查，记录验证范围（完整结果与剩余的既有收尾超时见 `review.md`）。
+- [x] 8.6 修正全量验证发现的轮次切换测试前置竞态，保留 250ms/350ms 时限断言；记录既有子任务测试收尾超时。
+
 ### 6.9 记录：非本变更的基线失败
 
 全量运行中固定失败 2 项、偶发失败 1 项，均与本轮改动无关：

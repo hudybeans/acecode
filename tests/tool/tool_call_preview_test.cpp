@@ -148,3 +148,26 @@ TEST(ToolCallPreview, MalformedJsonReturnsEmpty) {
     auto preview = ToolExecutor::build_tool_call_preview("bash", "not json at all");
     EXPECT_TRUE(preview.empty());
 }
+
+// 场景 7: apply_patch(GPT / Codex 系模型的编辑工具)。补丁只改一个文件时预览
+// 显示该文件路径;改多个文件时显示第一个文件 + "(+N more)";只扫 header 行,
+// 所以信封不完整的补丁也能出预览(预览不该因为格式错误而消失)。
+TEST(ToolCallPreview, ApplyPatchListsFirstFileAndRemainderCount) {
+    nlohmann::json single = {{"input",
+        "*** Begin Patch\n*** Update File: src/app.py\n@@\n-a\n+b\n*** End Patch\n"}};
+    EXPECT_EQ(ToolExecutor::build_tool_call_preview("apply_patch", single.dump()),
+              "apply_patch  src/app.py");
+
+    nlohmann::json multi = {{"input",
+        "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n"
+        "*** Update File: c.txt\n@@\n-1\n+2\n*** End Patch\n"}};
+    EXPECT_EQ(ToolExecutor::build_tool_call_preview("apply_patch", multi.dump()),
+              "apply_patch  a.txt (+2 more)");
+
+    nlohmann::json broken = {{"input", "*** Update File: only.txt\n-1\n+2\n"}};
+    EXPECT_EQ(ToolExecutor::build_tool_call_preview("apply_patch", broken.dump()),
+              "apply_patch  only.txt");
+
+    nlohmann::json empty = {{"input", "garbage"}};
+    EXPECT_TRUE(ToolExecutor::build_tool_call_preview("apply_patch", empty.dump()).empty());
+}

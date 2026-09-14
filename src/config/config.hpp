@@ -179,7 +179,7 @@ struct WebUiPreferencesConfig {
     // Stable Desktop/WebUI appearance preferences. `system` is resolved by
     // the frontend so a legacy first launch keeps following the OS mode.
     std::string theme = "system";       // system | light | dark
-    std::string color_theme = "blue";   // blue | orange | eva-01 (downloaded)
+    std::string color_theme = "blue";   // Built-in colors, downloadable themes, or local ai-* themes.
     std::string font_size = "medium";   // small | medium | large
     // Sidebar session rows show a relative timestamp. Product default is on;
     // turning it off leaves the time visible only in the row hover card.
@@ -354,6 +354,21 @@ struct WorktreeConfig {
     std::vector<std::string> sparse_paths;
 };
 
+// bash 沙盒配置(openspec add-auto-mode-sandbox,对齐 Codex 的
+// sandbox_workspace_write 段)。默认值不落盘。
+struct SandboxConfig {
+    // 总开关。false = 后端一律视为不可用:auto 模式退化为"安全命令自动、
+    // 其余确认"。
+    bool enabled = true;
+    // workspace-write 沙盒是否放行网络。只在能断网的后端(macOS Seatbelt /
+    // Linux bwrap)生效;Windows unelevated 受限令牌不拦网络。
+    bool network_access = false;
+    // 会话 cwd 之外额外允许写的绝对路径。
+    std::vector<std::string> writable_roots;
+    // true = 不把系统临时目录列为可写根。
+    bool exclude_tmpdir = false;
+};
+
 // git 感知配置(openspec add-git-context)。enabled=false 时不采集/不注入
 // gitStatus 快照,/api/git/* 端点按非仓库处理;系统提示的 git repo 标识行
 // 保留(零成本且不泄露仓库状态)。
@@ -455,6 +470,12 @@ struct SessionTitleConfig {
     int timeout_ms = 15000;
 };
 
+struct SummaryGenerationConfig {
+    bool enabled = false;
+    // A saved_models.name, independent of the current conversation model.
+    std::string model_name;
+};
+
 struct NetworkConfig {
     // "auto"   = Windows: WinHTTP-IE → registry → env → direct;
     //            POSIX: env (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY/NO_PROXY).
@@ -488,8 +509,9 @@ struct AppConfig {
     int context_window = 128000; // model context window size in tokens
     int max_sessions = 50;       // max saved sessions per project
     // Default permission mode for newly-created daemon/Web/Desktop sessions.
-    // Canonical values: default | accept-edits | plan | yolo.
+    // Canonical values: default | auto | plan | yolo (accept-edits is read as auto).
     std::string default_permission_mode = "default";
+    SandboxConfig sandbox;                       // bash 沙盒(openspec add-auto-mode-sandbox)
     std::map<std::string, McpServerConfig> mcp_servers; // MCP stdio servers (optional)
     SkillsConfig skills;                         // skill system configuration (optional)
     MemoryConfig memory;                         // persistent user memory settings
@@ -518,6 +540,7 @@ struct AppConfig {
     ConsoleConfig console;                       // 终端类型 / 程序路径(控制台 + bash 工具共用)
     ToolchainsConfig toolchains;                 // Agent 工具链目录(进程 PATH 前缀)
     SessionTitleConfig session_title;            // hidden auto session title generation
+    SummaryGenerationConfig summary_generation; // optional background title model
 
     // --- model profiles (openspec/changes/model-profiles) ---
     // 用户维护的命名模型列表。

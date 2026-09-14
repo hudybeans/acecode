@@ -1,5 +1,5 @@
 // 覆盖 src/permissions.hpp 的决策逻辑:
-//   - 三种模式(Default / AcceptEdits / Yolo)下哪些工具自动放行
+//   - 三种模式(Default / Auto / Yolo)下哪些工具自动放行
 //   - 用户自定义 PermissionRule(按 tool/path/command 匹配 + priority)
 //   - 会话级 always-allow(/permissions 的 "always" 记忆)
 // 任何回归都会让用户在 TUI 上要么多出现确认弹窗、要么危险命令被静默放行,
@@ -50,22 +50,22 @@ TEST(Permissions, YoloModeAllowsAll) {
     EXPECT_TRUE(pm.should_auto_allow("file_edit",  false));
 }
 
-// 场景:AcceptEdits 模式自动放行 file_write / file_edit,但仍然拦截 bash;
+// 场景:Auto 模式自动放行 file_write / file_edit,但仍然拦截 bash;
 // 这个模式是为了让"大段写代码"不被反复打断,但危险命令(shell 执行)
 // 还要用户确认,测试锁定这条边界。
-TEST(Permissions, AcceptEditsModeAllowsFileWritesButNotBash) {
+TEST(Permissions, AutoModeAllowsFileWritesButNotBash) {
     PermissionManager pm;
-    pm.set_mode(PermissionMode::AcceptEdits);
+    pm.set_mode(PermissionMode::Auto);
     EXPECT_TRUE(pm.should_auto_allow("file_write", false));
     EXPECT_TRUE(pm.should_auto_allow("file_edit",  false));
     EXPECT_FALSE(pm.should_auto_allow("bash",      false));
 }
 
 // 场景:Plan 模式只按 Default 一样自动放行 read-only 工具;普通写工具
-// 不能因为之前处在 AcceptEdits/Yolo 就被 PermissionManager 直接放行。
+// 不能因为之前处在 Auto/Yolo 就被 PermissionManager 直接放行。
 TEST(Permissions, PlanModeAllowsOnlyReadOnlyByDefault) {
     PermissionManager pm;
-    pm.set_mode(PermissionMode::AcceptEdits);
+    pm.set_mode(PermissionMode::Auto);
     pm.set_mode(PermissionMode::Plan);
 
     EXPECT_TRUE(pm.should_auto_allow("file_read", true));
@@ -79,24 +79,24 @@ TEST(Permissions, PlanModeAllowsOnlyReadOnlyByDefault) {
 // 如果原来就在 Plan 里重复 set,不能把 pre-plan 覆盖成 Plan。
 TEST(Permissions, PlanModeRestoresPreviousNonPlanMode) {
     PermissionManager pm;
-    pm.set_mode(PermissionMode::AcceptEdits);
+    pm.set_mode(PermissionMode::Auto);
     pm.set_mode(PermissionMode::Plan);
     EXPECT_EQ(pm.mode(), PermissionMode::Plan);
-    EXPECT_EQ(pm.pre_plan_mode(), PermissionMode::AcceptEdits);
+    EXPECT_EQ(pm.pre_plan_mode(), PermissionMode::Auto);
 
     pm.set_mode(PermissionMode::Plan);
-    EXPECT_EQ(pm.pre_plan_mode(), PermissionMode::AcceptEdits);
+    EXPECT_EQ(pm.pre_plan_mode(), PermissionMode::Auto);
 
-    EXPECT_EQ(pm.restore_pre_plan_mode(), PermissionMode::AcceptEdits);
-    EXPECT_EQ(pm.mode(), PermissionMode::AcceptEdits);
+    EXPECT_EQ(pm.restore_pre_plan_mode(), PermissionMode::Auto);
+    EXPECT_EQ(pm.mode(), PermissionMode::Auto);
     EXPECT_EQ(pm.pre_plan_mode(), PermissionMode::Default);
 }
 
 // 场景:状态栏/快捷键循环包含 Plan,顺序锁定为
-// Default -> AcceptEdits -> Yolo -> Plan -> Default。
+// Default -> Auto -> Yolo -> Plan -> Default。
 TEST(Permissions, CycleModeIncludesPlanMode) {
     PermissionManager pm;
-    EXPECT_EQ(pm.cycle_mode(), PermissionMode::AcceptEdits);
+    EXPECT_EQ(pm.cycle_mode(), PermissionMode::Auto);
     EXPECT_EQ(pm.cycle_mode(), PermissionMode::Yolo);
     EXPECT_EQ(pm.cycle_mode(), PermissionMode::Plan);
     EXPECT_EQ(pm.cycle_mode(), PermissionMode::Default);
@@ -165,8 +165,33 @@ TEST(Permissions, SessionAllowStickyForTool) {
     pm.set_mode(PermissionMode::Default);
     EXPECT_FALSE(pm.should_auto_allow("bash", false));
     pm.add_session_allow("bash");
-    EXPECT_TRUE(pm.should_auto_allow("bash", false));
-    EXPECT_TRUE(pm.has_session_allow("bash"));
-    pm.clear_session_allows();
+    EXPECT_FALSE(pm.should_auto_allow("bash", false));
     EXPECT_FALSE(pm.has_session_allow("bash"));
+    pm.add_session_allow("file_edit");
+    EXPECT_TRUE(pm.has_session_allow("file_edit"));
+    pm.clear_session_allows();
+    EXPECT_FALSE(pm.has_session_allow("file_edit"));
+    EXPECT_FALSE(pm.has_session_allow("bash"));
+}
+
+// 场景:apply_patch(GPT / Codex 系模型的编辑工具)在各模式下的权限语义
+// (openspec add-gpt-apply-patch-adaptation)。
+// 期望:与 file_edit 完全一致 —— Default 需确认,Auto 自动放行,Yolo 放行;
+// 内置的 .acecode/rules/** 保护对它同样生效(matched_rule 给 Deny)。
+// 回归:漏掉 Auto 分支时 GPT 用户在 Auto 模式下每次改文件都会被弹窗打断。
+TEST(Permissions, ApplyPatchFollowsFileEditSemantics) {
+    PermissionManager pm;
+    pm.set_mode(PermissionMode::Default);
+    EXPECT_FALSE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Auto);
+    EXPECT_TRUE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Yolo);
+    EXPECT_TRUE(pm.should_auto_allow("apply_patch", false));
+
+    pm.set_mode(PermissionMode::Auto);
+    EXPECT_EQ(pm.matched_rule("apply_patch", "proj/.acecode/rules/exec.json"),
+              std::optional<RuleAction>(RuleAction::Deny));
+    EXPECT_FALSE(pm.should_auto_allow("apply_patch", false, "proj/.acecode/rules/exec.json"));
 }

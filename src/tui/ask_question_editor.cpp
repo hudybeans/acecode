@@ -33,7 +33,8 @@ std::size_t next_boundary(const std::string& text, std::size_t pos) {
 
 std::size_t line_start(const std::string& text, std::size_t pos) {
     pos = acecode::clamp_utf8_boundary(text, pos);
-    const auto newline = text.rfind('\n', pos == 0 ? 0 : pos - 1);
+    if (pos == 0) return 0;
+    const auto newline = text.rfind('\n', pos - 1);
     return newline == std::string::npos ? 0 : newline + 1;
 }
 

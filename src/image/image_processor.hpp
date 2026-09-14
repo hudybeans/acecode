@@ -26,6 +26,8 @@ struct ImageNormalizeOptions {
     int max_edge = kImageNormalizeMaxEdge;
     int jpeg_quality = 85;
     bool force = false;
+    // Data packages such as themes require PNG even for opaque images.
+    bool force_png = false;
 };
 
 struct ImageNormalizeResult {

@@ -548,7 +548,6 @@ run('every current floating-surface owner participates in the native overlay con
     'GlobalFindOverlay.jsx',
     'ImageLightbox.jsx',
     'InputBar.jsx',
-    'LoopPage.jsx',
     'Message.jsx',
     'Modal.jsx',
     'PathReferenceDropdown.jsx',

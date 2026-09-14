@@ -122,6 +122,112 @@ TEST_F(ThemeStoreTest, CatalogAndDefinitionRejectUnsafePathsAndExecutableValues)
     EXPECT_FALSE(valid_theme_definition(theme));
 }
 
+TEST_F(ThemeStoreTest, AppearanceAcceptsOnlyOptionalHexColorsAndBooleanTitlebarExtension) {
+    EXPECT_TRUE(valid_theme_definition(definition));
+    for (const auto& appearance : std::vector<json>{
+             json::object(), {{"logo_color", "#aBcDeF"}}, {{"home_title_color", "#012345"}},
+             {{"extend_to_titlebar", false}},
+             {{"logo_color", "#9B6DFF"}, {"home_title_color", "#FFFFFF"}, {"extend_to_titlebar", true}}}) {
+        auto theme = definition;
+        theme["appearance"] = appearance;
+        EXPECT_TRUE(valid_theme_definition(theme)) << appearance;
+        theme["id"] = "ai-example";
+        theme["name"] = "Example";
+        theme["mode"] = "dark";
+        EXPECT_TRUE(valid_theme_definition(theme)) << appearance;
+    }
+    for (const auto& appearance : std::vector<json>{
+             nullptr, true, 1, "#FFFFFF", json::array(), {{"unknown", true}},
+             {{"logo_color", nullptr}}, {{"logo_color", "#FFF"}}, {{"logo_color", "#FFFFFF80"}},
+             {{"logo_color", "#GGGGGG"}}, {{"logo_color", "var(--accent)"}},
+             {{"home_title_color", 123}}, {{"home_title_color", "url(https://example.com)"}},
+             {{"extend_to_titlebar", "true"}}, {{"extend_to_titlebar", 1}},
+             {{"extend_to_titlebar", nullptr}}}) {
+        auto theme = definition;
+        theme["appearance"] = appearance;
+        EXPECT_FALSE(valid_theme_definition(theme)) << appearance;
+    }
+}
+
+TEST_F(ThemeStoreTest, NationalDayDownloadsByIdAndPreservesItsApprovedMode) {
+    definition["id"] = kNationalDayThemeId;
+    definition["name"] = "National Day";
+    definition["mode"] = "dark";
+    EXPECT_TRUE(valid_theme_definition(definition));
+    const std::string png = std::string("\x89PNG\r\n\x1a\n", 8) + std::string(24, 'x');
+    make_archive({{"theme.json", definition.dump()}, {"background.png", png}, {"thumbnail.png", png}});
+    auto entry = catalog["themes"][0];
+    entry["id"] = kNationalDayThemeId;
+    entry["package"] = {{"path", "national-day-2026/1.0.0/theme.zip"},
+        {"bytes", archive_bytes.size()}, {"sha256", acecode::sha256_hex(archive_bytes)}};
+    entry["thumbnail"]["path"] = "national-day-2026/1.0.0/thumbnail.png";
+    catalog["themes"].push_back(entry); // EVA first must not redirect the requested ID.
+    ASSERT_TRUE(valid_theme_catalog(catalog));
+    auto invalid = catalog;
+    invalid["themes"][1] = invalid["themes"][0];
+    EXPECT_FALSE(valid_theme_catalog(invalid));
+    invalid = catalog; invalid["themes"][1]["package"]["path"] = "eva-01/1.0.0/theme.zip";
+    EXPECT_FALSE(valid_theme_catalog(invalid));
+    invalid = catalog; invalid["themes"][1]["id"] = "unknown";
+    EXPECT_FALSE(valid_theme_catalog(invalid));
+
+    ThemeStore store(root / "cache", "https://example.com/aupdate/", transport());
+    auto permission = json{{"confirm_download", true}, {"version", entry["version"]},
+        {"bytes", entry["package"]["bytes"]}, {"sha256", entry["package"]["sha256"]}, {"automatic", true}};
+    store.start(kNationalDayThemeId, permission);
+    const auto completed = finish(store);
+    EXPECT_EQ(completed["state"], "completed");
+    EXPECT_EQ(completed["automatic"], true);
+    EXPECT_EQ(store.definition(kNationalDayThemeId)["mode"], "dark");
+    EXPECT_FALSE(store.installed("eva-01"));
+    EXPECT_THROW(store.remove_local(kNationalDayThemeId), ThemeError);
+    EXPECT_THROW(store.start_export(kNationalDayThemeId), ThemeError);
+    offline = true;
+    ThemeStore restarted(root / "cache", "https://another.example/aupdate/", transport());
+    const auto themes = restarted.catalog()["themes"];
+    EXPECT_EQ(themes[0]["id"], kNationalDayThemeId);
+    EXPECT_EQ(themes[0]["installed"], true);
+}
+
+TEST_F(ThemeStoreTest, LegacyMirrorFallsBackOnlyWhenExpandedCatalogIsMissing) {
+    auto io = transport();
+    std::vector<std::string> urls;
+    io.fetch = [&](const std::string& url) {
+        urls.push_back(url);
+        acecode::upgrade::HttpTextResult result;
+        result.status_code = url.find("catalog-v2.json") != std::string::npos ? 404 : 200;
+        result.body = catalog.dump();
+        return result;
+    };
+    ThemeStore store(root / "cache", "https://example.com/aupdate/", io);
+    EXPECT_EQ(store.catalog()["themes"][0]["id"], "eva-01");
+    ASSERT_EQ(urls.size(), 2u);
+    EXPECT_EQ(urls[0], "https://example.com/aupdate/themes/catalog-v2.json");
+    EXPECT_EQ(urls[1], "https://example.com/aupdate/themes/catalog.json");
+    EXPECT_EQ(downloads.load(), 0);
+}
+
+TEST_F(ThemeStoreTest, StartupAttemptIsClaimedOnceAcrossConcurrentStoresAndRestarts) {
+    ThemeStore first(root / "cache", "https://example.com/", transport());
+    ThemeStore second(root / "cache", "https://example.com/", transport());
+    std::atomic<int> claims{0};
+    std::vector<std::thread> callers;
+    for (int i = 0; i < 8; ++i) callers.emplace_back([&, i] {
+        const auto result = (i % 2 ? first : second).claim_startup_theme();
+        if (result.at("claimed") == true) ++claims;
+    });
+    for (auto& caller : callers) caller.join();
+    EXPECT_EQ(claims.load(), 1);
+    ThemeStore restarted(root / "cache", "https://different.example/", transport());
+    EXPECT_EQ(restarted.claim_startup_theme()["claimed"], false);
+    EXPECT_EQ(downloads.load(), 0);
+    ThemeStore other_profile(root / "other", "https://example.com/", transport());
+    EXPECT_EQ(other_profile.claim_startup_theme()["claimed"], true);
+    std::ofstream(root / "blocked").put('x');
+    ThemeStore blocked(root / "blocked", "https://example.com/", transport());
+    EXPECT_THROW(blocked.claim_startup_theme(), ThemeError);
+}
+
 TEST_F(ThemeStoreTest, NoDownloadUntilExactSizeAndIdentityAreConfirmed) {
     ThemeStore store(root / "cache", "https://example.com/aupdate/", transport());
     EXPECT_FALSE(store.catalog()["themes"][0]["installed"]);
@@ -142,7 +248,7 @@ TEST_F(ThemeStoreTest, CatalogFailureReportsTheConfiguredMirrorAddress) {
         FAIL() << "Expected catalogue failure";
     } catch (const ThemeError& error) {
         EXPECT_EQ(error.code, "THEME_CATALOG_UNAVAILABLE");
-        EXPECT_EQ(error.path, "https://mirror.example/custom/themes/catalog.json");
+        EXPECT_EQ(error.path, "https://mirror.example/custom/themes/catalog-v2.json");
         EXPECT_NE(std::string(error.what()).find("503"), std::string::npos);
     }
     EXPECT_EQ(downloads.load(), 0);
@@ -167,7 +273,7 @@ TEST_F(ThemeStoreTest, CurrentServerReplacesStartupAddressAndScopesCachedCatalog
         store.catalog();
         FAIL() << "A different server must not reuse the previous catalogue";
     } catch (const ThemeError& error) {
-        EXPECT_EQ(error.path, base + "themes/catalog.json");
+        EXPECT_EQ(error.path, base + "themes/catalog-v2.json");
     }
     ThemeStore different_server(root / "cache", base, transport());
     EXPECT_THROW(different_server.catalog(), ThemeError);

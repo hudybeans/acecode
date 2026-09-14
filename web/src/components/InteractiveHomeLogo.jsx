@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../theme.jsx';
 import { EVA_THEME_ID } from '../lib/themePackages.js';
+import { themeLogoRgb } from '../lib/brandLogoColors.js';
+import { HOME_LOGO_SHADER_ENABLED } from '../lib/homeLogoEffectPolicy.js';
+import BrandLogo from './BrandLogo.jsx';
 import {
   IDLE_LOGO_LIGHT_RADIUS_PX,
   MAX_LIGHT_DISTANCE_PX,
@@ -35,6 +38,8 @@ uniform vec2 u_center;
 uniform float u_size;
 uniform float u_theme;
 uniform float u_pointer_active;
+uniform vec3 u_logo_color;
+uniform float u_custom_logo;
 
 out vec4 outColor;
 
@@ -219,19 +224,6 @@ float sdPrompt(vec2 point) {
   return minimumDistance * signValue;
 }
 
-float glyphDistance(vec2 point) {
-  return min(sdLetterA(point), sdPrompt(point));
-}
-
-float tileHeight(vec2 point) {
-  float tile = sdRoundBox(point, vec2(0.5), ${ICON_CORNER_RADIUS});
-  float bevel = 1.0 - smoothstep(-0.055, 0.008, tile);
-  float crown = saturate(
-    1.0 - dot(point * vec2(0.80, 0.76), point * vec2(0.80, 0.76))
-  );
-  return bevel * (0.014 + 0.026 * crown);
-}
-
 void main() {
   vec2 fragment = gl_FragCoord.xy;
   vec2 point = (fragment - u_center) / u_size;
@@ -306,31 +298,7 @@ void main() {
   float tileHalo = exp(-max(tileDistance, 0.0) * 12.0) * (1.0 - tileMask);
   float haloAlpha = tileHalo * mix(0.13, 0.035, lightTheme);
 
-  float lightHeight = 0.44;
-  float lightIntensity = 0.64;
-  float specularPower = 38.0;
-  vec3 toLight = vec3(lightPlanar - point, lightHeight);
-  float lightDistanceSquared = dot(toLight, toLight);
-  vec3 lightDirection = normalize(toLight);
-  vec3 viewDirection = vec3(0.0, 0.0, 1.0);
-
-  float tileSurfaceHeight = tileHeight(point);
-  vec3 tileNormal = normalize(vec3(
-    -dFdx(tileSurfaceHeight) * u_size,
-    -dFdy(tileSurfaceHeight) * u_size,
-    1.0
-  ));
-
-  float attenuation = lightIntensity / (0.62 + lightDistanceSquared * 1.18);
-  float diffuse = max(dot(tileNormal, lightDirection), 0.0);
-  float daylightDiffuse = max(dot(tileNormal, viewDirection), 0.0);
-  vec3 halfway = normalize(lightDirection + viewDirection);
-  float specular = pow(max(dot(tileNormal, halfway), 0.0), specularPower);
-  float fresnel = pow(
-    1.0 - max(dot(tileNormal, viewDirection), 0.0),
-    3.0
-  );
-
+  // Keep the face matte like the canonical SVG; only its cast shadow follows light.
   float paintedGradient = saturate(
     0.46 + point.x * 0.70 - point.y * 0.76
   );
@@ -343,6 +311,12 @@ void main() {
   vec3 brandSky = vec3(0.086, 0.529, 0.855);
   vec3 brandBlue = vec3(0.145, 0.388, 0.922);
   vec3 brandDeep = vec3(0.031, 0.165, 0.322);
+  if (u_custom_logo > 0.5) {
+    brandCyan = mix(u_logo_color, vec3(1.0), 0.42);
+    brandSky = mix(u_logo_color, vec3(1.0), 0.14);
+    brandBlue = u_logo_color;
+    brandDeep = u_logo_color * 0.42;
+  }
   vec3 tileColor = mix(
     brandCyan,
     brandSky,
@@ -359,12 +333,6 @@ void main() {
     smoothstep(0.70, 1.0, balancedPaintedGradient)
   );
 
-  vec2 highlightOffset =
-    (point - vec2(-0.31, 0.36)) * vec2(1.14, 1.30);
-  float paintedHighlight = exp(-dot(highlightOffset, highlightOffset) * 4.2);
-  tileColor += vec3(0.72, 0.96, 1.0) *
-    paintedHighlight * mix(0.23, 0.04, lightTheme);
-
   float waveBoundary = -0.215 +
     sin((point.x + 0.08) * 6.2) * 0.055 - point.x * 0.025;
   float lowerDepth = 1.0 - smoothstep(
@@ -374,56 +342,13 @@ void main() {
   );
   tileColor *= 1.0 - lowerDepth * mix(0.10, 0.04, lightTheme);
 
-  float darkTileLighting = 0.56 + diffuse * attenuation * 0.92;
-  float lightTileLighting = 0.78 + daylightDiffuse * 0.38 +
-    pointerActivity * diffuse * attenuation * 0.14;
-  tileColor *= mix(darkTileLighting, lightTileLighting, lightTheme);
-  float tileSpecularStrength = mix(
-    0.58,
-    pointerActivity * 0.16,
-    lightTheme
-  );
-  tileColor += vec3(0.34, 0.82, 1.0) *
-    specular * attenuation * tileSpecularStrength;
-  tileColor += vec3(0.04, 0.28, 0.48) * fresnel;
-
-  float edgeLight = 1.0 - smoothstep(0.0, 0.034, abs(tileDistance));
-  float darkTileEdge = 0.055 + diffuse * 0.11;
-  float lightTileEdge = 0.040 + daylightDiffuse * 0.035 +
-    pointerActivity * diffuse * attenuation * 0.025;
-  tileColor += vec3(0.74, 0.94, 1.0) *
-    edgeLight * mix(darkTileEdge, lightTileEdge, lightTheme);
   tileColor *= mix(1.0, 0.80, lightTheme);
 
-  vec2 planarDirection = normalize(lightPlanar + vec2(0.0001));
   float letterDistance = sdLetterA(point);
   float promptDistance = sdPrompt(point);
-  float glyph = min(letterDistance, promptDistance);
   float letterMask = 1.0 - smoothstep(-pixel, pixel, letterDistance);
   float promptMask = 1.0 - smoothstep(-pixel, pixel, promptDistance);
   float glyphMask = max(letterMask, promptMask);
-  float glyphShadowDistance = glyphDistance(
-    point + planarDirection * (0.026 + 0.012 / lightHeight)
-  );
-  float glyphShadow = 1.0 - smoothstep(-0.004, 0.026, glyphShadowDistance);
-  glyphShadow *= 1.0 - glyphMask;
-  float glyphReliefStrength = mix(1.0, 0.42, lightTheme);
-  tileColor *= 1.0 - glyphShadow * 0.32 * glyphReliefStrength;
-
-  float glyphSurfaceHeight = 0.024 *
-    (1.0 - smoothstep(-0.012, 0.010, glyph));
-  vec3 glyphNormal = normalize(vec3(
-    -dFdx(glyphSurfaceHeight) * u_size,
-    -dFdy(glyphSurfaceHeight) * u_size,
-    1.0
-  ));
-
-  float glyphDiffuse = max(dot(glyphNormal, lightDirection), 0.0);
-  float glyphDaylightDiffuse = max(dot(glyphNormal, viewDirection), 0.0);
-  float glyphSpecular = pow(
-    max(dot(glyphNormal, halfway), 0.0),
-    specularPower * 0.72
-  );
   float letterGradient = saturate(0.48 - point.y * 1.25 + point.x * 0.16);
   float promptGradient = saturate(0.52 - point.y * 1.90 + point.x * 0.20);
   vec3 letterColor = mix(
@@ -436,22 +361,11 @@ void main() {
     vec3(0.404, 0.910, 0.976),
     promptGradient
   );
+  if (u_custom_logo > 0.5) {
+    letterColor = mix(vec3(1.0), vec3(241.0 / 255.0), letterGradient);
+    promptColor = mix(vec3(1.0), vec3(236.0 / 255.0), promptGradient);
+  }
   vec3 glyphColor = mix(letterColor, promptColor, promptMask);
-  float darkGlyphLighting = 0.76 + glyphDiffuse * attenuation * 0.48;
-  float lightGlyphLighting = 0.90 + glyphDaylightDiffuse * 0.12 +
-    pointerActivity * glyphDiffuse * attenuation * 0.08;
-  glyphColor *= mix(darkGlyphLighting, lightGlyphLighting, lightTheme);
-  float glyphSpecularStrength = mix(
-    0.72,
-    pointerActivity * 0.18,
-    lightTheme
-  );
-  glyphColor += vec3(0.72, 0.94, 1.0) *
-    glyphSpecular * attenuation * glyphSpecularStrength;
-
-  float glyphEdge = 1.0 - smoothstep(0.002, 0.018, abs(glyph));
-  glyphColor += vec3(0.20, 0.48, 0.66) *
-    glyphEdge * (0.07 + glyphDiffuse * 0.10) * glyphReliefStrength;
   tileColor = mix(tileColor, glyphColor, glyphMask);
 
   float surfaceGrain = hash21(floor(fragment));
@@ -463,7 +377,7 @@ void main() {
     vec3(0.055, 0.070, 0.085),
     lightTheme
   );
-  vec3 haloColor = vec3(0.015, 0.175, 0.285);
+  vec3 haloColor = mix(vec3(0.015, 0.175, 0.285), u_logo_color * 0.30, u_custom_logo);
   vec3 premultiplied = shadowColor * shadowAlpha;
   float alpha = shadowAlpha;
   premultiplied += haloColor * haloAlpha * (1.0 - alpha);
@@ -491,9 +405,10 @@ function compileShader(gl, type, source) {
 }
 
 export default function InteractiveHomeLogo({ className = '', enabled = true }) {
-  const { colorTheme } = useTheme();
+  const { colorTheme, appearance } = useTheme();
+  const logoColor = appearance?.logoColor || null;
   const isEvaTheme = colorTheme === EVA_THEME_ID;
-  const animated = enabled && !isEvaTheme;
+  const animated = HOME_LOGO_SHADER_ENABLED && enabled && !isEvaTheme;
   const canvasRef = useRef(null);
   const [rendererRevision, setRendererRevision] = useState(0);
   const [ready, setReady] = useState(false);
@@ -561,7 +476,10 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
       size: gl.getUniformLocation(program, 'u_size'),
       theme: gl.getUniformLocation(program, 'u_theme'),
       pointerActive: gl.getUniformLocation(program, 'u_pointer_active'),
+      logoColor: gl.getUniformLocation(program, 'u_logo_color'),
+      customLogo: gl.getUniformLocation(program, 'u_custom_logo'),
     };
+    const logoRgb = logoColor ? themeLogoRgb(logoColor) : [0, 0, 0];
     const pointer = { clientX: 0, clientY: 0, active: false };
     const idleLight = {
       active: false,
@@ -732,6 +650,8 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
       gl.uniform2f(uniforms.center, centerX * pixelRatio, centerY * pixelRatio);
       gl.uniform1f(uniforms.size, LOGO_SIZE * pixelRatio);
       gl.uniform1f(uniforms.theme, lightTheme);
+      gl.uniform3f(uniforms.logoColor, ...logoRgb);
+      gl.uniform1f(uniforms.customLogo, logoColor ? 1 : 0);
       gl.uniform1f(
         uniforms.pointerActive,
         pointer.active || idleLight.active ? 1 : 0,
@@ -833,7 +753,7 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
         gl.deleteShader(vertexShader);
       }
     };
-  }, [animated, rendererRevision]);
+  }, [animated, rendererRevision, logoColor]);
 
   return (
     <div
@@ -841,10 +761,9 @@ export default function InteractiveHomeLogo({ className = '', enabled = true }) 
       role="img"
       aria-label="ACECode"
       data-dynamic-logo-ready={animated && ready ? 'true' : 'false'}
-      data-dynamic-logo-fallback={isEvaTheme ? 'theme' : enabled ? undefined : 'session-visited'}
+      data-dynamic-logo-fallback={!HOME_LOGO_SHADER_ENABLED ? 'disabled' : isEvaTheme ? 'theme' : enabled ? undefined : 'session-visited'}
     >
-      <img
-        src="/acecode-logo.png"
+      <BrandLogo
         alt=""
         width={LOGO_SIZE}
         height={LOGO_SIZE}

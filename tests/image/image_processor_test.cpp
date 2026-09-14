@@ -58,6 +58,30 @@ TEST(ImageProcessor, TenMiBIsCompressionThreshold) {
               10u * 1024u * 1024u);
 }
 
+TEST(ImageProcessor, ForcedPngConvertsOpaqueImagesWithoutCompressionThreshold) {
+    acecode::image::ImageNormalizeOptions options;
+    options.force_png = true;
+    const auto result = acecode::image::normalize_image_bytes(ppm_image_4x2(), "", options);
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.changed);
+    EXPECT_EQ(result.mime_type, "image/png");
+    EXPECT_EQ(result.bytes.substr(0, 8), std::string("\x89PNG\r\n\x1a\n", 8));
+    EXPECT_EQ(result.output.width, 4);
+    EXPECT_EQ(result.output.height, 2);
+}
+
+TEST(ImageProcessor, ForcedPngResizesThumbnailsAndRejectsTruncatedImages) {
+    acecode::image::ImageNormalizeOptions options;
+    options.force_png = true;
+    options.max_edge = 2;
+    const auto result = acecode::image::normalize_image_bytes(ppm_image_4x2(), "", options);
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(result.output.width, 2);
+    EXPECT_EQ(result.output.height, 1);
+    EXPECT_EQ(result.mime_type, "image/png");
+    EXPECT_FALSE(acecode::image::normalize_image_bytes(result.bytes.substr(0, 28), "", options).ok);
+}
+
 TEST(ImageProcessor, ExactlyTenMiBAttemptsNormalization) {
     std::string bytes(acecode::image::kImageCompressionThresholdBytes, 'x');
     auto result = acecode::image::normalize_image_bytes(bytes, "image/png");

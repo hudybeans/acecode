@@ -7,6 +7,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "tui/ask_question_controller.hpp"
+#include "tui/ask_question_adapter.hpp"
 #include "tui/ask_question_layout.hpp"
 #include "tui/ask_question_panel.hpp"
 #include "tui/ask_question_view.hpp"
@@ -134,6 +135,76 @@ int first_row_of_kind(const AskQuestionLayout& layout, AskQuestionLayoutKind kin
         return static_cast<int>(i);
     }
     return -1;
+}
+
+TEST(AskQuestionPanelTest, OverflowScrollbarDoesNotCaptureOptionClicks) {
+    auto question = single_choice();
+    question.options[1].description = std::string(180, 'b');
+    AskQuestionController controller({question}, {});
+    const auto frame = render_frame(controller.snapshot(), 50, 20, 4);
+    ASSERT_GT(frame.layout.total_rows, frame.layout.visible_rows);
+    // The rendered bar is one cell with one padding cell on each side.
+    EXPECT_EQ(frame.scrollbar.x_max - frame.scrollbar.x_min + 1, 3);
+
+    acecode::tui::AskQuestionFrame hit_frame;
+    hit_frame.layout = frame.layout;
+    hit_frame.row_boxes = frame.rows;
+    hit_frame.scrollbar_box = frame.scrollbar;
+    const int option_row = first_row_of_kind(frame.layout, AskQuestionLayoutKind::Option);
+    ASSERT_GE(option_row, frame.layout.scroll_offset);
+    const auto& box = frame.rows[option_row - frame.layout.scroll_offset];
+    const auto hit = acecode::tui::hit_test_ask_question_frame(
+        hit_frame, box.x_min + frame.layout.title_x, box.y_min);
+    EXPECT_EQ(hit.kind, acecode::tui::AskQuestionHitKind::Option);
+    EXPECT_EQ(hit.option_index, 0);
+    EXPECT_EQ(acecode::tui::hit_test_ask_question_frame(
+        hit_frame, frame.scrollbar.x_min, frame.scrollbar.y_min).kind,
+        acecode::tui::AskQuestionHitKind::Scrollbar);
+}
+
+TEST(AskQuestionPanelTest, LongCustomEditorKeepsOneVisibleCaretAfterResize) {
+    AskQuestionController controller({single_choice()}, {});
+    controller.handle({AskQuestionEventKind::BeginCustom});
+    controller.handle({AskQuestionEventKind::InsertText, -1, 0,
+                       "\nfirst line\n" + std::string(100, 'a') + "\nlast line"});
+    for (const int width : {32, 50, 72}) {
+        auto frame = render_frame(controller.snapshot(), width, 20, 4);
+        auto wrapped = std::find_if(frame.layout.rows.begin(), frame.layout.rows.end(),
+            [](const auto& row) {
+                return row.kind == AskQuestionLayoutKind::Custom &&
+                       row.text_byte_begin > 20;
+            });
+        ASSERT_NE(wrapped, frame.layout.rows.end());
+        const auto boundary = wrapped->text_byte_begin;
+        for (const auto cursor : {std::size_t{0}, boundary}) {
+            controller.handle({AskQuestionEventKind::MoveCursorTo, -1, 0, {}, cursor});
+            frame = render_frame(controller.snapshot(), width, 20, 4);
+            const auto caret_row = std::find_if(frame.layout.rows.begin(), frame.layout.rows.end(),
+                [](const auto& row) { return row.has_cursor; });
+            ASSERT_NE(caret_row, frame.layout.rows.end());
+            EXPECT_EQ(std::count_if(frame.layout.rows.begin(), frame.layout.rows.end(),
+                [](const auto& row) { return row.has_cursor; }), 1);
+            EXPECT_EQ(caret_row->text_byte_begin, cursor);
+            ASSERT_GT(caret_row->rect.height, 0);
+            EXPECT_EQ(frame.screen.cursor().shape, ftxui::Screen::Cursor::Block);
+            EXPECT_EQ(frame.screen.cursor().y,
+                      frame.overlay.y_min + 1 + caret_row->rect.y);
+            EXPECT_EQ(frame.screen.cursor().x,
+                      frame.overlay.x_min + 1 + frame.layout.title_x);
+        }
+
+        AskQuestionController full_line({single_choice()}, {});
+        full_line.handle({AskQuestionEventKind::BeginCustom});
+        const auto empty_frame = render_frame(full_line.snapshot(), width, 20, 4);
+        const int capacity = empty_frame.layout.title_width +
+                             empty_frame.layout.column_gap +
+                             empty_frame.layout.description_width;
+        full_line.handle({AskQuestionEventKind::InsertText, -1, 0,
+                          std::string(capacity, 'a')});
+        const auto full_frame = render_frame(full_line.snapshot(), width, 20, 4);
+        EXPECT_EQ(full_frame.screen.cursor().shape, ftxui::Screen::Cursor::Block);
+        EXPECT_LT(full_frame.screen.cursor().x, full_frame.scrollbar.x_min);
+    }
 }
 
 // Screen row of a logical layout row, given the reflected panel geometry.

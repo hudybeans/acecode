@@ -3,6 +3,7 @@
 #include "../provider/llm_provider.hpp"
 #include "diff_utils.hpp"
 #include "question_policy.hpp"
+#include "sandbox/sandbox_policy.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -217,6 +218,11 @@ struct ToolContext {
     // the execution boundary so replayed/model-produced calls cannot bypass
     // provider schema filtering.
     std::optional<ToolCapabilityPolicy> capability_policy;
+
+    // bash 的沙盒请求(AgentLoop 按 src/sandbox 决策表逐次注入)。空 = 不沙盒,
+    // 与独立调用 ToolExecutor 的旧行为一致。bash_tool 只按它行动,不知道模式 /
+    // 规则的存在。
+    std::optional<sandbox::ExecSandboxRequest> exec_sandbox;
 
     // 当前 active 模型的身份与视觉能力(AgentLoop 注入)。vision_analyze 用它把
     // "当前模型"从候选视觉模型里剔除:主模型自己带 vision 标签时,子调用很容易

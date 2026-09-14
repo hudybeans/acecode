@@ -1,4 +1,5 @@
 #include "attachment_prompt_context.hpp"
+#include "tool/tool_protocol_names.hpp"
 
 #include "utils/utf8_path.hpp"
 
@@ -50,7 +51,8 @@ std::string file_attachment_reference_text(
     }
 
     text +=
-        " Read `read_path` with `file_read` or another suitable read-only "
+        " Read `read_path` with `" + model_tool_name_for_native("file_read") +
+        "` or another suitable read-only "
         "inspection tool only when the task needs the contents.";
     if (source_path.has_value() && !snapshot_path.empty()) {
         text +=

@@ -17,6 +17,24 @@ import {
   sessionTodosPath,
 } from './api.js';
 
+await run('local import sends original binary ZIP with authentication and preview digest', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const calls = [];
+    globalThis.fetch = async (url, options) => { calls.push({ url, options }); return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({}) }; };
+    const api = createApi({ origin: 'http://127.0.0.1:49000', token: 'local-test-token' });
+    const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
+    await api.previewThemeImport(blob);
+    await api.importTheme(blob, 'a'.repeat(64));
+    assert.equal(calls[0].url, 'http://127.0.0.1:49000/api/themes/import/preview');
+    assert.equal(calls[0].options.body, blob);
+    assert.equal(calls[1].options.body, blob);
+    assert.equal(calls[1].options.headers['Content-Type'], 'application/zip');
+    assert.equal(calls[1].options.headers['X-ACECode-Token'], 'local-test-token');
+    assert.ok(calls[1].url.endsWith(`?sha256=${'a'.repeat(64)}`));
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 function run(name, fn) {
   try {
     const ret = fn();
@@ -1851,5 +1869,57 @@ await run('reloadSessionModel preserves structured non-success errors', async ()
     );
   } finally {
     globalThis.fetch = previousFetch;
+  }
+});
+
+await run('theme management requests keep auth in headers and return ZIP bytes without a public token URL', async () => {
+  const previousFetch = globalThis.fetch, calls = [];
+  const archive = new Blob(['PK theme'], { type: 'application/zip' });
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, headers: { get: () => url.endsWith('/download') ? 'application/zip' : 'application/json' },
+      blob: async () => archive, json: async () => ({ job_id: 'job/1', state: 'completed' }) };
+  };
+  try {
+    const client = createApi({ origin: 'http://127.0.0.1:4567', token: 'theme-token' });
+    await client.exportTheme('ai-eva', { native_save: true });
+    await client.getThemeExport('job/1');
+    await client.cancelThemeExport('job/1');
+    assert.equal(await client.readThemeExport('job/1'), archive);
+    await client.deleteTheme('ai-eva');
+    assert.deepEqual(calls.map(({ url, options }) => [url.replace('http://127.0.0.1:4567', ''), options.method]), [
+      ['/api/themes/ai-eva/export', 'POST'], ['/api/themes/exports/job%2F1', 'GET'],
+      ['/api/themes/exports/job%2F1/cancel', 'POST'], ['/api/themes/exports/job%2F1/download', 'GET'], ['/api/themes/ai-eva', 'DELETE'],
+    ]);
+    assert.deepEqual(JSON.parse(calls[0].options.body), { native_save: true });
+    for (const call of calls) {
+      assert.equal(call.options.headers['X-ACECode-Token'], 'theme-token');
+      assert.equal(call.url.includes('theme-token'), false);
+    }
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+await run('native theme Save As has no request timeout and package download accepts cancellation', async () => {
+  const previousFetch = globalThis.fetch, previousTimeout = globalThis.setTimeout, previousClear = globalThis.clearTimeout;
+  const timers = [], signals = [];
+  globalThis.setTimeout = (callback, ms) => { timers.push(ms); return timers.length; };
+  globalThis.clearTimeout = () => {};
+  globalThis.fetch = async (url, options) => {
+    signals.push(options.signal);
+    if (url.endsWith('/download')) return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }))));
+    return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ state: 'cancelled', cancelled: true }) };
+  };
+  try {
+    const client = createApi({ origin: 'http://127.0.0.1:4567', token: 'theme-token' });
+    await client.exportTheme('ai-eva', { native_save: true });
+    assert.deepEqual(timers, []);
+    await client.exportTheme('ai-eva');
+    assert.deepEqual(timers, [DEFAULT_REQUEST_TIMEOUT_MS]);
+    const abort = new AbortController();
+    const downloading = client.readThemeExport('job/1', { signal: abort.signal });
+    abort.abort();
+    await assert.rejects(downloading, (error) => error.name === 'AbortError');
+  } finally {
+    globalThis.fetch = previousFetch; globalThis.setTimeout = previousTimeout; globalThis.clearTimeout = previousClear;
   }
 });

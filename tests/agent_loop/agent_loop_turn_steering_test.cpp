@@ -322,6 +322,10 @@ TEST(AgentLoopTurnSteering, InterruptStartsStructuredTurnBeforeOrdinaryQueue) {
     h.loop().submit("start");
     const std::string turn_id = h.wait_for_active_turn();
     ASSERT_FALSE(turn_id.empty());
+    // An active turn can still be preparing its first provider request. This
+    // test interrupts an in-flight request, so wait for that precondition;
+    // otherwise the replacement can legitimately be provider call number one.
+    ASSERT_TRUE(h.wait_for_provider_turns(1));
     h.loop().submit("ordinary queued input");
 
     acecode::UserInput guidance;

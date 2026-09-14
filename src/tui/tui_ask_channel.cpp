@@ -20,13 +20,18 @@ namespace {
 // questions_to_payload 的逆向:overlay 渲染吃的是 AskQuestion 结构而不是 JSON。
 // 字段名与 daemon 的 wire 契约一致,这里只做形状转换,不做校验 —— 参数校验
 // 已经在工具层 validate_ask_user_question_args 里做过了。
-std::vector<AskQuestion> questions_from_payload(const nlohmann::json& payload) {
+std::vector<AskQuestion> questions_from_payload(
+    const nlohmann::json& payload, std::vector<std::string>& question_ids) {
     std::vector<AskQuestion> out;
     if (!payload.is_array()) return out;
     for (const auto& item : payload) {
         if (!item.is_object()) continue;
         AskQuestion q;
         q.question = item.value("text", item.value("id", std::string{}));
+        // IDs are transport data, independent of display text. Keep them in
+        // question order, including when two questions share the same text.
+        const auto id = item.value("id", std::string{});
+        question_ids.push_back(id.empty() ? q.question : id);
         q.header = item.value("header", std::string{});
         q.multi_select = item.value("multiSelect", false);
         if (item.contains("options") && item["options"].is_array()) {
@@ -75,11 +80,9 @@ nlohmann::json ask_via_tui_overlay(TuiState& state,
                                    const std::atomic<bool>* abort_flag,
                                    int timeout_seconds,
                                    const std::string& origin_label) {
-    const std::vector<AskQuestion> questions =
-        questions_from_payload(questions_payload);
     std::vector<std::string> question_order;
-    question_order.reserve(questions.size());
-    for (const auto& q : questions) question_order.push_back(q.question);
+    const std::vector<AskQuestion> questions =
+        questions_from_payload(questions_payload, question_order);
 
     if (questions.empty()) {
         return make_response(/*cancelled=*/true, false, question_order, {});

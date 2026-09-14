@@ -550,7 +550,7 @@ std::string expand_opencode_command(
 
 bool is_web_reserved_builtin_command(const std::string& name) {
     return name == "init" || name == "compact" ||
-           name == "goal" || name == "plan";
+           name == "goal" || name == "plan" || name == "sandbox";
 }
 
 } // namespace acecode

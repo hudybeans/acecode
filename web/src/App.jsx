@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { api, ApiError, createApi } from './lib/api.js';
 import { useTheme } from './theme.jsx';
 import { useThemeDownloads } from './lib/useThemeDownloads.js';
+import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThemeCreation.js';
 import { ThemeDownloadFailureDialog } from './components/ThemeDownloadFailureDialog.jsx';
 import { setToken } from './lib/auth.js';
 import { connection } from './lib/connection.js';
@@ -214,6 +215,7 @@ export function App() {
     set: setTheme,
     setColorTheme,
     prepareTheme,
+    forgetTheme,
     themeMode,
   } = useTheme();
   const initialAppearance = useMemo(() => initialAppearancePreferences(), []);
@@ -229,6 +231,7 @@ export function App() {
   const [sidebarSessionLoadResetSequence, setSidebarSessionLoadResetSequence] = useState(0);
   const [homeLogoEffectEnabled, setHomeLogoEffectEnabled] = useState(true);
   const [homeComposerDrafts, setHomeComposerDrafts] = useState({});
+  const [homeComposerAttentionRequest, setHomeComposerAttentionRequest] = useState(0);
   const [navHistory, setNavHistory] = useState(() => (
     (typeof window !== 'undefined' && navigationHistoryFromHash(window.location.hash))
     || { back: [], forward: [] }
@@ -333,13 +336,15 @@ export function App() {
       },
     });
   }
-  const changeAppearance = useCallback((patch) => (
-    appearanceControllerRef.current.change(patch)
+  const changeAppearance = useCallback((patch, options) => (
+    appearanceControllerRef.current.change(patch, options)
   ), []);
   const themeDownloads = useThemeDownloads({
     enabled: authState === 'ok' && showSettings,
     prepare: prepareTheme,
-    apply: (id) => changeAppearance({ colorTheme: id }),
+    apply: (id, options) => changeAppearance({ colorTheme: id }, options),
+    remove: (id) => appearanceControllerRef.current.removeColorTheme(id, () => api.deleteTheme(id)),
+    forget: forgetTheme,
   });
   // sidePanelCollapsed 是列表 + 详情的总开关;listCollapsed 只隐藏最右导航列表。
   const sidePanelCollapsed = uiPrefs.sidePanelCollapsed;
@@ -352,6 +357,20 @@ export function App() {
   const sidebarResizeActiveRef = useRef(false);
   const [previewPanelVisible, setPreviewPanelVisible] = useState(false);
   const activeRefRef = useRef(activeRef);
+  const themeCreationMonitor = useMemo(() => createLiveThemeCreationMonitor({
+    onStart: () => themeDownloads.controller.beginCreation(),
+    onCreated: (created, intent) => { void themeDownloads.controller.created(created, intent); },
+  }), [themeDownloads.controller]);
+  useLayoutEffect(() => {
+    themeCreationMonitor.setSession(activeRef?.sessionId || activeRef?.id || '');
+  }, [activeRef?.sessionId, activeRef?.id, themeCreationMonitor]);
+  useEffect(() => {
+    const message = (event) => themeCreationMonitor.accept(event.detail);
+    connection.addEventListener('message', message);
+    return () => {
+      connection.removeEventListener('message', message);
+    };
+  }, [themeCreationMonitor]);
   const healthRef = useRef(health);
   const subagentIndexRef = useRef(subagentIndex);
   const subagentDirectoryRef = useRef(subagentDirectory);
@@ -768,10 +787,12 @@ export function App() {
     });
     api.getUiPreferences().then((preferences) => {
       appearanceControllerRef.current.restore(preferences);
+      // The daemon owns the durable attempt marker, shared across windows and upgrades.
+      void themeDownloads.controller.applyStartupTheme(preferences);
     }).catch(() => {
       // Older/offline daemons keep the injected or cached appearance usable.
     });
-  }, [authState]);
+  }, [authState, themeDownloads.controller]);
 
   useEffect(() => {
     if (authState !== 'ok') {
@@ -1453,12 +1474,17 @@ export function App() {
     }
   }, [updateJob, updateRestarting]);
 
-  const openHomeForWorkspace = useCallback((workspace = null) => {
+  const openHomeForWorkspace = useCallback((workspace = null, { composerFeedback = false } = {}) => {
+    const current = activeRefRef.current || {};
+    if (composerFeedback && view === 'single' && !sessionJumpId(current)
+        && !current?.loop && !current?.expertComponents) {
+      setHomeComposerAttentionRequest((request) => request + 1);
+    }
     const target = workspace == null ? noHomeWorkspaceOption() : workspace;
     const next = homeRefFromWorkspace(target, activeRefRef.current, health);
     void refreshWorkspaceGitInfo(createApi(next), next).catch(() => {});
     navigateToRef(next);
-  }, [health, navigateToRef]);
+  }, [health, navigateToRef, view]);
 
   const openLoopPage = useCallback(() => {
     navigateToRef({ loop: true });
@@ -1485,7 +1511,13 @@ export function App() {
     return true;
   }, [health, navigateToRef]);
 
-  const dispatchExpertToNewTask = useCallback((expert, prompt = '') => {
+  const startAiThemeCreation = useCallback(() => {
+    const next = aiThemeCreationRef(activeRefRef.current || {}, health);
+    setShowSettings(false);
+    navigateToRef(next);
+  }, [health, navigateToRef]);
+
+  const dispatchExpertToNewTask = useCallback((expert, prompt = expert?.quick_prompts?.[0] || '') => {
     const expertId = String(expert?.id || '');
     if (!expertId) return false;
     const current = activeRefRef.current || {};
@@ -1531,6 +1563,7 @@ export function App() {
   const replaceHomeWorkspace = useCallback((workspace) => {
     replaceActiveRef((current) => {
       const next = homeRefFromWorkspace(workspace, current, health);
+      if (current?.composerDraftScope === 'ai-theme') next.composerDraftScope = 'ai-theme';
       void refreshWorkspaceGitInfo(createApi(next), next).catch(() => {});
       return next;
     });
@@ -2020,7 +2053,7 @@ export function App() {
           collapsed={sidebarCollapsed}
           width={singleLayout.sidebar}
           onOpenHome={openHomeForWorkspace}
-          onNewTask={() => openHomeForWorkspace()}
+          onNewTask={() => openHomeForWorkspace(null, { composerFeedback: true })}
           onNewLoop={openLoopPage}
           appVersion={health?.version || ''}
           workspaceActivationRequest={workspaceActivationRequest}
@@ -2061,6 +2094,7 @@ export function App() {
                 sessionRef={activeRef}
                 homeLogoEffectEnabled={homeLogoEffectEnabled}
                 homeComposerDrafts={homeComposerDrafts}
+                homeComposerAttentionRequest={homeComposerAttentionRequest}
                 onHomeComposerDraftChange={updateHomeComposerDraft}
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}
                 modelProfileRevision={modelProfileRevision}
@@ -2152,6 +2186,7 @@ export function App() {
               themeDownloads.controller.select(nextColorTheme)
             )}
             themeDownloads={themeDownloads}
+            onCreateAiTheme={startAiThemeCreation}
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
             sidebarSessionTime={sidebarSessionTime}
             onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}

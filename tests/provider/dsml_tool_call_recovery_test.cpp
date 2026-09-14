@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "provider/dsml_tool_call_recovery.hpp"
+#include "tool/tool_protocol_names.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -215,7 +216,12 @@ TEST(DsmlToolCallRecoveryTest, StripsMarkupWhenRequestHasNoTools) {
     EXPECT_TRUE(result.tool_calls.empty());
 }
 
+// 场景:「工具重写」把 file_read 改叫 read,工具表里只有 read,而模型在 DSML
+// 标记里写的是原生名 file_read。
+// 期望:两个名字都被 allowlist 接受(映射是进程级动态状态,这里显式启用种子)。
 TEST(DsmlToolCallRecoveryTest, AcceptsNativeAndPublicToolNames) {
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::default_model_tool_name_mappings());
     ToolDef read;
     read.name = "read";
     const std::string input = u8R"(<｜DSML｜tool_calls>

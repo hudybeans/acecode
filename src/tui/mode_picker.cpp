@@ -7,7 +7,7 @@ namespace acecode {
 std::vector<ModePickerOption> build_mode_picker_options(PermissionMode current_mode) {
     static constexpr std::array<PermissionMode, 4> kModes = {
         PermissionMode::Default,
-        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
         PermissionMode::Plan,
         PermissionMode::Yolo,
     };

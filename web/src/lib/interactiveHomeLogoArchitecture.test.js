@@ -67,50 +67,35 @@ test('home logo effect permanently latches off after the first real session', ()
   assert.match(chatView, /homeLogoEffectEnabled = true/);
   assert.match(chatView, /<InteractiveHomeLogo enabled=\{homeLogoEffectEnabled\}\s*\/>/);
   assert.match(logo, /function InteractiveHomeLogo\(\{ className = '', enabled = true \}\)/);
-  assert.match(logo, /const animated = enabled && !isEvaTheme;/);
+  assert.match(logo, /const animated = HOME_LOGO_SHADER_ENABLED && enabled && !isEvaTheme;/);
   assert.match(logo, /setReady\(false\);\s*if \(!animated\) return undefined;/);
   assert.match(logo, /data-dynamic-logo-ready=\{animated && ready \? 'true' : 'false'\}/);
-  assert.match(logo, /data-dynamic-logo-fallback=\{isEvaTheme \? 'theme' : enabled \? undefined : 'session-visited'\}/);
+  assert.match(logo, /data-dynamic-logo-fallback=\{!HOME_LOGO_SHADER_ENABLED \? 'disabled' : isEvaTheme \? 'theme' : enabled \? undefined : 'session-visited'\}/);
   assert.match(logo, /\{animated && \(\s*<canvas/);
   assert.doesNotMatch(logo, /fps|frameRate|framesPerSecond|lowFps/i);
   assert.doesNotMatch(performance, /fps|frameRate|framesPerSecond|lowFps/i);
 });
 
-test('interactive logo preserves the approved SDF material and bounded shadow', () => {
+test('interactive logo preserves the matte SDF tile and bounded shadow', () => {
   const logo = source('components/InteractiveHomeLogo.jsx');
 
   assert.match(logo, /const LOGO_SIZE = 100;/);
   assert.match(logo, /const CANVAS_SIZE = 156;/);
   assert.match(logo, /float sdLetterA\(vec2 point\)/);
   assert.match(logo, /float sdPrompt\(vec2 point\)/);
-  assert.match(logo, /float tileHeight\(vec2 point\)/);
   assert.match(logo, /float darkShadowLength = mix\(0\.024, 0\.20, shadowDistanceFactor\);/);
   assert.match(logo, /float maximumLightDistance = 0\.80;/);
   assert.match(logo, /smoothstep\(0\.0, 0\.30, lightDistanceToTile\)/);
   assert.match(logo, /for \(int index = 1; index <= 12; index\+\+\)/);
-  assert.match(logo, /paintedHighlight/);
-  assert.match(logo, /glyphShadow/);
+  assert.doesNotMatch(logo, /paintedHighlight|[Ss]pecular|edgeLight|fresnel|tileHeight|glyphShadow|glyphNormal/);
 });
 
-test('light theme uses overhead daylight, weak pointer fill, and short vertical shadow', () => {
+test('light theme keeps a matte face and short vertical shadow', () => {
   const logo = source('components/InteractiveHomeLogo.jsx');
   const styles = source('styles/globals.css');
 
   assert.match(logo, /uniform float u_pointer_active;/);
   assert.match(logo, /float pointerActivity = step\(0\.5, u_pointer_active\);/);
-  assert.match(logo, /float daylightDiffuse = max\(dot\(tileNormal, viewDirection\), 0\.0\);/);
-  assert.match(
-    logo,
-    /float lightTileLighting = 0\.78 \+ daylightDiffuse \* 0\.38 \+\s*pointerActivity \* diffuse \* attenuation \* 0\.14;/,
-  );
-  assert.match(logo, /pointerActivity \* 0\.16,/);
-  assert.match(logo, /float glyphReliefStrength = mix\(1\.0, 0\.42, lightTheme\);/);
-  assert.match(
-    logo,
-    /float lightGlyphLighting = 0\.90 \+ glyphDaylightDiffuse \* 0\.12 \+\s*pointerActivity \* glyphDiffuse \* attenuation \* 0\.08;/,
-  );
-  assert.match(logo, /pointerActivity \* 0\.18,/);
-  assert.match(logo, /paintedHighlight \* mix\(0\.23, 0\.04, lightTheme\);/);
   assert.match(logo, /float lightShadowLength = mix\(\s*0\.025,\s*0\.0375,/);
   assert.match(logo, /vec2\(0\.0, -1\.0\)/);
   assert.match(logo, /float shadowStrength = mix\(0\.44, 0\.18, lightTheme\);/);
@@ -136,7 +121,6 @@ test('light theme compresses the baked color range toward the center blue', () =
     (logo.match(/smoothstep\([^\n]+, balancedPaintedGradient\)/g) || []).length,
     3,
   );
-  assert.match(logo, /paintedHighlight \* mix\(0\.23, 0\.04, lightTheme\);/);
   assert.match(
     logo,
     /tileColor \*= 1\.0 - lowerDepth \* mix\(0\.10, 0\.04, lightTheme\);/,
@@ -174,7 +158,7 @@ test('light pointer shadow stays opposite the fill and halves every light-theme 
   assert.doesNotMatch(styles, /drop-shadow\(0 4px 4px rgba\(31, 57, 85, 0\.16\)\)/);
 });
 
-test('dark theme retains the original directional-light coefficients', () => {
+test('dark theme retains the brand palette and directional shadow on the matte tile', () => {
   const logo = source('components/InteractiveHomeLogo.jsx');
 
   assert.match(logo, /float darkShadowLength = mix\(0\.024, 0\.20, shadowDistanceFactor\);/);
@@ -183,17 +167,9 @@ test('dark theme retains the original directional-light coefficients', () => {
   assert.match(logo, /vec3 brandSky = vec3\(0\.086, 0\.529, 0\.855\);/);
   assert.match(logo, /vec3 brandBlue = vec3\(0\.145, 0\.388, 0\.922\);/);
   assert.match(logo, /vec3 brandDeep = vec3\(0\.031, 0\.165, 0\.322\);/);
-  assert.match(logo, /paintedHighlight \* mix\(0\.23, 0\.04, lightTheme\);/);
   assert.match(logo, /lowerDepth \* mix\(0\.10, 0\.04, lightTheme\)/);
   assert.match(logo, /tileColor \*= mix\(1\.0, 0\.80, lightTheme\);/);
   assert.match(logo, /float shadowStrength = mix\(0\.44, 0\.18, lightTheme\);/);
-  assert.match(logo, /float darkTileLighting = 0\.56 \+ diffuse \* attenuation \* 0\.92;/);
-  assert.match(logo, /float tileSpecularStrength = mix\(\s*0\.58,/);
-  assert.match(logo, /float darkTileEdge = 0\.055 \+ diffuse \* 0\.11;/);
-  assert.match(logo, /glyphShadow \* 0\.32 \* glyphReliefStrength/);
-  assert.match(logo, /float darkGlyphLighting = 0\.76 \+ glyphDiffuse \* attenuation \* 0\.48;/);
-  assert.match(logo, /float glyphSpecularStrength = mix\(\s*0\.72,/);
-  assert.match(logo, /glyphEdge \* \(0\.07 \+ glyphDiffuse \* 0\.10\) \* glyphReliefStrength/);
 });
 
 test('interactive logo uses premultiplied transparent WebGL2 output and bounds direct-input frames', () => {
@@ -278,7 +254,8 @@ test('reduced motion disables idle wandering but keeps direct pointer lighting a
   assert.match(logo, /reducedMotion = event\.matches;/);
   assert.match(logo, /reducedMotionQuery\?\.addEventListener\?\.\('change', handleReducedMotionChange\)/);
   assert.match(logo, /reducedMotionQuery\?\.removeEventListener\?\.\('change', handleReducedMotionChange\)/);
-  assert.match(logo, /src="\/acecode-logo\.png"/);
+  assert.match(logo, /<BrandLogo/);
+  assert.match(source('components/BrandLogo.jsx'), /'\/acecode-logo\.png'/);
   assert.match(
     logo,
     /data-dynamic-logo-ready=\{animated && ready \? 'true' : 'false'\}/,
@@ -343,13 +320,13 @@ test('dark theme adds a local fading blue grid behind both logo render paths', (
   assert.match(logoStyles, /width: 240px;[\s\S]*height: 220px;/);
   assert.match(
     logoStyles,
-    /linear-gradient\(rgba\(61, 144, 197, 0\.04\) 1px, transparent 1px\)/,
+    /linear-gradient\(rgba\(var\(--ace-logo-color-rgb, 61, 144, 197\), 0\.04\) 1px, transparent 1px\)/,
   );
   assert.match(
     logoStyles,
-    /linear-gradient\(90deg, rgba\(61, 144, 197, 0\.04\) 1px, transparent 1px\)/,
+    /linear-gradient\(90deg, rgba\(var\(--ace-logo-color-rgb, 61, 144, 197\), 0\.04\) 1px, transparent 1px\)/,
   );
-  assert.match(logoStyles, /radial-gradient\(\s*ellipse 50% 50% at center,[\s\S]*rgba\(5, 74, 124, 0\.48\) 0%/);
+  assert.match(logoStyles, /radial-gradient\(\s*ellipse 50% 50% at center,[\s\S]*rgba\(var\(--ace-logo-color-rgb, 5, 74, 124\), 0\.48\) 0%/);
   assert.match(logoStyles, /background-size: 5px 5px, 5px 5px, 100% 100%;/);
   assert.match(logoStyles, /-webkit-mask-image: radial-gradient\(/);
   assert.match(logoStyles, /mask-image: radial-gradient\(/);
@@ -370,7 +347,7 @@ test('dark grid fades fully before every rectangular edge and stays subdued', ()
   const backdropStyles = styles.slice(start, end);
 
   assert.equal(
-    (backdropStyles.match(/rgba\(61, 144, 197, 0\.04\)/g) || []).length,
+    (backdropStyles.match(/rgba\(var\(--ace-logo-color-rgb, 61, 144, 197\), 0\.04\)/g) || []).length,
     2,
   );
   assert.doesNotMatch(backdropStyles, /rgba\(61, 144, 197, 0\.10\)/);

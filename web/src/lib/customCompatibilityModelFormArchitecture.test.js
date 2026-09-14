@@ -33,13 +33,34 @@ run('自定义兼容 API 的基础字段集中到 Provider 右侧详情区', () 
     picker,
     /\{directModelIdInput \? \([\s\S]*?id="custom-openai-model-id"[\s\S]*?\{directModelDetails\}[\s\S]*?\) : \(/,
   );
-  assert.match(dialog, /function CustomCompatibilityApiFields\([\s\S]*?Base URL[\s\S]*?API Key[\s\S]*?预设名称/);
-  assert.match(dialog, /fieldLabel\('model-profile-name', '预设名称', true\)/);
-  assert.match(dialog, /placeholder="为空时使用 Model ID"/);
+  // 别名放在 Base URL / API Key 之上,与非自定义 Provider 的字段顺序一致。
+  assert.match(dialog, /function CustomCompatibilityApiFields\([\s\S]*?<ModelAliasField[\s\S]*?Base URL[\s\S]*?API Key/);
 });
 
 run('自定义兼容 API 不在 Provider 选择器下方重复基础字段', () => {
   assert.match(dialog, /!policy\?\.managed && !customCompatibilityApi && \(/);
-  assert.match(dialog, /editing && !customCompatibilityApi && \(/);
-  assert.match(dialog, /!editing && !customCompatibilityApi && \(/);
+  // 非自定义 Provider 的别名字段只渲染一次(选择器下方、连接字段之前),
+  // 高级设置与编辑模式里不再各放一份「预设名称」。
+  assert.match(dialog, /\{!customCompatibilityApi && \(\s*<ModelAliasField/);
+  assert.equal((dialog.match(/<ModelAliasField/g) || []).length, 2, '自定义一份 + 非自定义一份');
+  assert.doesNotMatch(dialog, /预设名称', true\)/);
+  assert.doesNotMatch(dialog, /id="model-profile-name"[\s\S]*?id="model-profile-name"[\s\S]*?id="model-profile-name"/);
+});
+
+// 「复用已有凭据」下拉已删除:draft 与 payload 都不再携带 credential_source_name,
+// 弹窗里也没有对应控件。回归哨兵,防止后续把这块又接回来。
+run('新增模型弹窗不再提供复用已有凭据', () => {
+  assert.doesNotMatch(dialog, /credential_source_name|compatibleCredentialSources|复用已有凭据/);
+  const settings = fs.readFileSync(path.resolve(here, './modelSettings.js'), 'utf8');
+  assert.doesNotMatch(settings, /credential_source_name|compatibleCredentialSources/);
+});
+
+// 所有会改变模型 / Provider 选择的草稿更新都要经过别名同步,否则自动别名不会跟着刷新;
+// 反过来 patchDraft(改别名 / API Key 等其它字段)不能走它,否则会覆盖用户正在手打的别名。
+run('模型选择变化统一经 syncAutoModelAlias 刷新自动别名', () => {
+  assert.match(dialog, /const withAutoAlias = \(next\) => syncAutoModelAlias\(next, \{/);
+  assert.match(dialog, /onDraftChange=\{changeSelectionDraft\}/);
+  assert.match(dialog, /withAutoAlias\(applyCatalogProviderToDraft\(current, nextProvider\)\)/);
+  assert.match(dialog, /buildModelMutationPayloads\(draft, provider, \{ editing, existingNames \}\)/);
+  assert.doesNotMatch(dialog, /onDraftChange=\{setDraft\}/);
 });

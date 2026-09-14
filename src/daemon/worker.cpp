@@ -39,6 +39,7 @@
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tool/bash_tool.hpp"
 #include "../tool/builtin_tool_registry.hpp"
+#include "../tool/tool_rewrites.hpp"
 #include "../tool/file_read_tool.hpp"
 #include "../tool/file_write_tool.hpp"
 #include "../tool/file_edit_tool.hpp"
@@ -232,12 +233,8 @@ bool apply_cwd_override(const std::string& raw, bool foreground) {
 }
 
 acecode::PermissionMode permission_mode_from_config(const std::string& mode) {
-    if (mode == "accept-edits" || mode == "acceptEdits") {
-        return acecode::PermissionMode::AcceptEdits;
-    }
-    if (mode == "plan") return acecode::PermissionMode::Plan;
-    if (mode == "yolo") return acecode::PermissionMode::Yolo;
-    return acecode::PermissionMode::Default;
+    return acecode::PermissionManager::parse_mode_name(mode)
+        .value_or(acecode::PermissionMode::Default);
 }
 
 } // namespace
@@ -507,6 +504,10 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     acecode::SkillUsageStore skill_usage_store(
         acecode::get_acecode_dir() + "/.skill_usage_state.json");
     acecode::ExpertRegistry expert_registry;
+
+    // 「工具重写」(<data_dir>/tool-rewrites.json)必须先于任何 register_tool
+    // 发布到进程,注册期的模型侧名冲突检查才拿得到真实映射。
+    acecode::tool_rewrites::load_and_apply(acecode::get_acecode_dir());
 
     acecode::ToolExecutor tools;
     acecode::register_session_builtin_tools(tools, cfg_mut);

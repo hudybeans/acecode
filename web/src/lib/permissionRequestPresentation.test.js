@@ -1,6 +1,30 @@
 import assert from 'node:assert/strict';
 import { planPermissionPresentation } from './permissionRequestPresentation.js';
 
+// 执行审批显示真实边界/理由,解释器或不透明脚本不提供可误解的会话放行。
+const escalation = planPermissionPresentation({
+  tool: 'bash',
+  args: {
+    command: 'pnpm install',
+    justification: 'Install the project dependencies.',
+    permission: { reason: 'escalation_requested', sandbox: 'full-access', always_allow_prefix: 'pnpm install' },
+  },
+});
+assert.equal(escalation.title, '模型申请在沙盒外执行');
+assert.match(escalation.body, /沙盒外/);
+assert.equal(escalation.justification, 'Install the project dependencies.');
+assert.equal(escalation.allowSessionLabel, '本次会话允许: pnpm install');
+assert.equal(escalation.hideAllowSession, false);
+const opaque = planPermissionPresentation({
+  tool: 'bash', args: { permission: { reason: 'dangerous_command', sandbox: 'workspace-write', always_allow_prefix: '' } },
+});
+assert.equal(opaque.title, '模型要执行一条危险命令');
+assert.equal(opaque.hideAllowSession, true);
+assert.match(opaque.body, /沙盒内/);
+assert.match(planPermissionPresentation({
+  tool: 'bash', args: { permission: { reason: 'unknown_command_without_sandbox', sandbox: 'full-access' } },
+}).body, /没有可用沙盒/);
+
 function run(name, fn) {
   try {
     fn();

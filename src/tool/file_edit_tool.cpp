@@ -2,6 +2,7 @@
 #include "mtime_tracker.hpp"
 #include "diff_utils.hpp"
 #include "tool_icons.hpp"
+#include "tool_protocol_names.hpp"
 #include "lsp/lsp_diagnostics.hpp"
 #include "utils/logger.hpp"
 #include "utils/tool_args_parser.hpp"
@@ -428,14 +429,18 @@ static ToolResult execute_file_edit(const std::string& arguments_json, const Too
 
     if (!file_exists && !old_string.empty()) {
         return ToolResult{ToolErrors::file_not_found(file_path, current_path_utf8()) +
-                          ". Use file_edit with empty old_string or file_write to create a new file.",
+                          ". Use " + model_tool_name_for_native("file_edit") +
+                          " with empty old_string or " +
+                          model_tool_name_for_native("file_write") +
+                          " to create a new file.",
                           false};
     }
 
     if (file_exists) {
         auto size_check = FileOperations::check_edit_file_size(
             file_path,
-            "Use bounded file_read or grep calls to inspect it. Large-file mutation is not supported.");
+            "Use bounded " + model_tool_name_for_native("file_read") +
+                " or grep calls to inspect it. Large-file mutation is not supported.");
         if (!size_check.success) {
             return size_check;
         }

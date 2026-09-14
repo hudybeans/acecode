@@ -56,6 +56,26 @@ Use the command set in [AGENTS.md](AGENTS.md) as the source of truth. Important 
 
 ## Agent Loop And Tools
 
+### Auto 模式与 exec 沙盒
+
+`PermissionMode::Auto` 的规范名称是 `auto`；旧的 `accept-edits` / `acceptEdits`
+仅作为输入别名，统一走 `PermissionManager::parse_mode_name`。
+`src/sandbox/exec_permission` 组合命令分类、全局/项目规则及会话前缀，
+`exec_decision` 输出是否确认和实际执行边界；`AgentLoop` 是唯一审批入口，
+`bash_tool` 只执行已注入的 `ToolContext::exec_sandbox`，不得自行取消沙盒重试。
+规则 forbidden 优先于 yolo/dangerous。文件工具不得改写 exec 规则。
+
+Windows 使用免管理员 WRITE_RESTRICTED 令牌；合成 SID 绑定完整策略和模式，
+禁止共用写身份给只读模式或其它工作区。敏感路径需保护新建、删除和祖先改名，
+ACL 幂等检查不能只按路径缓存。Windows 不隔离网络，Everyone/登录 SID 写权限
+是已知限制。macOS 使用 Seatbelt，Linux 使用系统 bubblewrap。
+`/sandbox [on|off]` 与配置、升级协议详见 [docs/sandbox.md](docs/sandbox.md)。
+会话级探测结论是粘性的:prepare / 启动失败经 `mark_unavailable` 把后端标成不可用,
+`/sandbox on` 会 `reset_probe()` 让它重新读取进程级探测,这是唯一不重启的恢复入口。
+goal 无人值守下 bash 的 Prompt 决策与其它写工具一样自动放行,但执行沙盒仍取
+`ExecDecision::sandbox`(auto 下危险命令留在 workspace-write 里),Forbidden 不受影响;
+回归 `agent_loop_goal_test.cpp::UnattendedGoalAutoApprovesDangerousBashInsideSandbox`。
+
 `image_generate` uses `config.image_generation` and supports generation and
 editing through the Images API. Settings > Tools > Image generation owns its
 configuration; it is not a chat-model entry. Saving settings refreshes the shared
@@ -96,11 +116,40 @@ MCP 工具调用同样响应 abort:`McpManager::invoke` 把阻塞的 JSON-RPC �
 
 `ToolContext` 的 `active_provider_name` / `active_model_id` / `active_model_can_read_images` 由 `AgentLoop::build_tool_context` 填;为空 = 未接线,一律 fail-open 维持旧行为(漏接线不该让唯一的视觉模型凭空消失)。**不要**改成「没 vision 就不注册 `vision_analyze`」:工具注册在启动时一次性完成(`main.cpp` / `worker.cpp` / `headless_runner.cpp` 各一次),而 `apply_model_to_session` 根本不碰 ToolExecutor,按启动模型 gate 会让用户中途 `/model` 切到无视觉模型后工具补不回来。磁盘上的图片对有视觉的主模型不是死路 —— `show_image` 会把文件挂成 `content_parts`,下一轮它就看得见。回归测试:`tests/tool/vision_subagent_tool_test.cpp` 的 7 个自调用防护用例 + `tests/prompt/system_prompt_test.cpp` 的三条 Environment 用例。改 `assets/seed/` 下的 skill 内容要同步 bump `assets/seed/seed.version` 与 `assets/seed/MANIFEST.json`(bundle_version + 该 skill 的 `skill_md_sha256`),`tests/skills/default_skill_seeder_test.cpp` 里硬编码的 bundle 版本也要跟着改。
 
+### GPT 系模型适配:apply_patch + 模型族提示(add-gpt-apply-patch-adaptation)
+
+起因是用户实测「接 ChatGPT / GPT-5 效果很挫」:GPT-5 / gpt-5-codex 家族是用 Codex 的 `apply_patch` 补丁语言训练的,对 `file_edit` 的 old_string 精确匹配不熟,反复失败后退化成 shell heredoc 写文件。做法对齐 opencode(`tool/registry.ts::usePatch` + `session/system.ts::provider()`):按模型 id 分发编辑工具与系统提示。
+
+- **判定只看模型 id,不看 provider 名**(`src/tool/model_family.{hpp,cpp}`):`model_prefers_apply_patch` = 小写后「含 `gpt-` 且不含 `gpt-4`、不含 `oss`」或「含 `codex`」;`detect_model_family` 另分 Anthropic / Gemini / GptLegacy(gpt-4* / o 系)。PA 网关 / OpenAI 兼容代理转发 GPT-5 时 provider 名是 `openai`,只有 id 可信。
+- **三个编辑工具始终注册,只裁模型侧定义表。** `AgentLoop` 每次组装请求(常规与紧急档两条分支之后)调 `filter_tool_definitions_for_model(bundle.tool_defs, prefers)`:偏好 apply_patch 就去掉 `file_edit` / `file_write`(按当前「工具重写」映射后的名字),否则去掉 `apply_patch`;apply_patch 被 expert 能力策略滤掉时回退保留 edit/write,system prompt 的 `apply_patch_mode` 用同一条件(`guidance_allows("apply_patch")`),两边一致。**不要**改成按启动模型注册 —— 与视觉那一节同一个理由:`/model` 中途切换不重建 ToolExecutor;历史 / 别名调用靠 `resolve_model_tool_name_to_native` fail-open 继续可执行。
+- **系统提示按模型族分支**:`build_system_prompt` 尾参数 `SystemPromptModelState`(AgentLoop::system_prompt_model_state,两处调用都传)。apply_patch 模式下 file_edit / file_write 的所有指引不出,换成 apply_patch 指引(相对路径 / 3 行上下文 / `@@` 锚点 / 找不到就重读而不是绕道 shell),cmd / PowerShell 指引里「多行内容用哪个工具」也改口(`get_shell_guidance` 的 `multiline_tool` 参数);GPT / GptCodex 家族追加 `# Model-specific guidance`(取自 opencode gpt.txt / codex.txt 中不与 ACECode 冲突的部分)。非 GPT 模型输出逐字节不变,`system_prompt_test.cpp::NonGptModelStateIsByteIdenticalToLegacyPrompt` 守着。
+- **`apply_patch` 工具**(`src/tool/apply_patch_format.{hpp,cpp}` 纯逻辑 + `apply_patch_tool.{hpp,cpp}` IO):语义对齐 codex-rs / opencode `patch/index.ts`(信封、Add / Delete / Update / Move to、`@@` 锚点、`*** End of File`、四级容错匹配 精确 → 去尾空白 → 去两端空白 → Unicode 标点归一、倒序应用),偏离处:结尾换行按原文(上游总补一个);Add 拒绝覆盖非空文件(与 file_edit 空 old_string 同款);未知行前缀报带行号的错而不是静默吞。**先全量校验再落盘**,同一补丁多段 Update 同一文件靠内存 overlay 串起来(GPT 常这么输出)。不要求先 `file_read`(Codex / opencode 同款),但落盘后 `record_write` 记基线、Delete / Move 源 `invalidate_agent_read_state`;Delete / Move 源也要过 `track_file_write_before`,否则 /rewind 恢复不了被删文件。参数名 `input`(Codex function tool 同名),`patchText` / `patch` 别名 fail-open。
+- **一次结果多文件**:`DiffHunk::file`(空 = 沿用 summary.object,file_edit / file_write 不填);codec 只在非空时输出 `file` 并附 per-hunk `additions` / `deletions`(Web 聚合器多文件时 message 级 +N/-M 无法归属),TUI `render_diff_view` 在 file 变化处插文件标题行,Web `hunksToUnifiedDiff` 按 file 重新输出 `--- a/ +++ b/` 头。`metadata.files[]` 给 UI / hooks;全部路径在 scratch 下才置 `exclude_from_turn_change_summary`。
+- **权限门按路径集合走**:`apply_patch::extract_target_paths(args, cwd)`(Add / Update / Delete 路径 + Move 目标),AgentLoop 对每条路径过 exec-rules 保护、Deny 规则(`.env` / `.git/**` / `.acecode/rules/**` 三处规则表都加了 apply_patch)、`should_auto_allow`、写边界、危险路径确认;Plan 模式要求全部路径都是计划文件;任一路径不过整份补丁不执行,确认框只弹一次(列全部文件)。hooks 的 `apply_patch` matcher 同时命中原生 `apply_patch`。
+- **表面只扫 header 行**:调用行预览(`build_tool_call_preview`)、TUI 确认框、Web 权限弹窗(`permissionToolPreview.js::patchFileHeaders`)用 `summarize_patch_headers`,不做完整解析,预览不该因为补丁格式错误而消失。resume(`session_resume_restore`)为补丁写过的文件补 MtimeTracker 基线,`restore_file_tool_state_from_messages` 多了 cwd 参数解析相对路径。
+- 回归测试:`tests/tool/{model_family,apply_patch_format,apply_patch_tool}_test.cpp`、`tests/agent_loop/agent_loop_apply_patch_test.cpp`(StubLlmProvider 现在支持 `set_model` 切模型族)、`system_prompt_test.cpp` 的 Gpt* 四条、`permissions_test.cpp::ApplyPatchFollowsFileEditSemantics`、`tool_call_preview_test.cpp::ApplyPatch*`、Web `permissionToolPreview` / `sessionChanges` 测试。**没做**:Responses API 原生 `apply_patch` 工具类型 / custom tool + Lark grammar(要动 provider 协议层),opencode 其它模型族(beast / gemini / kimi)的整套提示。
+
+### 模型侧工具名与「工具重写」(tool_protocol_names / tool_rewrites)
+
+工具有两个名字:**原生名**(`file_read` / `file_write` / `file_edit` / `TodoWrite`,ToolExecutor 注册的 id,会话 JSONL、权限、hooks payload、TUI/Web 行都用它)和**模型侧名**(发给 provider 的工具表、历史 `tool_calls[].function.name`、system prompt、工具描述与错误/守卫文案里出现的名字)。两者之间的映射由 [src/tool/tool_protocol_names.cpp](src/tool/tool_protocol_names.cpp) 持有,是**进程级可动态发布**的(`set_model_tool_name_mappings`,读多写少,shared_ptr 快照),**默认为空 = 不重写**。曾经的四条 OpenCode 别名(read/write/edit/todowrite)是编译期常量、永远生效,现在只作为 `default_model_tool_name_mappings()` 种子。
+
+映射的唯一来源是 **「工具重写」**(Settings > 工具 > 工具重写),数据刻意**不进 config.json**,单独存 `<data_dir>/tool-rewrites.json`([src/tool/tool_rewrites.cpp](src/tool/tool_rewrites.cpp):`{version, enabled, rewrites:{native:public}}`,文件缺失 = 关闭 + 种子)。三个入口(worker.cpp / main.cpp / headless_runner.cpp)都在**注册工具之前**调 `tool_rewrites::load_and_apply(get_acecode_dir())`,因为 `register_tool` 的模型侧名冲突检查用的就是当前映射。REST `GET/PUT /api/config/tool-rewrites`(`routes_tool_rewrites.cpp` + `handlers/tool_rewrites_handler.cpp`)整体替换、原子落盘、立即发布;前端 `web/src/lib/toolRewrites.js`(纯逻辑 + store,Node 测试)+ `components/ToolRewriteSettings.jsx`。
+
+改这块要守住的几条(都是复盘时踩出来的):
+
+- **给模型看的文案里的工具名一律动态取**(`model_tool_name_for_native("file_read")`),不要写死:工具描述与参数 schema 的 `description` 在 `translate_tool_definitions_for_model` 里整词重写(`rewrite_model_facing_text`,边界 `[A-Za-z0-9_]`,单遍最长匹配不链式);执行期生成的文案(`utils/tool_errors.hpp`、file_read 的 unchanged stub、doom guard、attachment 提示、text_file_buffer 的编码错误)各自在生成时取名。**绝不能**对工具输出正文做整词重写 —— 文件内容里的 `file_read` 是数据。守卫测试:`tool_protocol_names_test.cpp::BuiltinToolDescriptionsUseModelFacingNamesWhenMapped`、`ToolErrorTextsFollowActiveMapping`、`system_prompt_test` 的映射开/关两组用例。按文案识别错误类型的地方(doom guard 的 `is_retryable_precondition_failure`)只匹配不含工具名的前缀。
+- **发给 provider 的历史只有一个入口** `agent_loop.cpp::model_facing_provider_messages`(修复 + 改名)。主请求与 side-question 都走它;再加新的「构造 provider 消息」路径也必须走它,否则模型看到它工具表里没有的原生名 —— 这在 `9f89d6a0` 已经漏过一次。
+- 入站解析 `ToolExecutor::resolve_model_tool_name_to_native` 是 fail-open:精确原生名优先,别名只在对应 handler 已注册时生效,未知名原样透传。所以映射开关切换、老会话、模型自己混用两套名字都不会断。
+- `get_model_tool_definitions` 翻译失败(运行期映射与注册表冲突)时**回退原生定义**而不是空表 —— 空表意味着模型零工具静默运行。
+- hooks 的 matcher 别名表(`hook_runtime.cpp::alias_matches` / `canonical_hook_match_value`)除 Claude Code 风格的 `Write` / `Edit` 外,也经 `native_tool_name_for_public_alias` 接受当前生效的模型侧名。
+- 校验规则一份(`validate_model_tool_name_mappings` + `validate_settings_against_tools`):public 名匹配 `^[A-Za-z0-9_-]{1,64}$`、唯一、不等于任何注册工具名或其它映射的原生名(否则 resolve 先命中真工具)。前端 `validateToolRewriteDraft` 只是即时反馈,后端仍会再校验。
+- 测试里改映射用 RAII `ScopedModelToolNameMappings`,它是进程级共享状态,忘记恢复会污染同进程的其它用例。
+
 ### Thread Goals(/goal,复刻 Codex ext/goal)
 
 每 session 至多一个 goal,存项目级 `state.sqlite3`(`src/session/thread_goal_store.cpp`)。状态机:`active / paused / blocked / usage_limited / budget_limited / complete`,仅 `active` 参与自动 continuation(`AgentLoop::maybe_continue_goal`,空闲时注入 hidden `goal_context` user 消息开新回合;Plan mode 下不触发)。模型工具 `get_goal` / `create_goal` / `update_goal(complete|blocked)`;`/goal` 命令双端注册(TUI `goal_command.cpp`,daemon builtin 在 `session_registry.cpp`)。
 
-**Goal interaction mode**:`AgentLoop::goal_unattended_active()` = 当前会话(或子代理的父会话)有 `active` goal 且非 Plan mode。为 true 时写工具权限门自动放行,AskUserQuestion 仍弹出提问组件,但固定等待 30 秒;超时后自动采纳每题第一个(推荐)选项并继续。Plan mode 只读约束优先。
+**Goal interaction mode**:`AgentLoop::goal_unattended_active()` = 当前会话(或子代理的父会话)有 `active` goal 且非 Plan mode。为 true 时写工具权限门自动放行(bash 的 exec Prompt 也放行,但沿用决策表的批准后沙盒,见「Auto 模式与 exec 沙盒」),AskUserQuestion 仍弹出提问组件,但固定等待 30 秒;超时后自动采纳每题第一个(推荐)选项并继续。Plan mode 只读约束优先。
 
 **Turn error 停 goal**:provider 终止错误 / 连续空回复耗尽 / provider 缺失 → `stop_active_goal_after_turn_error`(429 → `usage_limited`,其余 → `blocked`),防止 continuation 对同一错误无限重试烧 token;`/goal resume` 恢复。用户 abort → `paused`。
 
@@ -399,6 +448,8 @@ SidePanel 折叠 UI:`ChatView` 把 `SidePanel` 包到 `<div class="ace-side-pane
 
 全局会话搜索面板(`add-webui-search-palette`):`Ctrl+K` / `Cmd+K`(经 `lib/useGlobalShortcut.js` 的 `matchShortcut` 判定,`window` keydown + preventDefault)或 TopBar 🔍 按钮触发 `SearchPalette`。前端**纯聚合**所有 workspace 的 sessions:`api.listAllWorkspaceSessions`(底层 `mergeAllWorkspaceSessions` 纯函数 + `Promise.allSettled`,单 workspace 失败不阻塞其它)→ `lib/searchSessions.js::rankSessions` 加权排序(title 前缀 +1000 / 子串 +500 / summary +200 / workspaceName +100 / fuzzy 兜底 +50,叠 24h/7d/30d 时间衰减 0~50)→ z-300 居中模态。键盘导航 ↑/↓/PgUp/PgDn/Home/End/Enter/Esc;选中同 workspace 直接 `setActiveRef`;跨 workspace 优先 `aceDesktop_activateWorkspace` + 整页 navigate `?open=<sid>`(App.jsx mount 时解析并 `replaceState` 抹掉 query),无 bridge 时降级直接 setActiveRef。数据 60s TTL 缓存,`session_status` / `session_status_snapshot` / `mark_session_read_ack` 任一 WS 帧到达即 invalidate。**后端零路由变更**。
 
+**对话框键盘约定(Claude Code 风格,全部走 `components/Modal.jsx`)**:Esc 取消、Tab / Shift+Tab 只在对话框内循环、Enter 触发默认操作、删除类确认框打开即默认选中「删除」。判定逻辑全在 `lib/dialogKeyboard.js`(纯函数,Node 单测用鸭子类型假 DOM):默认操作按钮用 `data-ace-dialog-primary="true"` 标出;初始焦点顺序 = 已落在对话框内的焦点(React `autoFocus` 在 commit 阶段先跑,Modal 不再抢——旧实现无条件聚焦第一个可聚焦元素,曾把「添加专家」搜索框的 autoFocus 抢成头部 ×)> 第一个文本输入框(表单型)> primary(确认型)> 第一个可聚焦元素;Enter 只在焦点**不在**会自己消费 Enter 的元素(button / a[href] / textarea / contenteditable / `<form>` 内控件——表单靠隐式提交)上时点 primary,子组件自己处理 Enter 必须 `preventDefault`(Tag 输入框那样),否则会双触发;按住不放的 auto-repeat Enter 一律 `preventDefault`(Chromium 的按钮激活发生在 keypress、且派发给当时聚焦的元素,「按住 Enter 打开确认框 → 焦点落到删除 → 连带确认」就是这么来的;keydown 被阻止就不再产生 keypress),textarea / contenteditable 内放行。输入法合成中的 Esc 不关对话框。焦点环只在 `:focus-visible`(`.ace-modal-dialog :is(button, [role="button"], a[href])`),鼠标点开时脚本聚焦的默认按钮不画环、按 Tab 后才出现,与系统对话框一致。**不要**再手写 `fixed inset-0` 遮罩当对话框(循环编辑表单与 opencode 导入框已收编;`agentBrowserArchitecture.test.js` 的 floatingSurfaceOwners 清单相应减少)。自动弹出的 `WorkspaceCleanupNotice` 故意不标 primary:无人触发的对话框不能带破坏性默认操作,默认落在「保留」。守卫:`lib/dialogKeyboard.test.js` + `lib/dialogKeyboardArchitecture.test.js`(后者还断言取消类文案永远不会被标成 primary)。
+
 排队卡片栈(`redesign-webui-queue-cards`):busy 期间提交的待发送消息**不进 transcript**,改由 `<QueueCardList>`(在 `<InputBar>` 上方)渲染成卡片堆。状态机(`lib/chatInputQueue.js`)与 `enqueueQueuedInput` / `cancelQueuedInput` / `markQueuedInput*` / `nextQueuedInput` / `completeQueuedInputForMessage` 全部不变;只是渲染分支换地方。每张卡片左侧 3px `.ace-queue-card-indicator` 色条标注状态(QUEUED 灰 / FAILED 红),右侧恒挂"取消"(close 图标),FAILED 多一个"重试"。状态↔标签映射收敛在 `lib/queueCardItem.js::buildQueueCardItem`(纯函数,Node 单测覆盖);DOM 端只是把这份结构映射到 className。`Message.jsx::UserBubble` 已剥离 `queued`/`onCancelQueued`/`onRetryQueued` props——transcript 里出现的 user 气泡一定是后端真实落库的消息。
 
 ### Web UI: HTTP / WS 协议增量
@@ -669,6 +720,12 @@ If no saved model is configured, normal startup/session creation fails instead o
 - `/model --default <name>` — switch + persist to `config.json` `default_model_name`
 
 Unknown name → error, no state change. All persisting paths run under `provider_mu` and recompute `context_window`.
+
+**cwd 一律以 UTF-8 `std::string` 传递,别用 `std::filesystem::path` 当参数类型接它。** `cwd_model_override` 的四个接口曾声明为 `const fs::path&`,而所有调用方手里都是 UTF-8 string —— MSVC 的隐式 `string → path` 转换按系统 ANSI 代码页(中文 Windows = GBK)+ `MB_ERR_INVALID_CHARS` 解码:反斜杠形态的中文路径解成乱码、算错 `<cwd_hash>`(override 静默失效,TUI 与 Web 两边 hash 还不一样);Desktop 注册 workspace 用的正斜杠形态(`E:/SS项目数据库/…`,`库/` = `93 2F`,0x2F 不是合法 GBK 尾字节)直接抛 `std::system_error`,新建/恢复会话变成裸 500,daemon 日志一行线索都没有(2026-09-11 用户反馈)。是否触发取决于目录名里 CJK 连续字符个数的奇偶与后一个字节,所以表现为「有的中文目录能用有的不能」。现在签名改为 `const std::string& cwd_utf8`;新加接 cwd 的函数照此办理,内部需要 `fs::path` 时用 `path_from_utf8`。配套:会话 create/resume 路由把逃逸的 `std::exception` 收成 JSON 500(`SESSION_CREATE_FAILED` / `SESSION_RESUME_FAILED`,带 message 与 cwd)并记 ERR 日志;`server.cpp` 装了 Crow 全局 `exception_handler`(其它路由 → `INTERNAL_ERROR` JSON 500)和 Crow 日志桥(Warning+ 进 daemon-*.log,Info 丢弃 —— Crow 每个响应都打一行 Info)。**Desktop 托管的 daemon stderr 指向 NUL**,任何只写 stderr 的诊断信息在线上都等于没有。回归测试:`tests/provider/cwd_model_override_test.cpp` 的两条 Cjk 用例(hash 与 UTF-8 口径逐字节一致,在 936 与 1252 下修复前都挂)+ `web_server_smoke_test.cpp` 的 `WorkspaceSessionCreateWorksForCjkCwdRegisteredWithForwardSlashes` / `SessionRoutesReportEscapedExceptionsAsJson500` / `UncaughtRouteExceptionBecomesJson500`。
+
+Windows 升级兼容:新 UTF-8 override 文件缺失时,只读回退到当前文件系统代码页下旧版计算的键,依次检查传入拼写、反斜杠和正斜杠形态。旧转换放在受保护的兼容助手里,失败时跳过;已有新文件(含损坏文件)始终优先。新保存只写 UTF-8 键,显式删除同时清理旧键,避免旧模型选择重新生效。对应 `LegacyCwdModelOverrideTest`。
+
+Crow 的 `ResponseCorsMiddleware` 在响应完成时复用 `add_loopback_cors_headers`,让全局异常 JSON 也带上允许的 loopback Origin。路由已经加过头时不重复追加,原有 Token 与来源校验保持不变。
 
 ## CI / Release
 

@@ -23,7 +23,7 @@ run('PermissionCard is an inline non-modal surface with explicit actions', () =>
   const card = source('components/PermissionCard.jsx');
   assert.match(card, /data-permission-card/);
   assert.match(card, />\s*拒绝\s*</);
-  assert.match(card, />\s*本次会话允许\s*</);
+  assert.match(card, /\{allowSessionLabel\}/);
   assert.match(card, /primaryLabel/);
   assert.match(card, /disabled=\{!pending\}/);
   assert.doesNotMatch(card, /<Modal|position:\s*['"]fixed|fixed inset|backdrop|document\.addEventListener|Escape|autoFocus|focus\(/);
