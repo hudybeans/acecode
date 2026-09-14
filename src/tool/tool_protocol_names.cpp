@@ -105,6 +105,11 @@ ScopedModelToolNameMappings::ScopedModelToolNameMappings(
     set_model_tool_name_mappings(std::move(mappings));
 }
 
+ScopedModelToolNameMappings::ScopedModelToolNameMappings(
+    std::initializer_list<ToolProtocolNameMapping> mappings)
+    : ScopedModelToolNameMappings(
+          ToolProtocolNameMappings(mappings.begin(), mappings.end())) {}
+
 ScopedModelToolNameMappings::~ScopedModelToolNameMappings() {
     set_model_tool_name_mappings(previous_);
 }

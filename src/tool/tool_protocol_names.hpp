@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,6 +39,8 @@ bool set_model_tool_name_mappings(ToolProtocolNameMappings mappings,
 class ScopedModelToolNameMappings {
 public:
     explicit ScopedModelToolNameMappings(ToolProtocolNameMappings mappings);
+    ScopedModelToolNameMappings(
+        std::initializer_list<ToolProtocolNameMapping> mappings);
     ~ScopedModelToolNameMappings();
     ScopedModelToolNameMappings(const ScopedModelToolNameMappings&) = delete;
     ScopedModelToolNameMappings& operator=(const ScopedModelToolNameMappings&) = delete;
