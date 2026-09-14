@@ -46,4 +46,4 @@
 
 - [x] 6.1 bash 工具描述与 system prompt 沙盒指引更新(`system_prompt_test` byte-stable 用例同步)
 - [x] 6.2 `docs/sandbox.md`、`docs/daemon-api.md`、CLAUDE.md、openspec spec
-- [ ] 6.3 全量单测 + web 测试 + 构建
+- [x] 6.3 全量单测 + web 测试 + 构建(C++ 4350 通过;9 个失败均属同工作树里并发进行的主题 / 技能种子改动,与本变更无关;web 仅 themeManagementUi 一例失败,同源;acecode / acecode-desktop 在 MinSizeRel 配置链接通过,Release 目录被运行中的桌面版锁住)
