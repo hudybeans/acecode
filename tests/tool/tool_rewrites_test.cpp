@@ -178,7 +178,8 @@ TEST(ToolRewrites, LoadAndApplyPublishesEffectiveMappingToProcess) {
 
     // 文件损坏:保持不重写,不抛不崩。
     write_text(acecode::path_from_utf8(path), "{{{");
-    acecode::ScopedModelToolNameMappings dirty({{"bash", "shell"}});
+    acecode::ScopedModelToolNameMappings dirty(
+        acecode::ToolProtocolNameMappings{{"bash", "shell"}});
     acecode::tool_rewrites::load_and_apply(dir.utf8());
     EXPECT_TRUE(acecode::model_tool_name_mappings().empty());
 }

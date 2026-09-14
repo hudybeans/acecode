@@ -68,7 +68,8 @@ TEST(HookRuntime, MatcherAliasesMapCodexNamesToAceCodeTools) {
 // 三套命名词汇并存时用户写的 matcher 静默失效。
 TEST(HookRuntime, MatcherAcceptsModelFacingAliasWhenRewriteActive) {
     {
-        acecode::ScopedModelToolNameMappings scoped({{"file_write", "write"}});
+        acecode::ScopedModelToolNameMappings scoped(
+            acecode::ToolProtocolNameMappings{{"file_write", "write"}});
         EXPECT_TRUE(acecode::hook_matcher_matches(
             make_hook("h5", acecode::kCodexHookEventPreToolUse, "write"),
             acecode::kCodexHookEventPreToolUse,

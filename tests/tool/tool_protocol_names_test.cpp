@@ -105,7 +105,8 @@ TEST(ToolProtocolNames, SeedDeclaresOnlyVerifiedOpenCodeMappings) {
 // 场景:发布一组非法映射(public 名撞另一条的 native 名 / 含非法字符 / 重复)。
 // 期望:set 返回 false 且原映射保持不变;RAII 析构后恢复上一份映射。
 TEST(ToolProtocolNames, RejectsInvalidMappingsAndRestoresOnScopeExit) {
-    acecode::ScopedModelToolNameMappings outer({{"file_read", "read"}});
+    acecode::ScopedModelToolNameMappings outer(
+        acecode::ToolProtocolNameMappings{{"file_read", "read"}});
     {
         std::string error;
         EXPECT_FALSE(acecode::set_model_tool_name_mappings(
@@ -123,7 +124,8 @@ TEST(ToolProtocolNames, RejectsInvalidMappingsAndRestoresOnScopeExit) {
         // 失败的发布不改动生效映射。
         EXPECT_EQ(acecode::model_tool_name_for_native("file_read"), "read");
 
-        acecode::ScopedModelToolNameMappings inner({{"bash", "shell"}});
+        acecode::ScopedModelToolNameMappings inner(
+            acecode::ToolProtocolNameMappings{{"bash", "shell"}});
         EXPECT_EQ(acecode::model_tool_name_for_native("bash"), "shell");
         EXPECT_EQ(acecode::model_tool_name_for_native("file_read"), "file_read");
     }
@@ -202,7 +204,8 @@ TEST(ToolProtocolNames, TranslatesDefinitionsAndDescriptionsOnly) {
 // 场景:两个原生工具翻译后得到同一个模型侧名。
 // 期望:翻译失败、输出参数不被改动。
 TEST(ToolProtocolNames, RejectsDuplicateOutboundPublicNames) {
-    acecode::ScopedModelToolNameMappings scoped({{"file_write", "write"}});
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::ToolProtocolNameMappings{{"file_write", "write"}});
     const std::vector<acecode::ToolDef> native = {
         {"file_write", "mapped", nlohmann::json::object()},
         {"write", "native collision", nlohmann::json::object()},
@@ -230,7 +233,8 @@ TEST(ToolProtocolNames, FallsBackToNativeDefinitionsWhenTranslationCollides) {
         ASSERT_TRUE(tools.register_tool(make_protocol_tool("file_write")));
         ASSERT_TRUE(tools.register_tool(make_protocol_tool("write")));
     }
-    acecode::ScopedModelToolNameMappings scoped({{"file_write", "write"}});
+    acecode::ScopedModelToolNameMappings scoped(
+        acecode::ToolProtocolNameMappings{{"file_write", "write"}});
     const auto definitions = tools.get_model_tool_definitions();
     EXPECT_EQ(definition_names(definitions),
               (std::vector<std::string>{"file_write", "write"}));
