@@ -186,3 +186,54 @@ TEST(ConfirmQuestion, FilePathWrongTypeFallsBack) {
         R"({"file_path":123})");
     EXPECT_EQ(s, "Do you want to use file_edit?");
 }
+
+// 场景:bash 越权确认的 payload 带 scoped_write_root 与 proposed_prefix_rule
+// (openspec align-codex-sandboxing D5)。期望:选项变成 Yes / 会话前缀 /
+// 只放行该目录 / 记住前缀 / No 五项,序号连续,No 永远最后且是默认焦点;
+// 标题里透出上一次被拒的路径。
+TEST(ConfirmQuestion, BashEscalationOffersScopedAndRememberOptions) {
+    const std::string args = R"({"command":"pnpm install","permission":{"reason":"escalation_requested",
+        "request":"require_escalated","sandbox":"full-access","always_allow_prefix":"pnpm install",
+        "proposed_prefix_rule":"pnpm install","scoped_write_root":"/home/u/.cache/pnpm",
+        "denied_path":"/home/u/.cache/pnpm/store.lock"}})";
+    const auto options = acecode::tui::build_confirm_options("bash", args);
+    ASSERT_EQ(options.size(), 5u);
+    EXPECT_EQ(options[0].result, acecode::PermissionResult::Allow);
+    EXPECT_EQ(options[1].result, acecode::PermissionResult::AlwaysAllow);
+    EXPECT_NE(options[1].label.find("pnpm install"), std::string::npos);
+    EXPECT_EQ(options[2].result, acecode::PermissionResult::AllowScoped);
+    EXPECT_NE(options[2].label.find("/home/u/.cache/pnpm"), std::string::npos);
+    EXPECT_EQ(options[3].result, acecode::PermissionResult::AllowRemember);
+    EXPECT_EQ(options[3].label.rfind("4. ", 0), 0u);
+    EXPECT_EQ(options[4].result, acecode::PermissionResult::Deny);
+    EXPECT_EQ(options[4].label, "5. No");
+    EXPECT_EQ(acecode::tui::confirm_default_focus("bash", args), 4);
+    const auto title = acecode::tui::build_confirm_question("bash", args);
+    EXPECT_NE(title.find("store.lock"), std::string::npos);
+    EXPECT_NE(title.find("沙盒外"), std::string::npos);
+}
+
+// 场景:额外权限申请(with_additional_permissions)与不透明脚本。期望:额外权限
+// 申请的会话选项说的是「保留这些权限」且不提供「记住前缀」;标题列出申请的
+// 路径 / 网络;不透明脚本(无前缀)只有 Yes / No 两项;非 bash 工具维持三项。
+TEST(ConfirmQuestion, AdditionalPermissionsAndOpaqueCommandsShapeOptions) {
+    const std::string additional = R"({"command":"pnpm install","justification":"cache",
+        "permission":{"reason":"additional_permissions_requested","request":"with_additional_permissions",
+        "sandbox":"workspace-write","always_allow_prefix":"pnpm install","proposed_prefix_rule":"pnpm install",
+        "additional_permissions":{"write":["/home/u/.cache/pnpm"],"read":[],"network":true}}})";
+    auto options = acecode::tui::build_confirm_options("bash", additional);
+    ASSERT_EQ(options.size(), 3u);
+    EXPECT_NE(options[1].label.find("extra permissions"), std::string::npos);
+    EXPECT_EQ(options[2].result, acecode::PermissionResult::Deny);
+    const auto title = acecode::tui::build_confirm_question("bash", additional);
+    EXPECT_NE(title.find("write /home/u/.cache/pnpm"), std::string::npos);
+    EXPECT_NE(title.find("+ network"), std::string::npos);
+    EXPECT_NE(title.find("沙盒内 + 申请的额外权限"), std::string::npos);
+    options = acecode::tui::build_confirm_options("bash",
+        R"({"command":"bash -c x","permission":{"reason":"escalation_requested","always_allow_prefix":""}})");
+    ASSERT_EQ(options.size(), 2u);
+    EXPECT_EQ(options[1].result, acecode::PermissionResult::Deny);
+    EXPECT_EQ(acecode::tui::confirm_default_focus("bash", "{}"), 2);
+    EXPECT_EQ(acecode::tui::build_confirm_options("file_write", R"({"file_path":"a"})").size(), 3u);
+    EXPECT_EQ(acecode::tui::build_confirm_options("file_write", "not json").size(), 3u);
+}

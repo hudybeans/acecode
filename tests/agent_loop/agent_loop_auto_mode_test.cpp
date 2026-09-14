@@ -3,6 +3,10 @@
 #include "stub_provider.hpp"
 #include "tool/bash_tool.hpp"
 #include "../sandbox/test_support.hpp"
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <condition_variable>
 #include <chrono>
 #include <memory>
@@ -23,6 +27,8 @@ public:
     std::unique_ptr<AgentLoop> loop;
     std::vector<nlohmann::json> prompts;
     std::vector<SandboxMode> executions;
+    std::vector<std::optional<SandboxPolicy>> policies;   // 每次执行时注入的策略(不沙盒 = nullopt)
+    std::optional<ToolResult> next_result;                 // 下一次 bash 执行返回的结果(模拟沙盒拒绝)
     PermissionResult answer = PermissionResult::Allow;
     std::mutex mutex;
     std::condition_variable cv;
@@ -33,6 +39,12 @@ public:
         auto bash = create_bash_tool();
         bash.execute = [this](const std::string&, const ToolContext& ctx) {
             executions.push_back(ctx.exec_sandbox ? ctx.exec_sandbox->policy.mode : SandboxMode::FullAccess);
+            policies.push_back(ctx.exec_sandbox ? std::optional<SandboxPolicy>(ctx.exec_sandbox->policy) : std::nullopt);
+            if (next_result) {
+                auto result = *next_result;
+                next_result.reset();
+                return result;
+            }
             return ToolResult{"ok", true};
         };
         tools.register_tool(bash);
@@ -165,4 +177,172 @@ TEST(AgentLoopAutoMode, SessionSandboxSwitchClearsRememberedPrefixes) {
     ASSERT_TRUE(h.run({{"command", "pnpm test"}}));
     EXPECT_EQ(h.prompts.size(), 1u);
     EXPECT_EQ(h.executions.back(), SandboxMode::WorkspaceWrite);
+}
+
+namespace {
+bool has_writable_root(const std::optional<SandboxPolicy>& policy, const std::filesystem::path& dir) {
+    if (!policy) return false;
+    const auto wanted = path_to_utf8(std::filesystem::weakly_canonical(dir));
+    for (const auto& root : policy->writable_roots) {
+        if (root.root == wanted) return true;
+    }
+    return false;
+}
+}
+
+// 场景:模型带 sandbox_permissions=with_additional_permissions 申请给 `<tree>/extra`
+// 写权限(align-codex-sandboxing D3),用户选「本次会话保留这些权限」。期望:
+// 弹一次确认(reason=additional_permissions_requested,sandbox=workspace-write,
+// payload 列出申请的路径);批准后命令留在 workspace-write 里、可写根含 extra;
+// 同样的申请第二次不再确认(会话授权已覆盖);普通命令也带着授权跑。
+TEST(AgentLoopAutoMode, AdditionalPermissionsStaySandboxedAndCanBeKeptForSession) {
+    AutoHarness h;
+    const auto extra = h.tree.dir("extra");
+    h.answer = PermissionResult::AlwaysAllow;
+    const nlohmann::json request = {{"command", "pnpm install"},
+        {"sandbox_permissions", "with_additional_permissions"},
+        {"justification", "Needs the shared store."},
+        {"additional_permissions", {{"file_system", {{"write", {path_to_utf8(extra)}}}}}}};
+    ASSERT_TRUE(h.run(request));
+    ASSERT_EQ(h.prompts.size(), 1u);
+    EXPECT_EQ(h.prompts[0]["permission"]["reason"], "additional_permissions_requested");
+    EXPECT_EQ(h.prompts[0]["permission"]["sandbox"], "workspace-write");
+    EXPECT_EQ(h.prompts[0]["permission"]["request"], "with_additional_permissions");
+    EXPECT_EQ(h.prompts[0]["permission"]["additional_permissions"]["write"].size(), 1u);
+    ASSERT_EQ(h.executions.size(), 1u);
+    EXPECT_EQ(h.executions[0], SandboxMode::WorkspaceWrite);
+    EXPECT_TRUE(has_writable_root(h.policies[0], extra));
+    ASSERT_TRUE(h.run(request));
+    ASSERT_TRUE(h.run({{"command", "pnpm test"}}));
+    EXPECT_EQ(h.prompts.size(), 1u) << "会话授权已覆盖,不再确认";
+    ASSERT_EQ(h.executions.size(), 3u);
+    EXPECT_TRUE(has_writable_root(h.policies[1], extra));
+    EXPECT_TRUE(has_writable_root(h.policies[2], extra)) << "普通命令也带着会话授权";
+}
+
+// 场景:命令在沙盒里因为写 `<tree>/outside/x.txt` 被拒(工具结果带
+// sandbox_violation),模型随后带越权申请重试,用户选「只放行该目录」(D4)。
+// 期望:越权确认的 payload 带 denied_path 与 scoped_write_root=<tree>/outside;
+// 批准后命令仍在 workspace-write 里跑、可写根多了 outside;不记 bypass 前缀,
+// 之后同前缀命令照常进沙盒;成功执行后陈旧的被拒路径作废,再次越权申请不再
+// 提供 scoped 选项。
+TEST(AgentLoopAutoMode, ScopedApprovalGrantsOnlyTheDeniedDirectory) {
+    AutoHarness h;
+    // 被拒目录必须在工作区(harness cwd = tree.root)之外,否则它本来就可写,
+    // 不构成「被拒」,也就不会给出 scoped 选项。
+    test::TempTree elsewhere;
+    const auto outside = elsewhere.dir("outside");
+    ToolResult denied{"sh: " + path_to_utf8(outside / "x.txt") + ": Permission denied", false};
+    denied.metadata["sandbox_denied"] = true;
+    denied.metadata["sandbox_violation"] = {{"reason", "permission_denied"},
+        {"path", path_to_utf8(outside / "x.txt")}, {"snippet", "Permission denied"}};
+    h.next_result = denied;
+    ASSERT_TRUE(h.run({{"command", "pnpm install"}}));
+    EXPECT_TRUE(h.prompts.empty());
+    h.answer = PermissionResult::AllowScoped;
+    ASSERT_TRUE(h.run({{"command", "pnpm install"}, {"sandbox_permissions", "require_escalated"},
+                      {"justification", "write the report"}}));
+    ASSERT_EQ(h.prompts.size(), 1u);
+    EXPECT_EQ(h.prompts[0]["permission"]["reason"], "escalation_requested");
+    EXPECT_EQ(h.prompts[0]["permission"]["denied_path"], path_to_utf8(outside / "x.txt"));
+    EXPECT_EQ(h.prompts[0]["permission"]["scoped_write_root"], path_to_utf8(std::filesystem::weakly_canonical(outside)));
+    ASSERT_EQ(h.executions.size(), 2u);
+    EXPECT_EQ(h.executions[1], SandboxMode::WorkspaceWrite) << "只放行目录 = 留在沙盒里";
+    EXPECT_TRUE(has_writable_root(h.policies[1], outside));
+    ASSERT_TRUE(h.run({{"command", "pnpm install lodash"}}));
+    EXPECT_EQ(h.executions.back(), SandboxMode::WorkspaceWrite);
+    EXPECT_EQ(h.prompts.size(), 1u);
+    h.answer = PermissionResult::Deny;
+    ASSERT_TRUE(h.run({{"command", "pnpm publish"}, {"with_escalated_permissions", true},
+                      {"justification", "publish"}}));
+    ASSERT_EQ(h.prompts.size(), 2u);
+    EXPECT_FALSE(h.prompts[1]["permission"].contains("scoped_write_root")) << "成功执行后陈旧路径作废";
+}
+
+// 场景:模型越权申请 `pnpm install`,用户选「以后都允许」(D6)。期望:确认框 payload
+// 带 proposed_prefix_rule=`pnpm install`;批准后本次沙盒外执行;规则写进临时规则
+// 目录的 default.rules(沙盒外批准);随后不带越权的 `pnpm install lodash` 不再确认
+// 且按全局 allow 规则沙盒外执行。对照:auto 下危险命令 `rm -rf output` 的确认
+// 不提供记住选项(`rm` 在禁用名单),用户即便选「以后都允许」也只降级为会话允许。
+TEST(AgentLoopAutoMode, RememberWritesRuleFileAndSkipsFuturePrompts) {
+    AutoHarness h;
+    const auto rules_dir = h.tree.root / "rules";
+    h.loop->set_exec_rules_dir_for_tests(path_to_utf8(rules_dir));
+    h.answer = PermissionResult::AllowRemember;
+    ASSERT_TRUE(h.run({{"command", "pnpm install"}, {"sandbox_permissions", "require_escalated"},
+                      {"justification", "Install into the shared store."}}));
+    ASSERT_EQ(h.prompts.size(), 1u);
+    EXPECT_EQ(h.prompts[0]["permission"]["proposed_prefix_rule"], "pnpm install");
+    ASSERT_EQ(h.executions.size(), 1u);
+    EXPECT_EQ(h.executions[0], SandboxMode::FullAccess);
+    std::ifstream in(rules_dir / kRememberedRulesFile);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("prefix_rule(pattern=[\"pnpm\", \"install\"], decision=\"allow\")"), std::string::npos) << content;
+    ASSERT_TRUE(h.run({{"command", "pnpm install lodash"}}));
+    EXPECT_EQ(h.prompts.size(), 1u);
+    EXPECT_EQ(h.executions.back(), SandboxMode::FullAccess);
+    ASSERT_TRUE(h.run({{"command", "rm -rf output"}}));
+    ASSERT_EQ(h.prompts.size(), 2u);
+    EXPECT_EQ(h.prompts[1]["permission"]["reason"], "dangerous_command");
+    EXPECT_FALSE(h.prompts[1]["permission"].contains("proposed_prefix_rule"));
+    EXPECT_FALSE(std::filesystem::exists(rules_dir / kRememberedSandboxedRulesFile));
+    EXPECT_EQ(h.executions.back(), SandboxMode::WorkspaceWrite);
+}
+
+// 场景:auto 模式下危险命令 `git push --force` 的确认,用户选「以后都允许」。期望:
+// 沙盒内批准写到 default.sandboxed.rules,加载后 allow 降级为 AllowSandboxed;
+// 但新出现的危险参数仍要确认(危险命令判定先于项目 / 沙盒 allow),所以第二次
+// `git push --force` 仍弹确认 —— 记住的是免确认的普通 `git push` 用法。
+TEST(AgentLoopAutoMode, SandboxedApprovalIsRememberedInSandboxedRulesFile) {
+    AutoHarness h;
+    const auto rules_dir = h.tree.root / "rules";
+    h.loop->set_exec_rules_dir_for_tests(path_to_utf8(rules_dir));
+    h.answer = PermissionResult::AllowRemember;
+    ASSERT_TRUE(h.run({{"command", "git push --force"}}));
+    ASSERT_EQ(h.prompts.size(), 1u);
+    EXPECT_EQ(h.prompts[0]["permission"]["reason"], "dangerous_command");
+    EXPECT_EQ(h.prompts[0]["permission"]["proposed_prefix_rule"], "git push");
+    EXPECT_EQ(h.executions.back(), SandboxMode::WorkspaceWrite);
+    std::ifstream in(rules_dir / kRememberedSandboxedRulesFile);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("prefix_rule(pattern=[\"git\", \"push\"], decision=\"allow\")"), std::string::npos) << content;
+    EXPECT_FALSE(std::filesystem::exists(rules_dir / kRememberedRulesFile));
+    ASSERT_TRUE(h.run({{"command", "git push --force"}}));
+    EXPECT_EQ(h.prompts.size(), 2u) << "危险参数不能被记住的 allow 悄悄放行";
+}
+
+// 场景:配置里的普通 Deny 规则(`.env` 写入,priority 10)与内置保护级 Deny
+// (priority 1000)分别命中 file_write(align-codex-sandboxing D10)。期望:普通
+// Deny 回到弹确认,批准后执行(Desktop 没有 --dangerous 也有逃生口);保护级 Deny
+// 仍硬拒绝、不弹确认。
+TEST(AgentLoopAutoMode, ConfiguredDenyRulePromptsWhileBuiltinProtectionHardDenies) {
+    AutoHarness h;
+    h.permissions.add_rule({"file_write", "**/.env", "", RuleAction::Deny, 10});
+    h.permissions.add_rule({"file_write", "**/protected/**", "", RuleAction::Deny,
+                            PermissionManager::kBuiltinProtectionPriority});
+    int writes = 0;
+    ToolDef def;
+    def.name = "file_write";
+    def.description = "test";
+    def.parameters = nlohmann::json({{"type", "object"}, {"properties", {{"file_path", {{"type", "string"}}}}}});
+    ToolImpl tool{def, [&](const std::string&, const ToolContext&) { ++writes; return ToolResult{"ok", true}; }, false};
+    ASSERT_TRUE(h.tools.register_tool(tool));
+    auto run_write = [&](const std::string& path, const char* id) {
+        h.provider->push_tool_call("file_write", nlohmann::json{{"file_path", path}, {"content", "x"}}.dump(), id);
+        h.provider->push_text("done");
+        {
+            std::lock_guard<std::mutex> lock(h.mutex);
+            h.busy = true;
+        }
+        h.loop->submit("write");
+        std::unique_lock<std::mutex> lock(h.mutex);
+        return h.cv.wait_for(lock, 10s, [&h] { return !h.busy; });
+    };
+    h.answer = PermissionResult::Allow;
+    ASSERT_TRUE(run_write(path_to_utf8(h.tree.root / ".env"), "call-env"));
+    EXPECT_EQ(h.prompts.size(), 1u) << "普通 Deny 规则改为弹确认";
+    EXPECT_EQ(writes, 1);
+    ASSERT_TRUE(run_write(path_to_utf8(h.tree.root / "protected" / "x"), "call-protected"));
+    EXPECT_EQ(h.prompts.size(), 1u) << "保护级 Deny 不弹确认";
+    EXPECT_EQ(writes, 1) << "保护级 Deny 硬拒绝";
 }

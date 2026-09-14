@@ -936,6 +936,16 @@ std::string command_basename(const std::string& token) {
 }
 
 std::string always_allow_prefix_for_segment(const CommandSegment& segment) {
+    const auto tokens = always_allow_prefix_tokens_for_segment(segment);
+    std::string out;
+    for (const auto& token : tokens) {
+        if (!out.empty()) out += ' ';
+        out += token;
+    }
+    return out;
+}
+
+std::vector<std::string> always_allow_prefix_tokens_for_segment(const CommandSegment& segment) {
     if (segment.tokens.empty()) return {};
     const std::string base = command_basename(segment.tokens[0]);
     if (base.empty()) return {};
@@ -957,10 +967,10 @@ std::string always_allow_prefix_for_segment(const CommandSegment& segment) {
                             segment.tokens[1][0] == '-')) return {};
         if (base == name && segment.tokens.size() >= 2 && !segment.tokens[1].empty() &&
             segment.tokens[1][0] != '-') {
-            return segment.tokens[0] + " " + segment.tokens[1];
+            return {segment.tokens[0], segment.tokens[1]};
         }
     }
-    return segment.tokens[0];
+    return {segment.tokens[0]};
 }
 
 bool segment_references_sensitive_path(const CommandSegment& segment) {

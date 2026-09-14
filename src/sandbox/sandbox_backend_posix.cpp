@@ -84,7 +84,7 @@ bool bwrap_probe_succeeds(const std::string& bwrap) {
 
 } // namespace
 
-BackendProbe probe_backend() {
+BackendProbe probe_backend(WindowsBackendChoice /*windows_backend*/) {
     BackendProbe probe;
 #if defined(__APPLE__)
     probe.kind = BackendKind::MacosSeatbelt;

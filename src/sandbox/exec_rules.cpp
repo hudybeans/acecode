@@ -281,7 +281,16 @@ void load_dir(const std::string& dir, RuleScope scope, std::vector<PrefixRule>& 
     std::sort(files.begin(), files.end());
     for (const auto& file : files) {
         const std::string name = path_to_utf8(file);
-        ParsedRulesFile parsed = parse_rules_text(read_text_file(file), scope, name);
+        // 全局目录里 `*.sandboxed.rules` 是「批准并记住」的沙盒内批准(D6):
+        // allow 降级为免确认但仍沙盒。
+        RuleScope file_scope = scope;
+        const std::string filename = path_to_utf8(file.filename());
+        const std::string suffix = ".sandboxed.rules";
+        if (scope == RuleScope::Global && filename.size() > suffix.size() &&
+            filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            file_scope = RuleScope::Sandboxed;
+        }
+        ParsedRulesFile parsed = parse_rules_text(read_text_file(file), file_scope, name);
         if (!parsed.error.empty()) {
             LOG_WARN("[sandbox] skipping exec rules file " + name + ": " + parsed.error);
             skipped.push_back(name + ": " + parsed.error);
@@ -292,8 +301,37 @@ void load_dir(const std::string& dir, RuleScope scope, std::vector<PrefixRule>& 
 }
 
 RuleDecision degrade_for_scope(RuleDecision d, RuleScope scope) {
-    if (d == RuleDecision::Allow && scope == RuleScope::Project) return RuleDecision::AllowSandboxed;
+    if (d == RuleDecision::Allow && (scope == RuleScope::Project || scope == RuleScope::Sandboxed)) {
+        return RuleDecision::AllowSandboxed;
+    }
     return d;
+}
+
+// Codex BANNED_PREFIX_SUGGESTIONS(core/src/exec_policy.rs)+ acecode 补的 cmd /
+// PowerShell 拼写。每项是完整 token 序列:`["git"]` 禁而 `["git","commit"]` 不禁。
+const std::vector<std::vector<std::string>>& banned_prefixes() {
+    static const std::vector<std::vector<std::string>> banned = {
+        {"/bin/bash"}, {"/bin/bash", "-c"}, {"/bin/bash", "-lc"}, {"/bin/sh"}, {"/bin/sh", "-c"},
+        {"/bin/sh", "-lc"}, {"/bin/zsh"}, {"/bin/zsh", "-c"}, {"/bin/zsh", "-lc"}, {"rscript"},
+        {"bash"}, {"bash", "-c"}, {"bash", "-lc"}, {"bun"}, {"bun", "-e"}, {"bun", "run"},
+        {"cmd"}, {"cmd", "/c"}, {"cmd", "/k"}, {"cmd", "/d"}, {"dash"}, {"dash", "-c"},
+        {"deno"}, {"deno", "eval"}, {"env"}, {"fish"}, {"fish", "-c"}, {"git"}, {"julia"},
+        {"julia", "-e"}, {"ksh"}, {"ksh", "-c"}, {"lua"}, {"lua", "-e"}, {"node"}, {"node", "-e"},
+        {"nodejs"}, {"nodejs", "-e"}, {"npm", "run"}, {"osascript"}, {"perl"}, {"perl", "-e"},
+        {"php"}, {"php", "-r"}, {"pnpm", "run"}, {"powershell"}, {"powershell", "-command"},
+        {"powershell", "-encodedcommand"}, {"powershell", "-file"}, {"powershell", "-c"},
+        {"pwsh"}, {"pwsh", "-command"}, {"pwsh", "-encodedcommand"}, {"pwsh", "-file"},
+        {"pwsh", "-c"}, {"pwsh", "-e"}, {"pwsh", "-ec"}, {"pwsh", "-f"}, {"py"}, {"py", "-3"},
+        {"pypy"}, {"pypy3"}, {"python"}, {"python", "-"}, {"python", "-c"}, {"python3"},
+        {"python3", "-"}, {"python3", "-c"}, {"pythonw"}, {"pyw"}, {"rm"}, {"ruby"},
+        {"ruby", "-e"}, {"sh"}, {"sh", "-c"}, {"sh", "-lc"}, {"sudo"}, {"yarn", "run"}, {"zsh"},
+        {"zsh", "-c"}, {"zsh", "-lc"},
+        // acecode 补:cmd / PowerShell 的删除与提权拼写,以及通用启动器。
+        {"del"}, {"erase"}, {"rd"}, {"rmdir"}, {"remove-item"}, {"ri"}, {"doas"}, {"su"},
+        {"runas"}, {"start"}, {"start-process"}, {"xargs"}, {"eval"}, {"exec"}, {"source"},
+        {"wscript"}, {"cscript"}, {"mshta"}, {"npx"}, {"invoke-expression"}, {"iex"},
+    };
+    return banned;
 }
 
 } // namespace
@@ -404,6 +442,105 @@ RuleEvaluation ExecRules::evaluate(const CommandClassification& command) const {
         }
     }
     return result;
+}
+
+bool is_banned_prefix(const std::vector<std::string>& tokens) {
+    if (tokens.empty()) return true;
+    for (const auto& banned : banned_prefixes()) {
+        if (banned.size() != tokens.size()) continue;
+        bool same = true;
+        for (std::size_t i = 0; i < banned.size() && same; ++i) {
+            const std::string actual = i == 0 ? command_basename(tokens[i]) : lower(tokens[i]);
+            const std::string expected = i == 0 ? command_basename(banned[i]) : banned[i];
+            if (actual != expected) same = false;
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
+std::vector<std::vector<std::string>> derive_remember_patterns(
+    const CommandClassification& command, const std::vector<std::string>& proposed) {
+    std::vector<std::vector<std::string>> out;
+    if (!command.split_safely || command.segments.empty()) return out;
+    if (!proposed.empty()) {
+        if (is_banned_prefix(proposed)) return out;
+        for (const auto& segment : command.segments) {
+            if (segment.tokens.size() < proposed.size()) return out;
+            for (std::size_t i = 0; i < proposed.size(); ++i) {
+                const bool same = i == 0 ? command_basename(segment.tokens[i]) == command_basename(proposed[i])
+                                         : segment.tokens[i] == proposed[i];
+                if (!same) return out;
+            }
+        }
+        out.push_back(proposed);
+        return out;
+    }
+    for (const auto& segment : command.segments) {
+        auto prefix = always_allow_prefix_tokens_for_segment(segment);
+        if (prefix.empty() || is_banned_prefix(prefix)) return {};
+        bool duplicate = false;
+        for (const auto& existing : out) {
+            if (existing == prefix) { duplicate = true; break; }
+        }
+        if (!duplicate) out.push_back(std::move(prefix));
+    }
+    return out;
+}
+
+std::string format_prefix_rule(const std::vector<std::string>& pattern) {
+    std::string out = "prefix_rule(pattern=[";
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        if (i) out += ", ";
+        out += '"';
+        for (char c : pattern[i]) {
+            if (c == '\\' || c == '"') out += '\\';
+            if (c == '\n') { out += "\\n"; continue; }
+            out += c;
+        }
+        out += '"';
+    }
+    out += "], decision=\"allow\")";
+    return out;
+}
+
+std::string append_prefix_rules(const std::string& file,
+                                const std::vector<std::vector<std::string>>& patterns) {
+    if (file.empty()) return "rules file path is empty";
+    if (patterns.empty()) return "no prefix pattern to remember";
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path path = path_from_utf8(file);
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return "cannot create rules directory: " + ec.message();
+    std::string existing;
+    if (fs::exists(path, ec) && !ec) {
+        existing = read_text_file(path);
+        if (!existing.empty() && existing[0] == '!') return "cannot read rules file: " + file;
+    }
+    // 去重:已有同 pattern 的 allow 规则就不再追加(文件解析失败时视为无规则,
+    // 追加不会让它更坏 —— 整文件本来就会被跳过)。
+    std::vector<std::vector<std::string>> pending;
+    const ParsedRulesFile parsed = parse_rules_text(existing, RuleScope::Global, file);
+    for (const auto& pattern : patterns) {
+        bool duplicate = false;
+        for (const auto& rule : parsed.rules) {
+            if (rule.decision != RuleDecision::Allow || rule.pattern.size() != pattern.size()) continue;
+            bool same = true;
+            for (std::size_t i = 0; i < pattern.size() && same; ++i) {
+                if (rule.pattern[i].size() != 1 || rule.pattern[i][0] != pattern[i]) same = false;
+            }
+            if (same) { duplicate = true; break; }
+        }
+        if (!duplicate) pending.push_back(pattern);
+    }
+    if (pending.empty()) return {};
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out) return "cannot open rules file for writing: " + file;
+    if (!existing.empty() && existing.back() != '\n') out << '\n';
+    for (const auto& pattern : pending) out << format_prefix_rule(pattern) << '\n';
+    if (!out) return "cannot write rules file: " + file;
+    return {};
 }
 
 } // namespace acecode::sandbox

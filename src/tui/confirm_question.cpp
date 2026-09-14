@@ -160,13 +160,29 @@ std::string build_confirm_question(const std::string& tool_name,
                 const auto reason = permission.value("reason", std::string{});
                 if (reason == "dangerous_command") out = "模型要执行一条危险命令";
                 else if (reason == "escalation_requested") out = "模型申请在沙盒外执行";
+                else if (reason == "additional_permissions_requested") out = "模型申请临时加宽沙盒权限";
                 else if (reason == "unknown_command_without_sandbox") out = "本平台没有可用沙盒,未知命令需要确认";
                 else if (reason == "rule_prompt") out = "执行规则要求确认这条命令";
-                if (j.value("with_escalated_permissions", false)) {
+                const auto request = permission.value("request", std::string{});
+                if (request == "require_escalated" || j.value("with_escalated_permissions", false)) {
                     out += "\n执行范围:沙盒外";
+                } else if (request == "with_additional_permissions") {
+                    out += "\n执行范围:沙盒内 + 申请的额外权限";
                 }
                 const auto justification = j.value("justification", std::string{});
                 if (!justification.empty()) out += "\n" + format_command_block(justification);
+                if (permission.contains("additional_permissions") && permission["additional_permissions"].is_object()) {
+                    const auto& ap = permission["additional_permissions"];
+                    for (const char* field : {"write", "read"}) {
+                        if (!ap.contains(field) || !ap[field].is_array()) continue;
+                        for (const auto& item : ap[field]) {
+                            if (item.is_string()) out += std::string("\n  + ") + field + " " + truncate_path(item.get<std::string>());
+                        }
+                    }
+                    if (ap.value("network", false)) out += "\n  + network";
+                }
+                const auto denied_path = permission.value("denied_path", std::string{});
+                if (!denied_path.empty()) out += "\n上一次被沙盒拒绝的路径: " + truncate_path(denied_path);
                 const auto prefix = permission.value("always_allow_prefix", std::string{});
                 if (!prefix.empty()) out += "\n本次会话允许的前缀: " + truncate_command_line(prefix);
             }
@@ -235,6 +251,51 @@ std::string build_confirm_question(const std::string& tool_name,
     }
 
     return "Do you want to use " + tool_name + "?";
+}
+
+std::vector<ConfirmOption> build_confirm_options(const std::string& tool_name,
+                                                 const std::string& arguments_json) {
+    std::vector<ConfirmOption> options;
+    std::string session_label = "Yes, allow all edits during this session (shift+tab)";
+    std::string scoped_root;
+    std::string remember_prefix;
+    bool additional = false;
+    try {
+        auto j = nlohmann::json::parse(arguments_json);
+        if (tool_name == "bash" && j.contains("permission") && j["permission"].is_object()) {
+            const auto& permission = j["permission"];
+            const auto prefix = permission.value("always_allow_prefix", std::string{});
+            additional = permission.value("request", std::string{}) == "with_additional_permissions";
+            if (additional) session_label = "Yes, and keep these extra permissions for this session (shift+tab)";
+            else if (!prefix.empty()) session_label = "Yes, allow `" + truncate_command_line(prefix) + "` during this session (shift+tab)";
+            else session_label.clear();   // 解释器 / 不透明脚本:没有可记的前缀
+            scoped_root = permission.value("scoped_write_root", std::string{});
+            remember_prefix = permission.value("proposed_prefix_rule", std::string{});
+        }
+    } catch (...) {
+        // 坏 JSON:只给基础三项
+    }
+    int n = 1;
+    auto add = [&](std::string label, PermissionResult result) {
+        options.push_back({std::to_string(n++) + ". " + std::move(label), result});
+    };
+    add("Yes", PermissionResult::Allow);
+    if (!session_label.empty()) add(session_label, PermissionResult::AlwaysAllow);
+    if (!scoped_root.empty()) {
+        add("Yes, but only grant write access to " + truncate_path(scoped_root) + " (stay sandboxed)",
+            PermissionResult::AllowScoped);
+    }
+    if (!remember_prefix.empty() && !additional) {
+        add("Yes, and always allow `" + truncate_command_line(remember_prefix) + "` (saved to rules file)",
+            PermissionResult::AllowRemember);
+    }
+    add("No", PermissionResult::Deny);
+    return options;
+}
+
+int confirm_default_focus(const std::string& tool_name, const std::string& arguments_json) {
+    const auto options = build_confirm_options(tool_name, arguments_json);
+    return options.empty() ? 0 : static_cast<int>(options.size()) - 1;
 }
 
 } // namespace acecode::tui

@@ -296,7 +296,8 @@ TEST(SandboxBackendWin, BashChildEnforcesBoundaryAndReportsDenial) {
     EXPECT_FALSE(denied.success);
     EXPECT_FALSE(fs::exists(outside / "denied.txt"));
     EXPECT_TRUE(denied.metadata.value("sandbox_denied", false)) << denied.output;
-    EXPECT_NE(denied.output.find("with_escalated_permissions=true"), std::string::npos);
+    EXPECT_NE(denied.output.find("require_escalated"), std::string::npos);
+    EXPECT_TRUE(denied.metadata.contains("sandbox_violation")) << denied.metadata.dump();
     ctx.exec_sandbox.reset(); // 模拟用户已批准的完整访问执行上下文。
     auto approved = bash.execute(nlohmann::json{{"command", command},
         {"with_escalated_permissions", true}, {"justification", "Write the requested external file."}}.dump(), ctx);
@@ -329,6 +330,84 @@ TEST(SandboxBackendWin, DocumentsUnelevatedDeleteAndRenameLimitation) {
     EXPECT_TRUE(token_can_rename(token.value, workspace / ".acecode", workspace / ".acecode-old"));
     EXPECT_NE(runtime.status_text(PermissionMode::Auto, path_to_utf8(workspace), false)
         .find("delete/rename are not fully restricted"), std::string::npos);
+}
+
+// 场景:Windows 受限令牌 + network_access=false 的真实子进程(align-codex-sandboxing
+// D7)。期望:子进程看到准断网环境(HTTPS_PROXY 指向死端口、NPM_CONFIG_OFFLINE)、
+// PATH 最前是 ssh / scp 桩目录且 `ssh` 直接失败退出;放行网络(会话授权)后这些
+// 变量不出现。
+TEST(SandboxBackendWin, OfflineEnvironmentReachesRestrictedChild) {
+    if (!probe_backend().available) GTEST_SKIP() << "restricted tokens unavailable";
+    test::TempTree tree;
+    ASSERT_TRUE(make_private_test_root(tree.root));
+    const auto workspace = tree.dir("workspace");
+    SandboxRuntime runtime;
+    SandboxRuntimeConfig config;
+    config.exclude_tmpdir = true;
+    config.acecode_home = path_to_utf8(tree.dir("home"));
+    runtime.configure(config);
+    ToolContext ctx;
+    ctx.cwd = path_to_utf8(workspace);
+    ctx.exec_sandbox = runtime.request_for(SandboxMode::WorkspaceWrite, ctx.cwd);
+    ASSERT_TRUE(runtime.prepare_request(*ctx.exec_sandbox).empty());
+    EXPECT_FALSE(ctx.exec_sandbox->denybin_dir.empty());
+    auto previous = environment::terminal().last();
+    struct RestoreTerminal {
+        decltype(previous) snapshot;
+        ~RestoreTerminal() {
+            if (snapshot) environment::terminal().publish(*snapshot);
+            else environment::terminal().reset_for_test();
+        }
+    } restore{previous};
+    environment::terminal().reset_for_test();
+    auto bash = create_bash_tool();
+    auto env = bash.execute(nlohmann::json{{"command", "echo %HTTPS_PROXY% %NPM_CONFIG_OFFLINE% %SBX_NONET_ACTIVE%"}}.dump(), ctx);
+    ASSERT_TRUE(env.success) << env.output;
+    EXPECT_NE(env.output.find("http://127.0.0.1:9 true 1"), std::string::npos) << env.output;
+    auto ssh = bash.execute(nlohmann::json{{"command", "ssh example.com"}}.dump(), ctx);
+    EXPECT_FALSE(ssh.success) << ssh.output;
+    AdditionalPermissions network;
+    network.network = true;
+    ctx.exec_sandbox = runtime.request_for(SandboxMode::WorkspaceWrite, ctx.cwd, &network);
+    ASSERT_TRUE(runtime.prepare_request(*ctx.exec_sandbox).empty());
+    auto online = bash.execute(nlohmann::json{{"command", "echo [%HTTPS_PROXY%]"}}.dump(), ctx);
+    ASSERT_TRUE(online.success) << online.output;
+    EXPECT_EQ(online.output.find("127.0.0.1:9"), std::string::npos) << online.output;
+}
+
+// 场景:Job Object 杀树(D7)。期望:cmd 启动一个 30 秒的 ping 孙进程后,
+// TerminateJobObject 让整棵树在 2 秒内退出;不设 KILL_ON_JOB_CLOSE,所以只
+// 关闭 Job 句柄不会杀进程。
+TEST(SandboxBackendWin, ProcessTreeJobTerminatesGrandchildren) {
+    void* job = create_process_tree_job();
+    ASSERT_NE(job, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring command = L"cmd.exe /d /c ping -n 30 127.0.0.1 > nul";
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    ASSERT_TRUE(CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi));
+    const bool assigned = assign_process_to_job(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    if (!assigned) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess); close_job(job);
+        GTEST_SKIP() << "nested job assignment refused on this host";
+    }
+    Sleep(500);
+    EXPECT_EQ(WaitForSingleObject(pi.hProcess, 0), WAIT_TIMEOUT) << "命令应仍在跑";
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    ASSERT_TRUE(QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr));
+    EXPECT_GE(accounting.ActiveProcesses, 2u) << "cmd + ping 都应在 Job 里";
+    terminate_job_tree(job);
+    EXPECT_EQ(WaitForSingleObject(pi.hProcess, 2000), WAIT_OBJECT_0);
+    ASSERT_TRUE(QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr));
+    EXPECT_EQ(accounting.ActiveProcesses, 0u);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    close_job(job);
 }
 
 // 真机完整链路:模型调用 -> AgentLoop 审批 -> Bash 受限/完整访问子进程。

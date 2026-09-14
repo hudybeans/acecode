@@ -13,6 +13,8 @@
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
 #include "pa/pa_overflow_rescue.hpp"
+#include "sandbox/exec_permission.hpp"
+#include "sandbox/sandbox_denial.hpp"
 #include "sandbox/sandbox_runtime.hpp"
 
 #include <vector>
@@ -305,6 +307,12 @@ public:
     void set_cwd(const std::string& new_cwd);
     void set_sandbox_config(const SandboxConfig& config);
     void set_exec_rules(sandbox::ExecRules rules) { exec_rules_ = std::move(rules); }
+    // 测试用:把全局规则目录(默认 `<data_dir>/rules`)指到临时目录,让
+    // 「批准并记住」的写回不碰真实用户数据;同时影响 reload_exec_rules()。
+    void set_exec_rules_dir_for_tests(const std::string& dir) {
+        exec_rules_dir_override_ = dir;
+        reload_exec_rules();
+    }
     void set_sandbox_availability_for_tests(std::optional<bool> value) {
         sandbox_runtime_.set_availability_override_for_tests(value);
     }
@@ -705,6 +713,13 @@ private:
     mutable sandbox::SandboxRuntime sandbox_runtime_;
     sandbox::ExecRules exec_rules_;
     std::atomic<bool> sandbox_session_disabled_{false};
+    // 最近一次 bash 沙盒拒绝(含被拒路径):下一次越权确认据此提供「只放行该目录」
+    // 选项(openspec align-codex-sandboxing D4)。bash 成功 / 换 cwd / 沙盒开关时清空。
+    std::optional<sandbox::SandboxViolation> last_sandbox_violation_;
+    std::string exec_rules_dir_override_;
+    std::string global_exec_rules_dir() const;
+    // 「批准并记住」:把前缀写进全局规则文件并重载;返回错误信息,空 = 成功。
+    std::string remember_exec_rule(const sandbox::ExecPermission& permission);
     void reload_exec_rules();
     std::string sandbox_prompt_description() const;
     mutable std::mutex sandbox_prompt_mutex_;

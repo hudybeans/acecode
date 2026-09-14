@@ -874,6 +874,29 @@ static AppConfig load_config_from_path_once(
                         }
                     }
                 }
+                // 权限清单(openspec align-codex-sandboxing):条目原文保留(记号
+                // 在策略构造时展开),只要求是非空字符串;非法项静默跳过。
+                auto read_entries = [](const nlohmann::json& node, std::vector<std::string>& out) {
+                    if (!node.is_array()) return;
+                    for (const auto& item : node) {
+                        if (item.is_string() && !item.get<std::string>().empty()) {
+                            out.push_back(item.get<std::string>());
+                        }
+                    }
+                };
+                if (sj.contains("filesystem") && sj["filesystem"].is_object()) {
+                    const auto& fj = sj["filesystem"];
+                    if (fj.contains("read")) read_entries(fj["read"], cfg.sandbox.filesystem_read);
+                    if (fj.contains("write")) read_entries(fj["write"], cfg.sandbox.filesystem_write);
+                    if (fj.contains("deny")) read_entries(fj["deny"], cfg.sandbox.filesystem_deny);
+                }
+                if (sj.contains("deny_defaults") && sj["deny_defaults"].is_boolean()) {
+                    cfg.sandbox.deny_defaults = sj["deny_defaults"].get<bool>();
+                }
+                if (sj.contains("windows_backend") && sj["windows_backend"].is_string()) {
+                    const auto backend = sj["windows_backend"].get<std::string>();
+                    if (backend == "restricted-token" || backend == "mxc") cfg.sandbox.windows_backend = backend;
+                }
             }
             if (j.contains("features") && j["features"].is_object()) {
                 const auto& fj = j["features"];
@@ -2227,6 +2250,17 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             sbj["exclude_tmpdir"] = cfg.sandbox.exclude_tmpdir;
         if (!cfg.sandbox.writable_roots.empty())
             sbj["writable_roots"] = cfg.sandbox.writable_roots;
+        {
+            nlohmann::json fsj = nlohmann::json::object();
+            if (!cfg.sandbox.filesystem_read.empty()) fsj["read"] = cfg.sandbox.filesystem_read;
+            if (!cfg.sandbox.filesystem_write.empty()) fsj["write"] = cfg.sandbox.filesystem_write;
+            if (!cfg.sandbox.filesystem_deny.empty()) fsj["deny"] = cfg.sandbox.filesystem_deny;
+            if (!fsj.empty()) sbj["filesystem"] = fsj;
+        }
+        if (cfg.sandbox.deny_defaults != sandbox_d.deny_defaults)
+            sbj["deny_defaults"] = cfg.sandbox.deny_defaults;
+        if (!cfg.sandbox.windows_backend.empty() && cfg.sandbox.windows_backend != "restricted-token")
+            sbj["windows_backend"] = cfg.sandbox.windows_backend;
         if (!sbj.empty()) j["sandbox"] = sbj;
     }
 

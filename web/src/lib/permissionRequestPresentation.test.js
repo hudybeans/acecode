@@ -77,3 +77,70 @@ run('plan permission presentation leaves generic tool requests unchanged', () =>
   assert.equal(view.title, '权限请求');
   assert.equal(view.primaryLabel, '允许一次');
 });
+
+// 场景:模型申请 with_additional_permissions(只加一个目录的写权限)。
+// 期望:标题说明是「临时加宽」、正文强调仍在沙盒内、额外权限逐条列出、
+// 「本次会话允许」按钮记的是权限而不是命令前缀、不提供「以后都允许」。
+run('additional permission requests list the extra grants and stay sandboxed', () => {
+  const view = planPermissionPresentation({
+    tool: 'bash',
+    args: {
+      command: 'pnpm install',
+      justification: 'Needs the shared cache.',
+      permission: {
+        reason: 'additional_permissions_requested',
+        request: 'with_additional_permissions',
+        sandbox: 'workspace-write',
+        always_allow_prefix: 'pnpm install',
+        proposed_prefix_rule: 'pnpm install',
+        additional_permissions: { write: ['/home/u/.cache/pnpm'], read: [], network: true },
+      },
+    },
+  });
+  assert.equal(view.title, '模型申请临时加宽沙盒权限');
+  assert.match(view.body, /仍在沙盒内/);
+  assert.deepEqual(view.additionalPermissions, [
+    { kind: 'write', path: '/home/u/.cache/pnpm' },
+    { kind: 'network', path: '' },
+  ]);
+  assert.equal(view.hideAllowSession, false);
+  assert.equal(view.allowSessionLabel, '本次会话保留这些权限');
+  assert.equal(view.rememberPrefix, '');
+});
+
+// 场景:越权申请之前刚有一次沙盒拒绝,后端给出了被拒路径所在目录与可记住前缀。
+// 期望:多出「只放行写入 <目录>」与「以后都允许: <前缀>」两个选项的文案,
+// 并把被拒路径透出给用户看。
+run('escalation requests expose scoped-grant and remember options', () => {
+  const view = planPermissionPresentation({
+    tool: 'bash',
+    args: {
+      command: 'pnpm install',
+      permission: {
+        reason: 'escalation_requested',
+        request: 'require_escalated',
+        sandbox: 'full-access',
+        always_allow_prefix: 'pnpm install',
+        proposed_prefix_rule: 'pnpm install',
+        scoped_write_root: '/home/u/.cache/pnpm',
+        denied_path: '/home/u/.cache/pnpm/store.lock',
+      },
+    },
+  });
+  assert.equal(view.scopedWriteRoot, '/home/u/.cache/pnpm');
+  assert.equal(view.scopedLabel, '只放行写入 /home/u/.cache/pnpm');
+  assert.equal(view.rememberLabel, '以后都允许: pnpm install');
+  assert.equal(view.deniedPath, '/home/u/.cache/pnpm/store.lock');
+});
+
+// 场景:不透明脚本(没有可记前缀、没有被拒路径)的越权申请。期望:两个新
+// 选项都不出现,回到旧的「允许一次 / 拒绝」形态。
+run('opaque commands offer neither scoped nor remember options', () => {
+  const view = planPermissionPresentation({
+    tool: 'bash',
+    args: { permission: { reason: 'escalation_requested', request: 'require_escalated', sandbox: 'full-access', always_allow_prefix: '' } },
+  });
+  assert.equal(view.scopedWriteRoot, '');
+  assert.equal(view.rememberPrefix, '');
+  assert.equal(view.hideAllowSession, true);
+});

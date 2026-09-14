@@ -367,6 +367,19 @@ struct SandboxConfig {
     std::vector<std::string> writable_roots;
     // true = 不把系统临时目录列为可写根。
     bool exclude_tmpdir = false;
+    // 权限清单(openspec align-codex-sandboxing D2):条目可用 `~`、
+    // `:workspace_roots[/sub]`、`:tmpdir`、`:acecode_home` 记号。
+    //   read  非空时启用受限读(只放行这些根 + 可写根);空 = 全盘可读。
+    //   write 与 writable_roots 语义相同,一并合并。
+    //   deny  读写都拒绝(含子树),允许 glob(`**/.env`)。
+    std::vector<std::string> filesystem_read;
+    std::vector<std::string> filesystem_write;
+    std::vector<std::string> filesystem_deny;
+    // true = 追加内置默认 deny 名单(~/.ssh、~/.aws、~/.gnupg、~/.netrc、
+    // ~/.docker/config.json、~/.kube、数据目录里的 config.json)。
+    bool deny_defaults = true;
+    // Windows 后端:"restricted-token"(默认)/ "mxc"(MXC 口子,本构建不可用)。
+    std::string windows_backend;
 };
 
 // git 感知配置(openspec add-git-context)。enabled=false 时不采集/不注入

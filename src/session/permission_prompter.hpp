@@ -120,11 +120,25 @@ private:
 // helper: PermissionDecisionChoice → 老 PermissionResult
 inline PermissionResult to_permission_result(PermissionDecisionChoice c) {
     switch (c) {
-        case PermissionDecisionChoice::Allow:        return PermissionResult::Allow;
-        case PermissionDecisionChoice::Deny:         return PermissionResult::Deny;
-        case PermissionDecisionChoice::AllowSession: return PermissionResult::AlwaysAllow;
+        case PermissionDecisionChoice::Allow:         return PermissionResult::Allow;
+        case PermissionDecisionChoice::Deny:          return PermissionResult::Deny;
+        case PermissionDecisionChoice::AllowSession:  return PermissionResult::AlwaysAllow;
+        case PermissionDecisionChoice::AllowScoped:   return PermissionResult::AllowScoped;
+        case PermissionDecisionChoice::AllowRemember: return PermissionResult::AllowRemember;
     }
     return PermissionResult::Deny;
+}
+
+// 反向映射(TUI 把 overlay 的选择路由回子会话时用)。
+inline const char* permission_result_choice_name(PermissionResult r) {
+    switch (r) {
+        case PermissionResult::Allow:         return "allow";
+        case PermissionResult::Deny:          return "deny";
+        case PermissionResult::AlwaysAllow:   return "allow_session";
+        case PermissionResult::AllowScoped:   return "allow_scoped";
+        case PermissionResult::AllowRemember: return "allow_remember";
+    }
+    return "deny";
 }
 
 } // namespace acecode

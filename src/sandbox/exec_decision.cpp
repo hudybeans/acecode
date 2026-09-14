@@ -31,6 +31,13 @@ SandboxMode approved_sandbox(const ExecDecisionInput& in) {
     return SandboxMode::FullAccess;
 }
 
+// 额外权限批准后的沙盒:模型明确要求「留在沙盒里」,所以非 plan 一律
+// workspace-write(工作区 + 申请的路径);plan 只读约束优先。
+SandboxMode additional_sandbox(const ExecDecisionInput& in) {
+    if (!in.sandbox_available) return SandboxMode::FullAccess;
+    return in.mode == PermissionMode::Plan ? SandboxMode::ReadOnly : SandboxMode::WorkspaceWrite;
+}
+
 ExecDecision make(ExecVerdict v, SandboxMode s, const char* reason) {
     ExecDecision d;
     d.verdict = v;
@@ -42,6 +49,7 @@ ExecDecision make(ExecVerdict v, SandboxMode s, const char* reason) {
 } // namespace
 
 ExecDecision decide_exec(const ExecDecisionInput& in) {
+    const bool additional_pending = in.additional_requested && !in.additional_covered;
     // 1. forbidden 规则对任何模式都生效,包括 --dangerous。
     if (in.rule == RuleDecision::Forbidden) {
         return make(ExecVerdict::Forbidden, SandboxMode::FullAccess, "rule_forbidden");
@@ -50,14 +58,29 @@ ExecDecision decide_exec(const ExecDecisionInput& in) {
     if (in.dangerous_mode || in.mode == PermissionMode::Yolo) {
         return make(ExecVerdict::Allow, SandboxMode::FullAccess, "yolo");
     }
+    // 2a. 无人值守(active goal)没有人能批越权 / 加宽申请。曾经这里落到第 4 条的
+    // Prompt + FullAccess,再被 goal 自动放行 —— 模型只要声明越权就能出沙盒。
+    // 与 Codex approval_policy=never 的 PROMPT_CONFLICT 同款:直接 Forbidden,
+    // 工具结果引导模型去掉参数留在沙盒里重试。
+    if (in.unattended && (in.escalation_requested || additional_pending)) {
+        return make(ExecVerdict::Forbidden, mode_sandbox(in.mode, in.sandbox_available),
+                    "escalation_unattended");
+    }
     // 3. prompt 规则。
     if (in.rule == RuleDecision::Prompt) {
         return make(ExecVerdict::Prompt,
-                    in.escalation_requested ? SandboxMode::FullAccess : approved_sandbox(in), "rule_prompt");
+                    in.escalation_requested ? SandboxMode::FullAccess
+                    : additional_pending    ? additional_sandbox(in)
+                                            : approved_sandbox(in), "rule_prompt");
     }
     // 4. 模型显式申请越权:批准后不沙盒。
     if (in.escalation_requested && in.session_allow != SessionAllowKind::Bypass) {
         return make(ExecVerdict::Prompt, SandboxMode::FullAccess, "escalation_requested");
+    }
+    // 4a. 模型申请额外权限(留在沙盒里但加宽):会话授权没覆盖就问一次,批准后
+    // 带着额外条目进模式沙盒。
+    if (additional_pending) {
+        return make(ExecVerdict::Prompt, additional_sandbox(in), "additional_permissions_requested");
     }
     // 5. 会话级前缀记忆(升级审批通过的那种):不沙盒。
     if (in.session_allow == SessionAllowKind::Bypass && in.kind != CommandKind::Dangerous) {

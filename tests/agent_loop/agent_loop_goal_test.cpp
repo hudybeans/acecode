@@ -662,3 +662,54 @@ TEST(AgentLoopGoal, UnattendedGoalCannotOverrideForbiddenExecRule) {
     EXPECT_EQ(h.confirm_requests(), 0);
     EXPECT_EQ(executed.load(), 0);
 }
+
+// 场景:auto 模式 + Active goal + 沙盒可用,模型带 with_escalated_permissions +
+// justification 执行 `pnpm install`(align-codex-sandboxing D1)。期望:确认回调
+// 一次都不触发(goal 无人值守承诺),命令**不执行**,工具结果告诉模型去掉越权
+// 参数在沙盒里重试;紧接着不带参数的同一条命令照常在 workspace-write 里执行。
+// 回归:曾经越权申请判成 Prompt + FullAccess,再被 goal 自动放行 —— 无人值守时
+// 模型只要声明越权就能出沙盒(0.9.15 已发布版本里就有)。
+TEST(AgentLoopGoal, UnattendedGoalRefusesEscalationInsteadOfAutoApproving) {
+    AgentLoopGoalHarness h("bash_escalation");
+    h.permissions().set_mode(acecode::PermissionMode::Auto);
+    h.loop().set_exec_rules({});
+    h.loop().set_sandbox_availability_for_tests(true);
+
+    std::vector<acecode::sandbox::SandboxMode> executions;
+    std::mutex executions_mu;
+    auto bash = acecode::create_bash_tool();
+    bash.execute = [&](const std::string&, const acecode::ToolContext& ctx) {
+        std::lock_guard<std::mutex> lk(executions_mu);
+        executions.push_back(ctx.exec_sandbox ? ctx.exec_sandbox->policy.mode
+                                              : acecode::sandbox::SandboxMode::FullAccess);
+        return acecode::ToolResult{"ok", true};
+    };
+    ASSERT_TRUE(h.tools().register_tool(bash));
+    h.create_goal();
+
+    h.provider().push_tool_call("bash",
+        R"({"command":"pnpm install","with_escalated_permissions":true,"justification":"needs the cache"})",
+        "call-escalate");
+    h.provider().push_tool_call("bash", R"({"command":"pnpm install"})", "call-plain");
+    h.provider().push_tool_call("update_goal", R"({"status":"complete"})", "goal-done");
+
+    ASSERT_TRUE(h.submit_and_wait("start", 10s));
+    ASSERT_TRUE(h.wait_until([&h] {
+        auto goal = h.goal();
+        return goal.has_value() &&
+            goal->status == acecode::ThreadGoalStatus::Complete;
+    }, 10s));
+    EXPECT_EQ(h.confirm_requests(), 0);
+    {
+        std::lock_guard<std::mutex> lk(executions_mu);
+        ASSERT_EQ(executions.size(), 1u) << "越权申请那次不能执行";
+        EXPECT_EQ(executions[0], acecode::sandbox::SandboxMode::WorkspaceWrite);
+    }
+    bool refused = false;
+    for (const auto& msg : h.loop().messages()) {
+        if (msg.role == "tool" && msg.content.find("cannot be approved while running unattended") != std::string::npos) {
+            refused = true;
+        }
+    }
+    EXPECT_TRUE(refused) << "工具结果要引导模型去掉越权参数重试";
+}

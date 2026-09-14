@@ -213,7 +213,8 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
     if (!ctx.scratch_dir.empty()) child_environment.emplace_back("ACECODE_TMPDIR", ctx.scratch_dir);
     if (sandboxed) {
         const auto additions = sandbox::sandbox_environment(ctx.exec_sandbox->backend,
-            ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced);
+            ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced,
+            ctx.exec_sandbox->denybin_dir);
         child_environment.insert(child_environment.end(), additions.begin(), additions.end());
     }
 
@@ -339,6 +340,11 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
     (void)stdin_inputs;
 
     if (sandboxed) {
+        if (ctx.exec_sandbox->backend == sandbox::BackendKind::WindowsMxc) {
+            // MXC 口子(align-codex-sandboxing D9):探测恒不可用,正常不会走到这里;
+            // 真接入时把 SandboxPolicy 翻译成 MXC ExecutionRequest 后在此启动。
+            return sandbox_failure("MXC backend is not bundled in this build");
+        }
         if (ctx.exec_sandbox->backend != sandbox::BackendKind::WindowsRestrictedToken) {
             return sandbox_failure("Invalid backend for Windows");
         }
@@ -392,19 +398,24 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     BOOL ok = FALSE;
     std::string sandbox_error;
+    // 挂起启动 → 挂进 Job Object → 再放行(align-codex-sandboxing D7):超时 / 中止时
+    // TerminateJobObject 能杀掉整棵进程树(cmd → node → 子工具),而不是只杀 cmd。
+    // Job 不设 KILL_ON_JOB_CLOSE,正常结束关闭句柄不影响有意留下的后台孙进程。
+    const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED |
+                                 (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0);
     if (sandboxed) {
         HANDLE token = static_cast<HANDLE>(sandbox::create_restricted_token(ctx.exec_sandbox->policy, &sandbox_error));
         if (token) {
             std::wstring desktop = L"winsta0\\default";
             si.lpDesktop = desktop.data();
             ok = CreateProcessAsUserW(token, nullptr, full_cmd_buffer.data(), nullptr, nullptr, TRUE,
-                CREATE_NO_WINDOW | (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0), env_ptr, cwd_ptr, &si, &pi);
+                creation_flags, env_ptr, cwd_ptr, &si, &pi);
             if (!ok) sandbox_error = "CreateProcessAsUserW failed: " + std::to_string(GetLastError());
             CloseHandle(token);
         }
     } else {
         ok = CreateProcessW(nullptr, full_cmd_buffer.data(), nullptr, nullptr, TRUE,
-            CREATE_NO_WINDOW | (env_ptr ? CREATE_UNICODE_ENVIRONMENT : 0), env_ptr, cwd_ptr, &si, &pi);
+            creation_flags, env_ptr, cwd_ptr, &si, &pi);
     }
 
     CloseHandle(hWritePipe);
@@ -414,6 +425,18 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         if (sandboxed) return sandbox_failure(sandbox_error);
         return ToolResult{"[Error] Failed to execute command.", false};
     }
+
+    void* process_job = sandbox::create_process_tree_job();
+    if (process_job && !sandbox::assign_process_to_job(process_job, pi.hProcess)) {
+        // 嵌套 Job 被拒(旧系统 / 受限宿主 Job):退回只杀直接子进程的旧行为。
+        sandbox::close_job(process_job);
+        process_job = nullptr;
+    }
+    ResumeThread(pi.hThread);
+    auto kill_process_tree = [&]() {
+        if (process_job) sandbox::terminate_job_tree(process_job);
+        else TerminateProcess(pi.hProcess, 1);
+    };
 
     char buffer[4096];
     DWORD bytes_read;
@@ -453,7 +476,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
         // Abort check
         if (ctx.abort_flag && ctx.abort_flag->load()) {
-            TerminateProcess(pi.hProcess, 1);
+            kill_process_tree();
             WaitForSingleObject(pi.hProcess, 1000);
             while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
                 if (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytes_read, nullptr) && bytes_read > 0) {
@@ -467,7 +490,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count();
         if (elapsed >= timeout_ms) {
-            TerminateProcess(pi.hProcess, 1);
+            kill_process_tree();
             WaitForSingleObject(pi.hProcess, 1000);
             while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
                 if (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytes_read, nullptr) && bytes_read > 0) {
@@ -486,6 +509,7 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    sandbox::close_job(process_job);
     CloseHandle(hReadPipe);
 
 #else
@@ -797,9 +821,13 @@ static ToolResult execute_bash(const std::string& arguments_json, const ToolCont
     r.metadata["exit_code"] = static_cast<int>(exit_code);
     if (sandboxed) {
         r.metadata["sandbox"] = sandbox::sandbox_mode_name(ctx.exec_sandbox->policy.mode);
-        if (sandbox::is_likely_sandbox_denied(static_cast<int>(exit_code), full_output)) {
-            r.output += sandbox::escalation_hint(ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced);
+        if (const auto violation = sandbox::classify_sandbox_violation(static_cast<int>(exit_code), full_output)) {
+            r.output += sandbox::escalation_hint(ctx.exec_sandbox->policy, ctx.exec_sandbox->network_enforced,
+                                                 &*violation, ctx.exec_sandbox->network_best_effort);
             r.metadata["sandbox_denied"] = true;
+            r.metadata["sandbox_violation"] = sandbox::violation_to_json(*violation);
+            LOG_WARN("[sandbox] violation reason=" + violation->reason +
+                     (violation->path.empty() ? std::string{} : " path=" + violation->path));
         }
     }
     r.summary = make_summary(command, duration_ms, raw_bytes,
@@ -820,16 +848,52 @@ ToolImpl create_bash_tool() {
                       "For programs that prompt for input (e.g. 'apt install' confirming, "
                       "'npm login' asking for credentials), pass stdin_inputs with the "
                       "answers to pipe into the command's stdin in order. "
-                      "Commands may run in a filesystem/network sandbox. If a necessary command is denied, "
-                      "request approval with with_escalated_permissions=true and a non-empty justification.";
+                      "Commands may run in a filesystem/network sandbox. If a command is denied by the sandbox, "
+                      "prefer the smallest request: sandbox_permissions=\"with_additional_permissions\" plus "
+                      "additional_permissions listing only the extra paths (or network) it needs; use "
+                      "sandbox_permissions=\"require_escalated\" only when unrestricted access is genuinely "
+                      "required. Both need a non-empty justification and are subject to user approval.";
     def.parameters = nlohmann::json({
         {"type", "object"},
         {"properties", {
+            {"sandbox_permissions", {
+                {"type", "string"},
+                {"enum", nlohmann::json::array({"use_default", "with_additional_permissions", "require_escalated"})},
+                {"description", "use_default (default): run under the current sandbox policy. "
+                                "with_additional_permissions: stay sandboxed but also grant additional_permissions "
+                                "(user approval required). require_escalated: ask the user to run outside the sandbox."}
+            }},
+            {"additional_permissions", {
+                {"type", "object"},
+                {"description", "Extra permissions for sandbox_permissions=with_additional_permissions: "
+                                "{\"file_system\": {\"read\": [absolute paths], \"write\": [absolute paths]}, "
+                                "\"network\": {\"enabled\": true}}. Paths may start with ~. Denied secret stores "
+                                "(e.g. ~/.ssh) cannot be requested."},
+                {"properties", {
+                    {"file_system", {
+                        {"type", "object"},
+                        {"properties", {
+                            {"read", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                            {"write", {{"type", "array"}, {"items", {{"type", "string"}}}}}
+                        }}
+                    }},
+                    {"network", {
+                        {"type", "object"},
+                        {"properties", {{"enabled", {{"type", "boolean"}}}}}
+                    }}
+                }}
+            }},
             {"with_escalated_permissions", {
-                {"type", "boolean"}, {"description", "Request user approval to run outside the sandbox (default: false)"}
+                {"type", "boolean"}, {"description", "Legacy alias for sandbox_permissions=require_escalated (default: false)"}
             }},
             {"justification", {
-                {"type", "string"}, {"description", "One sentence explaining why sandbox escalation is necessary"}
+                {"type", "string"}, {"description", "One sentence explaining why extra or escalated permissions are necessary"}
+            }},
+            {"prefix_rule", {
+                {"type", "array"}, {"items", {{"type", "string"}}},
+                {"description", "Optional command prefix tokens (e.g. [\"pnpm\", \"install\"]) the user may choose "
+                                "to always allow; it must cover every command segment and cannot be a shell, "
+                                "interpreter, rm or sudo."}
             }},
             {"command", {
                 {"type", "string"},

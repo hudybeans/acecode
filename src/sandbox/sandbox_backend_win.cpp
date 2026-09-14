@@ -351,6 +351,13 @@ bool ensure_windows_acl_grants(const SandboxPolicy& policy, std::string* error) 
         for (const auto& sub : root.read_only_subpaths) {
             const std::wstring wsub = utf8_to_wide(sub);
             if (!path_exists(wsub)) {
+                // git / rules 这类自家受保护路径由 prepare_request 预建,消失了就是
+                // 异常;deny 名单落在可写根下的路径(比如把家目录当工作区时的
+                // `~/.ssh`)不存在是常态,跳过即可 —— 不能为了打拒绝 ACE 去创建它。
+                const std::wstring name = std::filesystem::path(wsub).filename().wstring();
+                const bool own_protected = name == L"rules" || name == L"hooks" || name == L"modules" ||
+                                           name == L"config" || name == L"config.worktree" || name == L".git";
+                if (!own_protected) continue;
                 if (error) *error = "Sandbox protected path disappeared: " + sub;
                 return false;
             }
@@ -416,10 +423,41 @@ bool remove_windows_acl_grants(const std::string& path, const SandboxPolicy& pol
     return true;
 }
 
-BackendProbe probe_backend() {
+void* create_process_tree_job() {
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) return nullptr;
+    // 刻意不设 KILL_ON_JOB_CLOSE:正常结束时关闭句柄不能连带杀掉后台孙进程
+    // (agent-browser 起的 Chrome 之类)。只有超时 / 中止才 TerminateJobObject。
+    // 也不能设 SILENT_BREAKAWAY_OK —— 它会让所有孙进程静默脱离 Job,杀树就只剩
+    // 直接子进程(实测 cmd → ping 时 Job 里只剩 cmd)。
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = 0;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        CloseHandle(job);
+        return nullptr;
+    }
+    return job;
+}
+
+bool assign_process_to_job(void* job, void* process) {
+    if (!job || !process) return false;
+    return AssignProcessToJobObject(static_cast<HANDLE>(job), static_cast<HANDLE>(process)) != FALSE;
+}
+
+void terminate_job_tree(void* job) {
+    if (job) TerminateJobObject(static_cast<HANDLE>(job), 1);
+}
+
+void close_job(void* job) {
+    if (job) CloseHandle(static_cast<HANDLE>(job));
+}
+
+BackendProbe probe_backend(WindowsBackendChoice windows_backend) {
+    if (windows_backend == WindowsBackendChoice::Mxc) return probe_windows_mxc();
     BackendProbe probe;
     probe.kind = BackendKind::WindowsRestrictedToken;
     probe.network_enforced = false;
+    probe.network_best_effort = true;
     std::string error;
     SandboxPolicy read_only;
     read_only.mode = SandboxMode::ReadOnly;

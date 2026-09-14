@@ -27,7 +27,9 @@
 
 namespace acecode::sandbox {
 
-enum class RuleScope { Global, Project };
+// Sandboxed:全局目录里的 `*.sandboxed.rules`(align-codex-sandboxing D6),由
+// 「批准并记住」沙盒内批准写入;allow 与项目作用域一样降级为 AllowSandboxed。
+enum class RuleScope { Global, Project, Sandboxed };
 
 enum class RuleDecision {
     NoMatch,
@@ -95,5 +97,31 @@ private:
 
 // 单条规则是否命中一段命令(首 token 允许 basename 回退,大小写不敏感)。
 bool prefix_rule_matches(const PrefixRule& rule, const CommandSegment& segment);
+
+// ---- 「批准并记住」的规则写回(align-codex-sandboxing D6)----
+
+// 全局规则目录里两个写回文件的文件名:沙盒外批准 / 沙盒内批准。
+constexpr const char* kRememberedRulesFile = "default.rules";
+constexpr const char* kRememberedSandboxedRulesFile = "default.sandboxed.rules";
+
+// 禁用前缀(移植 Codex BANNED_PREFIX_SUGGESTIONS 并补 cmd / PowerShell 拼写):
+// 解释器、shell、`rm` / `del`、`sudo`、`git` 单独等永远不作为可记住的前缀。
+// 首 token 按 basename 比较(`C:\...\node.exe` = `node`),大小写不敏感。
+bool is_banned_prefix(const std::vector<std::string>& tokens);
+
+// 推导要写进规则文件的 pattern(每段一条,单候选 token 列表)。
+//   proposed 非空:必须不在禁用名单、且每一段命令都以它开头,才作为唯一 pattern;
+//   否则每段用 always_allow_prefix_tokens_for_segment;任一段推不出前缀或命中禁用
+//   名单 → 返回空(不提供「记住」选项)。不可安全拆段的命令同样返回空。
+std::vector<std::vector<std::string>> derive_remember_patterns(
+    const CommandClassification& command, const std::vector<std::string>& proposed);
+
+// `prefix_rule(pattern=["git", "commit"], decision="allow")`(与 Codex amend.rs 同款)。
+std::string format_prefix_rule(const std::vector<std::string>& pattern);
+
+// 追加规则到文件(不存在则创建,父目录一并创建);已存在同 pattern 的 allow 规则
+// 时跳过。返回错误信息,空 = 成功。
+std::string append_prefix_rules(const std::string& file,
+                                const std::vector<std::vector<std::string>>& patterns);
 
 } // namespace acecode::sandbox

@@ -3814,7 +3814,7 @@ All client frames are JSON:
 | `status_unsubscribe` | `{workspace_hash}` | unsubscribes; ack is `status_unsubscribe_ack` |
 | `mark_session_read` | `{session_id,workspace_hash,cursor}` | persists read cursor; ack is `mark_session_read_ack` |
 | `user_input` | `{session_id,text}` | queues plain user input |
-| `decision` | `{session_id,request_id,choice}` | responds to permission request; `choice` is `allow`, `deny`, or `allow_session` |
+| `decision` | `{session_id,request_id,choice}` | responds to permission request; `choice` is `allow`, `deny`, `allow_session`, `allow_scoped`, or `allow_remember` |
 | `question_answer` | `{session_id,request_id,cancelled,answers}` | responds to AskUserQuestion |
 | `abort` | `{session_id}` | aborts current turn |
 | `ping` | `{}` | replies `{"type":"pong"}` |
@@ -3827,24 +3827,54 @@ adds a server-generated `permission` object:
 ```json
 {
   "command": "pnpm install",
-  "with_escalated_permissions": true,
+  "sandbox_permissions": "require_escalated",
   "justification": "Install dependencies using the shared cache.",
   "permission": {
     "reason": "escalation_requested",
+    "request": "require_escalated",
     "sandbox": "full-access",
     "always_allow_prefix": "pnpm install",
+    "proposed_prefix_rule": "pnpm install",
+    "scoped_write_root": "/home/u/.cache/pnpm",
+    "denied_path": "/home/u/.cache/pnpm/store.lock",
     "classification": "unknown"
   }
 }
 ```
 
 `reason` can be `dangerous_command`, `escalation_requested`,
-`unknown_command_without_sandbox`, `rule_prompt`, `default_mode`, or `plan_mode`.
-`sandbox` describes the approved execution boundary: `full-access`,
-`workspace-write`, or `read-only`. An empty `always_allow_prefix` means no
-session approval can be remembered. Shell interpreters and opaque scripts do
-not acquire broad session approval. Remembered sandbox approvals never become
-full access when a backend becomes unavailable.
+`additional_permissions_requested`, `unknown_command_without_sandbox`,
+`rule_prompt`, `default_mode`, or `plan_mode`. `request` echoes the model's
+`sandbox_permissions` value (`use_default`, `with_additional_permissions`, or
+`require_escalated`; the legacy `with_escalated_permissions=true` maps to
+`require_escalated`). `sandbox` describes the approved execution boundary:
+`full-access`, `workspace-write`, or `read-only`. An empty `always_allow_prefix`
+means no session approval can be remembered. Shell interpreters and opaque
+scripts do not acquire broad session approval. Remembered sandbox approvals
+never become full access when a backend becomes unavailable.
+
+Optional fields only appear when the corresponding choice is available:
+
+- `additional_permissions` (`{read:[],write:[],network:bool}`) lists what a
+  `with_additional_permissions` request asks for; `allow_session` then keeps
+  those grants for the session instead of remembering a command prefix.
+- `scoped_write_root` is offered on escalation requests when the previous
+  sandboxed run was denied on a known path outside the deny list; `allow_scoped`
+  grants write access to only that directory for the session and runs the
+  command inside the `workspace-write` sandbox.
+- `denied_path` is the path extracted from that previous denial, for display.
+- `proposed_prefix_rule` is the prefix `allow_remember` appends to the global
+  rules file (`<data_dir>/rules/default.rules` for approvals that leave the
+  sandbox, `default.sandboxed.rules` otherwise). It is absent for interpreters,
+  `rm`, `sudo`, and other banned prefixes.
+
+Clients that send `allow_scoped` or `allow_remember` for a request that did not
+offer them are treated as `allow` and `allow_session` respectively.
+
+Denied sandboxed runs return `metadata.sandbox_violation`
+(`{reason, path?, snippet}`) alongside `metadata.sandbox_denied`; `reason` is
+one of `operation_not_permitted`, `permission_denied`, `read_only_file_system`,
+`access_denied`, `policy_denied`, `failed_to_write_file`, or `sigsys`.
 
 The built-in `sandbox` command supports empty args (status), `off`, and `on`
 through the existing session command endpoint. It is session-local and does not
@@ -3852,8 +3882,9 @@ save configuration. See [sandbox.md](sandbox.md) for rules and platform limits.
 
 Each `permission_request` is followed by exactly one sequenced
 `permission_closed` event with `{request_id,choice,reason}` when it stops being
-actionable. `choice` is `allow`, `deny`, or `allow_session`; `reason` is
-`decision`, `permission_mode_change`, `abort`, or `timeout`. A timeout still
+actionable. `choice` is `allow`, `deny`, `allow_session`, `allow_scoped`, or
+`allow_remember`; `reason` is `decision`, `permission_mode_change`, `abort`, or
+`timeout`. A timeout still
 emits the existing `error` event with `reason:"permission_timeout"` after the
 close event.
 

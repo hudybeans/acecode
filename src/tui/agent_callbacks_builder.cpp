@@ -13,6 +13,7 @@
 
 #include "agent_loop.hpp"
 #include "commands/compact.hpp"
+#include "tui/confirm_question.hpp"
 #include "tui/model_retry_status.hpp"
 #include "tui/tool_row_format.hpp"
 #include "tui/tui_helpers.hpp"
@@ -60,7 +61,7 @@ void setup_agent_callbacks(TuiContext& ctx) {
             state.confirm_pending = true;
             state.confirm_tool_name = tool_name;
             state.confirm_tool_args = args;
-            state.confirm_focus = 2;
+            state.confirm_focus = acecode::tui::confirm_default_focus(tool_name, args);
         }
         screen.PostEvent(ftxui::Event::Custom);
         std::unique_lock<std::mutex> lk(state.mu);

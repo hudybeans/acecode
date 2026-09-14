@@ -70,6 +70,23 @@ Windows 使用免管理员 WRITE_RESTRICTED 令牌；合成 SID 绑定完整策�
 ACL 幂等检查不能只按路径缓存。Windows 不隔离网络，Everyone/登录 SID 写权限
 是已知限制。macOS 使用 Seatbelt，Linux 使用系统 bubblewrap。
 `/sandbox [on|off]` 与配置、升级协议详见 [docs/sandbox.md](docs/sandbox.md)。
+
+**权限清单与审批扩展(openspec align-codex-sandboxing)**:`SandboxPolicy` 由 read /
+write / deny 三类条目派生(`config.sandbox.filesystem.*` + 默认 deny 名单 + 会话授权),
+判定「最长前缀优先,同深度 deny > write > read」;Windows 受限令牌管不了读,deny 只拦写。
+bash 参数是 Codex 同款 `sandbox_permissions=use_default|with_additional_permissions|require_escalated`
++ `additional_permissions` + `prefix_rule`(旧 `with_escalated_permissions` 是别名)。
+决策表新增 `unattended`:active goal 下越权 / 额外权限申请一律 Forbidden(`escalation_unattended`),
+**不能**回到「Prompt 再被 goal 自动放行」—— 那是 0.9.15 里模型只要声明越权就能出沙盒的漏洞。
+审批决策五个:`allow` / `allow_session` / `allow_scoped`(只放行上次被拒路径所在目录,留在
+沙盒里)/ `allow_remember`(写 `<data_dir>/rules/default.rules` 或 `default.sandboxed.rules`)/ `deny`;
+协议字符串在 `session_client.hpp`,TUI 选项由 `confirm_question.cpp::build_confirm_options` 按
+payload 动态生成。拒绝分类 `classify_sandbox_violation` 抽路径进 `metadata.sandbox_violation`,
+AgentLoop 记 `last_sandbox_violation_` 给下一次越权确认提供 `scoped_write_root`。Windows 断网只是
+准断网环境(代理指向死端口 + ssh/scp 桩),子进程挂 Job Object 杀树但**不设 KILL_ON_JOB_CLOSE**
+也**不能设 SILENT_BREAKAWAY_OK**(孙进程会静默脱离 Job)。`windows_backend=mxc` 是微软 MXC
+(AppContainer)的口子,`sandbox_backend_mxc_win.cpp` 探测恒不可用。配置里的普通 Deny 规则对
+文件工具只弹确认,仅 priority ≥ 1000 的内置保护规则与 yolo 硬拒绝。
 会话级探测结论是粘性的:prepare / 启动失败经 `mark_unavailable` 把后端标成不可用,
 `/sandbox on` 会 `reset_probe()` 让它重新读取进程级探测,这是唯一不重启的恢复入口。
 goal 无人值守下 bash 的 Prompt 决策与其它写工具一样自动放行,但执行沙盒仍取

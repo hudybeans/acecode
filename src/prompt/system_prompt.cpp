@@ -444,8 +444,11 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     }
     if (sandbox) {
         oss << "- Shell sandbox: " << sandbox->description << "\n"
-            << "- If a necessary command is denied by the sandbox, request approval with "
-               "with_escalated_permissions=true and a non-empty justification; do not bypass the boundary.\n";
+            << "- If a necessary command is denied by the sandbox, request the smallest extra permission: "
+               "call bash again with sandbox_permissions=\"with_additional_permissions\", additional_permissions "
+               "listing only the paths (or network) it needs, and a non-empty justification; use "
+               "sandbox_permissions=\"require_escalated\" only when unrestricted access is genuinely required. "
+               "Never bypass the boundary by other means.\n";
     }
     oss << "- Working directory: " << cwd << "\n"
         << "- Is directory a git repo: "

@@ -501,19 +501,56 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     // 下一次模型请求按新 cwd 重采(openspec add-git-context)。
     git_snapshot_cache_.reset();
     permissions_.clear_session_allows();
+    sandbox_runtime_.clear_session_grants();
+    last_sandbox_violation_.reset();
     reload_exec_rules();
+}
+
+std::string AgentLoop::global_exec_rules_dir() const {
+    if (!exec_rules_dir_override_.empty()) return exec_rules_dir_override_;
+    return path_to_utf8(path_from_utf8(get_acecode_dir()) / "rules");
 }
 
 void AgentLoop::reload_exec_rules() {
     exec_rules_ = sandbox::ExecRules::load(
-        path_to_utf8(path_from_utf8(get_acecode_dir()) / "rules"),
+        global_exec_rules_dir(),
         path_to_utf8(path_from_utf8(cwd_) / ".acecode" / "rules"));
 }
 
+std::string AgentLoop::remember_exec_rule(const sandbox::ExecPermission& permission) {
+    if (permission.remember_patterns.empty()) return "no command prefix to remember";
+    // 沙盒外批准 → default.rules(全局 allow = 沙盒外);其余 → default.sandboxed.rules
+    // (免确认但仍沙盒)。与会话前缀记忆的 bypass 判定同一条件。
+    const bool bypass = permission.decision.sandbox == sandbox::SandboxMode::FullAccess &&
+                        permission.input.escalation_requested;
+    const auto file = path_from_utf8(global_exec_rules_dir()) /
+                      (bypass ? sandbox::kRememberedRulesFile : sandbox::kRememberedSandboxedRulesFile);
+    const std::string error = sandbox::append_prefix_rules(path_to_utf8(file), permission.remember_patterns);
+    if (!error.empty()) {
+        LOG_WARN("[sandbox] cannot remember exec rule: " + error);
+        return error;
+    }
+    LOG_INFO("[sandbox] remembered exec rule in " + path_to_utf8(file) + ": " + permission.remember_display());
+    reload_exec_rules();
+    return {};
+}
+
 void AgentLoop::set_sandbox_config(const SandboxConfig& config) {
-    sandbox_runtime_.configure({config.enabled, config.network_access,
-                                config.writable_roots, config.exclude_tmpdir});
+    sandbox::SandboxRuntimeConfig runtime_config;
+    runtime_config.enabled = config.enabled;
+    runtime_config.network_access = config.network_access;
+    runtime_config.writable_roots = config.writable_roots;
+    for (const auto& entry : config.filesystem_write) runtime_config.writable_roots.push_back(entry);
+    runtime_config.exclude_tmpdir = config.exclude_tmpdir;
+    runtime_config.readable_roots = config.filesystem_read;
+    runtime_config.denied_entries = config.filesystem_deny;
+    runtime_config.deny_defaults = config.deny_defaults;
+    runtime_config.windows_backend = config.windows_backend == "mxc"
+        ? sandbox::WindowsBackendChoice::Mxc : sandbox::WindowsBackendChoice::RestrictedToken;
+    runtime_config.acecode_home = get_acecode_dir();
+    sandbox_runtime_.configure(std::move(runtime_config));
     permissions_.clear_session_allows();
+    last_sandbox_violation_.reset();
 }
 
 std::string AgentLoop::sandbox_prompt_description() const {
@@ -541,6 +578,8 @@ std::string AgentLoop::sandbox_command(const std::string& args) {
     if (args == "off" || args == "on") {
         sandbox_session_disabled_.store(args == "off");
         permissions_.clear_session_allows();
+        sandbox_runtime_.clear_session_grants();
+        last_sandbox_violation_.reset();
         // `on` 同时丢掉本会话缓存的探测结论:prepare_request / 启动失败会经
         // mark_unavailable 把后端粘性地标成不可用,用户修好环境(比如把网络盘
         // 上的工作区挪回本地)之后需要一个不重启的恢复入口。
@@ -4082,15 +4121,46 @@ bool AgentLoop::execute_tool_calls(
                     else if (environment.terminal_family == "bash" || environment.terminal_family == "posix") {
                         platform = sandbox::CommandPlatform::Posix;
                     }
+                    sandbox::ExecPermissionOptions exec_options;
+                    exec_options.unattended = goal_unattended_active();
+                    exec_options.session_grants = sandbox_runtime_.session_grants();
                     exec_permission = sandbox::evaluate_exec_permission(effective_tc.function_arguments,
-                        permissions_, exec_rules_, !sandbox_session_disabled_ && sandbox_runtime_.available(), platform);
+                        permissions_, exec_rules_, !sandbox_session_disabled_ && sandbox_runtime_.available(),
+                        platform, exec_options);
                     if (!exec_permission->error.empty()) return ToolResult{"[Error] " + exec_permission->error, false};
                     if (exec_permission->decision.verdict == sandbox::ExecVerdict::Forbidden) {
+                        if (exec_permission->decision.reason == "escalation_unattended") {
+                            // D1:无人值守没有人能批越权;不是拒绝命令本身,只是拒绝加宽。
+                            return ToolResult{
+                                "[Sandbox] Escalated or additional permissions cannot be approved while running "
+                                "unattended (active goal), so this call was not executed. Retry the same command "
+                                "without sandbox_permissions / with_escalated_permissions / additional_permissions; "
+                                "it will run inside the sandbox.", false};
+                        }
                         return ToolResult{"[Permission denied by configured exec rule]", false};
                     }
+                    const std::string sandbox_root = write_root().empty() ? cwd_ : write_root();
+                    // D4:越权确认里附上上一次被拒的路径,并在它不在 deny 名单、且能用
+                    // workspace-write 承载时提供「只放行该目录」选项。
+                    if (exec_permission->decision.verdict == sandbox::ExecVerdict::Prompt &&
+                        exec_permission->input.escalation_requested && last_sandbox_violation_ &&
+                        permissions_.mode() != PermissionMode::Plan) {
+                        if (!last_sandbox_violation_->path.empty()) {
+                            exec_permission->arguments["permission"]["denied_path"] = last_sandbox_violation_->path;
+                        }
+                        if (!sandbox_session_disabled_ && sandbox_runtime_.available()) {
+                            const auto baseline = sandbox_runtime_.policy_for(sandbox::SandboxMode::WorkspaceWrite, sandbox_root);
+                            const auto suggested = sandbox::suggested_write_root(*last_sandbox_violation_, baseline);
+                            if (!suggested.empty()) {
+                                exec_permission->arguments["permission"]["scoped_write_root"] = suggested;
+                            }
+                        }
+                    }
                     if (exec_permission->decision.sandbox != sandbox::SandboxMode::FullAccess) {
+                        const sandbox::AdditionalPermissions* extra =
+                            exec_permission->additional.empty() ? nullptr : &exec_permission->additional;
                         auto request = sandbox_runtime_.request_for(exec_permission->decision.sandbox,
-                            write_root().empty() ? cwd_ : write_root());
+                                                                    sandbox_root, extra);
                         const auto error = sandbox_runtime_.prepare_request(request);
                         if (!error.empty()) {
                             sandbox_runtime_.mark_unavailable(error);
@@ -4134,10 +4204,16 @@ bool AgentLoop::execute_tool_calls(
                         }
                     }
                 }
+                // D10:只有内置保护规则(`.acecode/rules/**`,priority >= 1000)硬拒绝;
+                // 配置里的普通 Deny(`.env` / `.git/**` 写入)交给 should_auto_allow 弹确认,
+                // Desktop 没有 --dangerous 也有逃生口。yolo 的硬拒绝在下面单独处理;
+                // bash 的配置 Deny 已在 evaluate_exec_permission 里映射成 forbidden。
                 if (!permissions_.is_dangerous()) {
                     for (const auto& rule_path : rule_paths) {
-                        if (permissions_.matched_rule(effective_tc.function_name, rule_path,
-                                                      ctx_command) == RuleAction::Deny) {
+                        const auto detail = permissions_.matched_rule_detail(
+                            effective_tc.function_name, rule_path, ctx_command);
+                        if (detail && detail->action == RuleAction::Deny &&
+                            detail->priority >= PermissionManager::kBuiltinProtectionPriority) {
                             return ToolResult{"[Permission denied by configured rule]", false};
                         }
                     }
@@ -4352,23 +4428,60 @@ bool AgentLoop::execute_tool_calls(
                         report_permission_resolved("deny", "interactive");
                         return ToolResult{"[User denied tool execution]", false};
                     }
+                    // bash 专属决策落到别的工具(或 payload 没提供对应选项)时降级:
+                    // allow_scoped → allow,allow_remember → always_allow(D5 向后兼容)。
+                    const std::string scoped_root = exec_permission
+                        ? exec_permission->arguments["permission"].value("scoped_write_root", std::string{})
+                        : std::string{};
+                    if (perm == PermissionResult::AllowScoped && scoped_root.empty()) perm = PermissionResult::Allow;
+                    if (perm == PermissionResult::AllowRemember &&
+                        (!exec_permission || exec_permission->remember_patterns.empty())) {
+                        perm = PermissionResult::AlwaysAllow;
+                    }
                     report_permission_resolved(
-                        perm == PermissionResult::AlwaysAllow
-                            ? "always_allow"
-                            : "allow",
+                        perm == PermissionResult::AlwaysAllow   ? "always_allow"
+                        : perm == PermissionResult::AllowScoped   ? "allow_scoped"
+                        : perm == PermissionResult::AllowRemember ? "allow_remember"
+                                                                  : "allow",
                         "interactive");
                     emit_progress("tool_running", "正在调用工具 " + effective_tc.function_name,
                         effective_tc.function_name, effective_tc.function_name, effective_tc.id,
                         static_cast<int>(entry.original_index), true);
-                    if (perm == PermissionResult::AlwaysAllow &&
+                    if (perm == PermissionResult::AllowScoped) {
+                        // D4:只放行建议目录 —— 记进会话授权,命令留在 workspace-write 里带着
+                        // 该目录执行,而不是整个出沙盒。
+                        sandbox::AdditionalPermissions grant;
+                        grant.write.push_back(scoped_root);
+                        sandbox_runtime_.grant_for_session(grant);
+                        auto request = sandbox_runtime_.request_for(sandbox::SandboxMode::WorkspaceWrite,
+                            write_root().empty() ? cwd_ : write_root());
+                        const auto error = sandbox_runtime_.prepare_request(request);
+                        if (!error.empty()) {
+                            sandbox_runtime_.mark_unavailable(error);
+                            return ToolResult{"[Sandbox unavailable] " + error +
+                                ". The scoped grant was recorded but the command was not executed; retry.", false};
+                        }
+                        execution_context.exec_sandbox = std::move(request);
+                        LOG_INFO("[sandbox] scoped grant for session: write " + scoped_root);
+                    }
+                    if (perm == PermissionResult::AllowRemember && exec_permission) {
+                        // D6:写规则文件失败只记日志,本次仍按「允许一次」执行。
+                        remember_exec_rule(*exec_permission);
+                    }
+                    if ((perm == PermissionResult::AlwaysAllow || perm == PermissionResult::AllowRemember) &&
                         permissions_.mode() != PermissionMode::Plan &&
                         effective_tc.function_name != "EnterPlanMode" &&
                         effective_tc.function_name != "ExitPlanMode") {
                         if (exec_permission) {
-                            for (const auto& prefix : exec_permission->prefixes) {
-                                permissions_.add_session_command_allow(prefix,
-                                    exec_permission->decision.sandbox == sandbox::SandboxMode::FullAccess &&
-                                    exec_permission->input.escalation_requested);
+                            if (exec_permission->input.additional_requested && !exec_permission->additional.empty()) {
+                                // 额外权限申请的「本次会话允许」记的是权限,不是命令前缀。
+                                sandbox_runtime_.grant_for_session(exec_permission->additional);
+                            } else {
+                                for (const auto& prefix : exec_permission->prefixes) {
+                                    permissions_.add_session_command_allow(prefix,
+                                        exec_permission->decision.sandbox == sandbox::SandboxMode::FullAccess &&
+                                        exec_permission->input.escalation_requested);
+                                }
                             }
                         } else {
                             permissions_.add_session_allow(effective_tc.function_name);
@@ -4400,6 +4513,20 @@ bool AgentLoop::execute_tool_calls(
                         reason = tool_result.output.substr(0, tool_result.output.find('\n'));
                     }
                     sandbox_runtime_.mark_unavailable(reason);
+                }
+                if (exec_permission) {
+                    // D4:记住最近一次沙盒拒绝(含路径),给下一次越权确认提供
+                    // 「只放行该目录」;bash 成功一次就作废,别拿陈旧路径误导用户。
+                    const auto& meta = tool_result.metadata;
+                    if (meta.contains("sandbox_violation") && meta["sandbox_violation"].is_object()) {
+                        sandbox::SandboxViolation violation;
+                        violation.reason = meta["sandbox_violation"].value("reason", std::string{});
+                        violation.path = meta["sandbox_violation"].value("path", std::string{});
+                        violation.snippet = meta["sandbox_violation"].value("snippet", std::string{});
+                        last_sandbox_violation_ = std::move(violation);
+                    } else if (tool_result.success) {
+                        last_sandbox_violation_.reset();
+                    }
                 }
 
                 if ((effective_tc.function_name == "file_edit" || effective_tc.function_name == "file_write") &&

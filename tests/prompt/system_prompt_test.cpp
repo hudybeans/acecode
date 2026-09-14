@@ -32,7 +32,11 @@ TEST(SystemPromptSandbox, StableStateAndExplicitEscalationInstructions) {
     EXPECT_EQ(first, build());
     EXPECT_NE(first.find("Shell sandbox:"), std::string::npos);
     EXPECT_NE(first.find("network: not enforced"), std::string::npos);
-    EXPECT_NE(first.find("with_escalated_permissions"), std::string::npos);
+    // align-codex-sandboxing:指引先讲最小申请(with_additional_permissions),
+    // 再讲沙盒外执行(require_escalated),两者都要 justification。
+    EXPECT_NE(first.find("with_additional_permissions"), std::string::npos);
+    EXPECT_NE(first.find("require_escalated"), std::string::npos);
+    EXPECT_LT(first.find("with_additional_permissions"), first.find("require_escalated"));
     EXPECT_NE(first.find("justification"), std::string::npos);
 }
 

@@ -64,6 +64,8 @@ std::string command_basename(const std::string& token);
 // 会话级「总是允许」记忆用的前缀:首 token(basename),首 token 属于多级 CLI
 // (git / npm / cargo ...)时再带第二个 token。空段返回空串。
 std::string always_allow_prefix_for_segment(const CommandSegment& segment);
+// 同上,但返回 token 列表(规则写回用 pattern);空 = 不提供前缀。
+std::vector<std::string> always_allow_prefix_tokens_for_segment(const CommandSegment& segment);
 
 // 任一 token 引用敏感路径(.ssh / .env / id_rsa / .aws ... 与 PathValidator
 // 同一份名单)。只读命令碰这些文件也不该自动跑。

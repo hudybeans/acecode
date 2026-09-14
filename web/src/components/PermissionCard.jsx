@@ -8,7 +8,15 @@ import { VsIcon } from './Icon.jsx';
 function resolvedLabel(choice) {
   if (choice === 'allow') return '已允许一次';
   if (choice === 'allow_session') return '本次会话已允许';
+  if (choice === 'allow_scoped') return '已放行指定目录';
+  if (choice === 'allow_remember') return '已允许并写入规则';
   return '已拒绝';
+}
+
+function permissionKindLabel(kind) {
+  if (kind === 'write') return '写入';
+  if (kind === 'read') return '读取';
+  return '网络';
 }
 
 function resolvedReason(reason) {
@@ -31,6 +39,12 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
     primaryLabel,
     allowSessionLabel,
     justification,
+    additionalPermissions,
+    deniedPath,
+    scopedWriteRoot,
+    scopedLabel,
+    rememberPrefix,
+    rememberLabel,
   } = planPermissionPresentation(request);
   const status = request?.status || PERMISSION_REQUEST_STATUS.PENDING;
   const pending = status === PERMISSION_REQUEST_STATUS.PENDING;
@@ -89,6 +103,23 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
         )}
         <p className="m-0 text-[12px] leading-relaxed text-fg-2">{body}</p>
         {justification && <p className="m-0 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">{justification}</p>}
+        {additionalPermissions.length > 0 && (
+          <ul data-permission-additional="true" className="m-0 list-none p-0 text-[12px] leading-relaxed text-fg">
+            {additionalPermissions.map((item) => (
+              <li key={`${item.kind}:${item.path}`} className="flex min-w-0 gap-2">
+                <span className="shrink-0 rounded-full border border-border bg-surface-alt px-2 text-[11px] text-fg-2">
+                  {permissionKindLabel(item.kind)}
+                </span>
+                <span className="min-w-0 break-all font-mono text-[11px]">{item.path || '允许联网'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {deniedPath && (
+          <p data-permission-denied-path="true" className="m-0 break-all text-[11px] text-fg-mute">
+            上一次被沙盒拒绝的路径:<span className="font-mono">{deniedPath}</span>
+          </p>
+        )}
         {(isPlanApproval || isPlanEnter) && planFilePath && (
           <div className="break-all text-[11px] text-fg-mute">{planFilePath}</div>
         )}
@@ -139,6 +170,30 @@ export function PermissionCard({ request, onDecision, originLabel = '' }) {
         >
           拒绝
         </button>
+        {scopedWriteRoot && (
+          <button
+            type="button"
+            data-permission-choice="allow_scoped"
+            disabled={!pending}
+            onClick={() => decide('allow_scoped')}
+            title={scopedWriteRoot}
+            className="h-8 max-w-[320px] truncate rounded-md border border-accent bg-transparent px-3 text-[12px] font-medium text-accent transition hover:bg-accent-bg disabled:cursor-wait disabled:opacity-50"
+          >
+            {scopedLabel}
+          </button>
+        )}
+        {rememberPrefix && (
+          <button
+            type="button"
+            data-permission-choice="allow_remember"
+            disabled={!pending}
+            onClick={() => decide('allow_remember')}
+            title={`写入规则文件:${rememberPrefix}`}
+            className="h-8 max-w-[320px] truncate rounded-md border border-accent bg-transparent px-3 text-[12px] font-medium text-accent transition hover:bg-accent-bg disabled:cursor-wait disabled:opacity-50"
+          >
+            {rememberLabel}
+          </button>
+        )}
         {!hideAllowSession && (
           <button
             type="button"

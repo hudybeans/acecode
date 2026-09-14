@@ -75,7 +75,9 @@ struct SessionEvent {
 enum class PermissionDecisionChoice {
     Allow,
     Deny,
-    AllowSession, // = AlwaysAllow,这次允许 + 本 session 内不再问
+    AllowSession,  // = AlwaysAllow,这次允许 + 本 session 内不再问
+    AllowScoped,   // bash:只放行确认框建议的目录(会话授权),留在沙盒里执行
+    AllowRemember, // bash:允许 + 把命令前缀写进规则文件
 };
 
 struct PermissionDecision {
@@ -433,9 +435,11 @@ inline const char* to_string(SessionEventKind k) {
 
 inline const char* to_string(PermissionDecisionChoice c) {
     switch (c) {
-        case PermissionDecisionChoice::Allow:        return "allow";
-        case PermissionDecisionChoice::Deny:         return "deny";
-        case PermissionDecisionChoice::AllowSession: return "allow_session";
+        case PermissionDecisionChoice::Allow:         return "allow";
+        case PermissionDecisionChoice::Deny:          return "deny";
+        case PermissionDecisionChoice::AllowSession:  return "allow_session";
+        case PermissionDecisionChoice::AllowScoped:   return "allow_scoped";
+        case PermissionDecisionChoice::AllowRemember: return "allow_remember";
     }
     return "deny";
 }
@@ -455,9 +459,11 @@ inline const char* to_string(TurnSteerStatus status) {
 
 inline std::optional<PermissionDecisionChoice>
 parse_permission_choice(const std::string& s) {
-    if (s == "allow")         return PermissionDecisionChoice::Allow;
-    if (s == "deny")          return PermissionDecisionChoice::Deny;
-    if (s == "allow_session") return PermissionDecisionChoice::AllowSession;
+    if (s == "allow")          return PermissionDecisionChoice::Allow;
+    if (s == "deny")           return PermissionDecisionChoice::Deny;
+    if (s == "allow_session")  return PermissionDecisionChoice::AllowSession;
+    if (s == "allow_scoped")   return PermissionDecisionChoice::AllowScoped;
+    if (s == "allow_remember") return PermissionDecisionChoice::AllowRemember;
     return std::nullopt;
 }
 

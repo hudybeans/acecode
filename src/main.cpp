@@ -80,6 +80,7 @@
 #include "tool/memory_write_tool.hpp"
 #include "tool/ask_user_question_tool.hpp"
 #include "tui/confirm_question.hpp"
+#include "session/permission_prompter.hpp"
 #include "skills/skill_init.hpp"
 #include "skills/skill_registry.hpp"
 #include "skills/skill_commands.hpp"
@@ -2314,38 +2315,46 @@ static bool handle_confirm_overlay_event(
         screen.PostEvent(Event::Custom);
     };
 
+    // 选项随 payload 变化(bash 的「只放行该目录」/「记住前缀」按需出现),
+    // 数字快捷键 = 选项序号,No 永远最后。
+    const auto options = acecode::tui::build_confirm_options(
+        state.confirm_tool_name, state.confirm_tool_args);
+    const int count = std::max(1, static_cast<int>(options.size()));
+    auto has_result = [&](PermissionResult r) {
+        for (const auto& option : options) if (option.result == r) return true;
+        return false;
+    };
     if (is_terminal_key(event, acecode::tui::TerminalKey::Escape)) {
         submit(PermissionResult::Deny);
         return true;
     }
     if (event == Event::ArrowUp) {
-        state.confirm_focus = (state.confirm_focus + 2) % 3;
+        state.confirm_focus = (state.confirm_focus + count - 1) % count;
         screen.PostEvent(Event::Custom);
         return true;
     }
     if (event == Event::ArrowDown) {
-        state.confirm_focus = (state.confirm_focus + 1) % 3;
+        state.confirm_focus = (state.confirm_focus + 1) % count;
         screen.PostEvent(Event::Custom);
         return true;
     }
     if (is_terminal_key(
             event, acecode::tui::TerminalKey::Tab, kTerminalShift)) {
-        submit(PermissionResult::AlwaysAllow);
+        if (has_result(PermissionResult::AlwaysAllow)) submit(PermissionResult::AlwaysAllow);
         return true;
     }
     if (event == Event::Return) {
-        int f = std::clamp(state.confirm_focus, 0, 2);
-        PermissionResult r = (f == 0) ? PermissionResult::Allow
-                           : (f == 1) ? PermissionResult::AlwaysAllow
-                                      : PermissionResult::Deny;
-        submit(r);
+        const int f = std::clamp(state.confirm_focus, 0, count - 1);
+        submit(options.empty() ? PermissionResult::Deny : options[static_cast<std::size_t>(f)].result);
         return true;
     }
     if (event.is_character()) {
         const std::string& c = event.character();
-        if (c == "1") { submit(PermissionResult::Allow);       return true; }
-        if (c == "2") { submit(PermissionResult::AlwaysAllow); return true; }
-        if (c == "3") { submit(PermissionResult::Deny);        return true; }
+        if (c.size() == 1 && c[0] >= '1' && c[0] <= '9') {
+            const std::size_t index = static_cast<std::size_t>(c[0] - '1');
+            if (index < options.size()) submit(options[index].result);
+            return true;
+        }
         if (c == "y" || c == "Y") {
             submit(PermissionResult::Allow);
             return true;
@@ -2355,7 +2364,7 @@ static bool handle_confirm_overlay_event(
             return true;
         }
         if (c == "a" || c == "A") {
-            submit(PermissionResult::AlwaysAllow);
+            if (has_result(PermissionResult::AlwaysAllow)) submit(PermissionResult::AlwaysAllow);
             return true;
         }
         return true;
@@ -4921,16 +4930,14 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
         }
         rows.push_back(text(""));
 
-        const std::array<std::string, 3> labels = {
-            "1. Yes",
-            "2. Yes, allow all edits during this session (shift+tab)",
-            "3. No",
-        };
-        const int focus = std::clamp(state.confirm_focus, 0, 2);
-        for (int i = 0; i < 3; ++i) {
+        const auto options = acecode::tui::build_confirm_options(
+            state.confirm_tool_name, state.confirm_tool_args);
+        const int option_count = std::max(1, static_cast<int>(options.size()));
+        const int focus = std::clamp(state.confirm_focus, 0, option_count - 1);
+        for (int i = 0; i < static_cast<int>(options.size()); ++i) {
             bool focused = (i == focus);
             std::string prefix = focused ? " \xE2\x9D\xAF " : "   ";
-            auto row = text(prefix + labels[i]);
+            auto row = text(prefix + options[static_cast<std::size_t>(i)].label);
             if (focused) {
                 row = row | bold | color(tui::theme().ui.text_primary) | bgcolor(tui::theme().ui.selection_bg);
             } else {
@@ -4940,7 +4947,8 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
         }
         rows.push_back(text(""));
         rows.push_back(
-            text(" \xE2\x86\x91\xE2\x86\x93 move   Enter select   1/2/3 jump   Esc deny")
+            text(" \xE2\x86\x91\xE2\x86\x93 move   Enter select   1-" + std::to_string(option_count) +
+                 " jump   Esc deny")
             | tui::readable_secondary());
         confirm_overlay_element = vbox(std::move(rows)) | border | color(tui::theme().ui.accent);
     }
@@ -5620,7 +5628,7 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
             state.confirm_origin_label.clear();
             // 每次新确认都把焦点复位到 "No",避免上一次留下的焦点泄漏到下一次,
             // 同时安全的默认是 Deny —— 用户随手 Enter 不会误授权。
-            state.confirm_focus = 2;
+            state.confirm_focus = acecode::tui::confirm_default_focus(tool_name, args);
         }
         screen.PostEvent(Event::Custom);
 
@@ -7013,7 +7021,7 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
                 state.confirm_remote_session_id = req.session_id;
                 state.confirm_remote_request_id = req.request_id;
                 state.confirm_origin_label = req.origin_label;
-                state.confirm_focus = 2;
+                state.confirm_focus = acecode::tui::confirm_default_focus(req.tool, req.args_preview);
             }
         }
 
@@ -7022,12 +7030,8 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
                 [&subagent_host](const std::string& sid,
                                  const std::string& rid,
                                  PermissionResult r) {
-                    const char* choice = (r == PermissionResult::Allow)
-                        ? "allow"
-                        : (r == PermissionResult::AlwaysAllow)
-                            ? "allow_session"
-                            : "deny";
-                    subagent_host.respond_permission(sid, rid, choice);
+                    subagent_host.respond_permission(
+                        sid, rid, permission_result_choice_name(r));
                 })) {
             return true;
         }

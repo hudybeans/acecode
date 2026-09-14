@@ -40,7 +40,10 @@ enum class PermissionMode {
 enum class PermissionResult {
     Allow,        // Execute the tool
     Deny,         // Reject this tool call
-    AlwaysAllow   // Allow + remember for this tool for the rest of the session
+    AlwaysAllow,  // Allow + remember for this tool for the rest of the session
+    // bash 专属(openspec align-codex-sandboxing D5):
+    AllowScoped,  // 只放行确认框建议的那个目录(会话授权),命令留在沙盒里执行
+    AllowRemember // Allow + 把命令前缀写进规则文件,以后不再问
 };
 
 // bash 的会话级「总是允许」记忆结论(按命令前缀,见 add_session_command_allow)。
@@ -108,9 +111,15 @@ public:
         rules_.push_back(rule);
     }
 
-    std::optional<RuleAction> matched_rule(const std::string& tool_name,
-                                           const std::string& path = "",
-                                           const std::string& command = "") const {
+    // 命中的最高优先级规则(同优先级 Deny 胜)。priority >= kBuiltinProtectionPriority
+    // 的是构造函数登记的内置保护规则(`.acecode/rules/**`),AgentLoop 只对它们和
+    // yolo 模式硬拒绝;配置里的普通 Deny(`.env` / `.git/**`)回到弹确认
+    // (openspec align-codex-sandboxing D10)。
+    static constexpr int kBuiltinProtectionPriority = 1000;
+
+    std::optional<PermissionRule> matched_rule_detail(const std::string& tool_name,
+                                                      const std::string& path = "",
+                                                      const std::string& command = "") const {
         std::lock_guard<std::mutex> lk(mu_);
         const PermissionRule* best = nullptr;
         for (const auto& rule : rules_) {
@@ -120,7 +129,14 @@ public:
                 best = &rule;
             }
         }
-        return best ? std::optional<RuleAction>(best->action) : std::nullopt;
+        return best ? std::optional<PermissionRule>(*best) : std::nullopt;
+    }
+
+    std::optional<RuleAction> matched_rule(const std::string& tool_name,
+                                           const std::string& path = "",
+                                           const std::string& command = "") const {
+        const auto detail = matched_rule_detail(tool_name, path, command);
+        return detail ? std::optional<RuleAction>(detail->action) : std::nullopt;
     }
 
     // Check if a tool should be auto-allowed (no user prompt needed)

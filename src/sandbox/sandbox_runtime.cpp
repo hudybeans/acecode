@@ -18,6 +18,7 @@ void SandboxRuntime::configure(SandboxRuntimeConfig cfg) {
     std::lock_guard<std::mutex> lk(mu_);
     cfg_ = std::move(cfg);
     probe_.reset();
+    session_grants_ = {};
 }
 
 SandboxRuntimeConfig SandboxRuntime::config() const {
@@ -26,6 +27,7 @@ SandboxRuntimeConfig SandboxRuntime::config() const {
 }
 
 BackendProbe SandboxRuntime::probe() {
+    WindowsBackendChoice choice;
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (probe_) return *probe_;
@@ -36,10 +38,13 @@ BackendProbe SandboxRuntime::probe() {
             probe_ = disabled;
             return disabled;
         }
+        choice = cfg_.windows_backend;
     }
-    // 真探测放在锁外:Windows 上要创建令牌,Linux 上要 fork bwrap。
-    static const BackendProbe process_probe = probe_backend();
-    BackendProbe fresh = process_probe;
+    // 真探测放在锁外:Windows 上要创建令牌,Linux 上要 fork bwrap。进程级缓存按
+    // 后端选择各存一份,切换配置不用重启。
+    static const BackendProbe process_probe_default = probe_backend(WindowsBackendChoice::RestrictedToken);
+    static const BackendProbe process_probe_mxc = probe_backend(WindowsBackendChoice::Mxc);
+    BackendProbe fresh = choice == WindowsBackendChoice::Mxc ? process_probe_mxc : process_probe_default;
     std::lock_guard<std::mutex> lk(mu_);
     if (!probe_) {
         probe_ = fresh;
@@ -66,27 +71,56 @@ bool SandboxRuntime::network_enforced() {
     return probe().network_enforced;
 }
 
+bool SandboxRuntime::network_best_effort() {
+    return probe().network_best_effort;
+}
+
 void SandboxRuntime::set_availability_override_for_tests(std::optional<bool> value) {
     std::lock_guard<std::mutex> lk(mu_);
     override_ = value;
 }
 
-SandboxPolicyOptions SandboxRuntime::policy_options() const {
+void SandboxRuntime::grant_for_session(const AdditionalPermissions& grants) {
+    std::lock_guard<std::mutex> lk(mu_);
+    session_grants_.merge(grants);
+}
+
+AdditionalPermissions SandboxRuntime::session_grants() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return session_grants_;
+}
+
+void SandboxRuntime::clear_session_grants() {
+    std::lock_guard<std::mutex> lk(mu_);
+    session_grants_ = {};
+}
+
+SandboxPolicyOptions SandboxRuntime::policy_options(const AdditionalPermissions* extra) const {
     std::lock_guard<std::mutex> lk(mu_);
     SandboxPolicyOptions options;
     options.extra_writable_roots = cfg_.writable_roots;
+    options.readable_roots = cfg_.readable_roots;
+    options.denied_entries = cfg_.denied_entries;
+    if (cfg_.deny_defaults) {
+        for (const auto& entry : default_denied_entries()) options.denied_entries.push_back(entry);
+    }
     options.include_tmpdir = !cfg_.exclude_tmpdir;
     options.network_access = cfg_.network_access;
+    options.acecode_home = cfg_.acecode_home;
+    options.grants = session_grants_;
+    if (extra) options.grants.merge(*extra);
     return options;
 }
 
-SandboxPolicy SandboxRuntime::policy_for(SandboxMode mode, const std::string& write_root) const {
-    return make_sandbox_policy(mode, write_root, policy_options());
+SandboxPolicy SandboxRuntime::policy_for(SandboxMode mode, const std::string& write_root,
+                                         const AdditionalPermissions* extra) const {
+    return make_sandbox_policy(mode, write_root, policy_options(extra));
 }
 
-ExecSandboxRequest SandboxRuntime::request_for(SandboxMode mode, const std::string& write_root) {
+ExecSandboxRequest SandboxRuntime::request_for(SandboxMode mode, const std::string& write_root,
+                                               const AdditionalPermissions* extra) {
     ExecSandboxRequest req;
-    req.policy = policy_for(mode, write_root);
+    req.policy = policy_for(mode, write_root, extra);
     if (mode == SandboxMode::FullAccess) {
         req.backend = BackendKind::None;
         req.network_enforced = false;
@@ -95,7 +129,9 @@ ExecSandboxRequest SandboxRuntime::request_for(SandboxMode mode, const std::stri
     const BackendProbe p = probe();
     req.backend = p.kind;
     req.network_enforced = p.network_enforced;
+    req.network_best_effort = p.network_best_effort;
     req.backend_executable = p.executable_path;
+    if (p.network_best_effort && !req.policy.network_access) req.denybin_dir = denybin_dir();
     return req;
 }
 
@@ -109,6 +145,12 @@ void SandboxRuntime::mark_unavailable(const std::string& reason) {
 void SandboxRuntime::reset_probe() {
     std::lock_guard<std::mutex> lk(mu_);
     probe_.reset();
+}
+
+std::string SandboxRuntime::denybin_dir() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (cfg_.acecode_home.empty()) return {};
+    return path_to_utf8(path_from_utf8(cfg_.acecode_home) / "sandbox" / "denybin");
 }
 
 std::string SandboxRuntime::prepare_request(ExecSandboxRequest& request) {
@@ -135,6 +177,14 @@ std::string SandboxRuntime::prepare_request(ExecSandboxRequest& request) {
         }
     }
 #endif
+    if (!request.denybin_dir.empty()) {
+        // 准断网的 ssh / scp 桩:建不出来只是少一层劝退,不能因此让沙盒不可用。
+        std::string stub_error;
+        if (!ensure_denybin_stubs(request.denybin_dir, &stub_error)) {
+            LOG_WARN("[sandbox] offline stubs unavailable: " + stub_error);
+            request.denybin_dir.clear();
+        }
+    }
     if (request.policy.mode == SandboxMode::WorkspaceWrite) {
         if (request.policy.writable_roots.empty()) return "No sandbox workspace root.";
         for (const auto& writable : request.policy.writable_roots) {
@@ -149,10 +199,14 @@ std::string SandboxRuntime::prepare_request(ExecSandboxRequest& request) {
                 }
                 if (fs::exists(path, ec) && !ec) continue;
                 if (ec) return "Cannot inspect protected path: " + ec.message();
-                // Windows ACL / bwrap bind 都需要实体。预建空的规则、hooks、modules
-                // 目录和 config.worktree 文件,封住稍后新建敏感路径的漏洞。
-                const bool directory = path.filename() == "rules" || path.filename() == "hooks" ||
-                                       path.filename() == "modules";
+                // deny 名单里的路径不存在就不存在:不能为了打拒绝 ACE 去凭空创建
+                // `~/.ssh` 之类的目录。只有 git / rules 这类我们自己定义的受保护
+                // 路径才预建实体,封住稍后新建敏感路径的漏洞。
+                const std::string filename = path_to_utf8(path.filename());
+                const bool directory = filename == "rules" || filename == "hooks" || filename == "modules";
+                const bool known_protected = directory || filename == "config" ||
+                                             filename == "config.worktree" || filename == ".git";
+                if (!known_protected) continue;
                 fs::create_directories(directory ? path : path.parent_path(), ec);
                 if (ec) return "Cannot prepare protected path: " + ec.message();
                 if (!directory) {
@@ -163,9 +217,11 @@ std::string SandboxRuntime::prepare_request(ExecSandboxRequest& request) {
         }
     }
 #ifdef _WIN32
-    if (!ensure_windows_acl_grants(request.policy, &error)) {
-        mark_unavailable(error);
-        return error;
+    if (request.backend == BackendKind::WindowsRestrictedToken) {
+        if (!ensure_windows_acl_grants(request.policy, &error)) {
+            mark_unavailable(error);
+            return error;
+        }
     }
 #endif
     return {};
@@ -186,8 +242,8 @@ std::string SandboxRuntime::status_text(PermissionMode mode, const std::string& 
     oss << "Permission mode : " << PermissionManager::mode_name(mode) << "\n";
     const SandboxMode sm = mode_sandbox(mode, usable);
     oss << "Auto-run policy : " << sandbox_mode_name(sm) << "\n";
+    const SandboxPolicy policy = policy_for(sm == SandboxMode::FullAccess ? SandboxMode::ReadOnly : sm, write_root);
     if (sm == SandboxMode::WorkspaceWrite) {
-        const SandboxPolicy policy = policy_for(sm, write_root);
         oss << "Writable roots  :";
         if (policy.writable_roots.empty()) oss << " (none)";
         oss << "\n";
@@ -198,16 +254,47 @@ std::string SandboxRuntime::status_text(PermissionMode mode, const std::string& 
             }
         }
     }
+    if (sm != SandboxMode::FullAccess) {
+        oss << "Readable roots  : ";
+        if (policy.full_disk_read()) oss << "(entire disk)\n";
+        else {
+            oss << "\n";
+            for (const auto& root : policy.readable_roots) oss << "  - " << root << "\n";
+        }
+        oss << "Denied entries  :";
+        if (!policy.has_deny_entries()) oss << " (none)";
+        oss << "\n";
+        for (const auto& d : policy.denied_paths) oss << "  - " << d << "\n";
+        for (const auto& g : policy.denied_globs) oss << "  - " << g << " (glob)\n";
+        if (p.kind == BackendKind::WindowsRestrictedToken) {
+            oss << "                  (Windows: deny entries only block writes; reads are not restricted)\n";
+        }
+    }
+    const AdditionalPermissions grants = session_grants();
+    if (!grants.empty()) {
+        oss << "Session grants  :\n";
+        for (const auto& w : grants.write) oss << "  - write " << w << "\n";
+        for (const auto& r : grants.read) oss << "  - read " << r << "\n";
+        if (grants.network) oss << "  - network\n";
+    }
     oss << "Network         : ";
-    if (!p.network_enforced) oss << "not enforced by this backend";
-    else oss << (cfg.network_access ? "allowed" : "blocked");
+    if (p.network_enforced) oss << (policy.network_access ? "allowed" : "blocked");
+    else if (p.network_best_effort) oss << (policy.network_access ? "allowed" : "best-effort offline (proxy/env only, not enforced)");
+    else oss << "not enforced by this backend";
     oss << "\n";
     if (p.kind == BackendKind::WindowsRestrictedToken && usable) {
         oss << "Windows limits  : delete/rename are not fully restricted; public writable paths remain writable\n";
     }
     oss << "Config          : network_access=" << (cfg.network_access ? "true" : "false")
         << " exclude_tmpdir=" << (cfg.exclude_tmpdir ? "true" : "false")
-        << " writable_roots=" << cfg.writable_roots.size() << "\n";
+        << " writable_roots=" << cfg.writable_roots.size()
+        << " read=" << cfg.readable_roots.size()
+        << " deny=" << cfg.denied_entries.size()
+        << " deny_defaults=" << (cfg.deny_defaults ? "true" : "false")
+#ifdef _WIN32
+        << " windows_backend=" << windows_backend_choice_name(cfg.windows_backend)
+#endif
+        << "\n";
     return oss.str();
 }
 

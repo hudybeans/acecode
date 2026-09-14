@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include "sandbox/exec_rules.hpp"
+#include "test_support.hpp"
+#include <fstream>
+#include <iterator>
 
 using namespace acecode::sandbox;
 
@@ -60,6 +63,74 @@ TEST(ExecRules, AppliesStrictestDecisionAndProjectScope) {
     EXPECT_EQ(rules.evaluate(classify_command("git status && unknown-tool")).decision, RuleDecision::NoMatch);
     EXPECT_EQ(rules.evaluate(classify_command("git push")).decision, RuleDecision::Forbidden);
     EXPECT_EQ(rules.evaluate(classify_command("bash -c 'git push'", CommandPlatform::Posix)).decision, RuleDecision::Forbidden);
+}
+
+// 场景:禁用前缀名单(align-codex-sandboxing D6)。期望:解释器 / shell / rm /
+// sudo / cmd /c / powershell -Command / `git` 单独 都禁;`git commit`、`pnpm install`
+// 不禁;首 token 按 basename 比(`C:\...\node.exe` = node),大小写不敏感;空列表禁。
+TEST(ExecRules, BannedPrefixListCoversInterpretersAndDestructiveTools) {
+    for (const auto& banned : std::vector<std::vector<std::string>>{
+             {"bash"}, {"sh", "-c"}, {"python3", "-c"}, {"node", "-e"}, {"rm"}, {"sudo"}, {"git"},
+             {"cmd", "/c"}, {"powershell", "-Command"}, {"PowerShell.exe", "-command"},
+             {"C:\\Program Files\\nodejs\\node.exe"}, {"del"}, {"Remove-Item"}, {"npx"}}) {
+        EXPECT_TRUE(is_banned_prefix(banned)) << banned.front();
+    }
+    for (const auto& ok : std::vector<std::vector<std::string>>{
+             {"git", "commit"}, {"pnpm", "install"}, {"cargo", "test"}, {"ls"}, {"node", "script.js"}}) {
+        EXPECT_FALSE(is_banned_prefix(ok)) << ok.front();
+    }
+    EXPECT_TRUE(is_banned_prefix({}));
+}
+
+// 场景:推导可写回规则文件的 pattern。期望:模型给的 prefix_rule 覆盖每一段时
+// 作为唯一 pattern;只覆盖一段 / 命中禁用名单时退回逐段推导;逐段推导取
+// `always_allow_prefix_tokens`(多级 CLI 带子命令),任一段推不出(解释器)则
+// 整体不提供;不可安全拆段的命令不提供。
+TEST(ExecRules, DerivesRememberPatternsFromProposalOrSegments) {
+    const auto multi = classify_command("git status && pnpm test", CommandPlatform::Posix);
+    EXPECT_EQ(derive_remember_patterns(multi, {}),
+              (std::vector<std::vector<std::string>>{{"git", "status"}, {"pnpm", "test"}}));
+    EXPECT_EQ(derive_remember_patterns(multi, {"git"}), std::vector<std::vector<std::string>>{})
+        << "`git` 单独在禁用名单";
+    EXPECT_EQ(derive_remember_patterns(multi, {"pnpm"}), std::vector<std::vector<std::string>>{})
+        << "建议前缀没覆盖每一段(git status 不以 pnpm 开头)→ 不提供";
+    const auto single = classify_command("pnpm install lodash", CommandPlatform::Posix);
+    EXPECT_EQ(derive_remember_patterns(single, {"pnpm", "install"}),
+              (std::vector<std::vector<std::string>>{{"pnpm", "install"}}));
+    EXPECT_EQ(derive_remember_patterns(single, {"pnpm", "test"}), std::vector<std::vector<std::string>>{})
+        << "建议前缀与命令不符,也不用逐段推导兜底(模型明确给了错的)";
+    EXPECT_TRUE(derive_remember_patterns(classify_command("python -c 'x'", CommandPlatform::Posix), {}).empty());
+    EXPECT_TRUE(derive_remember_patterns(classify_command("git status > out.txt", CommandPlatform::Posix), {}).empty());
+}
+
+// 场景:把 pattern 追加进规则文件并重新加载。期望:文件与父目录自动创建,格式与
+// Codex amend.rs 一致;同 pattern 不重复追加;`default.sandboxed.rules` 加载后 allow
+// 降级为 AllowSandboxed,`default.rules` 仍是 Allow;已有内容末尾无换行时补换行。
+TEST(ExecRules, AppendsRulesWithoutDuplicatesAndLoadsSandboxedScope) {
+    acecode::sandbox::test::TempTree tree;
+    const auto dir = tree.root / "rules";
+    const std::string bypass_file = acecode::path_to_utf8(dir / kRememberedRulesFile);
+    const std::string sandboxed_file = acecode::path_to_utf8(dir / kRememberedSandboxedRulesFile);
+    EXPECT_EQ(format_prefix_rule({"git", "com\"mit"}), "prefix_rule(pattern=[\"git\", \"com\\\"mit\"], decision=\"allow\")");
+    ASSERT_TRUE(append_prefix_rules(bypass_file, {{"pnpm", "install"}}).empty());
+    ASSERT_TRUE(append_prefix_rules(bypass_file, {{"pnpm", "install"}, {"cargo", "test"}}).empty());
+    tree.write(dir / "manual.rules", "prefix_rule(pattern=[\"ls\"])");   // 无换行结尾
+    ASSERT_TRUE(append_prefix_rules(acecode::path_to_utf8(dir / "manual.rules"), {{"pwd"}}).empty());
+    ASSERT_TRUE(append_prefix_rules(sandboxed_file, {{"pnpm", "test"}}).empty());
+    std::ifstream in(dir / kRememberedRulesFile);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(content, "prefix_rule(pattern=[\"pnpm\", \"install\"], decision=\"allow\")\n"
+                       "prefix_rule(pattern=[\"cargo\", \"test\"], decision=\"allow\")\n");
+    std::ifstream manual(dir / "manual.rules");
+    std::string manual_content((std::istreambuf_iterator<char>(manual)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(manual_content, "prefix_rule(pattern=[\"ls\"])\nprefix_rule(pattern=[\"pwd\"], decision=\"allow\")\n");
+    const auto rules = ExecRules::load(acecode::path_to_utf8(dir), "");
+    EXPECT_TRUE(rules.skipped_files().empty());
+    EXPECT_EQ(rules.evaluate(classify_command("pnpm install x", CommandPlatform::Posix)).decision, RuleDecision::Allow);
+    EXPECT_EQ(rules.evaluate(classify_command("pnpm test", CommandPlatform::Posix)).decision, RuleDecision::AllowSandboxed);
+    EXPECT_EQ(rules.evaluate(classify_command("pwd", CommandPlatform::Posix)).decision, RuleDecision::Allow);
+    EXPECT_FALSE(append_prefix_rules("", {{"x"}}).empty());
+    EXPECT_FALSE(append_prefix_rules(bypass_file, {}).empty());
 }
 
 // 场景:allow 前缀后追加重定向或命令替换。期望:不可凭前缀授权整段不透明脚本。
