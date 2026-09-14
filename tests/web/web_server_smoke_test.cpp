@@ -48,6 +48,7 @@
 #include "session/session_trajectory.hpp"
 #include "session/session_user_message_search.hpp"
 #include "session/todo_state.hpp"
+#include "session/task_suggestion_service.hpp"
 #include "session/session_usage_ledger.hpp"
 #include "skills/skill_registry.hpp"
 #include "themes/theme_store.hpp"
@@ -55,6 +56,7 @@
 #include "tool/ask_user_question_tool.hpp"
 #include "tool/mtime_tracker.hpp"
 #include "tool/tool_executor.hpp"
+#include "tool/task_suggestion_tools.hpp"
 #include "upgrade/manifest.hpp"
 #include "../agent_loop/stub_provider.hpp"
 #include "utils/encoding.hpp"
@@ -444,6 +446,7 @@ struct WebServerFixture {
     struct NativeSavePickerTag {};
     struct SideQuestionProviderTag {};
     struct NoSessionRegistryTag {};
+    struct TaskSuggestionsTag {};
 
     acecode::ToolExecutor tools;
     acecode::PermissionManager template_perm;
@@ -457,6 +460,7 @@ struct WebServerFixture {
 
     std::unique_ptr<acecode::SessionRegistry> registry;
     std::unique_ptr<acecode::LocalSessionClient> client;
+    std::shared_ptr<acecode::TaskSuggestionService> task_suggestions;
     std::unique_ptr<acecode::HookManager> hook_manager;
     std::unique_ptr<acecode::loop::LoopStore> loop_store;
     std::unique_ptr<FakeRemoteWebProxyController> remote_web_proxy;
@@ -490,7 +494,8 @@ struct WebServerFixture {
         bool desktop_managed = false,
         NativeSaveFilePicker native_save_file_picker = {},
         std::shared_ptr<acecode::LlmProvider> registry_provider = {},
-        bool expose_session_registry = true) {
+        bool expose_session_registry = true,
+        bool enable_task_suggestions = false) {
         port = pick_test_port();
         web_cfg.bind = "127.0.0.1";
         web_cfg.port = port;
@@ -549,6 +554,12 @@ struct WebServerFixture {
         client = session_client_factory
             ? session_client_factory(*registry)
             : std::make_unique<acecode::LocalSessionClient>(*registry);
+        if (enable_task_suggestions) {
+            task_suggestions = std::make_shared<acecode::TaskSuggestionService>(
+                acecode::TaskSuggestionService::Deps{
+                    registry.get(), client.get(), &cfg, &app_config_mu});
+            acecode::register_task_suggestion_tools(tools, task_suggestions);
+        }
         loop_store = std::make_unique<acecode::loop::LoopStore>(tmp_dir / "loops.sqlite3");
         acecode::loop::StoreError loop_error;
         if (!loop_store->initialize(&loop_error)) {
@@ -572,6 +583,7 @@ struct WebServerFixture {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
         wdeps.session_client = client.get();
+        wdeps.task_suggestions = task_suggestions;
         wdeps.session_registry = expose_session_registry
             ? registry.get()
             : nullptr;
@@ -660,6 +672,10 @@ struct WebServerFixture {
               std::shared_ptr<acecode::LlmProvider>{},
               false) {}
 
+    explicit WebServerFixture(TaskSuggestionsTag)
+        : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
+                           false, {}, {}, true, true) {}
+
     explicit WebServerFixture(
         std::function<std::vector<std::string>()> remote_web_hosts,
         bool dangerous = false)
@@ -710,6 +726,8 @@ struct WebServerFixture {
         // fixture tree first races those terminal writes and can crash during
         // member destruction.
         server.reset();
+        if (task_suggestions) task_suggestions->shutdown();
+        task_suggestions.reset();
         client.reset();
         registry.reset();
         loop_store.reset();
@@ -1567,6 +1585,96 @@ TEST(WebServerHttp, UsageEndpointAggregatesLedgerRecords) {
 
 // 场景: 跨端口 Web/Desktop fetch 只接受 loopback Origin,且不能因为 remote_ip
 // 是 loopback 就绕过 token。preflight 本身不带 token,实际请求必须带。
+TEST(WebServerHttp, TaskSuggestionsOfferWithoutExecutionAndStaySourceScoped) {
+    WebServerFixture fx(WebServerFixture::TaskSuggestionsTag{});
+    // An isolated unborn repository avoids inheriting a developer's parent Git
+    // checkout and cannot accidentally provision a worktree outside the fixture.
+    ASSERT_TRUE(acecode::worktree::run_git({"init", "-b", "main"}, fx.cwd).ok());
+    const auto source = fx.registry->create({});
+    const auto other = fx.registry->create({});
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(other.empty());
+    acecode::ToolContext context;
+    context.session_manager = fx.registry->acquire(source)->sm.get();
+    const std::string draft = R"({"title":"Fix unrelated event delivery","description":"A cache listener has no sender.","prompt":"Inspect the sender and receiver; repair the missing dispatch and run the focused event tests."})";
+    ASSERT_TRUE(fx.tools.has_tool("suggest_task"));
+    EXPECT_FALSE(fx.tools.has_tool("accept_task_suggestion"));
+    const auto offered = fx.tools.execute("suggest_task", draft, context);
+    ASSERT_TRUE(offered.success) << offered.output;
+    const auto suggestion = json::parse(offered.output).at("suggestion");
+    const auto id = suggestion.at("id").get<std::string>();
+    EXPECT_EQ(suggestion.at("status"), "pending");
+    EXPECT_TRUE(suggestion.value("target_session_id", std::string{}).empty());
+    const auto duplicate = fx.tools.execute("suggest_task", draft, context);
+    ASSERT_TRUE(duplicate.success) << duplicate.output;
+    EXPECT_EQ(json::parse(duplicate.output)["suggestion"]["id"], id);
+    EXPECT_FALSE(fx.registry->acquire(source)->loop->has_pending_work());
+
+    const auto path = "/api/sessions/" + source + "/suggestions";
+    const auto listed = cpr::Get(cpr::Url{fx.url(path)});
+    ASSERT_EQ(listed.status_code, 200) << listed.text;
+    const auto body = json::parse(listed.text);
+    ASSERT_EQ(body.at("suggestions").size(), 1u);
+    EXPECT_FALSE(body.at("worktree_available").get<bool>());
+    const auto other_list = cpr::Get(cpr::Url{fx.url("/api/sessions/" + other + "/suggestions")});
+    ASSERT_EQ(other_list.status_code, 200);
+    EXPECT_TRUE(json::parse(other_list.text).at("suggestions").empty());
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/sessions/" + other + "/suggestions/" + id + "/dismiss")}).status_code, 409);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/sessions/unknown-source/suggestions")}).status_code, 404);
+
+    const auto accept = cpr::Url{fx.url(path + "/" + id + "/accept")};
+    for (const auto* invalid : {"{}", "[]", "{\"location\":42}",
+                              "{\"location\":\"current_branch\",\"prompt\":\"injected\"}"}) {
+        EXPECT_EQ(cpr::Post(accept, cpr::Body{invalid}).status_code, 400);
+    }
+    const auto dismissed = cpr::Post(cpr::Url{fx.url(path + "/" + id + "/dismiss")});
+    ASSERT_EQ(dismissed.status_code, 200) << dismissed.text;
+    EXPECT_EQ(json::parse(dismissed.text)["suggestion"]["status"], "dismissed");
+    EXPECT_EQ(cpr::Post(accept, cpr::Body{R"({"location":"current_branch"})"}).status_code, 409);
+    const auto no_context = fx.tools.execute("suggest_task", draft);
+    EXPECT_FALSE(no_context.success);
+}
+
+TEST(WebServerHttp, TaskSuggestionsAuthenticateEveryRouteAndKeepFailedTargetReceipt) {
+    WebServerFixture fx(WebServerFixture::TaskSuggestionsTag{});
+    ASSERT_TRUE(acecode::worktree::run_git({"init", "-b", "main"}, fx.cwd).ok());
+    const auto source = fx.registry->create({});
+    auto offered = fx.task_suggestions->propose(source,
+        {{"title", "Repair a separate cache"}, {"description", "Evidence from a listener."},
+         {"prompt", "Repair the cache and validate its events."}});
+    ASSERT_TRUE(offered.ok) << offered.error;
+    const auto id = offered.value["suggestion"]["id"].get<std::string>();
+    const auto path = "/api/sessions/" + source + "/suggestions";
+    const cpr::Header denied{{"Origin", "http://localhost:5173"}};
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(path)}, denied).status_code, 401);
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url(path + "/" + id + "/accept")}, denied,
+        cpr::Body{R"({"location":"current_branch"})"}).status_code, 401);
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url(path + "/" + id + "/dismiss")}, denied).status_code, 401);
+    const cpr::Header authorized{{"Origin", "http://localhost:5173"},
+                                 {"X-ACECode-Token", "smoke-token"}};
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(path)}, authorized).status_code, 200);
+
+    // No committed HEAD: retain one failed receipt, never silently use the
+    // current directory or allocate a fresh task when the user retries.
+    const auto accept = cpr::Url{fx.url(path + "/" + id + "/accept")};
+    const auto first = cpr::Post(accept, cpr::Body{R"({"location":"worktree"})"});
+    ASSERT_EQ(first.status_code, 202) << first.text;
+    const auto record = json::parse(first.text).at("suggestion");
+    EXPECT_EQ(record.at("status"), "failed");
+    const auto target = record.at("target_session_id").get<std::string>();
+    ASSERT_FALSE(target.empty());
+    const auto retried = cpr::Post(accept, cpr::Body{R"({"location":"worktree"})"});
+    ASSERT_EQ(retried.status_code, 202) << retried.text;
+    EXPECT_EQ(json::parse(retried.text)["suggestion"]["target_session_id"], target);
+    EXPECT_FALSE(fx.registry->acquire(target));
+    EXPECT_EQ(cpr::Post(accept, cpr::Body{R"({"location":"current_branch"})"}).status_code, 409);
+}
+
+TEST(WebServerHttp, TaskSuggestionsWithoutHostReturnNotFound) {
+    WebServerFixture fx;
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/sessions/source/suggestions")}).status_code, 404);
+}
+
 TEST(WebServerHttp, CorsCrossOriginLoopbackRequiresToken) {
     WebServerFixture fx;
     const std::string origin = "http://localhost:5173";

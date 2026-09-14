@@ -1072,6 +1072,11 @@ std::string SessionManager::current_session_id() const {
     return session_id_;
 }
 
+std::string SessionManager::current_project_dir() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return project_dir_;
+}
+
 bool SessionManager::has_active_session() const {
     std::lock_guard<std::mutex> lk(mu_);
     return created_ && !finalized_;

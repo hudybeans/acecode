@@ -28,6 +28,7 @@
 #include "../session/session_attention.hpp"
 #include "../session/session_client.hpp"
 #include "../session/session_registry.hpp"
+#include "../session/task_suggestion_service.hpp"
 #include "../session/session_rewind.hpp"
 #include "../session/session_serializer.hpp"
 #include "../session/session_markdown_export.hpp"
@@ -559,6 +560,7 @@ struct WebServer::Impl {
     void register_workspaces();
     void register_pinned_sessions();
     void register_sessions();
+    void register_task_suggestions();
     void register_models();
     void register_experts();
     void register_loops();

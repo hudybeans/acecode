@@ -33,6 +33,8 @@
 #include "../session/global_session_catalog.hpp"
 #include "../session/session_registry.hpp"
 #include "../session/thread_service.hpp"
+#include "../session/task_suggestion_service.hpp"
+#include "../tool/task_suggestion_tools.hpp"
 #include "../skills/skill_registry.hpp"
 #include "../skills/skill_init.hpp"
 #include "../skills/skill_usage_store.hpp"
@@ -568,6 +570,9 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     subagent_deps->config   = &cfg_mut;
     thread_tool_deps->service = std::make_shared<acecode::ThreadService>(
         acecode::ThreadService::Deps{&registry, &client});
+    auto task_suggestions = std::make_shared<acecode::TaskSuggestionService>(
+        acecode::TaskSuggestionService::Deps{&registry, &client, &cfg_mut, &app_config_mu});
+    acecode::register_task_suggestion_tools(tools, task_suggestions);
 
     // LOOP is daemon-owned and independent of browser connections. SQLite is
     // initialized before HTTP routes are exposed; scheduler shutdown happens
@@ -616,6 +621,7 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     web_deps.desktop_protocol_version = opts.desktop_protocol_version;
     web_deps.session_client     = &client;
     web_deps.session_registry   = &registry;
+    web_deps.task_suggestions   = task_suggestions;
     web_deps.before_data_dir_copy = [&] { loop_scheduler.stop(); };
     web_deps.on_data_dir_copy_failure = [&] { if (loop_store_ready) loop_scheduler.start(); };
     web_deps.expert_registry    = &expert_registry;
@@ -889,6 +895,7 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     });
 
     int rc = server.run();
+    task_suggestions->shutdown();
     // Remove the external listener before any daemon-owned service begins
     // teardown. The controller destructor is a second, idempotent safety net.
     remote_web_proxy.stop();

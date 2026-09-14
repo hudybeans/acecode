@@ -47,6 +47,14 @@ struct SessionModelTransition {
     bool selection_changed = false;
 };
 
+struct SessionModelRuntimeSnapshot {
+    std::shared_ptr<LlmProvider> provider;
+    SessionModelState state;
+    SavedModelsRevision revision = 0;
+    // Opaque, in-memory construction inputs. They must never be serialized.
+    std::shared_ptr<const PreparedProviderConstruction> construction_plan;
+};
+
 using SessionModelRevisionAccessor =
     std::function<SavedModelsRevision()>;
 using SessionModelResolver =
@@ -89,6 +97,12 @@ public:
     void install_runtime_snapshot(std::shared_ptr<LlmProvider> provider,
                                   SessionModelState state,
                                   SavedModelsRevision revision);
+    // Builds a distinct provider with the exact effective source settings,
+    // including session-local profiles. A changed selection or a host-supplied
+    // provider without a construction plan fails instead of using a default.
+    std::optional<SessionModelRuntimeSnapshot> clone_runtime_snapshot(
+        const std::string& expected_name, std::string* error = nullptr) const;
+    void install_cloned_snapshot(SessionModelRuntimeSnapshot snapshot);
 
     bool synchronize_context_window(
         const std::string& selected_name,
@@ -112,6 +126,7 @@ private:
 
     mutable std::mutex state_mu_;
     std::shared_ptr<LlmProvider> provider_;
+    std::shared_ptr<const PreparedProviderConstruction> construction_plan_;
     SessionModelState state_;
     std::optional<ProviderConstructionFingerprint> fingerprint_;
     std::atomic<SavedModelsRevision> applied_revision_{0};

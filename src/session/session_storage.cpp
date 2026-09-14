@@ -2,6 +2,7 @@
 #include "permissions.hpp"
 #include "session_serializer.hpp"
 #include "session_title_generator.hpp"
+#include "task_suggestion_store.hpp"
 #include "../config/config.hpp"
 #include "../prompt/context_usage_breakdown.hpp"
 #include "../utils/atomic_file.hpp"
@@ -796,6 +797,9 @@ bool SessionStorage::purge_session_files(const std::string& project_dir,
         }
         return false;
     }
+
+    TaskSuggestionStore suggestions(path_from_utf8(project_dir));
+    if (!suggestions.erase_source(session_id, error)) return false;
 
     return remove_file(path_from_utf8(meta_path(project_dir, session_id)),
                        "session metadata");

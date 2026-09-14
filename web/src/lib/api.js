@@ -341,6 +341,13 @@ export function createApi(base = null) {
     openInExplorer:   (path)         => request('POST',   '/api/open-in-explorer', { path }, base),
     listSessions:     (opts={})      => request('GET',    sessionsPath('/api/sessions', opts), undefined, base),
     createSession:    (opts={})      => request('POST',   '/api/sessions', opts, base),
+    listTaskSuggestions: (id, options = {}) => request('GET',
+      `/api/sessions/${encodeURIComponent(id)}/suggestions`, undefined, base,
+      { signal: options.signal, timeoutMs: 10000 }),
+    acceptTaskSuggestion: (id, suggestionId, location) => request('POST',
+      `/api/sessions/${encodeURIComponent(id)}/suggestions/${encodeURIComponent(suggestionId)}/accept`, { location }, base),
+    dismissTaskSuggestion: (id, suggestionId) => request('POST',
+      `/api/sessions/${encodeURIComponent(id)}/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, {}, base),
     resumeSession:    (id)           => request('POST',   `/api/sessions/${encodeURIComponent(id)}/resume`, {}, base),
     listWorkspaceSessions:  (hash, opts={}) => request('GET',  sessionsPath(`/api/workspaces/${encodeURIComponent(hash)}/sessions`, opts), undefined, base)
       .then((data) => {

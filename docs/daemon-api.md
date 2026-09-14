@@ -4293,6 +4293,66 @@ lazy-loaded. Read acknowledgements and authoritative list refreshes remove read,
 archived, and deleted tasks; running and child tasks do not contribute. Badge
 colors come from the resolved theme tokens and update with theme changes.
 
+## Task suggestions and session continuation
+
+The Web/Desktop chat shows durable, source-session-scoped suggestion cards.
+The daemon exposes `suggest_task(title, description, prompt)` and
+`dismiss_task_suggestion(suggestion_id)` to the agent. Proposing a side task
+only stores an offer; accepting it is a user action through the HTTP API.
+The prompt should identify an independent finding, its evidence, scope, and
+verification steps. There are at most three pending side-task offers per source;
+duplicate and dismissed offers retain their identity across reloads.
+
+All routes use the existing daemon authentication and CORS rules. Mutations
+are rejected while data-directory migration is active.
+
+| Method | Path | Request / result |
+|---|---|---|
+| GET | `/api/sessions/:source/suggestions` | `{suggestions, source_busy, workspace_busy, worktree_available}` |
+| POST | `/api/sessions/:source/suggestions/:id/accept` | Exactly `{"location":"worktree"}` or `{"location":"current_branch"}`; returns `{suggestion}` |
+| POST | `/api/sessions/:source/suggestions/:id/dismiss` | Returns `{suggestion}`; never stops an already started target |
+
+Suggestion records contain `id`, `source_session_id`, `kind` (`side_task` or
+`context_handoff`), `title`, `description`, `status`, and, after acceptance,
+`location` and `target_session_id`. A started record includes `target_session`
+for navigation. The states are `pending`, `queued`, `starting`, `started`,
+`failed`, and `dismissed`. Accept returns HTTP 202 while startup is pending or
+has failed and HTTP 200 for an already started target. Read the returned status
+and `error`; a 202 response is not proof that model execution has begun.
+Invalid request envelopes return 400; conflicting state/location returns 409;
+an unavailable source or a host without this feature returns 404.
+
+Acceptance durably reserves the target ID before provisioning. Repeated clicks
+and failed-start retries reuse that ID and the selected location. Closing the
+card or browser does not drive startup. Queued offers can be cancelled; startup
+already in progress cannot be dismissed. A completed start can be hidden or
+opened from the source card.
+
+`worktree` pins the source's committed Git HEAD at acceptance. It does not copy
+dirty or untracked source files, and missing Git/commit state fails without
+falling back to the current checkout. `current_branch` uses the source session's
+actual working directory, including an existing worktree. It waits for the
+source's safe execution boundary and known work in other sessions sharing that
+directory. This startup coordination does not lock the directory against later
+manual user actions or external processes.
+
+The optional top-level configuration `task_suggestion_compact_threshold`
+defaults to 3 successful compactions; 0 disables continuation suggestions.
+Accepted values are integers from 0 through 1000. It applies to newly created
+or restored session loops. Automatic and manual completed checkpoints count;
+repair/fallback checkpoints and failed attempts do not. The count survives
+resume; an explicitly forked context starts a new count. Dismissing a
+continuation offer suppresses it for that source session.
+
+A continuation uses `current_branch` and a fresh session with a structured
+reference to the source session. At the safe boundary the daemon captures a
+bounded handoff containing the latest compaction summary, subsequent updates,
+current goal/todos, and the source's execution configuration. The new model
+does not receive the whole old transcript. It can retrieve supporting history
+through the session reference. Once the first input is accepted, the old
+session's automatic goal continuation is paused; queued user messages are not
+discarded. The original history remains available.
+
 ## 17. Process Exit Codes
 
 | rc | Where | Meaning |

@@ -99,6 +99,38 @@ TEST_F(WorktreeGitTest, CreatesThenResumesWorktree) {
     EXPECT_FALSE(second.head_commit.empty());
 }
 
+// 接受任务时冻结的提交不能随当前分支移动,也不能带入未提交的源改动。
+TEST_F(WorktreeGitTest, PinnedSuggestionCommitSurvivesBranchMovement) {
+    auto initial = run_git({"rev-parse", "HEAD"}, repo_utf8_);
+    ASSERT_TRUE(initial.ok());
+    WorktreeCreateOptions options;
+    options.base_commit = initial.out.substr(0, initial.out.find_first_of("\r\n"));
+    write_file(repo_ / "later.txt", "later commit\n");
+    ASSERT_TRUE(run_git({"add", "later.txt"}, repo_utf8_).ok());
+    ASSERT_TRUE(run_git({"commit", "-m", "later"}, repo_utf8_).ok());
+    write_file(repo_ / "README.md", "uncommitted work\n");
+    write_file(repo_ / "untracked.txt", "private side work\n");
+
+    const auto created = get_or_create_worktree(repo_utf8_, "pinned-task", options);
+    ASSERT_TRUE(created.ok) << created.error;
+    EXPECT_EQ(created.head_commit, options.base_commit);
+    EXPECT_EQ(created.base_ref, options.base_commit);
+    EXPECT_FALSE(fs::exists(path_from_utf8(created.worktree_path) / "later.txt"));
+    EXPECT_FALSE(fs::exists(path_from_utf8(created.worktree_path) / "untracked.txt"));
+    EXPECT_TRUE(run_git({"diff", "--exit-code"}, created.worktree_path).ok());
+    EXPECT_FALSE(run_git({"diff", "--exit-code"}, repo_utf8_).ok());
+}
+
+// 错误或丢失的固定基线必须报错,不能静默改成默认分支。
+TEST_F(WorktreeGitTest, InvalidPinnedSuggestionCommitFailsClosed) {
+    WorktreeCreateOptions options;
+    options.base_commit = "--help";
+    EXPECT_FALSE(get_or_create_worktree(repo_utf8_, "bad-task", options).ok);
+    options.base_commit = std::string(40, '0');
+    EXPECT_FALSE(get_or_create_worktree(repo_utf8_, "missing-task", options).ok);
+    EXPECT_EQ(list_worktree_paths(repo_utf8_).size(), 1u);
+}
+
 // 场景:在 linked worktree 内部调用 find_canonical_git_root。
 // 期望:穿透到主仓根,而不是 worktree 自己的根 —— EnterWorktree 在已处于
 // worktree 中时必须把新 worktree 建在主仓的 .acecode/worktrees/ 下,

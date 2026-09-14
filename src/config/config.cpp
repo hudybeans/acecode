@@ -848,6 +848,13 @@ static AppConfig load_config_from_path_once(
             if (j.contains("max_sessions") && j["max_sessions"].is_number_integer()) {
                 cfg.max_sessions = j["max_sessions"].get<int>();
             }
+            if (j.contains("task_suggestion_compact_threshold") &&
+                j["task_suggestion_compact_threshold"].is_number_integer()) {
+                const auto& threshold = j["task_suggestion_compact_threshold"];
+                if (threshold >= 0 && threshold <= 1000) {
+                    cfg.task_suggestion_compact_threshold = threshold.get<int>();
+                }
+            }
             if (j.contains("default_permission_mode") &&
                 j["default_permission_mode"].is_string()) {
                 cfg.default_permission_mode = normalize_permission_mode_name(
@@ -2235,6 +2242,9 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
     j["codex"]["model"] = cfg.codex.model;
     j["context_window"] = cfg.context_window;
     j["max_sessions"] = cfg.max_sessions;
+    if (cfg.task_suggestion_compact_threshold != 3) {
+        j["task_suggestion_compact_threshold"] = cfg.task_suggestion_compact_threshold;
+    }
     if (normalize_permission_mode_name(cfg.default_permission_mode) != "default") {
         j["default_permission_mode"] =
             normalize_permission_mode_name(cfg.default_permission_mode);

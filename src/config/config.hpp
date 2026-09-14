@@ -521,6 +521,9 @@ struct AppConfig {
     CodexConfig codex;
     int context_window = 128000; // model context window size in tokens
     int max_sessions = 50;       // max saved sessions per project
+    // Successful summary compactions before suggesting a fresh conversation.
+    // Zero disables automatic continuation suggestions.
+    int task_suggestion_compact_threshold = 3;
     // Default permission mode for newly-created daemon/Web/Desktop sessions.
     // Canonical values: default | auto | plan | yolo (accept-edits is read as auto).
     std::string default_permission_mode = "default";

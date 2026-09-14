@@ -784,7 +784,9 @@ std::string SessionRegistry::create(const SessionOptions& opts) {
         ? SessionStorage::generate_session_id()
         : opts.preset_session_id;
     SessionOptions create_opts = opts;
-    if (create_opts.no_workspace) create_opts.cwd.clear();
+    if (create_opts.no_workspace && !create_opts.reuse_no_workspace_cwd) {
+        create_opts.cwd.clear();
+    }
     SessionOptions resolved = with_resolved_workspace(deps_, create_opts, id);
 
     auto entry = make_entry_locked(id, resolved, nullptr);
@@ -1036,6 +1038,8 @@ SessionRegistry::make_entry_locked(const std::string& id,
             ? initial_model_state.context_window
             : entry_config->context_window);
         entry->loop->set_agent_loop_config(entry_config->agent_loop);
+        entry->loop->set_task_suggestion_compact_threshold(
+            entry_config->task_suggestion_compact_threshold);
         entry->loop->set_sandbox_config(entry_config->sandbox);
     }
     if (opts.loop_execution) {

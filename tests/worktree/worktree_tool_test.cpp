@@ -177,6 +177,7 @@ TEST_F(WorktreeToolTest, InheritedWorktreeRefusesExitAndEnter) {
     auto info = sm_.active_worktree();
     info.inherited = true;
     sm_.set_active_worktree(info);
+    sm_.set_parent_session_id("parent-session");
     const std::string cwd_before = session_cwd_;
 
     auto exited = exit_.execute(R"({"action":"keep"})", ctx_);
@@ -194,4 +195,24 @@ TEST_F(WorktreeToolTest, InheritedWorktreeRefusesExitAndEnter) {
     EXPECT_FALSE(entered.success);
     EXPECT_NE(entered.output.find("shares the parent session's worktree"), std::string::npos);
     EXPECT_EQ(sm_.active_worktree().worktree_path, info.worktree_path);
+}
+
+TEST_F(WorktreeToolTest, IndependentSharedWorktreeAllowsKeepButNeverRemove) {
+    ASSERT_TRUE(enter_.execute(R"({"name":"independent-shared"})", ctx_).success);
+    auto info = sm_.active_worktree();
+    info.inherited = true;
+    sm_.set_active_worktree(info);
+    EXPECT_TRUE(sm_.current_parent_session_id().empty());
+
+    const auto removed = exit_.execute(R"({"action":"remove","discard_changes":true})", ctx_);
+    EXPECT_FALSE(removed.success);
+    EXPECT_NE(removed.output.find("multiple conversations share it"), std::string::npos);
+    EXPECT_TRUE(sm_.active_worktree().active());
+    EXPECT_TRUE(fs::exists(path_from_utf8(info.worktree_path)));
+
+    const auto kept = exit_.execute(R"({"action":"keep"})", ctx_);
+    EXPECT_TRUE(kept.success) << kept.output;
+    EXPECT_FALSE(sm_.active_worktree().active());
+    EXPECT_EQ(session_cwd_, info.original_cwd);
+    EXPECT_TRUE(fs::exists(path_from_utf8(info.worktree_path)));
 }
