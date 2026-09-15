@@ -98,6 +98,7 @@ TEST_F(AiThemeSeedTest, PreviousUserVersionReceivesDiscoverableThemeAndResources
         "assets/preview-light.html",
         "assets/preview-dark.html",
         "scripts/render_preview.py",
+        "scripts/artboard.js",
         "scripts/preview.js",
         "scripts/preview.css",
         "references/customization-questions.md",
@@ -172,6 +173,7 @@ TEST_F(AiThemeSeedTest, SurfaceRevisionUpdatesPreviouslyManagedThemeSkillAndRefe
     fs::copy(packaged_, previous, fs::copy_options::recursive);
     write(previous / "seed.version", "2026-09-12.1\n");
     const fs::path relative = fs::path("skills") / "acecode" / "ai-theme";
+    fs::remove(previous / relative / "scripts" / "artboard.js");
     const auto previous_skill = read_bytes(previous / relative / "SKILL.md") + "\nPrevious revision.\n";
     write(previous / relative / "SKILL.md", previous_skill);
     auto previous_palette = nlohmann::json::parse(read_bytes(
@@ -182,6 +184,7 @@ TEST_F(AiThemeSeedTest, SurfaceRevisionUpdatesPreviouslyManagedThemeSkillAndRefe
     ASSERT_TRUE(initial.error.empty()) << initial.error;
     ASSERT_TRUE(initial.version_written);
     ASSERT_EQ(read_bytes(home_ / relative / "SKILL.md"), previous_skill);
+    ASSERT_FALSE(fs::exists(home_ / relative / "scripts" / "artboard.js"));
 
     // An installed official copy keeps its ownership when the source ID advances.
     auto previous_state = nlohmann::json::parse(read_bytes(initial.state_path));
@@ -200,6 +203,8 @@ TEST_F(AiThemeSeedTest, SurfaceRevisionUpdatesPreviouslyManagedThemeSkillAndRefe
     EXPECT_TRUE(outcome->acecode_owned);
     EXPECT_EQ(outcome->source_tree_sha256, outcome->installed_tree_sha256);
     EXPECT_EQ(read_bytes(home_ / relative / "SKILL.md"), read_bytes(packaged_ / relative / "SKILL.md"));
+    EXPECT_EQ(read_bytes(home_ / relative / "scripts" / "artboard.js"),
+              read_bytes(packaged_ / relative / "scripts" / "artboard.js"));
     EXPECT_EQ(read_bytes(home_ / relative / "references" / "palette-example.json"),
               read_bytes(packaged_ / relative / "references" / "palette-example.json"));
     EXPECT_EQ(read_bytes(home_ / "seed.version"), read_bytes(packaged_ / "seed.version"));

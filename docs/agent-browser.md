@@ -80,6 +80,13 @@ Windows 和 macOS Desktop 默认注册以下结构化工具：
   `browser_press`、`browser_hover`、`browser_drag`、`browser_scroll`
 - 视觉和弹窗：`browser_screenshot`、`browser_handle_dialog`
 
+`browser_screenshot` 默认截取当前页面。制作独立图片时可传
+`canvas_selector: "#theme-artwork"`，导出该可见 canvas 的原始像素 PNG，尺寸不受
+CSS 缩放或 Browser 面板宽高影响，返回同样的图片附件与文件路径。该参数不能与
+`full_page: true` 同用；选择器必须唯一命中已绘制的 canvas，尺寸每边最多 8192
+像素、总计最多 32 兆像素、PNG 最多 16 MiB。无效、未就绪或不可见的画板会报错，
+不会改用页面截图。
+
 macOS 的交互工具（click/fill/type/press/hover/drag/scroll）额外暴露
 `input_mode: "synthetic" | "native"`，由 Agent 按页面需要显式选择：
 

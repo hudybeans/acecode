@@ -29,6 +29,7 @@
     const opacity = appearance[key + '_background_opacity'] ?? 1;
     const overlay = 'rgba(' + rgb(color) + ', ' + (1 - opacity) + ')';
     root.style.setProperty('--' + target + '-background-image', 'linear-gradient(' + overlay + ', ' + overlay + '), url("' + image + '")');
+    if (key === 'user_message') root.style.setProperty('--chat-card-background-size', '100% 100%, 100% auto');
     pending.push(new Promise((resolve, reject) => {
       const bitmap = new Image(); bitmap.onload = resolve; bitmap.onerror = reject; bitmap.src = image;
     }));

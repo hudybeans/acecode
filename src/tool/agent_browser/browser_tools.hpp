@@ -16,6 +16,9 @@ std::size_t unregister_agent_browser_tools(ToolExecutor& tools);
 // Exposed for focused tests of the semantic reference contract.
 std::string agent_browser_snapshot_script();
 
+// Captures canvas backing pixels independently of its CSS/viewport dimensions.
+std::string agent_browser_canvas_capture_script(const std::string& selector);
+
 // Exposed for focused tests of the visible Agent input indicator contract.
 std::string agent_browser_pointer_script(
     double x,

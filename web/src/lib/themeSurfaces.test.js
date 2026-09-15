@@ -134,6 +134,27 @@ await run('all background URLs are released on success, failure and theme cleanu
   assert.deepEqual(failedRevokes.sort(), ['blob:background', 'blob:user-message-background']);
 });
 
+await run('user wallpaper sizing keeps image ratio while its opacity veil fills tall bubbles', () => {
+  const image = { bytes: 100, sha256: 'a'.repeat(64) };
+  for (const opacity of [undefined, 0, 0.7, 1]) {
+    const appearance = { user_message_background_color: '#FFD078' };
+    if (opacity !== undefined) appearance.user_message_background_opacity = opacity;
+    const custom = { ...definition(appearance), user_message_background: image };
+    const properties = themeCssProperties(custom, 'blob:home', { userMessageBackgroundUrl: 'blob:user' });
+    assert.equal(properties['--ace-user-message-background-color'], '#FFD078');
+    assert.equal(properties['--ace-user-message-background-size'],
+      opacity === undefined ? '100% auto' : '100% 100%, 100% auto');
+    const missing = themeCssProperties(custom, 'blob:home');
+    assert.equal(missing['--ace-user-message-background-size'], undefined);
+  }
+  const styles = read('../styles/globals.css');
+  const rule = styles.match(/\[data-theme-user-message-background="true"\] \.ace-user-message-bubble \{([^}]+)\}/)[1];
+  assert.match(rule, /background-position: center bottom/);
+  assert.match(rule, /background-size: var\(--ace-user-message-background-size, 100% auto\)/);
+  assert.match(rule, /background-repeat: no-repeat/);
+  assert.doesNotMatch(rule, /opacity:/);
+});
+
 await run('installed theme application clears all appearance state on switching, removal and missing wallpaper', () => {
   const styles = new Map(), attributes = new Map([['data-theme', 'dark']]);
   const root = {

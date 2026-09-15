@@ -134,6 +134,10 @@ TEST(AgentBrowserTools, RegistersStructuredDesktopToolSet) {
     EXPECT_TRUE(tools.is_read_only("browser_screenshot"));
     EXPECT_FALSE(tools.is_read_only("browser_click"));
     EXPECT_FALSE(tools.has_tool("browser_start"));
+    const auto screenshot = std::find_if(definitions.begin(), definitions.end(),
+        [](const ToolDef& definition) { return definition.name == "browser_screenshot"; });
+    ASSERT_NE(screenshot, definitions.end());
+    EXPECT_EQ(screenshot->parameters["properties"]["canvas_selector"]["type"], "string");
     for (const char* name : {
              "browser_click", "browser_fill", "browser_type",
              "browser_press", "browser_hover", "browser_drag",
@@ -158,6 +162,23 @@ TEST(AgentBrowserTools, RegistersStructuredDesktopToolSet) {
 #else
     for (const auto& name : agent_browser_tool_names()) {
         EXPECT_FALSE(tools.has_tool(name)) << name;
+    }
+#endif
+}
+
+TEST(AgentBrowserTools, RejectsInvalidCanvasExportsBeforeConnecting) {
+#if defined(_WIN32) || defined(__APPLE__)
+    ToolExecutor tools;
+    register_agent_browser_tools(tools);
+    for (const auto& arguments : {
+             nlohmann::json{{"canvas_selector", ""}},
+             nlohmann::json{{"canvas_selector", 123}},
+             nlohmann::json{{"canvas_selector", std::string(2049, 'a')}},
+             nlohmann::json{{"canvas_selector", "#artwork"}, {"full_page", true}}}) {
+        const auto result = tools.execute("browser_screenshot", arguments.dump());
+        EXPECT_FALSE(result.success);
+        EXPECT_EQ(nlohmann::json::parse(result.output)["error"]["code"], "invalid_arguments");
+        EXPECT_TRUE(result.attachments.empty());
     }
 #endif
 }

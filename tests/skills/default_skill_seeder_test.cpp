@@ -22,6 +22,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -223,6 +230,53 @@ std::string canonical_lf_sha256(const fs::path& path) {
 nlohmann::json read_json(const fs::path& path) {
     return nlohmann::json::parse(read_file(path));
 }
+
+#ifdef _WIN32
+class ScopedSeedDirectoryLock {
+public:
+    explicit ScopedSeedDirectoryLock(const fs::path& directory)
+        : handle_(::CreateFileW(
+              directory.c_str(), GENERIC_READ,
+              FILE_SHARE_READ | FILE_SHARE_WRITE,
+              nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr)),
+          error_(handle_ == INVALID_HANDLE_VALUE ? ::GetLastError() : 0) {}
+
+    ~ScopedSeedDirectoryLock() { release(); }
+    ScopedSeedDirectoryLock(const ScopedSeedDirectoryLock&) = delete;
+    ScopedSeedDirectoryLock& operator=(const ScopedSeedDirectoryLock&) = delete;
+    bool valid() const { return handle_ != INVALID_HANDLE_VALUE; }
+    DWORD error() const { return error_; }
+
+    void release() {
+        if (valid()) {
+            ::CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+    }
+
+private:
+    HANDLE handle_;
+    DWORD error_;
+};
+
+bool wait_for_staged_skill(
+    const fs::path& staged_skill,
+    std::uintmax_t expected_size,
+    std::future<acecode::DefaultSkillSeedInstallResult>& update) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::error_code ec;
+        if (fs::is_regular_file(staged_skill, ec) && !ec &&
+            fs::file_size(staged_skill, ec) == expected_size && !ec) {
+            return true;
+        }
+        if (update.wait_for(std::chrono::milliseconds(2)) ==
+            std::future_status::ready) return false;
+    }
+    return false;
+}
+#endif
 
 std::string trim_ascii(std::string value) {
     while (!value.empty() &&
@@ -641,6 +695,104 @@ TEST_F(DefaultSkillSeederTest, UpdatesPristineAcecodeOwnedSeed) {
         outcome->source_tree_sha256,
         outcome->installed_tree_sha256);
 }
+
+#ifdef _WIN32
+TEST_F(DefaultSkillSeederTest, WindowsTransientDirectoryLockAllowsSeedUpgrade) {
+    const auto initial =
+        acecode::reconcile_default_global_skills(home, seed_root);
+    ASSERT_TRUE(initial.version_written) << initial.error;
+    const auto& seed = acecode::default_skill_seeds().front();
+    const fs::path source = seed_root / seed.relative_path;
+    const fs::path target = home / "skills" / seed.relative_path;
+    write_skill_file(source, seed.name, "updated after transient directory lock");
+    write_file(source / "new-resource.txt", "new supporting resource\n");
+    write_seed_version(seed_root, kSeedVersion2);
+    const auto expected_skill = read_file(source / "SKILL.md");
+
+    ScopedSeedDirectoryLock directory_lock(target);
+    ASSERT_TRUE(directory_lock.valid()) << directory_lock.error();
+    auto update = std::async(std::launch::async, [&] {
+        return acecode::reconcile_default_global_skills(home, seed_root);
+    });
+    const bool staged = wait_for_staged_skill(
+        home / ".seed_skills_staging" / "skills" /
+            seed.relative_path / "SKILL.md",
+        expected_skill.size(), update);
+    // Wait after staging so slow setup cannot bypass the locked rename.
+    const auto while_locked = update.wait_for(std::chrono::milliseconds(100));
+    directory_lock.release();
+    const auto result = update.get();
+
+    EXPECT_TRUE(staged);
+    EXPECT_EQ(while_locked, std::future_status::timeout);
+    ASSERT_TRUE(result.error.empty()) << result.error;
+    ASSERT_TRUE(result.version_written);
+    EXPECT_TRUE(result.state_written);
+    EXPECT_EQ(trim_ascii(read_file(home / "seed.version")), kSeedVersion2);
+    EXPECT_EQ(read_file(target / "SKILL.md"), expected_skill);
+    EXPECT_EQ(read_file(target / "new-resource.txt"), "new supporting resource\n");
+    const auto* outcome = find_outcome(result, seed.name);
+    ASSERT_NE(outcome, nullptr);
+    EXPECT_EQ(outcome->result, "updated");
+    EXPECT_TRUE(outcome->acecode_owned);
+    EXPECT_EQ(outcome->source_tree_sha256, outcome->installed_tree_sha256);
+}
+
+TEST_F(DefaultSkillSeederTest, WindowsPersistentDirectoryLockFailsWithoutAdvancingSeed) {
+    const auto initial =
+        acecode::reconcile_default_global_skills(home, seed_root);
+    ASSERT_TRUE(initial.version_written) << initial.error;
+    const auto& seed = acecode::default_skill_seeds().front();
+    const fs::path source = seed_root / seed.relative_path;
+    const fs::path target = home / "skills" / seed.relative_path;
+    const auto original_skill = read_file(target / "SKILL.md");
+    const auto original_marker = read_file(home / "seed.version");
+    write_skill_file(source, seed.name, "blocked newer seed copy");
+    write_file(source / "new-resource.txt", "must not be partially published\n");
+    write_seed_version(seed_root, kSeedVersion2);
+
+    ScopedSeedDirectoryLock directory_lock(target);
+    ASSERT_TRUE(directory_lock.valid()) << directory_lock.error();
+    auto update = std::async(std::launch::async, [&] {
+        return acecode::reconcile_default_global_skills(home, seed_root);
+    });
+    const bool staged = wait_for_staged_skill(
+        home / ".seed_skills_staging" / "skills" /
+            seed.relative_path / "SKILL.md",
+        fs::file_size(source / "SKILL.md"), update);
+    const auto finished_while_locked = update.wait_for(std::chrono::seconds(5));
+    // Always release before joining, including a bounded-retry test failure.
+    directory_lock.release();
+    const auto result = update.get();
+
+    EXPECT_TRUE(staged);
+    EXPECT_EQ(finished_while_locked, std::future_status::ready);
+    EXPECT_TRUE(result.attempted);
+    EXPECT_FALSE(result.error.empty());
+    EXPECT_FALSE(result.version_written);
+    ASSERT_TRUE(result.state_written) << result.error;
+    EXPECT_TRUE(fs::is_directory(target));
+    EXPECT_EQ(read_file(target / "SKILL.md"), original_skill);
+    EXPECT_FALSE(fs::exists(target / "new-resource.txt"));
+    EXPECT_EQ(read_file(home / "seed.version"), original_marker);
+    const auto* outcome = find_outcome(result, seed.name);
+    ASSERT_NE(outcome, nullptr);
+    EXPECT_EQ(outcome->result, "error");
+    EXPECT_NE(outcome->message.find("backup_existing_seed_failed"), std::string::npos);
+
+    nlohmann::json state;
+    ASSERT_NO_THROW(state = read_json(result.state_path));
+    EXPECT_EQ(state.at("completed"), false);
+    EXPECT_EQ(state.at("bundle_version"), kSeedVersion2);
+    const auto entry = std::find_if(
+        state.at("skills").begin(), state.at("skills").end(),
+        [&](const auto& item) { return item.at("name") == seed.name; });
+    ASSERT_NE(entry, state.at("skills").end());
+    EXPECT_EQ(entry->at("result"), "error");
+    EXPECT_EQ(entry->at("acecode_owned"), true);
+    EXPECT_EQ(entry->at("message"), outcome->message);
+}
+#endif
 
 TEST_F(DefaultSkillSeederTest, UpdatesPristineAcecodeOwnedExpert) {
     auto first =

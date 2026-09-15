@@ -3,7 +3,7 @@ name: ai-theme
 description: 为 ACECode 分级定制主页、会话页、用户消息背景与 UI 样式；支持 AI 位图、本地矢量和用户贴图，无生图模型时使用 HTML 与 Browser 预览，确认后安装主题。适用于 /ai-theme 或定制 ACECode 外观的请求。
 license: MIT
 metadata:
-  source_id: acecode:ai-theme@2026-09-15
+  source_id: acecode:ai-theme@2026-09-15.2
   compatibility: ACECode theme_create, AskUserQuestion and Browser tools; image_generate optional
   tags: [acecode, appearance, themes, image-generation, offline]
 ---
@@ -22,6 +22,7 @@ metadata:
 6. 按范围补问首页文本框透明度、首页背景主色和透明度；高级/深度增加会话背景主色和透明度；深度还确定用户消息背景。每题三档具体建议和“其他”自定义入口，已有答案直接采用。将需求和真实素材路径记录到本任务工作目录的 `theme-plan.json`，不写内部草稿或主题配置。
 7. 快速=主页和样式；高级=主页、会话页和样式；深度=主页、会话页、用户消息卡片及样式。**聊天卡片只指用户发送的消息，不包含 AI 回复。** 不限明暗是设计偏好，最终仍需确认实际 light/dark 模式。
 8. 透明度 0% 表示不透明，100% 表示完全透明；写入参数时 `opacity = 1 - 透明度/100`，不能直接把透明百分比当作 opacity。
+9. **所有主题图片只允许等比缩放。** 会话背景默认铺满右侧会话区域（cover），不制作带上下留边的横幅；只有用户明确约定尺寸或构图时才按约定处理。用户消息背景按气泡宽度等比缩放、底部对齐、不重复；长消息高出图片的部分由同色底色补齐。
 
 ## 1. 确认色系
 
@@ -38,12 +39,14 @@ metadata:
 按用户选择执行，使用真实保存路径，不把 UI 原型当作背景：
 
 - **位图**：读取 [references/image-prompts.md](references/image-prompts.md)，仅在 `image_generate` 配置并可用时调用。按范围准备主页、会话和用户消息独立素材；生图原型沿用随包的深浅首页参考图。
-- **矢量图（不使用图形生成工具）**：读取 [references/browser-preview.md](references/browser-preview.md)，用代码创建可编辑 SVG/CSS，不调用 image_generate，也不要求配置生图模型。通过 Browser 渲染并截图为安装用独立 PNG，保留 SVG 源稿。
+- **矢量图（不使用图形生成工具）**：读取 [references/browser-preview.md](references/browser-preview.md)，用代码创建可编辑 SVG/CSS，不调用 image_generate，也不要求配置生图模型。通过 Browser 画板导出原始像素的独立 PNG，保留 SVG 源稿；不把窄窗口截图拉伸成壁纸。
 - **使用自带贴图（不使用图形生成工具）**：使用**用户提供的本地图片**，询问各图片用于哪些区域。同图可经用户选择复用；只做必要适配，不默认搜索、上传图片或调用生成/修图模型。
 
 **没有可用生图模型时，preview 一律使用 HTML + ACECode Browser。** 工具缺失、未配置、无可用模型或生成失败都进入 [references/browser-preview.md](references/browser-preview.md)，不能只让用户去配置模型而终止。矢量和贴图模式默认也使用此路径。若位图素材尚缺，先用明确标注的框图确认构图，询问改用矢量或提供本地图片；坚持生成位图则保留草稿等待模型，不用占位框图冒充最终素材。
 
 图像工具结果通常已作为附件显示；重看本地图片用 `show_image`。能直接看图就自行检查；不能看图时按已安装的 vision-image-reader 使用 vision_analyze，不声称检查了不可见图片。检查主体、云朵、留白、文字可读性、主色和布局；局部问题只修订相关素材。
+
+用户消息素材的叶子、花纹等装饰安排在底部；顶部使用与 `user_message_background_color` 一致的纯色，或将装饰背景设为透明以露出该底色，避免长消息出现色差接缝。必须预览短消息、长消息及窄窗口；检查底部装饰可见、图案不变形、超高部分同色衔接。背景色有改动仍保留其它 appearance 参数并重新确认。
 
 HTML 预览主页在上、聊天页在下；①主页、②会话页、③仅用户消息，使用与安装相同的颜色和 opacity。核对图标色、首页标题色和通顶；深色通顶右侧按钮为白色，浅色通顶使用主题前景，顶部背景必须可读。
 

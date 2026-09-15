@@ -2,7 +2,6 @@
 
 import argparse
 import base64
-import html
 import json
 import math
 from pathlib import Path
@@ -19,7 +18,7 @@ SCOPES = {"quick": ("home",), "advanced": ("home", "session"),
           "deep": ("home", "session", "user_message")}
 
 
-def build(plan_path, output_path, artboard=None):
+def build(plan_path, output_path, artboard=None, width=None, height=None):
     root = Path(__file__).resolve().parent.parent
     plan_path, output_path = Path(plan_path).resolve(), Path(output_path).resolve()
     plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
@@ -59,14 +58,24 @@ def build(plan_path, output_path, artboard=None):
         encoded[key] = "data:" + MIME[path.suffix.lower()] + ";base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     if output_path in inputs or root in output_path.parents:
         raise ValueError("Write outputs outside the skill and preserve input files")
+    if width is not None or height is not None:
+        if (not artboard or type(width) is not int or type(height) is not int
+                or not 0 < width <= 8192 or not 0 < height <= 8192
+                or width * height > 33554432):
+            raise ValueError("Artboard width and height must be paired positive integers, at most 8192 per side and 32 megapixels")
     if artboard:
         if artboard not in encoded:
             raise ValueError("An artwork-only page requires a real asset: " + artboard)
-        document = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+        config = json.dumps({"src": encoded[artboard], "width": width, "height": height})
+        script = (root / "scripts" / "artboard.js").read_text(encoding="utf-8")
+        document = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
                     '<meta name="viewport" content="width=device-width,initial-scale=1">'
                     '<title>ACECode 独立背景</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;}'
-                    'img{display:block;width:100%;height:100%;object-fit:cover;}</style><body>'
-                    '<img alt="" src="' + html.escape(encoded[artboard], quote=True) + '"></body></html>')
+                    '#theme-artwork{display:block;width:100%;height:100%;object-fit:cover;}'
+                    '[role=alert]{padding:16px;}</style></head><body>'
+                    '<canvas id="theme-artwork" width="0" height="0" data-ready="false" aria-label="独立背景"></canvas>'
+                    '<script id="theme-artboard-config" type="application/json">' + config + '</script>'
+                    '<script>' + script + '</script></body></html>')
     else:
         document = (root / "assets" / ("preview-" + plan["mode"] + ".html")).read_text(encoding="utf-8")
         payload = {key: plan[key] for key in ("name", "mode", "scope", "appearance", "colors") if key in plan}
@@ -87,8 +96,10 @@ if __name__ == "__main__":
     parser.add_argument("--plan", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--artboard", choices=("home", "session", "user_message"))
+    parser.add_argument("--width", type=int, help="Explicitly agreed artwork width; requires --height")
+    parser.add_argument("--height", type=int, help="Explicitly agreed artwork height; requires --width")
     args = parser.parse_args()
     try:
-        print(build(args.plan, args.output, args.artboard))
+        print(build(args.plan, args.output, args.artboard, args.width, args.height))
     except (OSError, ValueError) as error:
         parser.exit(1, "Theme preview: " + str(error) + "\n")

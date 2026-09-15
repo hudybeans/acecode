@@ -1722,8 +1722,19 @@ body {
    直接切断,与 Claude 侧栏同款。渐隐高度落在首个分节标题的 pt-3 内边距上,
    所以未滚动时看不出来。 */
 .ace-sidebar-scroll {
+  --ace-sidebar-scrollbar-thumb: transparent;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+}
+/* Keep the scroll gutter allocated; only reveal its thumb on list hover. */
+.ace-sidebar-scroll:hover {
+  --ace-sidebar-scrollbar-thumb: rgba(150,150,150,.3);
+}
+.ace-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--ace-sidebar-scrollbar-thumb);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .ace-sidebar-scroll { scrollbar-color: var(--ace-sidebar-scrollbar-thumb) transparent; }
 }
 /* 底部设置区与会话列表之间唯一保留的细分隔线。 */
 .ace-sidebar-footer {
@@ -2792,8 +2803,8 @@ body {
 [data-theme-user-message-background="true"] .ace-user-message-bubble {
   background-color: var(--ace-user-message-background-color, var(--ace-accent-bg));
   background-image: var(--ace-user-message-background-image);
-  background-position: center;
-  background-size: cover;
+  background-position: center bottom;
+  background-size: var(--ace-user-message-background-size, 100% auto);
   background-repeat: no-repeat;
 }
 [data-theme-extend-to-titlebar="false"] .ace-app-shell[data-home-wallpaper="true"]::before { top: var(--ace-topbar-height); }

@@ -1116,28 +1116,47 @@ std::string safe_file_name(std::string value) {
 ToolImpl screenshot_tool() {
     return make_tool(
         "browser_screenshot",
-        "Capture the same visible Browser page as a PNG attachment. Use browser_read_page for semantic work and screenshots when visual evidence matters.",
+        "Capture the same visible Browser page as a PNG attachment. Optionally export a visible canvas at its original pixel resolution for independent artwork. Use browser_read_page for semantic work and screenshots when visual evidence matters.",
         object_schema({
             {"file_name", string_property("Optional safe attachment file name.")},
             {"full_page", {{"type", "boolean"}, {"description", "Capture beyond the current viewport when supported."}}},
+            {"canvas_selector", string_property("Optional CSS selector for exactly one visible, initialized canvas. Exports its backing pixels, ignoring CSS size. Cannot be combined with full_page=true.")},
         }),
         true,
         [](const json& args, const ToolContext& context) {
+            const bool canvas_capture = args.contains("canvas_selector");
+            if (canvas_capture &&
+                (!args["canvas_selector"].is_string() ||
+                 args["canvas_selector"].get<std::string>().empty() ||
+                 args["canvas_selector"].get<std::string>().size() > 2048 ||
+                 args.value("full_page", false))) {
+                return failure_result("invalid_arguments",
+                    "canvas_selector must be a nonempty CSS selector and cannot be combined with full_page=true");
+            }
             AgentBrowserCdpClient client;
             std::string error;
             if (!connect_client(client, context, error, &args)) return failure_result("desktop_browser_unavailable", error);
-            json params{{"format", "png"}, {"fromSurface", true}, {"captureBeyondViewport", args.value("full_page", false)}};
-            json captured = client.command("Page.captureScreenshot", params, std::chrono::seconds(30),
-                                           context.abort_flag, error);
+            json captured;
+            if (canvas_capture) {
+                captured = evaluate(client, agent_browser_canvas_capture_script(
+                    args["canvas_selector"].get<std::string>()), context, error);
+            } else {
+                json params{{"format", "png"}, {"fromSurface", true}, {"captureBeyondViewport", args.value("full_page", false)}};
+                captured = client.command("Page.captureScreenshot", params, std::chrono::seconds(30),
+                                          context.abort_flag, error);
+            }
             if (!error.empty()) return failure_result("screenshot_failed", error);
             const auto bytes = decode_agent_browser_base64(captured.value("data", ""));
             const auto dimensions = bytes
                 ? agent_browser_png_dimensions(*bytes)
                 : std::nullopt;
-            if (!bytes || !dimensions) {
+            if (!bytes || !dimensions || (canvas_capture &&
+                (bytes->size() > 16 * 1024 * 1024 ||
+                 dimensions->first != captured.value("width", 0u) ||
+                 dimensions->second != captured.value("height", 0u)))) {
                 return failure_result(
                     "screenshot_failed",
-                    "WebView2 returned invalid PNG screenshot data");
+                    "Browser returned invalid PNG screenshot data");
             }
             const std::filesystem::path root = context.scratch_dir.empty()
                 ? std::filesystem::temp_directory_path() / "acecode-agent-browser"
@@ -1233,6 +1252,33 @@ ToolImpl close_tool() {
 }
 
 } // namespace
+
+std::string agent_browser_canvas_capture_script(const std::string& selector) {
+    return R"JS(((selector) => {
+  const matches = document.querySelectorAll(selector);
+  if (matches.length !== 1 || !(matches[0] instanceof HTMLCanvasElement))
+    throw new Error('Select exactly one artwork canvas');
+  const canvas = matches[0];
+  const rect = canvas.getBoundingClientRect();
+  if (!canvas.isConnected || rect.width <= 0 || rect.height <= 0)
+    throw new Error('Artwork canvas is not visible');
+  for (let node = canvas; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0)
+      throw new Error('Artwork canvas is not visible');
+  }
+  const {width, height} = canvas;
+  if (!width || !height || width > 8192 || height > 8192 || width * height > 33554432)
+    throw new Error('Canvas dimensions must be positive, at most 8192 per side and 32 megapixels');
+  if (canvas.dataset.ready === 'false' || canvas.dataset.error)
+    throw new Error('Wait for artwork to finish rendering before export');
+  const url = canvas.toDataURL('image/png');
+  const prefix = 'data:image/png;base64,';
+  if (!url.startsWith(prefix) || url.length > 22369645)
+    throw new Error('Canvas PNG is invalid or exceeds 16 MiB');
+  return {data: url.slice(prefix.length), width, height};
+})()JS" + nlohmann::json(selector).dump() + ")";
+}
 
 nlohmann::json agent_browser_input_result_metadata(
     nlohmann::json value,

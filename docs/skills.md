@@ -31,6 +31,11 @@ self-heals a missing managed hook directory or upgrades a recognized previous of
 hook definition. Unknown and user-modified definitions remain preserved. A newer user
 marker prevents an older installation from downgrading the bundle.
 
+On Windows, seed directory publication retries temporary access or sharing violations
+for up to one second per rename. Persistent failures keep the prior version marker
+and preserve the existing backup/restore transaction, so a later startup can retry.
+Filesystem error messages are converted to UTF-8 before being recorded in seed state.
+
 The default Skill bundle contains:
 
 - `find-skills`

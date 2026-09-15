@@ -1,5 +1,5 @@
 {
-  "bundle_version": "2026-09-15.1",
+  "bundle_version": "2026-09-15.2",
   "description": "Versioned default ACECode global Skill, expert, and managed hook seed bundle reconciled at startup.",
   "skills": [
     {
@@ -58,9 +58,9 @@
     },
     {
       "name": "ai-theme",
-      "source_id": "acecode:ai-theme@2026-09-15",
+      "source_id": "acecode:ai-theme@2026-09-15.2",
       "relative_path": "acecode/ai-theme",
-      "skill_md_sha256": "0188439995c88addbd7e80cec57c5f3b5c400c5b3574f65bbe2da5ddf6931c18"
+      "skill_md_sha256": "2159b04a7d906b71fe2d58bb2a84338081d9878051a4618f94ddff1369ef3864"
     }
   ],
   "experts": [

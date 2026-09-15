@@ -1,6 +1,7 @@
 #include "default_skill_seeder.hpp"
 
 #include "../utils/atomic_file.hpp"
+#include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/sha256.hpp"
 #include "../utils/utf8_path.hpp"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -23,6 +25,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -51,6 +54,32 @@ constexpr const char* kSeedUpdateLockFile = ".seed_skills_update.lock";
 constexpr const char* kSeedStagingDir = ".seed_skills_staging";
 constexpr const char* kSeedBackupDir = ".seed_skills_backup";
 constexpr std::size_t kMaxSeedVersionBytes = 128;
+
+void rename_seed_directory(const fs::path& source,
+                           const fs::path& destination,
+                           std::error_code& ec) {
+#ifdef _WIN32
+    // Scanners can briefly open newly staged directories without share-delete.
+    // Keep the transaction's rename semantics and stop on permanent failures.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(1);
+    for (;;) {
+        fs::rename(source, destination, ec);
+        if (!ec || ec.category() != std::system_category() ||
+            (ec.value() != ERROR_ACCESS_DENIED &&
+             ec.value() != ERROR_SHARING_VIOLATION &&
+             ec.value() != ERROR_LOCK_VIOLATION)) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return;
+        std::this_thread::sleep_until(
+            (std::min)(deadline, now + std::chrono::milliseconds(50)));
+    }
+#else
+    fs::rename(source, destination, ec);
+#endif
+}
 
 struct ParsedSeedVersion {
     std::string text;
@@ -282,7 +311,7 @@ std::optional<std::string> hash_directory_tree(const fs::path& root,
         std::error_code status_ec;
         const fs::file_status status = it->symlink_status(status_ec);
         if (status_ec) {
-            error = "failed to inspect seed path: " + status_ec.message();
+            error = "failed to inspect seed path: " + ensure_utf8(status_ec.message());
             return std::nullopt;
         }
         if (fs::is_symlink(status)) {
@@ -296,7 +325,7 @@ std::optional<std::string> hash_directory_tree(const fs::path& root,
                 fs::relative(it->path(), root, relative_ec);
             if (relative_ec) {
                 error = "failed to make seed path relative: " +
-                        relative_ec.message();
+                        ensure_utf8(relative_ec.message());
                 return std::nullopt;
             }
             entries.push_back({
@@ -312,7 +341,7 @@ std::optional<std::string> hash_directory_tree(const fs::path& root,
         it.increment(ec);
     }
     if (ec) {
-        error = "failed to scan seed directory: " + ec.message();
+        error = "failed to scan seed directory: " + ensure_utf8(ec.message());
         return std::nullopt;
     }
 
@@ -546,7 +575,7 @@ bool copy_tree_no_overwrite(const fs::path& source_dir,
     }
     fs::create_directories(target_dir, ec);
     if (ec) {
-        error = "create_target_failed: " + ec.message();
+        error = "create_target_failed: " + ensure_utf8(ec.message());
         return false;
     }
 
@@ -557,7 +586,7 @@ bool copy_tree_no_overwrite(const fs::path& source_dir,
         std::error_code status_ec;
         const fs::file_status status = it->symlink_status(status_ec);
         if (status_ec) {
-            error = "inspect_source_failed: " + status_ec.message();
+            error = "inspect_source_failed: " + ensure_utf8(status_ec.message());
             return false;
         }
         if (fs::is_symlink(status)) {
@@ -569,7 +598,7 @@ bool copy_tree_no_overwrite(const fs::path& source_dir,
         const fs::path relative =
             fs::relative(it->path(), source_dir, relative_ec);
         if (relative_ec) {
-            error = "relative_path_failed: " + relative_ec.message();
+            error = "relative_path_failed: " + ensure_utf8(relative_ec.message());
             return false;
         }
         const fs::path target = target_dir / relative;
@@ -577,20 +606,20 @@ bool copy_tree_no_overwrite(const fs::path& source_dir,
         if (fs::is_directory(status)) {
             fs::create_directories(target, ec);
             if (ec) {
-                error = "create_directory_failed: " + ec.message();
+                error = "create_directory_failed: " + ensure_utf8(ec.message());
                 return false;
             }
         } else if (fs::is_regular_file(status)) {
             if (target.has_parent_path()) {
                 fs::create_directories(target.parent_path(), ec);
                 if (ec) {
-                    error = "create_parent_failed: " + ec.message();
+                    error = "create_parent_failed: " + ensure_utf8(ec.message());
                     return false;
                 }
             }
             fs::copy_file(it->path(), target, fs::copy_options::none, ec);
             if (ec) {
-                error = "copy_file_failed: " + ec.message();
+                error = "copy_file_failed: " + ensure_utf8(ec.message());
                 return false;
             }
         } else {
@@ -600,7 +629,7 @@ bool copy_tree_no_overwrite(const fs::path& source_dir,
         it.increment(ec);
     }
     if (ec) {
-        error = "scan_source_failed: " + ec.message();
+        error = "scan_source_failed: " + ensure_utf8(ec.message());
         return false;
     }
     return true;
@@ -613,7 +642,7 @@ bool stage_seed_directory(const fs::path& source_dir,
     std::error_code ec;
     fs::remove_all(stage_dir, ec);
     if (ec) {
-        error = "remove_staging_failed: " + ec.message();
+        error = "remove_staging_failed: " + ensure_utf8(ec.message());
         return false;
     }
     if (!copy_tree_no_overwrite(source_dir, stage_dir, error)) return false;
@@ -654,14 +683,14 @@ bool recover_seed_group(
         const fs::path target_dir = target_root / seed.relative_path;
         const bool backup_exists = fs::exists(backup_dir, ec);
         if (ec) {
-            append_error(result, "failed to inspect seed backup: " + ec.message());
+            append_error(result, "failed to inspect seed backup: " + ensure_utf8(ec.message()));
             return false;
         }
         if (!backup_exists) continue;
 
         const bool target_exists = fs::exists(target_dir, ec);
         if (ec) {
-            append_error(result, "failed to inspect seed target: " + ec.message());
+            append_error(result, "failed to inspect seed target: " + ensure_utf8(ec.message()));
             return false;
         }
         if (target_exists) {
@@ -669,7 +698,7 @@ bool recover_seed_group(
             if (ec) {
                 append_error(result,
                              "failed to remove completed seed backup: " +
-                                 ec.message());
+                                 ensure_utf8(ec.message()));
                 return false;
             }
         } else {
@@ -677,14 +706,14 @@ bool recover_seed_group(
             if (ec) {
                 append_error(result,
                              "failed to restore seed backup parent: " +
-                                 ec.message());
+                                 ensure_utf8(ec.message()));
                 return false;
             }
-            fs::rename(backup_dir, target_dir, ec);
+            rename_seed_directory(backup_dir, target_dir, ec);
             if (ec) {
                 append_error(result,
                              "failed to restore interrupted seed update: " +
-                                 ec.message());
+                                 ensure_utf8(ec.message()));
                 return false;
             }
         }
@@ -705,7 +734,7 @@ bool recover_interrupted_seed_update(
 
     fs::remove_all(staging_root, ec);
     if (ec) {
-        append_error(result, "failed to clean seed staging: " + ec.message());
+        append_error(result, "failed to clean seed staging: " + ensure_utf8(ec.message()));
         return false;
     }
 
@@ -752,14 +781,14 @@ bool publish_staged_seed(const fs::path& stage_dir,
     std::error_code ec;
     fs::create_directories(target_dir.parent_path(), ec);
     if (ec) {
-        error = "create_target_parent_failed: " + ec.message();
+        error = "create_target_parent_failed: " + ensure_utf8(ec.message());
         return false;
     }
 
     if (!update_existing) {
-        fs::rename(stage_dir, target_dir, ec);
+        rename_seed_directory(stage_dir, target_dir, ec);
         if (ec) {
-            error = "publish_seed_failed: " + ec.message();
+            error = "publish_seed_failed: " + ensure_utf8(ec.message());
             return false;
         }
         return true;
@@ -767,23 +796,23 @@ bool publish_staged_seed(const fs::path& stage_dir,
 
     fs::create_directories(backup_dir.parent_path(), ec);
     if (ec) {
-        error = "create_backup_parent_failed: " + ec.message();
+        error = "create_backup_parent_failed: " + ensure_utf8(ec.message());
         return false;
     }
-    fs::rename(target_dir, backup_dir, ec);
+    rename_seed_directory(target_dir, backup_dir, ec);
     if (ec) {
-        error = "backup_existing_seed_failed: " + ec.message();
+        error = "backup_existing_seed_failed: " + ensure_utf8(ec.message());
         return false;
     }
 
-    fs::rename(stage_dir, target_dir, ec);
+    rename_seed_directory(stage_dir, target_dir, ec);
     if (ec) {
-        const std::string publish_error = ec.message();
+        const std::string publish_error = ensure_utf8(ec.message());
         std::error_code restore_ec;
-        fs::rename(backup_dir, target_dir, restore_ec);
+        rename_seed_directory(backup_dir, target_dir, restore_ec);
         error = "publish_updated_seed_failed: " + publish_error;
         if (restore_ec) {
-            error += "; restore_failed: " + restore_ec.message();
+            error += "; restore_failed: " + ensure_utf8(restore_ec.message());
         }
         return false;
     }
@@ -791,7 +820,7 @@ bool publish_staged_seed(const fs::path& stage_dir,
     fs::remove_all(backup_dir, ec);
     if (ec) {
         LOG_WARN("[seed] Failed to remove seed update backup: " +
-                 ec.message());
+                 ensure_utf8(ec.message()));
     }
     return true;
 }
@@ -899,7 +928,7 @@ public:
         if (ec) {
             throw std::runtime_error(
                 "failed to create ACECode home for seed lock: " +
-                ec.message());
+                ensure_utf8(ec.message()));
         }
         const fs::path lock_path = acecode_home / kSeedUpdateLockFile;
 
@@ -941,12 +970,12 @@ public:
         if (fd_ < 0) {
             throw std::runtime_error(
                 "failed to open seed update lock: " +
-                std::error_code(errno, std::generic_category()).message());
+                ensure_utf8(std::error_code(errno, std::generic_category()).message()));
         }
         while (::flock(fd_, LOCK_EX) != 0) {
             if (errno == EINTR) continue;
             const std::string error =
-                std::error_code(errno, std::generic_category()).message();
+                ensure_utf8(std::error_code(errno, std::generic_category()).message());
             ::close(fd_);
             fd_ = -1;
             throw std::runtime_error(
@@ -1042,7 +1071,7 @@ void reconcile_seed_group(
         if (ec) {
             outcome.result = "error";
             outcome.message =
-                "failed to inspect target: " + ec.message();
+                "failed to inspect target: " + ensure_utf8(ec.message());
             completed = false;
             append_error(result, outcome.message);
             outcomes.push_back(std::move(outcome));
@@ -1065,7 +1094,7 @@ void reconcile_seed_group(
             if (ec) {
                 outcome.result = "error";
                 outcome.message =
-                    "failed to recheck target: " + ec.message();
+                    "failed to recheck target: " + ensure_utf8(ec.message());
                 completed = false;
                 append_error(result, outcome.message);
                 fs::remove_all(stage_dir, ec);
@@ -1210,7 +1239,7 @@ const std::vector<DefaultSkillSeed>& default_skill_seeds() {
          "acecode:vision-image-reader@2026-05-28",
          fs::path("acecode") / "vision-image-reader"},
         {"ai-theme",
-         "acecode:ai-theme@2026-09-15",
+         "acecode:ai-theme@2026-09-15.2",
          fs::path("acecode") / "ai-theme"},
     };
     return seeds;
@@ -1402,21 +1431,21 @@ DefaultSkillSeedInstallResult reconcile_default_global_skills(
         if (ec) {
             append_error(
                 result,
-                "failed to create global skills root: " + ec.message());
+                "failed to create global skills root: " + ensure_utf8(ec.message()));
             return result;
         }
         fs::create_directories(result.expert_target_root, ec);
         if (ec) {
             append_error(
                 result,
-                "failed to create global experts root: " + ec.message());
+                "failed to create global experts root: " + ensure_utf8(ec.message()));
             return result;
         }
         fs::create_directories(result.hook_target_root, ec);
         if (ec) {
             append_error(
                 result,
-                "failed to create global hooks root: " + ec.message());
+                "failed to create global hooks root: " + ensure_utf8(ec.message()));
             return result;
         }
 
@@ -1470,7 +1499,7 @@ DefaultSkillSeedInstallResult reconcile_default_global_skills(
         if (ec) {
             completed = false;
             append_error(
-                result, "failed to clean seed staging: " + ec.message());
+                result, "failed to clean seed staging: " + ensure_utf8(ec.message()));
         }
 
         if (!write_seed_state(result, completed, previous)) {
