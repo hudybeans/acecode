@@ -1,7 +1,7 @@
 // 每轮对话末尾的「本轮改动文件」列表(Claude Code 风格):
 // 标题行「已修改 xx 个文件 +X -Y」+ 行卡(文件树同款类型 icon + 单一路径
-//(cwd 内相对 / cwd 外绝对)+ 红绿加删数 + 「打开」)。点击行(或「打开」)
-// 在预览面板打开会话变更并定位到该文件的 diff。文件数超过阈值折叠,
+//(cwd 内相对 / cwd 外绝对)+ 红绿加删数 + 「打开」)。整行打开文件内容;
+// 悬停后行数位置显示独立的「查看变更」入口,打开该轮 diff。文件数超过阈值折叠,
 // 「展开查看剩余 x 个文件」/「收起」切换。
 //
 // 纯逻辑(路径展示 / 条目构建 / 折叠切分)在 lib/turnFileList.js,有 Node 单测。
@@ -28,6 +28,7 @@ export const TurnFileList = memo(function TurnFileList({
   summary,
   cwd = '',
   turnUserMessageId = '',
+  onOpenChanges,
   onOpenFile,
 }) {
   useTranslation();
@@ -49,18 +50,35 @@ export const TurnFileList = memo(function TurnFileList({
         />
       </div>
       {visible.map((item) => (
-        <button
+        <div
           key={item.file}
-          type="button"
           className="ace-turn-file-row"
-          onClick={() => onOpenFile?.(item.file, turnUserMessageId)}
-          title={item.file}
         >
+          <button
+            type="button"
+            className="ace-turn-file-target"
+            onClick={() => onOpenFile?.(item.file)}
+            title={item.file}
+          >
+            <span className="sr-only"><span>打开文件</span> {item.displayPath}</span>
+          </button>
           <FileTypeIcon path={item.file} size={16} className="ace-turn-file-icon" />
-          <span className="ace-turn-file-path">{item.displayPath}</span>
-          <ChangeCounts additions={item.additions} deletions={item.deletions} />
-          <span className="ace-turn-file-open">打开</span>
-        </button>
+          <span className="ace-turn-file-path" aria-hidden="true">{item.displayPath}</span>
+          <span className="ace-turn-file-detail">
+            <ChangeCounts additions={item.additions} deletions={item.deletions} />
+            <button
+              type="button"
+              className="ace-turn-file-changes"
+              onClick={() => onOpenChanges?.(item.file, turnUserMessageId)}
+            >
+              <span>查看变更</span>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 12 12 4M4 4h8v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </span>
+          <span className="ace-turn-file-open" aria-hidden="true">打开</span>
+        </div>
       ))}
       {collapsible && (
         <button

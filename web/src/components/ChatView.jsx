@@ -5258,7 +5258,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                     summary={set.summary}
                     cwd={sidePanelCwd}
                     turnUserMessageId={set.userMessageId}
-                    onOpenFile={openSessionChangePreview}
+                    onOpenChanges={openSessionChangePreview}
+                    onOpenFile={openFilePreview}
                   />
                 </div>
               ))
@@ -5280,7 +5281,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                 summary={set.summary}
                 cwd={sidePanelCwd}
                 turnUserMessageId={set.userMessageId}
-                onOpenFile={openSessionChangePreview}
+                onOpenChanges={openSessionChangePreview}
+                onOpenFile={openFilePreview}
               />
             </div>
           ))}

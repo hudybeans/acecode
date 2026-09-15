@@ -190,6 +190,8 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '已注册工作区': 'Registered workspaces',
   '快捷入口': 'Quick access',
   '打开文件': 'Open file',
+  '打开': 'Open',
+  '查看变更': 'View changes',
   '找不到路径:{{p0}}': 'Path not found: {{p0}}',
   '无权限读取这个目录:{{p0}}': 'No permission to read this folder: {{p0}}',
   '显示隐藏': 'Show hidden',
