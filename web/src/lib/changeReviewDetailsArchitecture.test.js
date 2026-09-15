@@ -134,7 +134,7 @@ run('Git branch selector changes only the shared list and detail comparison base
   assert.match(gitList, /buildBaseCandidates\(gitInfo\)/);
   assert.match(gitList, /api\.gitChanges\(targetCwd, targetBase\)/);
   assert.match(gitList, /onOpenFile\?\.\(path, baseRef\.current, fileCount\)/);
-  assert.match(gitList, /min-w-\[160px\] max-h-72 overflow-y-auto/);
+  assert.match(gitList, /<AnchoredMenu\s+anchorRef=\{baseAnchorRef\}/);
   assert.match(
     gitList,
     /const selectBase = useCallback\(\(next\) => \{[\s\S]*?setBase\(next\);[\s\S]*?onBaseChange\?\.\(next\);/,

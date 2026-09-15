@@ -4984,6 +4984,7 @@ a.ace-thread-link:focus-visible {
 }
 .ace-side-tab {
   flex: 0 0 auto;
+  white-space: nowrap;
   height: 24px;
   padding: 0 11px;
   border: 1px solid transparent;
@@ -5402,6 +5403,7 @@ a.ace-thread-link:focus-visible {
 .ace-review-title {
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
   gap: 7px;
   color: var(--ace-fg);
   font-size: 13px;

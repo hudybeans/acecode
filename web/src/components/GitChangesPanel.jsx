@@ -21,6 +21,7 @@ import {
 import { changesCache } from '../lib/gitChangesCache.js';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
 import { clsx } from '../lib/format.js';
+import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { ChangeFileList } from './ChangeFileList.jsx';
 import { VsIcon } from './Icon.jsx';
 
@@ -42,6 +43,7 @@ export function GitChangesPanel({
   );
   const [base, setBase] = useState(initial);
   const [baseOpen, setBaseOpen] = useState(false);
+  const baseAnchorRef = useRef(null);
   const [list, setList] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');      // 'timeout' | 其它文案
@@ -137,16 +139,19 @@ export function GitChangesPanel({
     <div className="ace-change-compact-panel" data-change-region="side-panel-git">
       <div className="ace-change-compact-summary" data-desktop-review-kind="summary">
         <div className="ace-review-title min-w-0">
-          <VsIcon name="editWindow" size={15} />
-          <span>变更</span>
-          <span className="text-fg-mute font-normal truncate max-w-[72px]" title={list?.branch || gitInfo.branch}>
+          <VsIcon name="editWindow" size={15} className="shrink-0" />
+          <span className="shrink-0">变更</span>
+          <span className="text-fg-mute font-normal min-w-0 basis-[72px] truncate max-w-[72px]" title={list?.branch || gitInfo.branch}>
             {list?.branch || gitInfo.branch}
           </span>
-          <span className="text-fg-mute opacity-60" aria-hidden="true">→</span>
-          <div className="relative min-w-0">
+          <span className="text-fg-mute opacity-60 shrink-0" aria-hidden="true">→</span>
+          <div className="flex min-w-12">
             <button
+              ref={baseAnchorRef}
               type="button"
-              className="inline-flex items-center gap-0.5 text-fg-mute hover:text-fg transition-colors min-w-0"
+              className="inline-flex items-center gap-0.5 text-fg-mute hover:text-fg transition-colors min-w-0 max-w-full"
+              aria-haspopup="menu"
+              aria-expanded={baseOpen}
               onClick={() => setBaseOpen(!baseOpen)}
               title={`比较基线:${base}(仅切换查看对象,不会 checkout)`}
             >
@@ -154,27 +159,31 @@ export function GitChangesPanel({
               <VsIcon name="expandDown" size={11} className="opacity-60 shrink-0" />
             </button>
             {baseOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setBaseOpen(false)} />
-                <div
-                  className="absolute top-full left-0 mt-1 min-w-[160px] max-h-72 overflow-y-auto bg-surface border border-border ace-shadow rounded-lg z-50 py-1"
-                  data-ace-native-overlay="overlap"
-                >
-                  {candidates.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className={clsx(
-                        'w-full text-left px-2.5 py-1 text-[12px] transition-colors',
-                        c === base ? 'bg-accent/10 text-accent font-medium' : 'text-fg hover:bg-surface-hi',
-                      )}
-                      onClick={() => selectBase(c)}
-                    >
-                      {c}
-                    </button>
-                  ))}
-                </div>
-              </>
+              <AnchoredMenu
+                anchorRef={baseAnchorRef}
+                onClose={() => setBaseOpen(false)}
+                width={320}
+                maxHeightRatio={0.6}
+                role="menu"
+                aria-label={base}
+                className="bg-surface border border-border ace-shadow rounded-lg z-50 py-1"
+              >
+                {candidates.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={c === base}
+                    className={clsx(
+                      'w-full text-left px-2.5 py-1 text-[12px] whitespace-normal [overflow-wrap:anywhere] transition-colors',
+                      c === base ? 'bg-accent/10 text-accent font-medium' : 'text-fg hover:bg-surface-hi',
+                    )}
+                    onClick={() => selectBase(c)}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </AnchoredMenu>
             )}
           </div>
         </div>

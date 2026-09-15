@@ -543,7 +543,6 @@ run('every current floating-surface owner participates in the native overlay con
     'ComposerSessionControls.jsx',
     'ConversationTurnScrubber.jsx',
     'DesktopContextMenu.jsx',
-    'GitChangesPanel.jsx',
     'GitSessionPill.jsx',
     'GlobalFindOverlay.jsx',
     'ImageLightbox.jsx',
@@ -571,7 +570,7 @@ run('every current floating-surface owner participates in the native overlay con
       file,
     );
   }
-  for (const file of ['ChatView.jsx', 'ConsoleDock.jsx', 'SidebarQuickMenu.jsx']) {
+  for (const file of ['ChatView.jsx', 'ConsoleDock.jsx', 'GitChangesPanel.jsx', 'SidebarQuickMenu.jsx']) {
     assert.match(source(`web/src/components/${file}`), /<AnchoredMenu/, file);
   }
 });
