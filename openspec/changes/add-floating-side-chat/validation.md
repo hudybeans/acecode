@@ -29,3 +29,13 @@ This checkout has no configured CMake build and its submodules are not initializ
 ## Artifacts
 
 Local browser results, screenshots, fixture script and Web logs are under `C:/Users/shao/AppData/Local/Temp/acecode-side-chat-qa/`. The fixture HTML/JSX was removed from the project after verification. The C++ test binary is under `C:/Users/shao/AppData/Local/Temp/acecode-side-chat-20260915/`.
+
+## Session toolbar, clear action and compact composer (2026-09-15)
+
+- Added the session toolbar's SVG bubble before the trajectory action. The floating header now has trash/clear and close buttons, superseding the initial close-only layout above.
+- Controller tests passed **20/20**, including clearing completed history/draft, clearing during loading/streaming/stop acknowledgement, synchronous cancellation callbacks, and ignoring every old event while a fresh request runs.
+- `pnpm i18n:catalog`, `pnpm test`, `pnpm build`, `pnpm i18n:audit`, `openspec validate add-floating-side-chat --strict`, and `git diff --check` passed. The Impeccable detector reported no findings on the changed UI targets.
+- The browser fixture mounted the production `ChatView` and `SideChatWindow`. It verified the bubble SVG loads and opens the shared window; clear precedes close; close/reopen retains draft/history; clear cancels loading, streaming and stopping requests, keeps the window open, focuses the editable textarea and starts a fresh request with empty side history. The main draft remained unchanged, clearing preserved geometry, and header dragging still worked.
+- Measured the bottom region at **60px** in empty, multiline, light/dark and 1440px/390px viewport cases: a 44px border-box input plus 8px top and bottom spacing. Shift+Enter retains multiline drafts and scrolls inside the textarea without increasing the region's height. Screenshots for all four theme/viewport combinations were visually reviewed. No browser page errors occurred.
+- Artifacts: `C:/Users/shao/AppData/Local/Temp/acecode-side-chat-refinement-20260915/` contains the browser script, fixture sources, results JSON, screenshots and Web logs. Temporary repository fixture files were removed after verification.
+- This refinement changes only frontend behavior; daemon/provider/C++ code is unchanged. No installed desktop rebuild or live-model verification was performed for this refinement.

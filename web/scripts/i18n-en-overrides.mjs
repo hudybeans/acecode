@@ -1289,6 +1289,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '主 checkout 在运行期间出现 {{p0}} 处 worktree 之外的改动':
     'The main checkout gained {{p0}} change(s) outside the worktree while this run executed',
   '关闭侧边聊天': 'Close side chat',
+  '清空侧边聊天': 'Clear side chat',
   '侧边聊天记录': 'Side chat history',
   '围绕当前会话继续聊，不会打断主任务，也不会加入主会话。':
     'Chat about this session without interrupting the main task or adding to its conversation.',

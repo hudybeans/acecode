@@ -151,6 +151,10 @@ export function createSideChatController({ startStream } = {}) {
       cancelImmediately();
       publish({ open: false });
     },
+    clear() {
+      cancelImmediately();
+      publish({ ...initialSnapshot(), open: snapshot.open });
+    },
     reset() {
       cancelImmediately();
       publish(initialSnapshot());

@@ -46,6 +46,14 @@
   cursor: grabbing;
 }
 
+.ace-side-chat-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.ace-side-chat-clear,
 .ace-side-chat-close,
 .ace-side-chat-action {
   display: inline-flex;
@@ -63,12 +71,14 @@
   transition: background-color 120ms, color 120ms;
 }
 
+.ace-side-chat-clear:hover,
 .ace-side-chat-close:hover,
 .ace-side-chat-action:not(:disabled):hover {
   background: var(--ace-surface-hi);
   color: var(--ace-fg);
 }
 
+.ace-side-chat-clear:focus-visible,
 .ace-side-chat-close:focus-visible,
 .ace-side-chat-action:focus-visible {
   outline: 2px solid var(--ace-accent);
@@ -146,12 +156,15 @@
 .ace-side-chat-composer {
   display: flex;
   flex: 0 0 auto;
-  align-items: flex-end;
+  box-sizing: border-box;
+  align-items: center;
   gap: 8px;
-  margin: 0 12px 12px;
+  /* 44px including borders plus two 8px margins: a 60px bottom region. */
+  height: 44px;
+  margin: 8px 12px;
   border: 1px solid var(--ace-border);
   border-radius: 14px;
-  padding: 10px 10px 10px 14px;
+  padding: 4px 10px 4px 14px;
   background: var(--ace-surface);
   box-shadow: var(--ace-shadow);
   transition: border-color 120ms;
@@ -166,9 +179,9 @@
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  min-height: 26px;
-  max-height: 120px;
-  margin: 4px 0;
+  height: 26px;
+  min-height: 0;
+  margin: 0;
   border: 0;
   padding: 0;
   outline: none;
@@ -177,6 +190,7 @@
   font: inherit;
   line-height: 26px;
   resize: none;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 

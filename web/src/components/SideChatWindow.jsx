@@ -58,6 +58,7 @@ export function SideChatWindow({
   onDraftChange,
   onSubmit,
   onStop,
+  onClear,
   onClose,
   onFileLink,
 }) {
@@ -130,13 +131,6 @@ export function SideChatWindow({
     previousTurnCountRef.current = turns.length;
     if (followingRef.current && transcript) transcript.scrollTop = transcript.scrollHeight;
   }, [open, turns, geometry.height, geometry.width]);
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!open || !textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(120, Math.max(26, textarea.scrollHeight))}px`;
-  }, [open, draft, geometry.width]);
 
   const handleMarkdownInteraction = useCallback(async (event) => {
     if (event.type === 'keydown' && (isComposing(event) || (event.key !== 'Enter' && event.key !== ' '))) return;
@@ -229,16 +223,32 @@ export function SideChatWindow({
     >
       <header className="ace-side-chat-header" onPointerDown={startPointer} {...pointerHandlers}>
         <h2 id={titleId}>侧边聊天</h2>
-        <button
-          ref={closeRef}
-          type="button"
-          className="ace-side-chat-close"
-          aria-label="关闭侧边聊天"
-          title="关闭侧边聊天"
-          onClick={onClose}
-        >
-          <VsIcon name="close" size={16} />
-        </button>
+        <div className="ace-side-chat-header-actions">
+          <button
+            type="button"
+            className="ace-side-chat-clear"
+            aria-label="清空侧边聊天"
+            title="清空侧边聊天"
+            onClick={() => {
+              onClear?.();
+              followingRef.current = true;
+              if (transcriptRef.current) transcriptRef.current.scrollTop = 0;
+              textareaRef.current?.focus({ preventScroll: true });
+            }}
+          >
+            <VsIcon name="delete" size={16} />
+          </button>
+          <button
+            ref={closeRef}
+            type="button"
+            className="ace-side-chat-close"
+            aria-label="关闭侧边聊天"
+            title="关闭侧边聊天"
+            onClick={onClose}
+          >
+            <VsIcon name="close" size={16} />
+          </button>
+        </div>
       </header>
       <div
         ref={transcriptRef}

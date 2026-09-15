@@ -5,7 +5,7 @@ Provide a movable, resizable side conversation above the ACECode application so 
 ## ADDED Requirements
 
 ### Requirement: Application-wide floating conversation
-The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, or the existing side-chat menu in a floating window above the application surfaces. The header SHALL contain the conversation title and only one top-right action, close. The window SHALL support dragging, resizing on all edges and corners, independent transcript scrolling, and a fixed bottom composer. It SHALL remain usable within the current viewport and use the application's theme.
+The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing side-chat menu, or a speech-bubble SVG button in the top-right session toolbar in a floating window above the application surfaces. The floating header SHALL contain the conversation title and top-right clear and close actions, in that order. The window SHALL support dragging, resizing on all edges and corners, independent transcript scrolling, and a fixed bottom input region totaling 60px including borders. Long drafts SHALL scroll inside the textarea without expanding that region. It SHALL remain usable within the current viewport and use the application's theme.
 
 #### Scenario: Open and resize above the workbench
 - **WHEN** the user opens side chat with the sidebar and preview visible
@@ -15,6 +15,10 @@ The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, or the existin
 #### Scenario: Open without a question
 - **WHEN** the user submits `/side` without arguments in an existing session
 - **THEN** the empty floating conversation opens and focuses its input
+
+#### Scenario: Open from the session toolbar
+- **WHEN** the user clicks the speech-bubble button before the trajectory button in the session toolbar
+- **THEN** the same side-chat window opens, preserving existing side history and the main composer draft
 
 ### Requirement: Isolated multi-turn conversation
 The system SHALL answer each side question using a safe main-session context snapshot plus the preceding successful or nonempty stopped side turns. It SHALL keep the side transcript temporary and independent from main-session history, tools, hooks, goals, event stream, and busy state. Failed or empty stopped turns SHALL remain visible without being added to future model context.
@@ -50,6 +54,12 @@ Closing SHALL cancel any active side request and preserve the temporary transcri
 #### Scenario: Close and reopen
 - **WHEN** the user closes and reopens side chat in the same session
 - **THEN** its previous temporary transcript and unsent draft remain available
+
+#### Scenario: Clear the current side conversation
+- **WHEN** the user clicks the trash button, including while loading, streaming, or awaiting a stop acknowledgement
+- **THEN** the active side request is cancelled, side turns and draft are cleared, and the window stays open with an editable input
+- **AND** late events cannot restore cleared content or affect a fresh request, whose side history is empty
+- **AND** the main conversation, draft, and running task are unaffected
 
 #### Scenario: Switch sessions during streaming
 - **WHEN** the user switches the main session during a side answer

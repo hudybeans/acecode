@@ -10,6 +10,7 @@ const ICONS = {
   brain: 'Brain',
   brightness: 'Brightness',
   bug: 'Bug',
+  chat: 'ChatBubble',
   check: 'Check',
   clearAll: 'ClearAll',
   close: 'Close',

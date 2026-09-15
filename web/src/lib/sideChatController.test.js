@@ -135,6 +135,62 @@ run('closing cancels immediately and reopening preserves transcript and unsent d
   assert.equal(state().draft, 'unsent draft');
 });
 
+run('clearing discards completed history and draft while keeping the window open', () => {
+  const { controller, requests, state } = setup();
+  controller.submit('old question');
+  requests[0].onDone({ answer: 'old answer' });
+  controller.setDraft('old draft');
+  controller.clear();
+  assert.deepEqual(state(), { open: true, turns: [], draft: '', busy: false, stopping: false });
+  assert.equal(controller.setDraft('fresh question'), true);
+  assert.equal(controller.submit(), true);
+  assert.deepEqual(requests[1].history, []);
+  controller.close();
+  controller.clear();
+  assert.equal(state().open, false);
+});
+
+for (const phase of ['loading', 'streaming', 'stopping']) {
+  run(`clearing while ${phase} cancels the request and isolates the next conversation`, () => {
+    const { controller, requests, state } = setup();
+    controller.submit('old question');
+    if (phase !== 'loading') requests[0].onDelta('old partial');
+    if (phase === 'stopping') controller.stop();
+    controller.clear();
+    assert.ok(requests[0].stops > 0);
+    assert.equal(requests[0].disposals, 1);
+    assert.deepEqual(state(), { open: true, turns: [], draft: '', busy: false, stopping: false });
+    assert.equal(controller.submit('fresh question'), true);
+    assert.deepEqual(requests[1].history, []);
+    const fresh = state();
+    requests[0].onDelta('late delta');
+    requests[0].onReset();
+    requests[0].onError({ message: 'late error' });
+    requests[0].onDone({ answer: 'late final', cancelled: true });
+    assert.equal(state(), fresh);
+    requests[1].onDone({ answer: 'fresh answer' });
+    assert.equal(state().turns[0].answer, 'fresh answer');
+    assert.equal(state().busy, false);
+  });
+}
+
+run('clear invalidates synchronous cancellation callbacks before clearing the transcript', () => {
+  let disposed = false;
+  const controller = createSideChatController({ startStream({ onDelta, onDone }) {
+    return {
+      stop() {
+        onDelta('late cancellation text');
+        onDone({ answer: 'late cancellation answer', cancelled: true });
+      },
+      dispose() { disposed = true; },
+    };
+  } });
+  controller.submit('old question');
+  controller.clear();
+  assert.equal(disposed, true);
+  assert.deepEqual(controller.getSnapshot(), { open: true, turns: [], draft: '', busy: false, stopping: false });
+});
+
 run('session reset and dispose invalidate all previous callbacks', () => {
   const { controller, requests, state } = setup();
   controller.submit('old session');

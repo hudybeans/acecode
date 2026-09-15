@@ -13,3 +13,10 @@
 
 - [x] 3.1 Run full Web tests and production build, focused C++ tests/build, OpenSpec strict validation and diff whitespace checks; record exact coverage and any environment limitations.
 - [x] 3.2 Inspect desktop/narrow and light/dark browser renders; verify multi-turn streaming, stop, close/reopen, session switch, geometry and top-level overlay behavior.
+
+## 4. Session toolbar and compact composer refinement
+
+- [x] 4.1 Add a session-toolbar speech-bubble SVG entry using the existing side-chat opener.
+- [x] 4.2 Add a clear action to the controller and window header; verify cancellation, draft/history reset, and late-event isolation with focused tests.
+- [x] 4.3 Compact the entire bottom input region to 60px including borders, preserving multiline editing through internal scrolling.
+- [x] 4.4 Regenerate translations, run Web tests/build and strict OpenSpec/diff checks, and verify toolbar/clear/height behavior in desktop and narrow light/dark browser renders.

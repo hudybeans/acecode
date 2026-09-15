@@ -5072,6 +5072,24 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {sid && !readOnlyExternalSession && (
+            <button
+              type="button"
+              onClick={openSideQuestionComposer}
+              className={clsx(
+                'w-6 h-6 rounded-md flex items-center justify-center shrink-0 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25',
+                sideChatState.open
+                  ? 'bg-accent-bg text-accent hover:bg-accent-bg'
+                  : 'text-fg-mute hover:bg-surface-hi hover:text-fg',
+              )}
+              title="侧边聊天"
+              aria-label="侧边聊天"
+              aria-expanded={sideChatState.open}
+              aria-haspopup="dialog"
+            >
+              <VsIcon name="chat" size={14} />
+            </button>
+          )}
           {sid && (
             <button
               type="button"
@@ -5365,6 +5383,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         onDraftChange={sideChat.setDraft}
         onSubmit={() => sideChat.submit()}
         onStop={sideChat.stop}
+        onClear={sideChat.clear}
         onClose={sideChat.close}
         onFileLink={handleTranscriptFileLink}
       />
