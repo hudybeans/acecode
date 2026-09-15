@@ -69,10 +69,11 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
 run('提问挂起时 composer 整体让位给提问框,不留插话入口', () => {
   const chatView = source('components/ChatView.jsx');
 
-  // 提问框承担提问期间唯一的交互面:提交/取消经 resolveQuestion 回流,结果由
-  // onFeedback 落成反馈卡。
+  // 提问框承担提问期间唯一的交互面:提交/取消经 resolveQuestion 回流,反馈
+  // 由共享 ToolBlock 按 tool_end 的持久化结果渲染。
   assert.match(chatView, /\{questionForView && \(\s*<QuestionPicker/);
-  assert.match(chatView, /onFeedback=\{handleQuestionFeedback\}/);
+  assert.match(chatView, /onResolve=\{resolveQuestion\}/);
+  assert.doesNotMatch(chatView, /setQuestionFeedback|renderFeedbackAfterQuestion/);
 
   // 输入区只挂在「没有待答问题」的分支里,提问期间 dock 中不存在 InputBar。
   const dockStart = chatView.indexOf('<div className="ace-composer-dock">');

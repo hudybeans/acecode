@@ -424,7 +424,6 @@ export function TranscriptItems({
   showAceCodeAvatar = false,
   annotationPresentations,
   renderBeforeItem,
-  renderAfterItem,
 }) {
   const list = Array.isArray(items) ? items : EMPTY_ITEMS;
   const generatedDirectives = useMemo(
@@ -442,7 +441,6 @@ export function TranscriptItems({
     const identity = item?.id ?? index;
     const itemKey = nested ? `${keyPrefix}-${identity}` : identity;
     const before = !nested ? renderBeforeItem?.(item) : null;
-    const after = !nested ? renderAfterItem?.(item) : null;
     return (
       <Fragment key={itemKey}>
         {before}
@@ -468,7 +466,6 @@ export function TranscriptItems({
           showAceCodeAvatar={showAceCodeAvatar}
           annotationPresentations={annotationPresentations}
         />
-        {after}
       </Fragment>
     );
   });

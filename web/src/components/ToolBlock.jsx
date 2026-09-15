@@ -20,6 +20,7 @@ import { highlightSourceForFile } from '../lib/sourceCodeHighlight.js';
 import { fallbackToolSummary } from '../lib/toolSummaryFallback.js';
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { normalizeTaskCompleteMarkdown } from '../lib/taskCompleteSummary.js';
+import { questionFeedbackForTool } from '../lib/questionFeedback.js';
 import {
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
@@ -27,6 +28,7 @@ import {
 import { AttachmentStrip } from './AttachmentStrip.jsx';
 import { ActivityLine } from './ActivityLine.jsx';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
+import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
 import { ToolSummaryIcon, VsIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import * as Diff2Html from 'diff2html';
@@ -154,8 +156,6 @@ function taskCompleteDisplayText(summary, output) {
   const outputText = String(output ?? '').trim();
   return outputText || '完成';
 }
-
-
 
 export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessionRunning = true }) {
   useTranslation();
@@ -340,6 +340,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   // 完成态与运行态共用 ActivityLine；详情仍由 ToolBlock 自己负责。
   if (isDone) {
     const ok = !!success;
+    const questionFeedback = questionFeedbackForTool(entry);
     return (
       <div
         {...toolContextAttrs}
@@ -382,6 +383,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
             <AttachmentStrip attachments={attachmentItems} align="left" compact />
           </div>
         )}
+        {questionFeedback && <QuestionFeedbackCard feedback={questionFeedback} />}
       </div>
     );
   }
