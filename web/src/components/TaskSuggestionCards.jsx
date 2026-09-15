@@ -37,6 +37,7 @@ function TaskSuggestionCard({ suggestion, state, controller, sourceRef, onOpenSe
       data-task-suggestion={suggestion.kind}
       data-suggestion-status={suggestion.status}
       className="pointer-events-auto rounded-xl bg-surface border border-border p-4 text-fg"
+      style={{ boxShadow: 'var(--ace-shadow-lg), var(--ace-shadow)' }}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && !menuOpen && !actionDisabled) {
           event.preventDefault();
@@ -180,7 +181,8 @@ export function TaskSuggestionCards({ api, sessionId, sourceRef, busy, onOpenSes
   return (
     <aside
       aria-label="任务建议"
-      className="pointer-events-none absolute right-3 top-12 z-30 flex max-h-[calc(100%-4rem)] w-[calc(100%-1.5rem)] max-w-[26rem] flex-col gap-3 overflow-y-auto overscroll-contain ace-scrollbar"
+      // Reserve shadow space inside the scroll area while keeping card bounds unchanged.
+      className="pointer-events-none absolute right-0 top-9 z-30 flex max-h-[calc(100%-2.5rem)] w-full max-w-[27.5rem] flex-col gap-3 overflow-y-auto overscroll-contain p-3 ace-scrollbar"
     >
       {state.suggestions.map((suggestion) => (
         <TaskSuggestionCard

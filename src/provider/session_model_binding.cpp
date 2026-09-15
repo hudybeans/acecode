@@ -51,6 +51,8 @@ SessionModelState session_model_state_from_profile(
     state.name = profile.name;
     state.provider = profile.provider;
     state.model = profile.model;
+    state.models_dev_provider_id = profile.models_dev_provider_id.value_or("");
+    state.reasoning = profile.reasoning;
     const int effective_pool_window =
         model_pool_status_service().effective_context_window_for(state.model);
     state.context_window = resolve_runtime_model_profile_context_window_nonblocking(
@@ -66,6 +68,12 @@ std::shared_ptr<LlmProvider> SessionModelBinding::provider_snapshot() const {
 SessionModelState SessionModelBinding::state_snapshot() const {
     std::lock_guard<std::mutex> lock(state_mu_);
     return state_;
+}
+
+SessionModelRuntimeSnapshot SessionModelBinding::runtime_snapshot() const {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    return {provider_, state_, applied_revision_.load(std::memory_order_acquire),
+            construction_plan_};
 }
 
 SavedModelsRevision SessionModelBinding::applied_revision() const noexcept {

@@ -14,6 +14,8 @@
 //   - SessionEvent 是事件流的最小公共表示;AgentLoop 内部产物经 adapter 转过来
 //   - SessionClient 方法可阻塞(create/list);事件订阅是 push 模式(回调)
 
+#include "../config/saved_models.hpp"
+
 #include <cstdint>
 #include <chrono>
 #include <functional>
@@ -158,6 +160,8 @@ struct SessionOptions {
     // 可选 model override(对应 saved_models.name)。
     // 留空 = 用 daemon 启动时的 default。
     std::string model_name;
+    // Session-local reasoning choice. Missing inherits the saved model profile.
+    std::optional<std::string> reasoning_effort;
 
     // 可选 permission mode override(default / auto / plan / yolo;accept-edits 是 auto 的别名)。
     // 留空 = 用 daemon/TUI 共享默认值。
@@ -222,6 +226,9 @@ struct SessionModelState {
     // configuration. provider/model stay empty so callers do not treat it as
     // a usable provider.
     bool        deleted = false;
+    std::string models_dev_provider_id;
+    std::optional<ModelReasoningOptions> reasoning;
+    std::optional<std::string> reasoning_effort;
 };
 
 // ----- Session 元数据(给 list_sessions 用) -----

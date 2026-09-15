@@ -157,6 +157,7 @@ import {
   sessionModelReloadFeedback,
   withCreateSessionPreferences,
 } from '../lib/sessionModel.js';
+import { composerReasoningOptions } from '../lib/modelReasoning.js';
 import { normalizePermissionMode, permissionModeOption } from '../lib/permissionMode.js';
 import { ATTACHMENT_HARD_LIMIT_BYTES, normalizeImageFile } from '../lib/imageNormalize.js';
 import { PanelToggleIcon, VsIcon } from './Icon.jsx';
@@ -734,6 +735,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const [modelOptions, setModelOptions] = useState([]);
   const [modelListLoaded, setModelListLoaded] = useState(false);
   const [homeModelName, setHomeModelName] = useState('');
+  const [homeReasoningEffort, setHomeReasoningEffort] = useState(null);
+  const [reasoningSwitching, setReasoningSwitching] = useState(false);
+  const reasoningRequestRef = useRef(0);
   const [experts, setExperts] = useState([]);
   const [homeExpertId, setHomeExpertId] = useState(() => String(
     ref?.expertId || ref?.expert_id || ref?.expert?.id || '',
@@ -1268,14 +1272,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     preserveExtras = false,
     title = '',
   } = {}) => {
-    if (homeSubmitting) return null;
+    if (homeSubmitting || reasoningSwitching) return null;
     const target = selectedHomeWorkspace || fallbackWorkspaceOption(ref, health);
     const targetHash = target?.hash || '';
     const targetNoWorkspace = !!target?.noWorkspace;
     void refreshWorkspaceGitInfo(api, target).catch(() => {});
     const baseOptions = withCreateSessionPreferences(
       createOptions || sessionCreateOptionsForText(text),
-      { modelName: homeModelName, permissionMode },
+      { modelName: homeModelName, permissionMode, reasoningEffort: homeReasoningEffort },
     );
     const expertOptions = homeExpertId ? { expert_id: homeExpertId, expertId: homeExpertId } : {};
     const options = targetNoWorkspace
@@ -1339,7 +1343,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setHomeSubmitting(false);
     }
-  }, [api, experts, health, homeExpertId, homeModelName, homeSubmitting, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
+  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
 
   const stageMediaFiles = useCallback((reservedFiles) => {
     const stagedItems = [];
@@ -1808,6 +1812,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     let cancelled = false;
     setPendingModelName('');
     setModelSwitching(false);
+    setReasoningSwitching(false);
+    reasoningRequestRef.current += 1;
     setModelRefreshing(false);
     setModelListLoaded(false);
 
@@ -1865,7 +1871,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   }, [api, modelProfileRevision, ref?.context_window, ref?.deleted, ref?.model, ref?.modelDeleted, ref?.model_deleted, ref?.model_name, ref?.model_preset, ref?.provider, ref?.workspaceHash, sid]);
 
   const refreshSessionModels = useCallback(async () => {
-    if (modelRefreshing) return;
+    if (modelRefreshing || reasoningSwitching) return;
     const targetSid = sid;
     setModelRefreshing(true);
     try {
@@ -1907,7 +1913,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setModelRefreshing(false);
     }
-  }, [api, modelOptions, modelRefreshing, sid]);
+  }, [api, modelOptions, modelRefreshing, sid, reasoningSwitching]);
 
   useEffect(() => {
     if (!sid) {
@@ -3209,7 +3215,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const selectHomeModel = useCallback(async (name) => {
     const nextName = String(name || '');
     const previousName = String(homeModelName || '');
-    if (!nextName || nextName === previousName || modelRefreshing || modelSwitching) return;
+    if (!nextName || nextName === previousName || modelRefreshing || modelSwitching || reasoningSwitching) return;
     setHomeModelName(nextName);
     setModelSwitching(true);
     try {
@@ -3223,12 +3229,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setModelSwitching(false);
     }
-  }, [api, homeModelName, modelRefreshing, modelSwitching]);
+  }, [api, homeModelName, modelRefreshing, modelSwitching, reasoningSwitching]);
 
   const switchSessionModel = useCallback(async (name) => {
     const nextName = String(name || '');
     const currentName = selectedModelName(modelState);
-    if (!sid || !nextName || nextName === currentName || modelSwitching) return;
+    if (!sid || !nextName || nextName === currentName || modelSwitching || reasoningSwitching) return;
     setPendingModelName(nextName);
     setModelSwitching(true);
     try {
@@ -3241,12 +3247,47 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       setPendingModelName('');
       setModelSwitching(false);
     }
-  }, [api, modelState, modelSwitching, sid]);
+  }, [api, modelState, modelSwitching, reasoningSwitching, sid]);
 
   const changeComposerModel = useCallback((name) => {
     if (sid) void switchSessionModel(name);
     else void selectHomeModel(name);
   }, [selectHomeModel, sid, switchSessionModel]);
+
+  useEffect(() => {
+    setHomeReasoningEffort(null);
+  }, [homeModelName, sid]);
+
+  useEffect(() => {
+    const selected = modelOptions.find((option) => option.name === homeModelName);
+    setHomeReasoningEffort((current) => composerReasoningOptions(selected, current)?.selectedEffort ?? null);
+  }, [homeModelName, modelOptions]);
+
+  const changeComposerReasoning = useCallback(async (effort) => {
+    if (busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing) return;
+    const selected = sid ? modelState : modelOptions.find((option) => option.name === homeModelName);
+    const choices = composerReasoningOptions(selected, sid ? undefined : homeReasoningEffort);
+    if (!choices || !choices.items.some((item) => item.effort === effort)) return;
+    if (!sid) {
+      setHomeReasoningEffort(effort);
+      return;
+    }
+    const targetSid = sid;
+    const request = ++reasoningRequestRef.current;
+    setReasoningSwitching(true);
+    try {
+      const state = await api.setSessionReasoning(targetSid, effort);
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) {
+        setModelState(normalizeModelState(state));
+      }
+    } catch (error) {
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) {
+        toast({ kind: 'err', text: '思考深度设置失败：' + (error?.message || '') });
+      }
+    } finally {
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) setReasoningSwitching(false);
+    }
+  }, [api, busy, composerSubmitting, homeModelName, homeReasoningEffort, homeSubmitting, modelOptions, modelRefreshing, modelState, modelSwitching, reasoningSwitching, sid]);
 
   const switchHomeDefaultPermissionMode = useCallback(async (mode) => {
     const nextMode = normalizePermissionMode(mode);
@@ -4804,7 +4845,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                 onChange={handleComposerChange}
                 onSubmit={submit}
                 disabled={!!questionForView}
-                submitting={homeSubmitting}
+                submitting={homeSubmitting || reasoningSwitching}
                 placeholder="向 ACECode 描述任务，或输入 / 命令..."
                 {...composerInputProps}
                 fileDropManagedExternally
@@ -4814,8 +4855,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   modelOptions,
                   selectedModelName: homeModelName,
                   modelLoad: homeModelLoad,
-                  modelSwitching,
+                  modelSwitching: modelSwitching || reasoningSwitching,
                   modelRefreshing,
+                  reasoningOptions: composerReasoningOptions(selectedHomeModel, homeReasoningEffort),
+                  reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
+                  onReasoningChange: changeComposerReasoning,
                   onModelChange: changeComposerModel,
                   onRefreshModels: refreshSessionModels,
                   onOpenModelSettings,
@@ -5385,7 +5429,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             {...composerInputProps}
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
-            submitting={composerSubmitting}
+            submitting={composerSubmitting || reasoningSwitching}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{
@@ -5393,8 +5437,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               modelOptions: displayedModelOptions,
               selectedModelName: currentModelName,
               modelLoad: currentModelLoad,
-              modelSwitching,
+              modelSwitching: modelSwitching || reasoningSwitching,
               modelRefreshing,
+              reasoningOptions: composerReasoningOptions(modelState),
+              reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
+              onReasoningChange: changeComposerReasoning,
               onModelChange: changeComposerModel,
               onRefreshModels: refreshSessionModels,
               onOpenModelSettings,

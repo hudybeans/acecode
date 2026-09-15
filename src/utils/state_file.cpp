@@ -210,6 +210,20 @@ std::optional<ModelProbeCacheEntry> parse_model_probe_cache_entry(
             }
         }
 
+        const auto reasonings = value.find("model_reasoning");
+        for (const auto& id : entry.models) {
+            entry.reasoning[id] = std::nullopt;
+            if (reasonings == value.end() || !reasonings->is_object()) continue;
+            const auto declaration = reasonings->find(id);
+            if (declaration == reasonings->end() || !declaration->is_object()) continue;
+            std::string error;
+            auto parsed = parse_model_reasoning_options(*declaration, error);
+            if (parsed.has_value() && parsed->supported &&
+                !parsed->supported_efforts.empty()) {
+                entry.reasoning[id] = std::move(parsed);
+            }
+        }
+
         auto probed_at = value.find("probed_at_ms");
         if (probed_at != value.end() && probed_at->is_number_integer()) {
             entry.probed_at_ms = probed_at->get<std::int64_t>();
@@ -226,6 +240,7 @@ nlohmann::json model_probe_cache_entry_to_json(
         {"version", 1},
         {"models", nlohmann::json::array()},
         {"model_context_windows", nlohmann::json::object()},
+        {"model_reasoning", nlohmann::json::object()},
         {"probed_at_ms", source.probed_at_ms},
     };
     std::set<std::string> seen;
@@ -236,6 +251,17 @@ nlohmann::json model_probe_cache_entry_to_json(
             continue;
         }
         value["models"].push_back(id);
+        value["model_reasoning"][id] = nullptr;
+        const auto declaration = source.reasoning.find(id);
+        if (declaration != source.reasoning.end() && declaration->second.has_value()) {
+            const auto encoded = model_reasoning_options_to_json(*declaration->second);
+            std::string error;
+            const auto parsed = parse_model_reasoning_options(encoded, error);
+            if (parsed.has_value() && parsed->supported &&
+                !parsed->supported_efforts.empty()) {
+                value["model_reasoning"][id] = encoded;
+            }
+        }
     }
     for (const auto& [id, context] : source.context_windows) {
         if (context > 0 && seen.count(id)) {

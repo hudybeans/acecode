@@ -711,3 +711,101 @@ TEST(ModelsHandler, ParseProbeRequestRejectsContentTypeRequestHeader) {
     EXPECT_EQ(code, "INVALID_REQUEST_HEADER");
     EXPECT_NE(err.find("Content-Type"), std::string::npos) << err;
 }
+
+TEST(ModelsHandler, DiscoveryReasoningRequiresCompleteValidEffortDeclaration) {
+    const auto valid = nlohmann::json{
+        {"supported_efforts", {"low", "high"}}, {"default_effort", "high"}};
+    const std::vector<nlohmann::json> invalid{
+        nullptr, false, "high", nlohmann::json::array(),
+        nlohmann::json::object(),
+        {{"supported_efforts", nlohmann::json::array()}},
+        {{"supported_efforts", "high"}},
+        {{"supported_efforts", {"low", "unknown"}}},
+        {{"supported_efforts", {"low", "low"}}},
+        {{"supported_efforts", {"low", nullptr}}},
+        {{"supported_efforts", {"low"}}, {"default_effort", "high"}},
+        {{"supported_efforts", {"low"}}, {"default_effort", nullptr}},
+    };
+    auto models = nlohmann::json::array({
+        {{"id", "valid"}, {"reasoning", valid}},
+        {{"id", "no-default"}, {"reasoning", {{"supported_efforts", {"medium"}}}}},
+        {{"id", "absent"}}, "string-model",
+    });
+    for (std::size_t i = 0; i < invalid.size(); ++i) {
+        models.push_back({{"id", "invalid-" + std::to_string(i)},
+                          {"reasoning", invalid[i]}});
+    }
+    const auto parsed = parse_openai_models({{"data", models}});
+    ASSERT_EQ(parsed.reasoning.size(), parsed.ids.size());
+    ASSERT_TRUE(parsed.reasoning.at("valid").has_value());
+    const auto& reasoning = *parsed.reasoning.at("valid");
+    EXPECT_TRUE(reasoning.supported);
+    EXPECT_TRUE(reasoning.default_enabled);
+    EXPECT_FALSE(reasoning.mandatory);
+    EXPECT_EQ(reasoning.supported_efforts,
+              (std::vector<std::string>{"low", "high"}));
+    EXPECT_EQ(reasoning.default_effort, "high");
+    EXPECT_FALSE(reasoning.effort.has_value());
+    ASSERT_TRUE(parsed.reasoning.at("no-default").has_value());
+    EXPECT_FALSE(parsed.reasoning.at("no-default")->default_effort.has_value());
+    EXPECT_FALSE(parsed.reasoning.at("absent").has_value());
+    EXPECT_FALSE(parsed.reasoning.at("string-model").has_value());
+    for (std::size_t i = 0; i < invalid.size(); ++i) {
+        EXPECT_FALSE(parsed.reasoning.at("invalid-" + std::to_string(i)).has_value()) << i;
+    }
+    const auto wire = acecode::web::model_probe_reasoning_to_json(
+        parsed.ids, parsed.reasoning);
+    EXPECT_EQ(wire["valid"]["supported_efforts"], valid["supported_efforts"]);
+    EXPECT_TRUE(wire["absent"].is_null());
+    EXPECT_EQ(wire.size(), parsed.ids.size());
+}
+
+TEST(ModelsHandler, ProbeReasoningRemovalClearsPriorDeclarationAndAceModelTag) {
+    const auto first = parse_openai_models(nlohmann::json::array({
+        {{"id", "aurora"}, {"reasoning", {{"supported_efforts", {"high"}}}}},
+        {{"id", "new-model"}, {"reasoning", {{"supported_efforts", {"low", "high"}}}}},
+    }));
+    ModelProbeRequest request;
+    request.provider = "openai";
+    request.catalog_provider_id = "acemodel";
+    request.base_url = "https://proxy.example/v1";
+    const auto first_caps = model_probe_capabilities(request, first.ids, first.reasoning);
+    EXPECT_EQ(first_caps.at("aurora"),
+              (std::vector<std::string>{"vision", "tool_use", "reasoning"}));
+    EXPECT_EQ(first_caps.at("new-model"),
+              (std::vector<std::string>{"reasoning"}));
+
+    const auto removed = parse_openai_models(nlohmann::json::array({
+        {{"id", "aurora"}}, {{"id", "new-model"}, {"reasoning", nullptr}},
+    }));
+    const auto wire = acecode::web::model_probe_reasoning_to_json(
+        removed.ids, removed.reasoning);
+    EXPECT_TRUE(wire["aurora"].is_null());
+    EXPECT_TRUE(wire["new-model"].is_null());
+    const auto removed_caps = model_probe_capabilities(request, removed.ids, removed.reasoning);
+    EXPECT_EQ(removed_caps.at("aurora"),
+              (std::vector<std::string>{"vision", "tool_use"}));
+    EXPECT_EQ(removed_caps.count("new-model"), 0u);
+
+    request.catalog_provider_id = "custom-openai";
+    EXPECT_TRUE(model_probe_capabilities(request, first.ids, first.reasoning).empty());
+}
+
+TEST(ModelsHandler, ModelStateSerializesReasoningAndNullableSessionOverride) {
+    SessionModelState state;
+    state.models_dev_provider_id = "acemodel";
+    const auto parsed = parse_openai_models(nlohmann::json::array({
+        {{"id", "model"}, {"reasoning", {{"supported_efforts", {"low", "high"}}}}},
+    }));
+    state.reasoning = parsed.reasoning.at("model");
+    state.reasoning_effort = "high";
+    const auto selected = model_state_to_json(state);
+    EXPECT_EQ(selected["models_dev_provider_id"], "acemodel");
+    EXPECT_EQ(selected["reasoning_effort"], "high");
+    EXPECT_EQ(selected["reasoning"]["supported_efforts"],
+              nlohmann::json::array({"low", "high"}));
+    state.reasoning_effort.reset();
+    EXPECT_TRUE(model_state_to_json(state)["reasoning_effort"].is_null());
+    state.reasoning.reset();
+    EXPECT_TRUE(model_state_to_json(state)["reasoning"].is_null());
+}

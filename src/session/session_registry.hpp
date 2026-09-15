@@ -37,6 +37,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -90,6 +91,9 @@ struct SessionEntry {
     // 只在父会话的工具线程上读写。
     std::string workspace_watch_cwd;
     std::vector<std::string> workspace_watch_baseline;
+    // Serializes profile selection, reload and session reasoning overrides.
+    // Never acquire the AgentLoop queue gate while holding this mutex.
+    std::mutex model_control_mu;
     std::shared_ptr<SessionModelBinding> model_binding;
     std::shared_ptr<SkillRegistry>       skill_registry;
     // Inputs required to re-apply a changed global Skill policy without
@@ -179,6 +183,20 @@ struct ExpertDetachResult {
     bool context_retained = true;
 };
 
+class SessionReasoningValidationError : public std::invalid_argument {
+public:
+    SessionReasoningValidationError()
+        : std::invalid_argument("reasoning effort is not supported by the enabled model") {}
+};
+
+enum class SessionReasoningStatus { Updated, UnknownSession, Busy, InvalidEffort, Unavailable, Failed };
+
+struct SessionReasoningResult {
+    SessionReasoningStatus status = SessionReasoningStatus::Failed;
+    SessionModelState state;
+    std::string error;
+};
+
 class SessionRegistry {
 public:
     explicit SessionRegistry(SessionRegistryDeps deps);
@@ -219,6 +237,8 @@ public:
     // affects future turns for that session only; an in-flight turn keeps the
     // provider shared_ptr snapshot it already captured.
     std::optional<SessionModelState> current_model_state(const std::string& id) const;
+    SessionReasoningResult set_reasoning_effort(
+        const std::string& id, const std::optional<std::string>& effort);
     bool model_profile_used_by_busy_session(const std::string& model_name) const;
     // Recompute and publish only the context budget for active sessions that
     // still reference model_name. Stable-name edits only: a renamed profile is

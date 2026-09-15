@@ -1,3 +1,4 @@
+import { normalizeModelReasoning } from './modelReasoning.js';
 import { normalizePermissionMode } from './permissionMode.js';
 
 export function normalizeModelState(raw) {
@@ -5,6 +6,8 @@ export function normalizeModelState(raw) {
   return {
     name: String(raw.name || raw.model_name || raw.model_preset || ''),
     provider: String(raw.provider || ''),
+    reasoning: normalizeModelReasoning(raw.reasoning),
+    reasoningEffort: raw.reasoning_effort ?? raw.reasoningEffort ?? null,
     model: String(raw.model || ''),
     models_dev_provider_id: String(raw.models_dev_provider_id || raw.modelsDevProviderId || ''),
     contextWindow: Number(raw.context_window || raw.contextWindow || 0) || 0,
@@ -123,10 +126,11 @@ export function withCreateSessionModel(options = {}, modelName = '') {
   return withCreateSessionPreferences(options, { modelName });
 }
 
-export function withCreateSessionPreferences(options = {}, { modelName = '', permissionMode = '' } = {}) {
+export function withCreateSessionPreferences(options = {}, { modelName = '', permissionMode = '', reasoningEffort = undefined } = {}) {
   const next = { ...(options && typeof options === 'object' ? options : {}) };
   const name = String(modelName || '').trim();
   if (name) next.name = name;
+  if (reasoningEffort !== undefined) next.reasoning_effort = reasoningEffort;
   const mode = String(permissionMode || '').trim();
   if (mode) next.permission_mode = normalizePermissionMode(mode);
   return next;

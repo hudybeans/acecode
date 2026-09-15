@@ -4,6 +4,7 @@ import {
   addManualModelToDraft,
   formatModelTokenLimit,
   normalizeProviderModelQuery,
+  modelRowsFromProbe,
   redactModelDraftSecrets,
   replaceDraftModelsFromProbe,
   toggleCatalogModelInDraft,
@@ -16,7 +17,6 @@ import {
 } from '../../lib/providerCatalogGroups.js';
 import {
   filterProviderModels,
-  normalizeModelProbeResult,
   parseRequestHeadersJson,
   splitModelIds,
 } from '../../lib/modelManager.js';
@@ -43,18 +43,6 @@ function modelMetadataSummary(model) {
   if (output) parts.push(`最大输出 ${output}`);
   if (model?.capabilities?.length) parts.push(`能力 ${model.capabilities.join(' · ')}`);
   return parts.join(' · ');
-}
-
-function modelRowsFromProbe(response) {
-  const normalized = normalizeModelProbeResult(response);
-  return normalized.models.map((id) => ({
-    id,
-    name: id,
-    context_window: normalized.contextWindows[id] || null,
-    max_output_tokens: null,
-    capabilities: normalized.capabilitiesByModel[id] || [],
-    reasoning: null,
-  }));
 }
 
 function modelProbeRequest(provider, draft) {
@@ -208,7 +196,7 @@ export function ProviderCatalogPicker({
             || providerIdRef.current !== requestProviderId
             || requestRevision !== probeCacheRequestRevisionRef.current
             || response?.cached !== true) return;
-        const models = modelRowsFromProbe(response);
+        const models = modelRowsFromProbe(response, provider);
         modelResultSourceRef.current = 'probe';
         catalogRequestRevisionRef.current += 1;
         setCatalogModels(models);
@@ -274,7 +262,7 @@ export function ProviderCatalogPicker({
       const response = await apiClient.probeModels(parsedRequest.value);
       if (providerIdRef.current !== requestProviderId
           || requestRevision !== probeRequestRevisionRef.current) return;
-      const models = modelRowsFromProbe(response);
+      const models = modelRowsFromProbe(response, provider);
       modelResultSourceRef.current = 'probe';
       catalogRequestRevisionRef.current += 1;
       setCatalogModels(models);

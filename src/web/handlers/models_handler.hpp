@@ -73,16 +73,23 @@ std::optional<ModelProbeRequest> parse_model_probe_request(const nlohmann::json&
 // returned or persisted by this helper.
 std::string model_probe_connection_fingerprint(const ModelProbeRequest& request);
 
-// Capability metadata attached to probe/cache responses. ACEModel derives it
-// from the canonical built-in catalog so probing never downgrades a model
-// selected from the static catalog.
+// ACEModel keeps built-in non-reasoning capabilities; reasoning is enabled
+// only by a valid explicit discovery declaration.
 std::map<std::string, std::vector<std::string>>
 model_probe_capabilities(const ModelProbeRequest& request,
-                         const std::vector<std::string>& model_ids);
+                         const std::vector<std::string>& model_ids,
+                         const std::map<std::string,
+                             std::optional<ModelReasoningOptions>>& reasoning = {});
+
+// Include every discovered id; null clears any stale declaration on clients.
+nlohmann::json model_probe_reasoning_to_json(
+    const std::vector<std::string>& model_ids,
+    const std::map<std::string, std::optional<ModelReasoningOptions>>& reasoning);
 
 struct ParsedOpenAiModels {
     std::vector<std::string> ids;
     std::map<std::string, int> context_windows;
+    std::map<std::string, std::optional<ModelReasoningOptions>> reasoning;
 };
 
 ParsedOpenAiModels parse_openai_models(const nlohmann::json& body);

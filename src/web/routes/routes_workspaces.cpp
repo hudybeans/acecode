@@ -524,6 +524,12 @@ void WebServer::Impl::register_workspaces() {
                     refresh_default_session_preferences_for_new_session_locked();
                 }
                 id = deps.session_client->create_session(opts);
+            } catch (const SessionReasoningValidationError& ex) {
+                crow::response r(400);
+                r.body = json{{"error", "INVALID_REASONING_EFFORT"},
+                              {"message", ex.what()}}.dump();
+                r.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(r));
             } catch (const std::invalid_argument& ex) {
                 crow::response r(400);
                 r.body = json{{"error", "INVALID_EXPERT"},

@@ -13,6 +13,7 @@ enum class ReasoningWireProtocol {
     None,
     OpenRouter,
     Anthropic,
+    OpenAi,
 };
 
 struct ProviderRequestOptions {

@@ -1541,6 +1541,15 @@ export const InputBar = forwardRef(function InputBar({
           addControl={capabilityControl}
           contexts={inlineContextControls}
           actions={submitControls}
+          onCaptureComposerSelection={() => {
+            if (!isComposerEditorFocused(rootRef.current)) return null;
+            const selection = captureComposerTextareaSelection(ta.current);
+            return () => restoreComposerTextareaCaret({
+              textareaElement: ta.current,
+              rootElement: rootRef.current,
+              selection,
+            });
+          }}
           expertId={selectedExpertId}
           expertName={selectedExpertName}
           expertType={selectedExpertType}

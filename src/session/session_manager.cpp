@@ -255,6 +255,7 @@ void SessionManager::start_session(const std::string& cwd,
     provider_name_ = provider;
     model_name_ = model;
     model_preset_ = model_preset;
+    reasoning_effort_.reset();
     surface_ = surface.empty() ? "unknown" : surface;
     no_workspace_ = no_workspace;
     project_dir_ = SessionStorage::get_project_dir(cwd);
@@ -333,6 +334,7 @@ bool SessionManager::ensure_created() {
     meta.provider = provider_name_;
     meta.model = model_name_;
     meta.model_preset = model_preset_;
+    meta.reasoning_effort = reasoning_effort_;
     meta.title = pending_title_;
     meta.title_source = title_source_;
     meta.input_draft = input_draft_;
@@ -663,6 +665,7 @@ std::vector<ChatMessage> SessionManager::resume_session(const std::string& sessi
         loop_id_ = meta.loop_id;
         loop_run_id_ = meta.loop_run_id;
         worktree_ = meta.worktree;
+        reasoning_effort_ = meta.reasoning_effort;
         if (model_preset_.empty()) {
             model_preset_ = meta.model_preset;
         }
@@ -731,11 +734,48 @@ bool SessionManager::set_active_provider(const std::string& provider,
     std::lock_guard<std::mutex> lk(mu_);
     provider_name_ = provider;
     model_name_ = model;
+    if (model_preset_ != model_preset) reasoning_effort_.reset();
     model_preset_ = model_preset;
     if (created_) {
         return update_meta();
     }
     return true;
+}
+
+bool SessionManager::set_active_model_state(
+    const std::string& provider,
+    const std::string& model,
+    const std::string& model_preset,
+    const std::optional<std::string>& reasoning_effort,
+    bool persist_immediately) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto old_provider = provider_name_;
+    const auto old_model = model_name_;
+    const auto old_preset = model_preset_;
+    const auto old_effort = reasoning_effort_;
+    if (!persist_immediately && old_provider == provider && old_model == model &&
+        old_preset == model_preset && old_effort == reasoning_effort) return true;
+    provider_name_ = provider;
+    model_name_ = model;
+    model_preset_ = model_preset;
+    reasoning_effort_ = reasoning_effort;
+    bool written = false;
+    try {
+        if (persist_immediately && !created_) ensure_created();
+        written = created_ ? update_meta() : !persist_immediately;
+    } catch (...) {
+        written = false;
+    }
+    if (!written) {
+        provider_name_ = old_provider;
+        model_name_ = old_model;
+        model_preset_ = old_preset;
+        reasoning_effort_ = old_effort;
+        // If initial materialization succeeded before a later write failed,
+        // make a best-effort attempt to restore the durable selection too.
+        try { if (created_) (void)update_meta(); } catch (...) {}
+    }
+    return written;
 }
 
 std::string SessionManager::current_model_preset() const {
@@ -1013,6 +1053,7 @@ std::string SessionManager::fork_session_to_new_id(
     meta.provider        = provider_name_;
     meta.model           = model_name_;
     meta.model_preset    = model_preset_;
+    meta.reasoning_effort = reasoning_effort_;
     meta.title           = title;
     meta.title_source    = title.empty() ? std::string{} : "user";
     meta.input_draft     = std::string{};
@@ -1168,6 +1209,7 @@ bool SessionManager::update_meta(
     meta.provider = provider_name_;
     meta.model = model_name_;
     meta.model_preset = model_preset_;
+    meta.reasoning_effort = reasoning_effort_;
     meta.title = pending_title_;
     meta.title_source = title_source_;
     meta.input_draft = input_draft_;
@@ -1513,6 +1555,7 @@ void SessionManager::set_input_draft(std::string draft) {
         meta.provider = provider_name_;
         meta.model = model_name_;
         meta.model_preset = model_preset_;
+        meta.reasoning_effort = reasoning_effort_;
         meta.title = pending_title_;
         meta.title_source = title_source_;
         meta.permission_mode = permission_mode_;

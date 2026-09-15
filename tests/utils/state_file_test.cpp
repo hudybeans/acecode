@@ -414,3 +414,57 @@ TEST_F(StateFileTest, SlashCommandUsageWriteFailureReturnsInMemoryCount) {
     EXPECT_FALSE(result.persisted);
     EXPECT_EQ(result.count, 1u);
 }
+
+TEST_F(StateFileTest, ModelProbeCachePreservesReasoningAndExplicitRemoval) {
+    const std::string fingerprint(64, 'd');
+    acecode::ModelReasoningOptions reasoning;
+    reasoning.supported = true;
+    reasoning.default_enabled = true;
+    reasoning.supported_efforts = {"low", "high"};
+    reasoning.default_effort = "high";
+    acecode::ModelProbeCacheEntry entry;
+    entry.models = {"supported", "unknown"};
+    entry.reasoning["supported"] = reasoning;
+    entry.reasoning["not-in-models"] = reasoning;
+    ASSERT_TRUE(acecode::write_model_probe_cache(fingerprint, entry));
+    auto restored = acecode::read_model_probe_cache(fingerprint);
+    ASSERT_TRUE(restored.has_value());
+    ASSERT_TRUE(restored->reasoning.at("supported").has_value());
+    EXPECT_EQ(restored->reasoning.at("supported")->supported_efforts,
+              reasoning.supported_efforts);
+    EXPECT_EQ(restored->reasoning.at("supported")->default_effort, "high");
+    EXPECT_FALSE(restored->reasoning.at("unknown").has_value());
+    EXPECT_EQ(restored->reasoning.count("not-in-models"), 0u);
+
+    entry.reasoning.clear();
+    ASSERT_TRUE(acecode::write_model_probe_cache(fingerprint, entry));
+    restored = acecode::read_model_probe_cache(fingerprint);
+    ASSERT_TRUE(restored.has_value());
+    ASSERT_EQ(restored->reasoning.size(), 2u);
+    EXPECT_FALSE(restored->reasoning.at("supported").has_value());
+    EXPECT_FALSE(restored->reasoning.at("unknown").has_value());
+}
+
+TEST_F(StateFileTest, LegacyOrInvalidProbeReasoningRestoresAsExplicitNull) {
+    const std::string fingerprint(64, 'e');
+    nlohmann::json cache{
+        {"version", 1}, {"models", {"model"}}, {"probed_at_ms", 123}};
+    auto write_cache = [&] {
+        write_raw(path_, nlohmann::json{
+            {"model_probe_cache", {{fingerprint, cache}}}}.dump());
+    };
+    write_cache();
+    auto restored = acecode::read_model_probe_cache(fingerprint);
+    ASSERT_TRUE(restored.has_value());
+    EXPECT_FALSE(restored->reasoning.at("model").has_value());
+
+    cache["model_reasoning"] = {{"model", {
+        {"supported", true}, {"mandatory", false}, {"default_enabled", true},
+        {"supports_max_tokens", false}, {"supported_efforts", {"unknown"}},
+    }}};
+    write_cache();
+    restored = acecode::read_model_probe_cache(fingerprint);
+    ASSERT_TRUE(restored.has_value());
+    EXPECT_FALSE(restored->reasoning.at("model").has_value());
+    EXPECT_EQ(restored->probed_at_ms, 123);
+}

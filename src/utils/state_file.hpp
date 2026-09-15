@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../config/saved_models.hpp"
+
 #include <optional>
 
 // 跨会话进程状态(once-only 提示标记等),持久化到 ~/.acecode/state.json。
@@ -78,6 +80,7 @@ struct ModelProbeCacheEntry {
     std::vector<std::string> models;
     std::map<std::string, int> context_windows;
     std::int64_t probed_at_ms = 0;
+    std::map<std::string, std::optional<ModelReasoningOptions>> reasoning;
 };
 
 // Missing/malformed entries return nullopt. The fingerprint must be exactly a

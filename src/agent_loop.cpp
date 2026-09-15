@@ -1190,6 +1190,17 @@ ControlEnqueueReceipt AgentLoop::enqueue_control(
     return receipt;
 }
 
+bool AgentLoop::try_run_idle_control(const std::function<void()>& control) {
+    if (!control) return false;
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    if (shutdown_requested_ || worker_task_active_ || busy_.load() ||
+        !priority_task_queue_.empty() || !task_queue_.empty()) {
+        return false;
+    }
+    control();
+    return true;
+}
+
 TurnSteerResult AgentLoop::steer_input(
     const std::string& expected_turn_id,
     const UserInput& input) {

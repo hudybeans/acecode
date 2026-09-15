@@ -47,3 +47,12 @@ for (const viewportHeight of [240, 300, 400, 600, 900]) {
   }
 }
 console.log('anchoredMenuPosition.test.js: all tests passed');
+
+const preferredAbove = place({ viewportHeight: 900, preferredPlacement: 'above' });
+assert.equal(preferredAbove.placement, 'above');
+assert.equal(preferredAbove.top + 202, 441);
+const topEdge = place({
+  preferredPlacement: 'above', anchorRect: { left: 16, top: 8, bottom: 36 },
+});
+assert.equal(topEdge.placement, 'below');
+assert.ok(topEdge.top >= 8);

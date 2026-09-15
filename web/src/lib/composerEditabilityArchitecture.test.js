@@ -52,6 +52,12 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
     'homeSubmitting 进 disabled 会让主页输入框在建会话期间变成只读',
   );
 
+  assert.doesNotMatch(
+    chatView,
+    /disabled=\{[^}]*reasoningSwitching[^}]*\}/,
+    'reasoning mutation must disable submission without making the editor read-only',
+  );
+
   // 主页 composer 的 disabled 只剩「有待回答的问题」这一个来源(主页没有会话
   // 可以承接插话);会话 composer 在提问挂起时**根本不渲染** —— dock 整体换成
   // 提问框,所以它既不需要 disabled,也不该留「请先回答上方问题」这类旧提示。
@@ -62,8 +68,8 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
   );
   assert.match(chatView, /<div className="ace-composer-dock">\s*\{!questionForView \? \(/);
   assert.doesNotMatch(chatView, /请先回答上方问题/);
-  assert.match(chatView, /submitting=\{composerSubmitting\}/);
-  assert.match(chatView, /submitting=\{homeSubmitting\}/);
+  assert.match(chatView, /submitting=\{composerSubmitting \|\| reasoningSwitching\}/);
+  assert.match(chatView, /submitting=\{homeSubmitting \|\| reasoningSwitching\}/);
 });
 
 run('提问挂起时 composer 整体让位给提问框,不留插话入口', () => {

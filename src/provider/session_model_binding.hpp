@@ -78,6 +78,8 @@ public:
 
     std::shared_ptr<LlmProvider> provider_snapshot() const;
     SessionModelState state_snapshot() const;
+    // Retain the exact immutable construction inputs for transaction rollback.
+    SessionModelRuntimeSnapshot runtime_snapshot() const;
     SavedModelsRevision applied_revision() const noexcept;
 
     SessionModelReloadResult install_explicit(

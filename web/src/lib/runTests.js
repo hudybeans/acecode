@@ -126,6 +126,7 @@ import './sessionTitle.test.js';
 import './archivedSessions.test.js';
 import './archivedSessionBatchActionsArchitecture.test.js';
 import './sessionModel.test.js';
+import './modelReasoning.test.js';
 import './modelContextSyncArchitecture.test.js';
 import './composerSessionControlsArchitecture.test.js';
 import './expertComponents.test.js';

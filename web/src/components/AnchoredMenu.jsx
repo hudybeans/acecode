@@ -5,7 +5,7 @@ import { notifyNativeSurfaceOverlayChange } from '../lib/agentBrowserSurfaceCoor
 
 // Own placement and dismissal together so menus escape clipped ancestors while
 // still following their trigger as the window, content, or dock changes size.
-export function AnchoredMenu({ anchorRef, onClose, children, className = '', width, maxHeightRatio = 1, ...props }) {
+export function AnchoredMenu({ anchorRef, onClose, children, className = '', width, maxHeightRatio = 1, preferredPlacement = 'below', ...props }) {
   const menuRef = useRef(null);
   const updatePositionRef = useRef(null);
   const closeRef = useRef(onClose);
@@ -43,6 +43,7 @@ export function AnchoredMenu({ anchorRef, onClose, children, className = '', wid
         viewportWidth,
         viewportHeight,
         maxHeight: viewportHeight * maxHeightRatio,
+        preferredPlacement,
       });
       const key = JSON.stringify(position);
       if (lastPosition === key) return;
@@ -104,7 +105,7 @@ export function AnchoredMenu({ anchorRef, onClose, children, className = '', wid
       if (menu.contains(document.activeElement)) previousFocus?.focus?.({ preventScroll: true });
       notifyNativeSurfaceOverlayChange();
     };
-  }, [anchorRef, width, maxHeightRatio]);
+  }, [anchorRef, width, maxHeightRatio, preferredPlacement]);
 
   // A sibling insertion can move the anchor without resizing any observed box.
   // Recheck after parent renders as well as on resize/scroll notifications.

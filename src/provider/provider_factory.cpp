@@ -56,6 +56,8 @@ ProviderRequestOptions request_options_from_entry(const ModelProfile& entry) {
                entry.models_dev_provider_id.has_value() &&
                equals_ascii_ci(*entry.models_dev_provider_id, "openrouter")) {
         options.reasoning_protocol = ReasoningWireProtocol::OpenRouter;
+    } else if (entry.provider == "openai" && entry.reasoning.has_value()) {
+        options.reasoning_protocol = ReasoningWireProtocol::OpenAi;
     }
     return options;
 }

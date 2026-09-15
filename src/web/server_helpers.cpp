@@ -2317,6 +2317,16 @@ std::optional<crow::response> WebServer::Impl::parse_session_options(
             opts.model_name = j["model"].get<std::string>();
         if (j.contains("name") && j["name"].is_string())
             opts.model_name = j["name"].get<std::string>();
+        if (j.contains("reasoning_effort") && !j["reasoning_effort"].is_null()) {
+            if (!j["reasoning_effort"].is_string()) {
+                crow::response r(400);
+                r.body = json{{"error", "INVALID_REASONING_EFFORT"},
+                              {"message", "reasoning_effort must be a string or null"}}.dump();
+                r.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(r));
+            }
+            opts.reasoning_effort = j["reasoning_effort"].get<std::string>();
+        }
         std::string permission_mode_name;
         if (j.contains("permission_mode") && j["permission_mode"].is_string()) {
             permission_mode_name = j["permission_mode"].get<std::string>();

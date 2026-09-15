@@ -1,6 +1,16 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '思考深度': 'Reasoning depth',
+  '思考深度：{{p0}}': 'Reasoning depth: {{p0}}',
+  '思考深度设置失败：': 'Could not update reasoning depth: ',
+  '可选思考深度': 'Available reasoning levels',
+  '最低': 'Minimal',
+  '低': 'Low',
+  '中': 'Medium',
+  '极高': 'Extra high',
+  '最大': 'Maximum',
+  '最小化侧边聊天': 'Minimize side chat',
   'Token 活动': 'Token activity',
   'Token 活动视图': 'Token activity view',
   '每日': 'Daily',

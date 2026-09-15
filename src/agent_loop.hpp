@@ -222,6 +222,11 @@ public:
     // update.
     ControlEnqueueReceipt enqueue_control(std::function<bool()> control);
 
+    // Run an external model-state mutation only when no work is active or
+    // queued. The callback holds the queue gate; it must not submit work, wait
+    // for the worker, or acquire active_turn_mu_. False means it was not run.
+    bool try_run_idle_control(const std::function<void()>& control);
+
     // Emit a visible system message without adding it to LLM history. Used by
     // daemon-owned builtin commands for TUI-like progress and fallback output.
     void emit_system_message(const std::string& content);

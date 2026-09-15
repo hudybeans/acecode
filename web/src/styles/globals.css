@@ -1393,6 +1393,20 @@ body {
   gap: 5px;
   flex-shrink: 0;
 }
+.ace-composer-reasoning-control {
+  flex: 0 0 auto;
+}
+.ace-composer-reasoning-button {
+  white-space: nowrap;
+}
+.ace-composer-reasoning-menu {
+  z-index: 80;
+  padding: 5px;
+  border: 1px solid var(--ace-border);
+  border-radius: 10px;
+  background: var(--ace-surface);
+  box-shadow: var(--ace-shadow-lg);
+}
 .ace-composer-permission-control,
 .ace-composer-model-control {
   min-width: 28px;

@@ -281,6 +281,9 @@ bool SessionStorage::write_meta(const std::string& meta_path, const SessionMeta&
     if (!meta.model_preset.empty()) {
         j["model_preset"] = meta.model_preset;
     }
+    if (meta.reasoning_effort.has_value()) {
+        j["reasoning_effort"] = *meta.reasoning_effort;
+    }
     if (!meta.title.empty()) {
         j["title"] = meta.title;
     }
@@ -366,6 +369,9 @@ SessionMeta SessionStorage::read_meta(const std::string& meta_path) {
         if (j.contains("provider"))      meta.provider      = j["provider"].get<std::string>();
         if (j.contains("model"))         meta.model         = j["model"].get<std::string>();
         meta.model_preset    = j.value("model_preset",    std::string{});
+        if (j.contains("reasoning_effort") && j["reasoning_effort"].is_string()) {
+            meta.reasoning_effort = j["reasoning_effort"].get<std::string>();
+        }
         meta.title           = j.value("title",           std::string{});
         meta.title_source    = j.value("title_source",    std::string{});
         if (!meta.title.empty() && meta.title_source.empty()) {

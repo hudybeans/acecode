@@ -10382,3 +10382,153 @@ TEST(WebServerHttp, ToolRewritesRoundTripPersistsJsonAndAppliesToProcess) {
     EXPECT_EQ(json::parse(after.text)["enabled"], false);
     EXPECT_EQ(json::parse(after.text)["rewrites"]["file_read"], "peek");
 }
+
+
+TEST(WebServerHttp, ModelProbeReasoningSurvivesCacheAndRemovedDeclaration) {
+    std::atomic<bool> declared{true};
+    std::atomic<int> requests{0};
+    LocalUpdateServer upstream([&](httplib::Server& http) {
+        http.Get("/models", [&](const httplib::Request&, httplib::Response& res) {
+            ++requests;
+            json model{{"id", "aurora"}};
+            if (declared.load()) {
+                model["reasoning"] = {
+                    {"supported_efforts", {"low", "high"}},
+                    {"default_effort", "high"},
+                };
+            }
+            res.set_content(json{{"data", json::array({
+                model, json{{"id", "opaque-model"}}})}}.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx;
+    const json draft{
+        {"catalog_provider_id", "acemodel"}, {"provider", "openai"},
+        {"base_url", upstream.base_url()}, {"api_key", "test-key"},
+    };
+    auto probe = [&](const std::string& route) {
+        return cpr::Post(cpr::Url{fx.url(route)},
+                         cpr::Header{{"Content-Type", "application/json"}},
+                         cpr::Body{draft.dump()});
+    };
+    auto response = probe("/api/models/probe");
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    const auto first = json::parse(response.text);
+    EXPECT_EQ(first["model_reasoning"]["aurora"]["supported_efforts"],
+              json::array({"low", "high"}));
+    EXPECT_EQ(first["model_reasoning"]["aurora"]["default_effort"], "high");
+    EXPECT_TRUE(first["model_reasoning"]["opaque-model"].is_null());
+    EXPECT_EQ(first["model_capabilities"]["aurora"],
+              json::array({"vision", "tool_use", "reasoning"}));
+    response = probe("/api/models/probe/cache");
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    const auto cached = json::parse(response.text);
+    EXPECT_EQ(cached["model_reasoning"], first["model_reasoning"]);
+    EXPECT_EQ(requests.load(), 1);
+
+    declared.store(false);
+    response = probe("/api/models/probe");
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    const auto removed = json::parse(response.text);
+    EXPECT_TRUE(removed["model_reasoning"]["aurora"].is_null());
+    EXPECT_EQ(removed["model_capabilities"]["aurora"],
+              json::array({"vision", "tool_use"}));
+    response = probe("/api/models/probe/cache");
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    EXPECT_EQ(json::parse(response.text)["model_reasoning"], removed["model_reasoning"]);
+    EXPECT_EQ(requests.load(), 2);
+}
+
+
+namespace {
+void configure_reasoning_http_model(WebServerFixture& fx) {
+    std::lock_guard<std::shared_mutex> lock(fx.app_config_mu);
+    acecode::ModelProfile profile;
+    profile.name = "reasoning-http";
+    profile.provider = "openai";
+    profile.base_url = "http://127.0.0.1:9/v1";
+    profile.api_key = "test-key";
+    profile.model = "reasoning-model";
+    profile.models_dev_provider_id = "acemodel";
+    profile.context_window = 128000;
+    acecode::ModelReasoningOptions reasoning;
+    reasoning.supported = true;
+    reasoning.default_enabled = true;
+    reasoning.supported_efforts = {"low", "high"};
+    reasoning.default_effort = "low";
+    profile.reasoning = reasoning;
+    fx.cfg.saved_models.push_back(profile);
+}
+} // namespace
+
+TEST(WebServerHttp, SessionReasoningCreateUpdateResetAndInvalidInputs) {
+    WebServerFixture fx;
+    configure_reasoning_http_model(fx);
+    auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"name", "reasoning-http"}, {"reasoning_effort", "high"}}.dump()});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto id = json::parse(create.text)["session_id"].get<std::string>();
+    auto state = cpr::Get(cpr::Url{fx.url("/api/sessions/" + id + "/model")});
+    ASSERT_EQ(state.status_code, 200) << state.text;
+    EXPECT_EQ(json::parse(state.text)["reasoning_effort"], "high");
+    EXPECT_EQ(json::parse(state.text)["reasoning"]["effort"], "high");
+    EXPECT_EQ(json::parse(state.text)["models_dev_provider_id"], "acemodel");
+    auto post = [&](const json& body) {
+        return cpr::Post(cpr::Url{fx.url("/api/sessions/" + id + "/reasoning")},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    };
+    for (const auto& invalid : std::vector<json>{json::object(), {{"effort", "max"}},
+            {{"effort", ""}}, {{"effort", false}}, json::array()}) {
+        auto response = post(invalid);
+        EXPECT_EQ(response.status_code, 400) << response.text;
+        EXPECT_EQ(json::parse(response.text)["error"], "INVALID_REASONING_EFFORT");
+    }
+    EXPECT_EQ(fx.registry->current_model_state(id)->reasoning_effort, "high");
+    auto update = post({{"effort", "low"}});
+    ASSERT_EQ(update.status_code, 200) << update.text;
+    EXPECT_EQ(json::parse(update.text)["reasoning_effort"], "low");
+    auto reset = post({{"effort", nullptr}});
+    ASSERT_EQ(reset.status_code, 200) << reset.text;
+    EXPECT_TRUE(json::parse(reset.text)["reasoning_effort"].is_null());
+    EXPECT_EQ(json::parse(reset.text)["reasoning"]["default_effort"], "low");
+    EXPECT_FALSE(fx.cfg.saved_models.back().reasoning->effort);
+
+    for (const auto& invalid : std::vector<json>{"max", "", false}) {
+        auto rejected = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"name", "reasoning-http"}, {"reasoning_effort", invalid}}.dump()});
+        EXPECT_EQ(rejected.status_code, 400) << rejected.text;
+        EXPECT_EQ(json::parse(rejected.text)["error"], "INVALID_REASONING_EFFORT");
+    }
+    EXPECT_EQ(fx.registry->list_active().size(), 1u);
+    auto unknown = cpr::Post(cpr::Url{fx.url("/api/sessions/missing/reasoning")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"effort":null})"});
+    EXPECT_EQ(unknown.status_code, 404);
+}
+
+TEST(WebServerHttp, WorkspaceReasoningCreationAndBusyMutation) {
+    WebServerFixture fx;
+    configure_reasoning_http_model(fx);
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"name", "reasoning-http"}, {"reasoning_effort", "high"}}.dump()});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto id = json::parse(create.text)["session_id"].get<std::string>();
+    auto entry = fx.registry->acquire(id);
+    ASSERT_TRUE(entry);
+    auto blocker = std::make_shared<BlockingProvider>();
+    entry->model_binding->install_runtime_snapshot(
+        blocker, entry->model_binding->state_snapshot(),
+        acecode::current_saved_models_revision());
+    entry->loop->submit("hold reasoning model");
+    EXPECT_TRUE(blocker->wait_for_started(2s));
+    auto busy = cpr::Post(cpr::Url{fx.url("/api/sessions/" + id + "/reasoning")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"effort":"low"})"});
+    blocker->release();
+    EXPECT_EQ(busy.status_code, 409) << busy.text;
+    EXPECT_EQ(json::parse(busy.text)["error"], "SESSION_BUSY");
+    EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
+    EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+}
