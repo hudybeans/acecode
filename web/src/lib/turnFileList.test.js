@@ -136,7 +136,14 @@ run('轮次文件入口把稳定 user message UUID 贯穿列表、页签和详�
   const chatView = readFileSync(new URL('../components/ChatView.jsx', import.meta.url), 'utf8');
   const previewDetails = readFileSync(new URL('../components/PreviewDetailsPanel.jsx', import.meta.url), 'utf8');
 
-  assert.match(turnFileList, /onOpenFile\?\.\(item\.file, turnUserMessageId\)/);
+  assert.match(turnFileList, /onOpenChanges\?\.\(item\.file, turnUserMessageId\)/);
+  assert.match(turnFileList, /onOpenFile\?\.\(item\.file\)/);
+  const lists = [...chatView.matchAll(/<TurnFileList\b[^>]*\/>/g)];
+  assert.equal(lists.length, 2);
+  for (const [list] of lists) {
+    assert.match(list, /onOpenChanges=\{openSessionChangePreview\}/);
+    assert.match(list, /onOpenFile=\{openFilePreview\}/);
+  }
   assert.equal(
     [...chatView.matchAll(/turnUserMessageId=\{set\.userMessageId\}/g)].length,
     2,

@@ -5280,7 +5280,7 @@ a.ace-thread-link:focus-visible {
 
 /* 每轮对话末尾的「本轮改动文件」列表(TurnFileList):
    标题行「已修改 xx 个文件 +X -Y」+ 行卡(文件树同款类型 icon + 单一路径 +
-   红绿加删数 + 「打开」)+ 折叠切换。字体字号与聊天正文一致(sans 13px),
+   红绿加删数 + 「打开」)+ 折叠切换;悬停时行数换为「查看变更」。字体字号与聊天正文一致(sans 13px),
    行卡底色与 AskUserQuestion 卡一致(--ace-surface-alt)。 */
 .ace-turn-files {
   width: min(100%, 810px);
@@ -5299,6 +5299,7 @@ a.ace-thread-link:focus-visible {
   color: var(--ace-fg);
 }
 .ace-turn-file-row {
+  position: relative;
   min-height: 36px;
   display: flex;
   align-items: center;
@@ -5316,6 +5317,23 @@ a.ace-thread-link:focus-visible {
 .ace-turn-file-row:hover {
   background: var(--ace-surface-hi);
 }
+.ace-turn-file-target {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.ace-turn-file-target:focus-visible {
+  outline: 2px solid var(--ace-accent);
+  outline-offset: -2px;
+}
+.ace-turn-file-icon,
+.ace-turn-file-path,
+.ace-turn-file-open {
+  pointer-events: none;
+}
 .ace-turn-file-icon {
   flex: 0 0 auto;
 }
@@ -5332,10 +5350,68 @@ a.ace-thread-link:focus-visible {
   gap: 6px;
   font-variant-numeric: tabular-nums;
 }
+.ace-turn-file-detail {
+  position: relative;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+.ace-turn-file-changes {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ace-fg-mute);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: none;
+}
+.ace-turn-file-row:is(:hover, :focus-within) .ace-turn-file-detail > .ace-turn-file-counts {
+  display: none;
+}
+.ace-turn-file-row:is(:hover, :focus-within) .ace-turn-file-changes {
+  position: relative;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.ace-turn-file-changes:hover > span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ace-turn-file-changes:focus-visible {
+  outline: 2px solid var(--ace-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 .ace-turn-file-open {
   margin-left: auto;
   flex: 0 0 auto;
   color: var(--ace-accent);
+}
+@media (hover: none) {
+  .ace-turn-file-detail > .ace-turn-file-counts {
+    display: none;
+  }
+  .ace-turn-file-changes {
+    position: relative;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .ace-turn-files-toggle {
   align-self: flex-start;
