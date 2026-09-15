@@ -1311,4 +1311,17 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '当前模型不支持只读旁路聊天，请切换模型后重试。':
     'This model does not support tool-free side chat. Switch models and try again.',
   '已停止': 'Stopped',
+  // Web AskUserQuestion 对齐 TUI(redesign-web-ask-user-question)
+  '{{p0}} 个问题待回答': '{{p0}} questions pending',
+  '跳过': 'Skip',
+  '(可多选)': '(Multi-select)',
+  '上一题 (Shift+Tab)': 'Previous (Shift+Tab)',
+  '下一题 (Tab)': 'Next (Tab)',
+  '继续回答': 'Continue answering',
+  '[推荐]': '[Recommended]',
+  '选择并进入下一题': 'Select and go to the next question',
+  '输入你的答案': 'Enter your answer',
+  '（多选）': ' (Multi)',
+  '全部提交完成': 'All answers submitted',
+  '未作答': 'Not answered',
 });

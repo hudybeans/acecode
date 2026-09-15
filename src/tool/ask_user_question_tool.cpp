@@ -224,17 +224,23 @@ std::string format_ask_answers(
 nlohmann::json build_ask_user_question_result_metadata(
     const std::vector<std::string>& question_order,
     const std::map<std::string, std::string>& answers,
-    const std::set<std::string>* auto_selected_questions) {
+    const std::set<std::string>* auto_selected_questions,
+    const std::set<std::string>* multi_select_questions) {
     nlohmann::json items = nlohmann::json::array();
     for (const auto& q : question_order) {
         auto it = answers.find(q);
         const std::string& a = (it == answers.end()) ? std::string{} : it->second;
         const bool auto_selected = auto_selected_questions != nullptr &&
             auto_selected_questions->count(q) != 0;
+        // multi_select 与 auto_selected 一样属于 UI 展示所需的形状信息:反馈卡
+        // 会在落盘消息上重建,不带上它就只能在重载后丢掉「(多选)」标注。
+        const bool multi_select = multi_select_questions != nullptr &&
+            multi_select_questions->count(q) != 0;
         items.push_back({
             {"question", q},
             {"answer", a},
             {"auto_selected", auto_selected},
+            {"multi_select", multi_select},
         });
     }
     return nlohmann::json{
@@ -344,6 +350,17 @@ ToolResult make_policy_denied_ask_result(const char* origin) {
     return r;
 }
 
+// 收集多选题目文本,供 build_ask_user_question_result_metadata 在落盘元数据里
+// 标注 (多选),使反馈卡在重载后仍能还原题型。
+static std::set<std::string> multi_select_question_set(
+    const std::vector<AskQuestion>& questions) {
+    std::set<std::string> out;
+    for (const auto& q : questions) {
+        if (q.multi_select) out.insert(q.question);
+    }
+    return out;
+}
+
 ToolResult make_timeout_adopted_ask_result(
     const std::vector<AskQuestion>& questions,
     const std::vector<std::string>& question_order,
@@ -371,6 +388,8 @@ ToolResult make_timeout_adopted_ask_result(
             auto_selected_questions.insert(q.question);
         }
     }
+    const std::set<std::string> multi_select_questions =
+        multi_select_question_set(questions);
     ToolResult r;
     r.success = true;
     r.output =
@@ -380,7 +399,7 @@ ToolResult make_timeout_adopted_ask_result(
         "their first Recommended option when available, otherwise Not answered. " +
         format_ask_answers(question_order, answers);
     r.metadata = build_ask_user_question_result_metadata(
-        question_order, answers, &auto_selected_questions);
+        question_order, answers, &auto_selected_questions, &multi_select_questions);
     r.metadata["ask_user_question_auto"] = {
         {"mode", "timeout"},
         {"seconds", timeout_seconds},
@@ -642,10 +661,13 @@ ToolImpl create_ask_user_question_tool_async(int max_questions) {
         }
 
         auto answers = parse_async_response(resp);
+        const std::set<std::string> multi_select_questions =
+            multi_select_question_set(*parsed);
         ToolResult r;
         r.success = true;
         r.output  = format_ask_answers(question_order, answers);
-        r.metadata = build_ask_user_question_result_metadata(question_order, answers);
+        r.metadata = build_ask_user_question_result_metadata(
+            question_order, answers, nullptr, &multi_select_questions);
         return r;
     };
 

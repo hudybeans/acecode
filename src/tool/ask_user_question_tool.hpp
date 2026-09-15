@@ -44,7 +44,8 @@ std::string format_ask_answers(
 nlohmann::json build_ask_user_question_result_metadata(
     const std::vector<std::string>& question_order,
     const std::map<std::string, std::string>& answers,
-    const std::set<std::string>* auto_selected_questions = nullptr);
+    const std::set<std::string>* auto_selected_questions = nullptr,
+    const std::set<std::string>* multi_select_questions = nullptr);
 
 // Build a compact UI-only Q/A transcript from ask_user_question_result
 // metadata. Returns empty for missing or malformed metadata.

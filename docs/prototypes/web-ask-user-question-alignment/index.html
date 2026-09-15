@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WEB AskUserQuestion 提问框原型 v3</title>
+<style>
+  :root{
+    --bg:#f3f4f6; --card:#ffffff; --border:#e5e7eb; --text:#1f2937; --muted:#6b7280;
+    --brand:#3B82F6; --brand-hover:#2563EB; --brand-soft:#eff6ff;
+    --ink:#111827; --ok:#15803d; --warn:#b45309;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--text);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:820px; margin:0 auto; padding:24px 20px 80px;}
+  header h1{font-size:20px; font-weight:700;}
+  header p{color:var(--muted); margin-top:4px;}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .chat{margin-top:16px; display:flex; flex-direction:column; height:640px;}
+  .chat-scroll{flex:1 1 auto; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px;}
+  .msg.agent{background:var(--brand-soft); border-radius:12px; padding:10px 14px; font-size:14px; max-width:92%;}
+  .msg.agent b{color:var(--brand);}
+  .msg.result{background:#eef6ee; color:#1d4d1d; border-radius:12px; padding:10px 14px; font-size:14px;}
+  .msg.result .q-line{margin:2px 0;}
+  .msg.cancel{background:#fdf0ef; color:#8a2f25; border-radius:12px; padding:10px 14px; font-size:14px;}
+  /* ---- 提问框 ---- */
+  .ask{overflow:hidden; margin:0 14px 14px;}
+  .ask-head{display:flex; align-items:center; gap:10px; padding:12px 14px;}
+  .ask-head .title{flex:1 1 auto; font-weight:700; min-width:0; word-break:break-word;}
+  .ask-head .title .multi{color:var(--muted); font-weight:500;}
+  .nav-btn{flex:0 0 auto; width:30px; height:30px; border:1px solid var(--border); border-radius:8px; background:var(--card);
+           cursor:pointer; font-size:15px; color:var(--text);}
+  .nav-btn:hover:not(:disabled){border-color:var(--brand); color:var(--brand); background:var(--brand-soft);}
+  .nav-btn:disabled{opacity:.35; cursor:not-allowed;}
+  .qpos{flex:0 0 auto; font-size:13px; color:var(--muted); min-width:52px; text-align:center; white-space:nowrap;}
+  .collapse-btn{flex:0 0 auto; border:1px solid var(--border); border-radius:8px; background:var(--card); cursor:pointer;
+                font-size:12px; padding:4px 10px; color:var(--muted);}
+  .collapse-btn:hover{color:var(--brand); border-color:var(--brand); background:var(--brand-soft);}
+  /* ---- 选项行 ---- */
+  .ask-body{padding:2px 14px 12px; display:flex; flex-direction:column;}
+  .opt-row{position:relative; display:flex; align-items:center; gap:12px; padding:11px 4px;
+           border-bottom:1px solid var(--border); cursor:pointer;
+           transition:background .1s ease;}
+  .opt-row:hover{background:#f6f7f9;}
+  .num{flex:0 0 26px; width:26px; height:26px; border:1.5px solid #d1d5db; border-radius:50%;
+       display:flex; align-items:center; justify-content:center; font-size:13px; color:var(--muted);
+       transition:all .12s ease;}
+  .opt-row.selected .num{background:var(--ink); border-color:var(--ink); color:#fff; font-weight:700;}
+  .opt-row .num .check{display:none;}
+  .opt-row.selected .num .check{display:inline;}
+  .opt-row.selected .num .idx{display:none;}
+  .opt-label{flex:1 1 auto; font-weight:600; min-width:0; word-break:break-word;}
+  .opt-row.selected .opt-label{color:var(--ink);}
+  .opt-desc{flex:0 0 auto; color:var(--muted); font-size:13px; max-width:46%; text-align:right;
+            word-break:break-word; transition:opacity .1s ease;}
+  .opt-row:hover .opt-desc{opacity:0;}
+  .row-actions{position:absolute; right:4px; top:50%; transform:translateY(-50%);
+               display:flex; gap:8px; opacity:0; pointer-events:none; transition:opacity .1s ease;}
+  .opt-row:hover .row-actions{opacity:1; pointer-events:auto;}
+  .icon-btn{display:inline-flex; align-items:center; gap:5px; border:1px solid var(--border); border-radius:8px;
+            background:var(--card); color:var(--muted); font-size:12px; padding:5px 10px; cursor:pointer;
+            transition:all .1s ease; white-space:nowrap;}
+  .icon-btn svg{width:13px; height:13px; fill:currentColor;}
+  .icon-btn:hover{color:var(--brand); border-color:var(--brand); background:var(--brand-soft);}
+  /* ---- 自定义行 ---- */
+  .custom-row{display:flex; align-items:center; gap:12px; padding:11px 4px;}
+  .custom-row .num{border-style:dashed;}
+  .custom-row.selected{background:#f6f7f9;}
+  .custom-row.selected .num{background:var(--ink); border-color:var(--ink); color:#fff; font-weight:700; border-style:solid;}
+  .custom-row.selected .num .check{display:inline;}
+  .custom-row.selected .num .idx{display:none;}
+  .custom-input{flex:1 1 auto; border:none; border-bottom:1px solid #d1d5db; outline:none;
+                padding:4px 2px; font:15px/1.5 inherit; color:var(--text); background:transparent;}
+  .custom-input:focus{border-bottom-color:var(--brand);}
+  .custom-input:focus::placeholder{color:transparent;}
+  .custom-input::placeholder{color:#9ca3af;}
+  .counter{flex:0 0 auto; font-size:12px; color:var(--muted);}
+  /* ---- 底部按钮 ---- */
+  .ask-foot{display:flex; justify-content:flex-end; align-items:center; gap:10px; padding:12px 14px; border-top:1px solid var(--border);}
+  button{font:inherit; border-radius:8px; padding:8px 18px; cursor:pointer; border:1px solid var(--border);}
+  .btn-cancel{background:#e5e7eb; border-color:#e5e7eb; color:#374151;}
+  .btn-cancel:hover{background:#d1d5db; border-color:#d1d5db;}
+  .btn-primary{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:500;}
+  .btn-primary:hover{background:var(--brand-hover); border-color:var(--brand-hover);}
+  /* ---- 状态摘要 ---- */
+  .summary{margin-top:14px; padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+  .summary .cap{font-size:13px; color:var(--muted);}
+  .chip{border:1px solid var(--border); border-radius:999px; padding:3px 12px; font-size:13px; cursor:pointer; background:var(--card);}
+  .chip:hover{border-color:var(--brand);}
+  .chip.answered{border-color:#bfe6c8; color:var(--ok); background:#f2fbf4;}
+  .chip.skipped{border-color:#f0d9a8; color:var(--warn); background:#fdf7ec;}
+  .chip.current{border-color:var(--brand); color:var(--brand);}
+  .reset{margin-top:10px; font-size:13px; color:var(--muted); background:transparent; border:none; cursor:pointer; text-decoration:underline;}
+  .reset:hover{color:var(--brand);}
+  .toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
+         background:#1c1c22; color:#fff; padding:9px 18px; border-radius:999px; font-size:13px;
+         opacity:0; pointer-events:none; transition:opacity .15s ease; z-index:5;
+         display:flex; align-items:center; gap:7px;}
+  .toast.show{opacity:1;}
+  .toast svg{width:14px; height:14px; fill:#4ade80;}
+  /* ---- 底部输入框(被提问框替换) ---- */
+  .composer{margin:0 14px 14px; display:flex; gap:10px;}
+  .composer input{flex:1 1 auto; border:1px solid var(--border); border-radius:10px; padding:10px 12px; font:inherit; outline:none;}
+  .composer input:focus{border-color:var(--brand);}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>WEB AskUserQuestion 提问框原型</h1>
+    <p>模拟:AI 收到提示词「随机问我5个问题,包含单选和多选」后生成了 5 个问题。提问期间提问框占据底部输入框位置(输入框被替换,提交/取消后恢复);悬停选项可看到"复制 / 回车"按钮,选中后左侧序号变成黑底白勾,右上角切题与折叠,右下角取消/跳过/提交。</p>
+  </header>
+
+  <div class="card chat">
+    <div class="chat-scroll">
+      <div class="msg agent"><b>AI:</b>好的,我随机准备了 5 个问题(单选 + 多选混合,部分标注了推荐项),请逐一回答:</div>
+      <div class="msg result hidden" id="resultMsg"></div>
+      <div class="msg cancel hidden" id="cancelMsg">你取消了全部回答,已通知 AI。</div>
+    </div>
+
+    <div class="ask" id="ask">
+      <div class="ask-head">
+        <div class="title" id="title"></div>
+        <button class="nav-btn" id="prevBtn" title="上一题">‹</button>
+        <div class="qpos" id="qpos"></div>
+        <button class="nav-btn" id="nextBtn" title="下一题">›</button>
+        <button class="collapse-btn" id="collapseBtn"></button>
+      </div>
+      <div class="ask-body" id="askBody">
+        <div id="opts"></div>
+        <div class="custom-row" id="customRow">
+          <span class="num" id="customNum"><span class="idx">5</span><span class="check">✓</span></span>
+          <input class="custom-input" id="customInput" type="text" placeholder="输入你的答案" maxlength="500" autocomplete="off">
+          <span class="counter" id="counter">0/500</span>
+        </div>
+      </div>
+      <div class="ask-foot" id="askFoot">
+        <button class="btn-cancel" id="cancelBtn">取消</button>
+        <button class="btn-primary" id="submitBtn"></button>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <input type="text" placeholder="输入你的消息…" disabled>
+      <button class="btn-primary" disabled>发送</button>
+    </div>
+  </div>
+
+  <div class="card summary">
+    <span class="cap">回答进度:</span>
+    <span id="chips"></span>
+  </div>
+  <button class="reset" id="resetBtn">重新开始</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+ * 纯状态机模块(可移植)
+ * 规则:单选/多选点击切换;回车按钮=选中并进入下一题(末题停留);
+ *      跳过=本题作废进下一题;末题提交;取消=通知 AI 全部取消。
+ * ===================================================================== */
+function createInitialState(questions){
+  return { questions:questions, currentIndex:0, collapsed:false, completed:false, cancelled:false,
+           answers:questions.map(function(){ return {selected:[], custom:'', customActive:false, skipped:false}; }), lastAction:'初始化' };
+}
+function hasAnswer(state, i){ var a=state.answers[i]; return a.selected.length>0 || (a.customActive && a.custom.trim()!==''); }
+function reducer(state, action){
+  if(state.completed || state.cancelled){
+    if(action.type==='RESET') return Object.assign(createInitialState(state.questions), {lastAction:'已重新开始'});
+    return Object.assign({}, state, {lastAction:'问答已结束,操作被忽略'});
+  }
+  var qs=state.questions, ci=state.currentIndex;
+  var ans=state.answers.map(function(a){ return Object.assign({}, a); });
+  var a=ans[ci], q=qs[ci];
+  switch(action.type){
+    case 'SELECT_OPTION': {
+      var oi=action.oi;
+      if(q.multiSelect){
+        a.selected = a.selected.indexOf(oi)>=0 ? a.selected.filter(function(x){return x!==oi;}) : a.selected.concat(oi);
+      } else {
+        if(a.selected[0]===oi) a.selected=[];
+        else { a.selected=[oi]; a.customActive=false; }
+      }
+      a.skipped=false;
+      return Object.assign({}, state, {answers:ans, lastAction:'切换选项'+(oi+1)});
+    }
+    case 'CONFIRM_OPTION': {
+      var coi=action.oi;
+      if(q.multiSelect){ if(a.selected.indexOf(coi)<0) a.selected=a.selected.concat(coi); }
+      else { a.selected=[coi]; a.customActive=false; }
+      a.skipped=false;
+      var nxt = (ci===qs.length-1) ? ci : ci+1;
+      return Object.assign({}, state, {answers:ans, currentIndex:nxt,
+        lastAction:'回车选中选项'+(coi+1)+(ci===qs.length-1?'(末题停留,待提交)':'并进入下一题')});
+    }
+    case 'SET_CUSTOM':
+      a.custom=action.text;
+      if(q.multiSelect) a.customActive = a.custom.trim()!=='';
+      else if(a.custom.trim()!==''){ a.selected=[]; a.customActive=true; }
+      else a.customActive=false;
+      a.skipped=false;
+      return Object.assign({}, state, {answers:ans, lastAction:'更新自定义答案'});
+    case 'GOTO_QUESTION': {
+      var i=Math.max(0, Math.min(qs.length-1, action.index));
+      return Object.assign({}, state, {currentIndex:i, lastAction:'切到第 '+(i+1)+' 题'});
+    }
+    case 'TOGGLE_COLLAPSE':
+      return Object.assign({}, state, {collapsed:!state.collapsed, lastAction:state.collapsed?'已折叠':'已展开'});
+    case 'SUBMIT_CURRENT':
+      if(ci<qs.length-1) return Object.assign({}, state, {answers:ans, currentIndex:ci+1, lastAction:'提交当前题,进入下一题'});
+      return Object.assign({}, state, {answers:ans, completed:true, lastAction:'提交整个问答'});
+    case 'SKIP_CURRENT': {
+      a.skipped=true; a.selected=[]; a.custom=''; a.customActive=false;
+      if(ci<qs.length-1) return Object.assign({}, state, {answers:ans, currentIndex:ci+1, lastAction:'跳过第 '+(ci+1)+' 题'});
+      return Object.assign({}, state, {answers:ans, completed:true, lastAction:'末题未作答,提交整个问答'});
+    }
+    case 'SUBMIT_ALL':
+      ans.forEach(function(item){ if(!item.selected.length && item.custom.trim()==='') item.skipped=true; });
+      return Object.assign({}, state, {answers:ans, completed:true, lastAction:'提交整个问答'});
+    case 'CANCEL':
+      return Object.assign({}, state, {cancelled:true, lastAction:'取消整个问答'});
+  }
+  return state;
+}
+function answerText(state, i){
+  var a=state.answers[i];
+  if(a.skipped) return '未作答';
+  var parts=a.selected.map(function(oi){ return state.questions[i].options[oi].label; });
+  if(a.customActive && a.custom.trim()) parts.push(a.custom.trim());
+  return parts.length? parts.join('; ') : '未作答';
+}
+var CHECK = '<span class="check">✓</span>';
+
+/* ===== 页面 ===== */
+var QUESTIONS = [
+  {text:'这次的主要目标是什么?', multiSelect:false, options:[
+    {label:'修复缺陷', description:'定位并解决现有问题'},
+    {label:'新增功能', description:'实现新的能力', recommended:true},
+    {label:'代码重构', description:'改善结构与可维护性'},
+    {label:'性能优化', description:'提升运行速度与资源占用'}]},
+  {text:'这次改动的影响范围?', multiSelect:false, options:[
+    {label:'单个模块', description:'改动集中在某一处', recommended:true},
+    {label:'跨模块', description:'涉及多个子系统'},
+    {label:'整个项目', description:'全局性改动'}]},
+  {text:'可接受的技术方案?', multiSelect:true, options:[
+    {label:'TypeScript', description:'类型安全,生态成熟', recommended:true},
+    {label:'Python', description:'开发效率高'},
+    {label:'Go', description:'部署简单,性能好'},
+    {label:'Rust', description:'内存安全,极致性能'}]},
+  {text:'需要哪些验证手段?', multiSelect:true, options:[
+    {label:'单元测试', description:'覆盖纯逻辑'},
+    {label:'集成测试', description:'覆盖跨模块链路'},
+    {label:'手动验收', description:'真实场景人工确认'},
+    {label:'性能压测', description:'验证性能指标'}]},
+  {text:'你更看重哪个方面?', multiSelect:false, options:[
+    {label:'开发速度', description:'快速上线'},
+    {label:'代码质量', description:'长期可维护', recommended:true},
+    {label:'文档完整', description:'过程与结果留档'}]}
+];
+
+var ICONS = {
+  copy: '<svg viewBox="0 0 24 24"><path d="M8 3h9a2 2 0 0 1 2 2v9h-2V5h-9V3zm-4 4h9a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v11h9V9H4z"/></svg>',
+  enter: '<svg viewBox="0 0 24 24"><path d="M18 3a1 1 0 0 1 1 1v6a2 2 0 0 1-2 2H7.4l2.3-2.3a1 1 0 1 0-1.4-1.4L4.6 12l3.7 3.7a1 1 0 1 0 1.4-1.4L7.4 12H17v-8a1 1 0 0 1 1-1z"/></svg>'
+};
+
+var state = createInitialState(QUESTIONS);
+
+function render(){
+  var ask=document.getElementById('ask');
+  var composer=document.getElementById('composer');
+  var q=state.questions[state.currentIndex], a=state.answers[state.currentIndex];
+  var total=state.questions.length, isLast=state.currentIndex===total-1;
+
+  if(state.completed || state.cancelled){
+    ask.classList.add('hidden');
+    composer.classList.remove('hidden');
+    document.getElementById('resultMsg').classList.toggle('hidden', !state.completed);
+    document.getElementById('cancelMsg').classList.toggle('hidden', !state.cancelled);
+    if(state.completed){
+      document.getElementById('resultMsg').innerHTML = '<b>已提交全部回答:</b>' +
+        state.questions.map(function(_,i){ return '<div class="q-line">Q'+(i+1)+' → '+answerText(state,i)+'</div>'; }).join('');
+    }
+    renderSummary(); return;
+  }
+
+  ask.classList.remove('hidden');
+  composer.classList.add('hidden');
+  document.getElementById('resultMsg').classList.add('hidden');
+  document.getElementById('cancelMsg').classList.add('hidden');
+
+  document.getElementById('title').innerHTML =
+    esc(q.text) + (q.multiSelect ? ' <span class="multi">(可多选)</span>' : '');
+  document.getElementById('qpos').textContent = (state.currentIndex+1) + ' / ' + total;
+  document.getElementById('prevBtn').disabled = state.currentIndex===0;
+  document.getElementById('nextBtn').disabled = isLast;
+  document.getElementById('collapseBtn').textContent = state.collapsed ? '展开' : '折叠';
+  document.getElementById('askBody').classList.toggle('hidden', state.collapsed);
+  document.getElementById('askFoot').classList.toggle('hidden', state.collapsed);
+
+  var opts=document.getElementById('opts'); opts.innerHTML='';
+  q.options.forEach(function(opt, oi){
+    var sel = a.selected.indexOf(oi)>=0;
+    var row=document.createElement('div');
+    row.className='opt-row'+(sel?' selected':'');
+    var num=document.createElement('span'); num.className='num';
+    num.innerHTML='<span class="idx">'+(oi+1)+'</span>'+CHECK;
+    row.appendChild(num);
+    var lbl=document.createElement('div'); lbl.className='opt-label';
+    lbl.textContent=opt.label;
+    if(opt.recommended){ var rec=document.createElement('span'); rec.style.color='var(--warn)'; rec.style.fontSize='12px'; rec.style.marginLeft='6px'; rec.textContent='[推荐]'; lbl.appendChild(rec); }
+    row.appendChild(lbl);
+    var desc=document.createElement('div'); desc.className='opt-desc'; desc.textContent=opt.description||''; row.appendChild(desc);
+    var acts=document.createElement('div'); acts.className='row-actions';
+    var copyBtn=document.createElement('button'); copyBtn.className='icon-btn'; copyBtn.innerHTML=ICONS.copy+'复制';
+    copyBtn.addEventListener('click', function(ev){ ev.stopPropagation(); copyText(opt.label+(opt.description?' '+opt.description:'')); });
+    var enterBtn=document.createElement('button'); enterBtn.className='icon-btn'; enterBtn.innerHTML=ICONS.enter+'回车';
+    enterBtn.addEventListener('click', function(ev){ ev.stopPropagation(); dispatch({type:'CONFIRM_OPTION', oi:oi}); });
+    acts.appendChild(copyBtn); acts.appendChild(enterBtn); row.appendChild(acts);
+    row.addEventListener('click', function(){ dispatch({type:'SELECT_OPTION', oi:oi}); });
+    row.addEventListener('dblclick', function(){ dispatch({type:'CONFIRM_OPTION', oi:oi}); });
+    opts.appendChild(row);
+  });
+
+  var cnum=document.getElementById('customNum');
+  cnum.innerHTML='<span class="idx">'+(q.options.length+1)+'</span>'+CHECK;
+  cnum.parentNode.className='custom-row'+((a.customActive && a.custom.trim()!=='')?' selected':'');
+  document.getElementById('counter').textContent=a.custom.length+'/500';
+  var inp=document.getElementById('customInput');
+  if(document.activeElement!==inp) inp.value=a.custom;
+
+  var sb=document.getElementById('submitBtn');
+  var answered = hasAnswer(state, state.currentIndex);
+  sb.textContent = (isLast || answered) ? '提交' : '跳过';
+  renderSummary();
+}
+
+function renderSummary(){
+  var box=document.getElementById('chips'); box.innerHTML='';
+  state.questions.forEach(function(q,i){
+    var a=state.answers[i];
+    var chip=document.createElement('span');
+    if(a.skipped) chip.className='chip skipped';
+    else if(hasAnswer(state,i)) chip.className='chip answered';
+    else chip.className='chip';
+    if(i===state.currentIndex && !state.completed && !state.cancelled) chip.className+=' current';
+    var label='Q'+(i+1);
+    if(a.skipped) label+=' 跳过';
+    else if(hasAnswer(state,i)) label+=' ✓'+(q.multiSelect&&a.selected.length>1?' ×'+a.selected.length:'');
+    chip.textContent=label; chip.title=answerText(state,i);
+    if(!state.completed&&!state.cancelled){
+      chip.addEventListener('click', function(){ dispatch({type:'GOTO_QUESTION', index:i}); });
+    }
+    box.appendChild(chip);
+  });
+}
+
+function dispatch(action){ state=reducer(state, action); render(); }
+
+document.getElementById('prevBtn').addEventListener('click', function(){ dispatch({type:'GOTO_QUESTION', index:state.currentIndex-1}); });
+document.getElementById('nextBtn').addEventListener('click', function(){ dispatch({type:'GOTO_QUESTION', index:state.currentIndex+1}); });
+document.getElementById('collapseBtn').addEventListener('click', function(){ dispatch({type:'TOGGLE_COLLAPSE'}); });
+document.getElementById('cancelBtn').addEventListener('click', function(){ dispatch({type:'CANCEL'}); });
+document.getElementById('submitBtn').addEventListener('click', function(){
+  var isLast = state.currentIndex===state.questions.length-1;
+  if(isLast) dispatch({type:'SUBMIT_ALL'});
+  else if(hasAnswer(state, state.currentIndex)) dispatch({type:'SUBMIT_CURRENT'});
+  else dispatch({type:'SKIP_CURRENT'});
+});
+document.getElementById('customInput').addEventListener('input', function(){
+  dispatch({type:'SET_CUSTOM', text:this.value});
+});
+document.getElementById('resetBtn').addEventListener('click', function(){ dispatch({type:'RESET'}); });
+
+function copyText(text){
+  var done=function(){ showToast('复制成功'); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, function(){ legacyCopy(text); done(); });
+  } else { legacyCopy(text); done(); }
+}
+function legacyCopy(text){
+  var ta=document.createElement('textarea'); ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); }catch(e){} document.body.removeChild(ta);
+}
+var toastTimer=null;
+function showToast(msg){
+  var t=document.getElementById('toast');
+  t.innerHTML='<svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>'+esc(msg);
+  t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 1600);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+render();
+</script>
+</body>
+</html>

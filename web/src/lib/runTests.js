@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './questionPickerInteraction.test.js';
 import './questionFeedback.test.js';
 import './questionFeedbackPersistence.test.js';
 import './pendingQuestions.test.js';

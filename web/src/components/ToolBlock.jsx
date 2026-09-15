@@ -28,6 +28,7 @@ import {
 import { AttachmentStrip } from './AttachmentStrip.jsx';
 import { ActivityLine } from './ActivityLine.jsx';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
+import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
 import { ToolSummaryIcon, VsIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import * as Diff2Html from 'diff2html';
@@ -110,35 +111,6 @@ function MetricList({ metrics }) {
   );
 }
 
-function ClampedQuestionText({ children, className = '' }) {
-  const ref = useRef(null);
-  const [clamped, setClamped] = useState(false);
-  const text = String(children || '');
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return undefined;
-    const measure = () => {
-      setClamped((el.scrollHeight - el.clientHeight) > 1);
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [text]);
-
-  return (
-    <span
-      ref={ref}
-      className={clsx('ace-qa-text-clamp', clamped && 'is-clamped', className)}
-      title={text || undefined}
-    >
-      {text}
-    </span>
-  );
-}
-
 function askUserQuestionText(result) {
   const items = Array.isArray(result?.items) ? result.items : [];
   return items
@@ -183,59 +155,6 @@ function taskCompleteDisplayText(summary, output) {
   if (object && object.toLowerCase() !== 'task') return object;
   const outputText = String(output ?? '').trim();
   return outputText || '完成';
-}
-
-function AskUserQuestionResultCard({ result, toolContextAttrs }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const items = Array.isArray(result?.items)
-    ? result.items.filter((item) => item && (item.question || item.answer))
-    : [];
-  if (items.length === 0) return null;
-  const fullText = askUserQuestionText({ items });
-
-  return (
-    <div className={clsx('ace-qa-card my-0.5', collapsed && 'is-collapsed')} data-question-feedback="submit" {...toolContextAttrs}>
-      <button
-        type="button"
-        className="ace-qa-card-header"
-        onClick={() => setCollapsed((value) => !value)}
-        aria-expanded={!collapsed}
-        title={collapsed ? fullText : '收起'}
-      >
-        <span className="ace-qa-card-icon">
-          <VsIcon name="ok" size={14} mono={false} />
-        </span>
-        <span className="ace-qa-card-title">已确认 {formatCount(items.length, 'items')}</span>
-        <span className="ace-qa-card-spacer" />
-        <span className="ace-qa-card-state">{collapsed ? '展开' : '收起'}</span>
-        <VsIcon
-          name={collapsed ? 'expandRight' : 'expandDown'}
-          size={15}
-          className="ace-qa-card-chevron"
-        />
-      </button>
-      {!collapsed && (
-        <div className="ace-qa-card-body">
-          {items.map((item, index) => (
-            <div key={`${item.question || ''}-${index}`} className="ace-qa-item">
-              <div className="ace-qa-row">
-                <span className="ace-qa-mark ace-qa-mark-q">Q</span>
-                <ClampedQuestionText className="ace-qa-question">
-                  {item.question}
-                </ClampedQuestionText>
-              </div>
-              <div className="ace-qa-row ace-qa-row-answer">
-                <span className="ace-qa-mark ace-qa-mark-a">A</span>
-                <ClampedQuestionText className="ace-qa-answer">
-                  {item.answer}
-                </ClampedQuestionText>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessionRunning = true }) {
@@ -396,36 +315,6 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
   }, [onReviewToggle]);
 
-  const questionFeedback = questionFeedbackForTool(entry);
-  if (questionFeedback?.kind === 'cancel') {
-    return (
-      <div className="ace-qa-card my-0.5" data-question-feedback="cancel" {...toolContextAttrs} data-desktop-tool-toggle="false">
-        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2 text-[12px] text-fg-mute">
-          <VsIcon name="close" size={14} />
-          <span>已取消全部回答</span>
-        </div>
-      </div>
-    );
-  }
-  if (questionFeedback?.kind === 'interject') {
-    return (
-      <div className="ace-qa-card my-0.5" data-question-feedback="interject" {...toolContextAttrs} data-desktop-tool-toggle="false">
-        <div className="flex min-h-11 items-center gap-2.5 px-3 py-2 text-[12px] text-fg-mute">
-          <VsIcon name="send" size={14} />
-          <span>已改为直接输入，取消作答</span>
-        </div>
-      </div>
-    );
-  }
-  if (questionFeedback?.kind === 'submit') {
-    return (
-      <AskUserQuestionResultCard
-        result={questionFeedback}
-        toolContextAttrs={toolContextAttrs}
-      />
-    );
-  }
-
   if (isTaskComplete) {
     return (
       <div
@@ -451,6 +340,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   // 完成态与运行态共用 ActivityLine；详情仍由 ToolBlock 自己负责。
   if (isDone) {
     const ok = !!success;
+    const questionFeedback = questionFeedbackForTool(entry);
     return (
       <div
         {...toolContextAttrs}
@@ -493,6 +383,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
             <AttachmentStrip attachments={attachmentItems} align="left" compact />
           </div>
         )}
+        {questionFeedback && <QuestionFeedbackCard feedback={questionFeedback} />}
       </div>
     );
   }

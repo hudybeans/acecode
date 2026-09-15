@@ -381,10 +381,34 @@ TEST(AskUserQuestionFormatTest, QuoteInAnswerIsNotEscaped) {
 }
 
 // 场景:拒绝路径固定 ToolResult —— success=false 且 output 精确匹配。
+// metadata 必须带 cancelled 标记:「已取消全部回答」反馈卡靠它作为落盘依据,
+// 才能在回合结束/会话重载后持续展示。
 TEST(AskUserQuestionRejectedTest, ConstantRejectedResult) {
     auto r = make_rejected_ask_result();
     EXPECT_FALSE(r.success);
     EXPECT_EQ(r.output, "[Error] User declined to answer questions.");
+    ASSERT_TRUE(r.metadata.is_object());
+    const auto& result = r.metadata["ask_user_question_result"];
+    EXPECT_TRUE(result["cancelled"].get<bool>());
+    ASSERT_TRUE(result["items"].is_array());
+    EXPECT_TRUE(result["items"].empty());
+}
+
+// 场景:多选标记必须随元数据落盘。反馈卡会在已持久化的消息上重建,
+// 不落 multi_select 就会在重载后丢掉「(多选)」标注。
+TEST(AskUserQuestionFormatTest, StructuredResultMetadataPersistsMultiSelect) {
+    std::vector<std::string> order{"Q1?", "Q2?"};
+    std::map<std::string, std::string> ans{
+        {"Q1?", "A"},
+        {"Q2?", "B, C"}
+    };
+    std::set<std::string> multi_select{"Q2?"};
+
+    auto meta = build_ask_user_question_result_metadata(order, ans, nullptr, &multi_select);
+    const auto& items = meta["ask_user_question_result"]["items"];
+    ASSERT_EQ(items.size(), 2u);
+    EXPECT_FALSE(items[0]["multi_select"].get<bool>());
+    EXPECT_TRUE(items[1]["multi_select"].get<bool>());
 }
 
 // active goal 仍使用提问组件，但固定 30 秒超时，到期自动采纳
