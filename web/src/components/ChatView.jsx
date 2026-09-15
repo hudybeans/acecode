@@ -48,6 +48,7 @@ import '../styles/side-chat.css';
 import { GitSessionPill } from './GitSessionPill.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
+import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
@@ -93,6 +94,7 @@ import {
   updateQueuedInputContent,
 } from '../lib/chatInputQueue.js';
 import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from '../lib/stickyUserContext.js';
+import { lastAskUserQuestionItem, questionFeedbackForItem } from '../lib/questionFeedback.js';
 import { loadTranscriptHistory, useSessionTranscript } from '../lib/sessionTranscript.js';
 import { createSingleWriterStore } from '../lib/singleWriterStore.js';
 import { projectCollapsedTranscriptItems } from '../lib/transcriptProjection.js';
@@ -589,8 +591,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subagentTasks = useSubagentTasks(sid, {
     onSpawnStart: openSubagentPanelForSpawn,
   });
-  // 放在 submit 之前:提问挂起时的插话分支要读 questionForView,useCallback 的
-  // deps 在渲染期求值,memo 必须先于它声明(否则 TDZ)。
+  // 提交/取消 AskUserQuestion 后,在消息流中跟随 AskUserQuestion 消息展示的
+  // 反馈卡(全部提交完成 / 已取消全部回答)。
+  const [questionFeedback, setQuestionFeedback] = useState(null);
+  // 当前视图可见的待答问题。提问挂起期间 composer dock 由提问框整体替换
+  // (方案 A),所以它只驱动渲染,不再参与 submit 的分支判定。
   const questionForView = useMemo(() => {
     if (!questionRequest) return null;
     const reqSid = questionRequest.session_id || '';
@@ -1216,6 +1221,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     draftEditVersionRef.current += 1;
     composerDirtyRef.current = true;
     setComposerValue(next);
+    if (next) setQuestionFeedback(null);
     if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, next);
   }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, sid]);
 
@@ -2908,66 +2914,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       // 本轮产生新变更 / todo 更新后按签名机制重现。
       dockAutoDismissRef.current();
     }
-    // AskUserQuestion 挂起时直接输入 = 插话:不是排队、不是打断。daemon 把
-    // 问题以「用户改为直接输入」收掉,这条消息紧跟工具结果进入同一回合,模型
-    // 据此继续。问题若已在别处结束(409 NO_PENDING_QUESTION)则退回普通路径。
-    // 后台任务(子会话)的问题:payload 自带 session_id,插话也路由回子会话。
-    if (sid && !isBuiltin && questionForView?.request_id) {
-      if (composerSubmitting) return;
-      const targetSid = questionForView.session_id || sid;
-      const requestId = questionForView.request_id;
-      const interjectPayload = {
-        ...payload,
-        request_id: requestId,
-        client_message_id:
-          `interject-${targetSid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      };
-      const fallbackToOrdinaryPath = () => {
-        if (busy) {
-          enqueueInput(payload);
-          clearCurrentSessionDraft({ expectedText: submittedComposerText });
-          clearComposerExtras();
-          toast({ kind: 'ok', text: '问题已结束，消息已加入排队' });
-          return;
-        }
-        applyEvent({ type: 'busy_changed', payload: { busy: true } }, { emitEffects: false });
-        sendInputOrBuiltin(sid, payload)
-          .then(() => {
-            if (payload.text.trim()) recordInputHistory(payload.text);
-            clearCurrentSessionDraft({ expectedText: submittedComposerText });
-            clearComposerExtras();
-          })
-          .catch((e) => {
-            toast({ kind: 'err', text: '发送失败:' + (e.message || '') });
-            applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
-          });
-      };
-      setComposerSubmitting(true);
-      api.interjectQuestion(targetSid, interjectPayload)
-        .then(() => {
-          if (payload.text.trim()) recordInputHistory(payload.text);
-          clearCurrentSessionDraft({ expectedText: submittedComposerText });
-          clearComposerExtras();
-          // 服务端会随 question_closed(interjected) 收掉问题;这里先本地收起,
-          // 免得 WS 往返期间再次提交撞上同一个 request_id。
-          onQuestionResolve?.();
-        })
-        .catch((e) => {
-          if (e?.code === 'NO_PENDING_QUESTION') {
-            onQuestionResolve?.();
-            fallbackToOrdinaryPath();
-            return;
-          }
-          toast({ kind: 'err', text: '插话失败:' + (e?.message || '未知错误') });
-        })
-        .finally(() => {
-          setComposerSubmitting(false);
-          // focusChatInput 在 questionRequest 仍存在时会让位给 picker;插话后
-          // picker 正在收起,直接把焦点还给输入框(与 resolveQuestion 同款)。
-          requestAnimationFrame(() => inputRef.current?.focus());
-        });
-      return;
-    }
+    // 提问挂起期间没有插话入口:composer dock 被提问框整体替换(方案 A),
+    // 输入框不渲染,submit 只可能来自「没有待答问题」的那一帧渲染。这里不做
+    // 提问插话分支,避免在不可达路径上保留第二套提问收尾逻辑。
     if (!sid) {
       // 自动新建会话。普通消息由 daemon auto_start 接管;builtin 先创建
       // 空会话,再走专门 command endpoint。
@@ -3118,7 +3067,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftAccepted, questionForView, onQuestionResolve, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -4334,10 +4283,32 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     subagentTasks.tasks,
   ]);
 
-  const resolveQuestion = useCallback(() => {
+  const resolveQuestion = useCallback((feedback) => {
+    if (feedback) setQuestionFeedback(feedback);
     onQuestionResolve?.();
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [onQuestionResolve]);
+
+  const handleQuestionFeedback = useCallback((feedback) => {
+    if (feedback) setQuestionFeedback(feedback);
+  }, []);
+
+  // 反馈卡按 item 就地派生:每条 AskUserQuestion 工具消息用自己落盘的元数据
+  // 生成卡片。不缓存锚点 id —— 回合结束时 transcript self-heal 会用新 id 覆写
+  // 最近一轮,任何缓存的锚点都会失效并让卡片消失。
+  const latestAskUserQuestionItemId = useMemo(() => {
+    const host = lastAskUserQuestionItem(rawItems);
+    return host ? String(host.id ?? '') : '';
+  }, [rawItems]);
+
+  const renderFeedbackAfterQuestion = useCallback((it) => {
+    if (!questionFeedback && !it?.tool?.askUserQuestionResult) return null;
+    const feedback = questionFeedbackForItem(it, {
+      transient: questionFeedback,
+      allowTransient: String(it?.id ?? '') === latestAskUserQuestionItemId,
+    });
+    return feedback ? <QuestionFeedbackCard feedback={feedback} /> : null;
+  }, [latestAskUserQuestionItemId, questionFeedback]);
 
   const sidePanelMounted = showSidePanel;
   const sidePanelNavigationCollapsed = sidePanelCollapsed || sidePanelListCollapsed;
@@ -4977,7 +4948,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           </div>
         </div>
         {questionForView && (
-          <QuestionPicker request={questionForView} onResolve={resolveQuestion} />
+          <QuestionPicker request={questionForView} onResolve={resolveQuestion} onFeedback={handleQuestionFeedback} />
         )}
         {createProjectOpen && (
           <CreateProjectModal
@@ -5232,6 +5203,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onLocateInFileTree={locateInFileTree}
             showAceCodeAvatar={showAceCodeAvatar}
             annotationPresentations={selectionAnnotationPresentations}
+            renderAfterItem={renderFeedbackAfterQuestion}
             renderBeforeItem={(it) => (
               (turnFileListPlacement.before.get(it.id) || []).map((set) => (
                 <div
@@ -5374,6 +5346,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         <QuestionPicker
           request={questionForView}
           onResolve={resolveQuestion}
+          onFeedback={handleQuestionFeedback}
           originLabel={questionOriginLabel}
         />
       )}
@@ -5404,6 +5377,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </div>
       ) : (
         <div className="ace-composer-dock">
+          {!questionForView ? (
+            <>
           <InputBar
             ref={inputRef}
             pathReferenceApi={api}
@@ -5433,10 +5408,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
             submitting={composerSubmitting}
-            // AskUserQuestion 挂起期间输入框不再禁用:直接输入 = 插话,daemon 把问题
-            // 以「用户改为直接输入」收掉并让模型按这条消息在同一回合继续。
-            // (文案不能提到模块顶层常量:i18n babel 插件要求翻译串懒解析。)
-            placeholder={questionForView ? '回答上方问题，或直接输入插话（将取消作答，交给 AI 继续）' : undefined}
+            // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
+            // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{
               model: currentModelLabel,
               modelOptions: displayedModelOptions,
@@ -5464,6 +5437,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             busy={busy}
             onIntentChange={handleGitPillIntentChange}
           />
+          </>
+          ) : null}
         </div>
       )}
       <SessionContentLoading

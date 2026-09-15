@@ -1,5 +1,5 @@
-// AskUserQuestion 内联 picker:停靠在输入框上方,不使用全屏 modal。
-// 支持单选 / 多选 / 自定义答案 / 多题分页 / 键盘操作。
+// AskUserQuestion 内联 picker:停靠在输入框位置(替换 composer 输入区)。
+// 支持单选 / 多选 / 自定义答案 / 多题导航 / 折叠 / 复制 / Enter 快捷键。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { connection } from '../lib/connection.js';
@@ -8,13 +8,17 @@ import { VsIcon } from './Icon.jsx';
 import {
   buildQuestionAnswerPayload,
   buildQuestionCancelPayload,
+  buildQuestionSummary,
   getNavigationState,
   hasSelectedTextWithin,
+  isQuestionAnswered,
   makeInitialAnswers,
   normalizeQuestionRequest,
+  recommendedOptionIndex,
   selectAnswerCustom,
   setAnswerCustom,
   toggleAnswerSelection,
+  unselectAnswerCustom,
 } from '../lib/questionPicker.js';
 
 const READABLE_TEXT_STYLE = { overflowWrap: 'anywhere', wordBreak: 'break-word' };
@@ -22,48 +26,70 @@ const SELECTABLE_OPTION_STYLE = {
   WebkitUserSelect: 'text',
   userSelect: 'text',
 };
+const MAX_CUSTOM_LENGTH = 500;
+const COPY_FEEDBACK_MS = 1500;
+// Esc 一次取消所有选中;在此窗口内再次按 Esc 才视为拒绝作答(取消整个问答)。
+const ESC_ARM_WINDOW_MS = 1200;
 
 function focusSoon(ref) {
-  requestAnimationFrame(() => ref.current?.focus());
+  requestAnimationFrame(() => ref.current?.focus?.());
 }
 
-// 提问期间输入框不再禁用(直接输入 = 插话)。用户正在输入框里打字时,picker
-// 挂载不能抢焦点 —— 否则接下来敲的数字 / Enter 会变成选项选择与提交。
-// 输入框为空时照旧把焦点给 picker,保证键盘答题(数字 / 方向键 / Enter)可用。
-function composerIsMidTyping(active = typeof document !== 'undefined' ? document.activeElement : null) {
-  if (!active) return false;
-  const tag = active.tagName;
-  const editable = active.isContentEditable || tag === 'TEXTAREA' || tag === 'INPUT';
-  if (!editable) return false;
-  const text = tag === 'TEXTAREA' || tag === 'INPUT'
-    ? String(active.value || '')
-    : String(active.textContent || '');
-  return text.trim().length > 0;
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
-export function QuestionPicker({ request, onResolve, originLabel = '' }) {
+export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '' }) {
   const normalized = useMemo(() => normalizeQuestionRequest(request), [request]);
   const { questions } = normalized;
   const [answers, setAnswers] = useState(() => makeInitialAnswers(questions));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [focusIndex, setFocusIndex] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState(-1);
+  const [editingCustom, setEditingCustom] = useState(false);
   const rootRef = useRef(null);
   const customRef = useRef(null);
+  const copiedTimerRef = useRef(null);
+  // 记录 Esc「取消选中」与「拒绝作答」之间的连按窗口。
+  const escTimerRef = useRef(null);
 
   useEffect(() => {
     setAnswers(makeInitialAnswers(questions));
     setCurrentIndex(0);
     setFocusIndex(0);
     setCollapsed(false);
-    if (!composerIsMidTyping()) focusSoon(rootRef);
+    setEditingCustom(false);
+    focusSoon(rootRef);
   }, [normalized.requestId, questions]);
 
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+
   const question = questions[currentIndex];
-  const answer = answers[currentIndex] || { selected: [], custom: '', customSelected: false };
+  const answer = answers[currentIndex] || { selected: [], custom: '', customSelected: false, skipped: false };
   const optionCount = question?.options?.length || 0;
   const customIndex = optionCount;
   const nav = getNavigationState(currentIndex, questions, answers);
+  const isMulti = !!question?.multiSelect;
 
   const updateAnswer = useCallback((index, updater) => {
     setAnswers((prev) => prev.map((item, i) => i === index ? updater(item) : item));
@@ -73,17 +99,32 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
     onResolve?.();
   }, [onResolve]);
 
+  // Esc 一次:取消所有问题的选中态(清空已选选项与自定义激活态),保留自定义草稿文字。
+  const resetAllSelections = useCallback(() => {
+    setAnswers((prev) => prev.map((a) => ({ ...a, selected: [], customSelected: false })));
+    setEditingCustom(false);
+    focusSoon(rootRef);
+  }, []);
+
   const cancel = useCallback(() => {
     connection.sendQuestionAnswer(buildQuestionCancelPayload(normalized));
+    onFeedback?.({ kind: 'cancel' });
     resolve();
-  }, [normalized, resolve]);
+  }, [normalized, onFeedback, resolve]);
 
-  const submit = useCallback(() => {
+  const submitCurrent = useCallback((i) => {
+    setCurrentIndex(Math.min(questions.length - 1, i + 1));
+    setFocusIndex(0);
+    focusSoon(rootRef);
+  }, [questions.length]);
+
+  const submitAll = useCallback(() => {
     const state = getNavigationState(currentIndex, questions, answers);
     if (!state.canSubmit) return;
     connection.sendQuestionAnswer(buildQuestionAnswerPayload(normalized, questions, answers));
+    onFeedback?.({ kind: 'submit', summary: buildQuestionSummary(questions, answers) });
     resolve();
-  }, [answers, currentIndex, normalized, questions, resolve]);
+  }, [answers, currentIndex, normalized, onFeedback, questions, resolve]);
 
   const goPrev = useCallback(() => {
     setCurrentIndex((value) => Math.max(0, value - 1));
@@ -93,56 +134,124 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
 
   const goNext = useCallback(() => {
     const state = getNavigationState(currentIndex, questions, answers);
-    if (!state.canGoNext) return;
+    if (state.isLast) return;
+    // 向后切换 = 进入下一题;当前题未作答时自动记 Not answered(跳过)。
+    setAnswers((prev) => prev.map((item, i) =>
+      i === currentIndex && !state.currentAnswered ? { ...item, skipped: true } : item));
     setCurrentIndex((value) => Math.min(questions.length - 1, value + 1));
     setFocusIndex(0);
     focusSoon(rootRef);
   }, [answers, currentIndex, questions]);
 
+  // 主操作:非末题在本地推进到下一题(daemon 为 first-wins,只允许末题统一收卷,
+  // 中途不可发送 question_answer,否则会提前关闭整个请求);末题提交全部。
   const primaryAction = useCallback(() => {
     const state = getNavigationState(currentIndex, questions, answers);
-    if (state.isLast) submit();
-    else goNext();
-  }, [answers, currentIndex, goNext, questions, submit]);
+    if (state.isLast) submitAll();
+    else if (state.canGoNext) submitCurrent(currentIndex);
+  }, [currentIndex, questions, answers, submitAll, submitCurrent]);
+
+  const skipCurrent = useCallback(() => {
+    if (!nav.canSkip) return;
+    setAnswers((prev) => prev.map((item, i) => i === currentIndex ? { ...item, skipped: true } : item));
+    submitCurrent(currentIndex);
+  }, [currentIndex, nav.canSkip, submitCurrent]);
 
   const selectOption = useCallback((optionIndex) => {
     const opt = question?.options?.[optionIndex];
     if (!opt) return;
     setFocusIndex(optionIndex);
-    updateAnswer(currentIndex, (item) => toggleAnswerSelection(item, opt.value, !!question.multiSelect));
-  }, [currentIndex, question, updateAnswer]);
+    updateAnswer(currentIndex, (item) => toggleAnswerSelection(item, opt.value, isMulti));
+  }, [currentIndex, isMulti, question, updateAnswer]);
+
+  // Enter 一键:单选/多选选中当前焦点项并进入下一题;末题只选中(需 Ctrl+Enter 提交)。
+  const commitEnter = useCallback((optionIndex) => {
+    const opt = question?.options?.[optionIndex];
+    if (!opt) return;
+    setFocusIndex(optionIndex);
+    updateAnswer(currentIndex, (item) => toggleAnswerSelection(item, opt.value, isMulti));
+    const state = getNavigationState(currentIndex, questions, { ...answers, [currentIndex]: answers[currentIndex] });
+    if (!state.isLast) {
+      submitCurrent(currentIndex);
+    }
+  }, [answers, currentIndex, isMulti, question, questions, submitCurrent, updateAnswer]);
 
   const selectCustom = useCallback(() => {
     setFocusIndex(customIndex);
-    updateAnswer(currentIndex, (item) => selectAnswerCustom(item, !!question?.multiSelect));
-  }, [currentIndex, customIndex, question, updateAnswer]);
+    setEditingCustom(true);
+    if (!isMulti) updateAnswer(currentIndex, (item) => selectAnswerCustom(item, false));
+  }, [customIndex, currentIndex, isMulti, updateAnswer]);
 
   const setCustom = useCallback((value) => {
-    updateAnswer(currentIndex, (item) => setAnswerCustom(item, value, !!question?.multiSelect));
-  }, [currentIndex, question, updateAnswer]);
+    const next = value.slice(0, MAX_CUSTOM_LENGTH);
+    updateAnswer(currentIndex, (item) => setAnswerCustom(item, next, isMulti));
+  }, [currentIndex, isMulti, updateAnswer]);
 
   const moveFocus = useCallback((delta) => {
     const count = optionCount + 1;
     setFocusIndex((value) => Math.min(count - 1, Math.max(0, value + delta)));
   }, [optionCount]);
 
+  const copyOption = useCallback(async (optionIndex, event) => {
+    if (event) event.stopPropagation();
+    const opt = question?.options?.[optionIndex];
+    if (!opt) return;
+    const text = opt.description ? `${opt.label} — ${opt.description}` : opt.label;
+    await copyText(text);
+    setCopiedIndex(optionIndex);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopiedIndex(-1), COPY_FEEDBACK_MS);
+  }, [question]);
+
   const onKeyDown = useCallback((event) => {
     if (!question) return;
     const target = event.target;
     const tag = target?.tagName;
     const inTextInput = tag === 'INPUT' || tag === 'TEXTAREA';
+    const withCtrl = event.ctrlKey || event.metaKey;
+    const ctrlEnter = withCtrl && event.key === 'Enter';
 
     if (event.key === 'Escape') {
       event.preventDefault();
-      cancel();
+      if (inTextInput) {
+        // 自定义输入框内:先退出编辑态,不参与连按判定。
+        setEditingCustom(false);
+        focusSoon(rootRef);
+        return;
+      }
+      // 连按窗口内再按 Esc = 拒绝回答问题(取消整个问答)。
+      if (escTimerRef.current) {
+        clearTimeout(escTimerRef.current);
+        escTimerRef.current = null;
+        cancel();
+        return;
+      }
+      // 第一次 Esc:取消所有问题选中,并开启连按窗口。
+      resetAllSelections();
+      escTimerRef.current = setTimeout(() => {
+        escTimerRef.current = null;
+      }, ESC_ARM_WINDOW_MS);
       return;
     }
 
     if (inTextInput) {
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         primaryAction();
       }
+      return;
+    }
+
+    if (ctrlEnter) {
+      event.preventDefault();
+      if (nav.isLast) submitAll();
+      return;
+    }
+
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      if (event.shiftKey) goPrev();
+      else goNext();
       return;
     }
 
@@ -150,12 +259,25 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
       const index = Number(event.key) - 1;
       if (index <= optionCount) {
         event.preventDefault();
-        if (index < optionCount) selectOption(index);
-        else customRef.current?.focus();
+        if (index < optionCount) commitEnter(index);
+        else {
+          setEditingCustom(true);
+          customRef.current?.focus();
+        }
       }
       return;
     }
 
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      goNext();
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      goPrev();
+      return;
+    }
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       moveFocus(1);
@@ -169,22 +291,28 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
     if (event.key === ' ') {
       event.preventDefault();
       if (focusIndex < optionCount) selectOption(focusIndex);
-      else customRef.current?.focus();
+      else {
+        setEditingCustom(true);
+        customRef.current?.focus();
+      }
       return;
     }
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (nav.currentAnswered) {
-        primaryAction();
-      } else if (focusIndex < optionCount) {
-        selectOption(focusIndex);
-      } else {
-        customRef.current?.focus();
-      }
+      if (focusIndex < optionCount) commitEnter(focusIndex);
     }
-  }, [cancel, focusIndex, moveFocus, nav.currentAnswered, optionCount, primaryAction, question, selectOption]);
+  }, [cancel, commitEnter, focusIndex, goNext, goPrev, moveFocus, nav.isLast, optionCount, primaryAction, question, resetAllSelections, selectOption, submitAll]);
 
   if (!question) return null;
+
+  const countdownLabel = `${nav.current} / ${nav.total}`;
+  const collapsedHint = `${nav.total} 个问题待回答`;
+  const primaryLabel = nav.isLast ? '提交' : (nav.currentAnswered ? '提交' : '跳过');
+  const primaryBtnLabel = primaryLabel === '提交'
+    ? (nav.isLast ? '提交' : '提交')
+    : '跳过';
+  const primaryKeyHint = nav.isLast ? 'Ctrl + Enter' : 'Enter';
+  const customActive = !!answer.customSelected && answer.custom.trim().length > 0;
 
   return (
     <section
@@ -192,176 +320,227 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
       tabIndex={-1}
       onKeyDown={onKeyDown}
       aria-label="AskUserQuestion"
-      className="mx-2.5 mb-2 shrink min-h-0 rounded-xl border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col"
+      className="mx-2.5 mb-2 shrink min-h-0 w-full rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col"
     >
-      <div className="min-h-10 shrink-0 px-3 py-2 border-b border-border bg-surface-alt flex items-start gap-2">
-        <div className="min-w-0 flex-1">
+      <div className="min-h-11 shrink-0 px-4 py-2 border-b border-border bg-surface flex items-center gap-2">
+        <div className="min-w-0 flex-1 overflow-hidden">
           {originLabel && (
             <div className="text-[10px] text-fg-mute mb-0.5 truncate" title={originLabel}>
               {originLabel}
             </div>
           )}
-          {question.header && (
+          {!collapsed && (
             <div
-              className="text-[10px] uppercase tracking-wide text-accent font-semibold whitespace-pre-wrap break-words"
+              className="text-[15px] font-semibold text-fg whitespace-pre-wrap break-words"
               style={READABLE_TEXT_STYLE}
             >
-              {question.header}
+              {question.text}
+              {isMulti && <span className="text-fg-mute text-[13px] font-normal ml-1.5">(可多选)</span>}
             </div>
           )}
-          <div
-            className="text-[13px] leading-[17px] font-semibold text-fg whitespace-pre-wrap break-words"
-            style={READABLE_TEXT_STYLE}
-          >
-            {question.text}
-          </div>
+          {collapsed && (
+            <div className="truncate text-[14px] font-medium text-fg-mute">{collapsedHint}</div>
+          )}
         </div>
+
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={goPrev}
+            disabled={!nav.canGoPrev}
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
+            title="上一题 (Shift+Tab)"
+            aria-label="上一题"
+          >
+            <VsIcon name="arrowLeft" size={14} />
+          </button>
+        )}
+        <div className={clsx('shrink-0 text-[13px] font-medium text-fg-mute tabular-nums', collapsed && 'ml-1')}>
+          {collapsed ? countdownLabel : countdownLabel}
+        </div>
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={nav.isLast}
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
+            title="下一题 (Tab)"
+            aria-label="下一题"
+          >
+            <VsIcon name="arrowRight" size={14} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setCollapsed((value) => !value)}
-          className="mt-0.5 w-7 h-7 shrink-0 rounded-md flex items-center justify-center text-fg-2 hover:bg-surface-hi transition"
+          className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi transition"
           title={collapsed ? '展开' : '折叠'}
+          aria-label={collapsed ? '展开' : '折叠'}
         >
-          <VsIcon name={collapsed ? 'expandRight' : 'expandDown'} size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={cancel}
-          className="mt-0.5 w-7 h-7 shrink-0 rounded-md flex items-center justify-center text-fg-2 hover:bg-danger-bg hover:text-danger transition"
-          title="取消回答"
-        >
-          <VsIcon name="close" size={14} />
+          <VsIcon name={collapsed ? 'expandUp' : 'expandDown'} size={14} />
         </button>
       </div>
 
       {collapsed ? (
-        <div className="shrink-0 px-3 py-2 text-[12px] text-fg-2 flex items-center justify-between gap-3">
-          <span className="truncate">已折叠,继续等待回答。</span>
-          <span className="shrink-0 text-fg-mute">{nav.current}/{nav.total}</span>
-        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          className="shrink-0 px-4 py-2.5 text-[13px] text-fg-2 flex items-center gap-2 hover:bg-surface-hi transition text-left"
+        >
+          <VsIcon name="expandUp" size={13} className="text-fg-mute" />
+          继续回答
+        </button>
       ) : (
         <>
-          <div className="p-2.5 min-h-0 flex-1 overflow-y-auto flex flex-col gap-1.5">
+          <div className="px-2 py-2.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
             {question.options.map((opt, index) => {
               const selected = answer.selected?.includes(opt.value);
               const focused = focusIndex === index;
+              const copied = copiedIndex === index;
               return (
-                <button
+                <div
                   key={`${opt.value}-${index}`}
-                  type="button"
+                  onMouseDown={(event) => {
+                    if (event.detail > 0 && event.detail >= 2) {
+                      event.preventDefault();
+                      commitEnter(index);
+                    }
+                  }}
                   onClick={(event) => {
                     if (event.detail > 0 && hasSelectedTextWithin(event.currentTarget, window.getSelection())) return;
+                    if (event.detail >= 2) return;
                     selectOption(index);
                   }}
-                  onFocus={() => setFocusIndex(index)}
-                  aria-pressed={selected}
                   style={SELECTABLE_OPTION_STYLE}
                   className={clsx(
-                    'w-full text-left rounded-lg border px-2.5 py-2 flex items-start gap-2 transition outline-none',
-                    selected
-                      ? 'bg-accent-bg border-accent text-fg'
-                      : 'bg-surface-alt border-border hover:bg-surface-hi',
-                    focused && 'ring-2 ring-accent/20 border-accent',
+                    'group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition',
+                    (selected || focused)
+                      ? 'bg-surface-hi'
+                      : 'hover:bg-surface-hi',
                   )}
                 >
-                  <span className="w-5 shrink-0 pt-0.5 text-[12px] font-semibold text-fg-mute tabular-nums">
-                    {index + 1}
+                  <span
+                    className={clsx(
+                      'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                      selected
+                        ? 'bg-fg text-bg border-fg'
+                        : 'border-fg-mute text-fg-mute',
+                    )}
+                  >
+                    {selected ? (
+                      <VsIcon name="check" size={13} mono={false} />
+                    ) : (
+                      <span className="text-[11px] font-semibold tabular-nums">{index + 1}</span>
+                    )}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span
-                      className="block text-[12px] font-medium text-fg whitespace-pre-wrap break-words"
-                      style={READABLE_TEXT_STYLE}
-                    >
+                    <span className="block text-[15px] font-semibold text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
                       {opt.label}
+                      {opt.recommended && (
+                        <span className="ml-1.5 align-middle text-[11px] font-medium text-fg-mute border border-border rounded px-1 py-0.5">
+                          [推荐]
+                        </span>
+                      )}
                     </span>
                     {opt.description && (
-                      <span
-                        className="block mt-0.5 text-[11px] leading-[15px] text-fg-mute whitespace-pre-wrap break-words"
-                        style={READABLE_TEXT_STYLE}
-                      >
+                      <span className="block mt-0.5 text-[12px] leading-[16px] text-fg-mute whitespace-pre-wrap break-words opacity-80 group-hover:opacity-100 transition" style={READABLE_TEXT_STYLE}>
                         {opt.description}
                       </span>
                     )}
                   </span>
-                  <span className="w-5 h-5 shrink-0 mt-0.5 flex items-center justify-center">
-                    {selected ? (
-                      <VsIcon name="ok" size={14} mono={false} />
-                    ) : (
-                      <span className="w-3.5 h-3.5 rounded-full border border-border" />
-                    )}
+                  <span className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <button
+                      type="button"
+                      onClick={(event) => copyOption(index, event)}
+                      className={clsx(
+                        'h-6 px-2 rounded-full text-[11px] font-medium border transition flex items-center gap-1',
+                        copied
+                          ? 'text-ok border-transparent'
+                          : 'text-fg-2 border-border bg-surface hover:bg-surface-hi',
+                      )}
+                    >
+                      {copied ? <VsIcon name="check" size={11} className="text-ok" /> : <>复制</>}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => { event.stopPropagation(); commitEnter(index); }}
+                      className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-fg-mute hover:bg-surface-hi hover:text-fg-2 transition"
+                      title="选择并进入下一题"
+                      aria-label="选择并进入下一题"
+                    >
+                      <VsIcon name="arrowRight" size={13} />
+                    </button>
                   </span>
-                </button>
+                </div>
               );
             })}
 
-            <label
+            <div className="mx-3 mt-1 mb-1 border-t border-border" />
+
+            <div
               className={clsx(
-                'rounded-lg border px-2.5 py-2 flex items-center gap-2 transition',
-                answer.customSelected
-                  ? 'bg-accent-bg border-accent'
-                  : 'bg-surface-alt border-border',
-                focusIndex === customIndex && 'ring-2 ring-accent/20 border-accent',
+                'flex items-center gap-3 rounded-lg px-3 py-2.5 transition',
+                (customActive || focusIndex === customIndex) ? 'bg-surface-hi' : 'hover:bg-surface-hi',
               )}
             >
-              <span className="w-5 shrink-0 text-[12px] font-semibold text-fg-mute tabular-nums">
-                {customIndex + 1}
-              </span>
-              <span className="min-w-0 flex-1 flex flex-col gap-1">
-                <span className="text-[12px] font-medium text-fg">其他</span>
-                <input
-                  ref={customRef}
-                  type="text"
-                  value={answer.custom || ''}
-                  onFocus={selectCustom}
-                  onChange={(event) => setCustom(event.target.value)}
-                  placeholder="输入自定义答案"
-                  className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[12px] text-fg outline-none focus:border-accent"
-                />
-              </span>
-              <span className="w-5 h-5 shrink-0 flex items-center justify-center">
-                {answer.customSelected ? (
-                  <VsIcon name="ok" size={14} mono={false} />
+              <span
+                className={clsx(
+                  'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                  customActive
+                    ? 'bg-fg text-bg border-fg'
+                    : 'border-fg-mute text-fg-mute',
+                )}
+              >
+                {customActive ? (
+                  <VsIcon name="check" size={13} mono={false} />
                 ) : (
-                  <span className="w-3.5 h-3.5 rounded-full border border-border" />
+                  <span className="text-[11px] font-semibold tabular-nums">{customIndex + 1}</span>
                 )}
               </span>
-            </label>
-          </div>
-
-          <div className="shrink-0 px-3 py-2 border-t border-border bg-surface-alt flex items-center gap-2">
-            <button
-              type="button"
-              onClick={goPrev}
-              disabled={!nav.canGoPrev}
-              className="w-7 h-7 rounded-md border border-border bg-surface text-[13px] text-fg-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-hi transition"
-              title="上一题"
-            >
-              &lt;
-            </button>
-            <div className="text-[12px] text-fg-mute tabular-nums min-w-10 text-center">
-              {nav.current}/{nav.total}
+              <input
+                ref={customRef}
+                type="text"
+                value={answer.custom || ''}
+                onFocus={selectCustom}
+                onChange={(event) => setCustom(event.target.value)}
+                onBlur={() => setEditingCustom(false)}
+                placeholder="输入你的答案"
+                maxLength={MAX_CUSTOM_LENGTH}
+                className="min-w-0 flex-1 h-9 bg-transparent text-[14px] text-fg outline-none placeholder:text-fg-mute placeholder:text-[13px]"
+              />
+              <span className="shrink-0 text-[12px] text-fg-mute tabular-nums">
+                {(answer.custom || '').length}/{MAX_CUSTOM_LENGTH}
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={goNext}
-              disabled={!nav.canGoNext}
-              className="w-7 h-7 rounded-md border border-border bg-surface text-[13px] text-fg-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-hi transition"
-              title="下一题"
-            >
-              &gt;
-            </button>
-            <div className="flex-1" />
-            <span className="hidden sm:inline text-[11px] text-fg-mute">
-              数字选择 · Enter 确认 · Esc 取消
-            </span>
-            <button
-              type="button"
-              onClick={primaryAction}
-              disabled={nav.isLast ? !nav.canSubmit : !nav.canGoNext}
-              className="px-3 h-7 rounded-md bg-accent text-white text-[12px] font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition"
-            >
-              {nav.isLast ? '提交' : '下一题'}
-            </button>
+            <div className="mt-2 flex items-center justify-end gap-2 border-t border-border pt-2.5 px-1.5">
+              <button
+                type="button"
+                onClick={cancel}
+                className="h-8 px-3 rounded-lg text-[13px] font-medium text-fg-2 bg-surface-hi hover:bg-surface-hi/60 transition whitespace-nowrap"
+              >
+                取消
+              </button>
+              {nav.currentAnswered || nav.isLast ? (
+                <button
+                  type="button"
+                  onClick={nav.isLast ? submitAll : (nav.currentAnswered ? () => submitCurrent(currentIndex) : undefined)}
+                  className="h-8 px-3 rounded-lg text-[13px] font-medium bg-fg text-bg hover:opacity-90 transition flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  {primaryBtnLabel}
+                  <span className="text-[10px] font-medium opacity-60 px-1.5 py-0.5 rounded bg-fg-mute/60">
+                    {primaryKeyHint}
+                  </span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={skipCurrent}
+                  className="h-8 px-3 rounded-lg text-[13px] font-medium text-fg-2 bg-surface-hi hover:bg-surface-hi/60 transition whitespace-nowrap"
+                >
+                  跳过
+                </button>
+              )}
+            </div>
           </div>
         </>
       )}

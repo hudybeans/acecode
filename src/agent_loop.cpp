@@ -4024,6 +4024,10 @@ bool AgentLoop::execute_tool_calls(
                         item["question_id"] = a.question_id;
                         item["selected"]    = a.selected;
                         item["custom_text"] = a.custom_text;
+                        // 对齐 TUI(ask_question_controller.cpp):selected 与
+                        // custom_text 均为空的题视为未作答,让 Web 端「跳过」
+                        // 在 LLM 结果中呈现为 "Not answered" 而非空串。
+                        item["not_answered"] = a.selected.empty() && a.custom_text.empty();
                         arr.push_back(std::move(item));
                     }
                     out["answers"] = std::move(arr);
