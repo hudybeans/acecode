@@ -43,7 +43,7 @@ std::size_t utf8_codepoint_count(const std::string& s) {
 
 constexpr int kMaxHeaderChars = 12;
 constexpr int kMinOptions = 2;
-constexpr int kMaxOptions = 4;
+// kDefaultAskMaxOptions / kMinAskMaxOptions / kMaxAskMaxOptions 见头文件。
 
 bool label_has_recommended_suffix(const std::string& label) {
     return ask_option_label_has_recommended_suffix(label);
@@ -84,6 +84,13 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
 
 std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
     const std::string& arguments_json, std::string& err, int max_questions) {
+    return validate_ask_user_question_args(
+        arguments_json, err, max_questions, kDefaultAskMaxOptions);
+}
+
+std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
+    const std::string& arguments_json, std::string& err, int max_questions,
+    int max_options) {
     err.clear();
     if (arguments_json.empty()) {
         err = "[Error] AskUserQuestion requires arguments.";
@@ -100,6 +107,8 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
 
     const int effective_max_questions = std::clamp(
         max_questions, kMinAskQuestions, kMaxAskQuestions);
+    const int effective_max_options = std::clamp(
+        max_options, kMinAskMaxOptions, kMaxAskMaxOptions);
     if (!root.is_object() || !root.contains("questions") || !root["questions"].is_array()) {
         err = "[Error] `questions` must be an array (length 1-" +
               std::to_string(effective_max_questions) + ").";
@@ -154,13 +163,16 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
 
         if (!q.contains("options") || !q["options"].is_array()) {
             err = "[Error] questions[" + std::to_string(qi) +
-                  "].options must be an array (length 2-4).";
+                  "].options must be an array (length 2-" +
+                  std::to_string(effective_max_options) + ").";
             return std::nullopt;
         }
         const auto& opts = q["options"];
-        if (opts.size() < kMinOptions || opts.size() > kMaxOptions) {
+        if (opts.size() < kMinOptions ||
+            opts.size() > static_cast<std::size_t>(effective_max_options)) {
             err = "[Error] questions[" + std::to_string(qi) +
-                  "].options length must be between 2 and 4 (got " +
+                  "].options length must be between 2 and " +
+                  std::to_string(effective_max_options) + " (got " +
                   std::to_string(opts.size()) + ").";
             return std::nullopt;
         }
@@ -434,9 +446,11 @@ namespace {
 
 // 构造 daemon 工厂会用到的同一份 ToolDef。复用 create_ask_user_question_tool
 // 那段拼装太长 —— 把 def 抽出来共享。
-ToolDef build_ask_user_question_def(int max_questions) {
+ToolDef build_ask_user_question_def(int max_questions, int max_options) {
     const int effective_max_questions = std::clamp(
         max_questions, kMinAskQuestions, kMaxAskQuestions);
+    const int effective_max_options = std::clamp(
+        max_options, kMinAskMaxOptions, kMaxAskMaxOptions);
     ToolDef def;
     def.name = "AskUserQuestion";
     def.description = kToolDescription;
@@ -480,10 +494,11 @@ ToolDef build_ask_user_question_def(int max_questions) {
             {"options", {
                 {"type", "array"},
                 {"minItems", kMinOptions},
-                {"maxItems", kMaxOptions},
+                {"maxItems", effective_max_options},
                 {"items", option_schema},
                 {"description",
-                 "2-4 mutually exclusive choices. Do NOT include an 'Other' option — "
+                 "2-" + std::to_string(effective_max_options) +
+                 " mutually exclusive choices. Do NOT include an 'Other' option — "
                  "the UI appends one automatically."}
             }},
             {"multiSelect", {
@@ -580,17 +595,27 @@ parse_async_response(const nlohmann::json& resp_json,
 } // namespace
 
 ToolImpl create_ask_user_question_tool_async() {
-    return create_ask_user_question_tool_async(kDefaultAskMaxQuestions);
+    return create_ask_user_question_tool_async(
+        kDefaultAskMaxQuestions, kDefaultAskMaxOptions);
 }
 
 ToolImpl create_ask_user_question_tool_async(int max_questions) {
+    return create_ask_user_question_tool_async(
+        max_questions, kDefaultAskMaxOptions);
+}
+
+ToolImpl create_ask_user_question_tool_async(int max_questions, int max_options) {
     const int effective_max_questions = std::clamp(
         max_questions, kMinAskQuestions, kMaxAskQuestions);
-    auto execute = [effective_max_questions](const std::string& arguments_json,
-                                               const ToolContext& ctx) -> ToolResult {
+    const int effective_max_options = std::clamp(
+        max_options, kMinAskMaxOptions, kMaxAskMaxOptions);
+    auto execute = [effective_max_questions, effective_max_options](
+                       const std::string& arguments_json,
+                       const ToolContext& ctx) -> ToolResult {
         std::string err;
         auto parsed = validate_ask_user_question_args(
-            arguments_json, err, effective_max_questions);
+            arguments_json, err, effective_max_questions,
+            effective_max_options);
         if (!parsed.has_value()) {
             return ToolResult{err, false};
         }
@@ -672,7 +697,8 @@ ToolImpl create_ask_user_question_tool_async(int max_questions) {
     };
 
     ToolImpl impl;
-    impl.definition   = build_ask_user_question_def(effective_max_questions);
+    impl.definition   = build_ask_user_question_def(
+        effective_max_questions, effective_max_options);
     impl.execute      = execute;
     impl.is_read_only = true;
     impl.source       = ToolSource::Builtin;
