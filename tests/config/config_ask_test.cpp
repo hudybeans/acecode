@@ -41,12 +41,14 @@ void remove_file(const std::filesystem::path& path) {
 
 } // namespace
 
-TEST(ConfigAskDefaults, StructAndAppConfigUseTenQuestions) {
+TEST(ConfigAskDefaults, StructAndAppConfigUseDefaults) {
     acecode::AskConfig ask;
     EXPECT_EQ(ask.max_questions, 10);
+    EXPECT_EQ(ask.max_options, 6);
 
     acecode::AppConfig cfg;
     EXPECT_EQ(cfg.ask.max_questions, 10);
+    EXPECT_EQ(cfg.ask.max_options, 6);
 }
 
 TEST(ConfigAskLoader, MissingValueKeepsDefault) {
@@ -55,6 +57,7 @@ TEST(ConfigAskLoader, MissingValueKeepsDefault) {
 
     const auto cfg = acecode::load_config_from_path(path.string());
     EXPECT_EQ(cfg.ask.max_questions, 10);
+    EXPECT_EQ(cfg.ask.max_options, 6);
     remove_file(path);
 }
 
@@ -65,6 +68,14 @@ TEST(ConfigAskLoader, AcceptsSupportedBoundaryValues) {
 
         const auto cfg = acecode::load_config_from_path(path.string());
         EXPECT_EQ(cfg.ask.max_questions, value) << "value=" << value;
+        remove_file(path);
+    }
+    for (const int value : {4, 6, 8}) {
+        const auto path = temp_config_path("valid-options");
+        write_json(path, {{"ask", {{"max_options", value}}}});
+
+        const auto cfg = acecode::load_config_from_path(path.string());
+        EXPECT_EQ(cfg.ask.max_options, value) << "value=" << value;
         remove_file(path);
     }
 }
@@ -78,6 +89,16 @@ TEST(ConfigAskLoader, ClampsValuesOutsideSupportedRange) {
 
         const auto cfg = acecode::load_config_from_path(path.string());
         EXPECT_EQ(cfg.ask.max_questions, test_case.expected)
+            << "configured=" << test_case.configured;
+        remove_file(path);
+    }
+    const Case option_cases[] = {{3, 4}, {2, 4}, {9, 8}, {100, 8}};
+    for (const Case test_case : option_cases) {
+        const auto path = temp_config_path("clamp-options");
+        write_json(path, {{"ask", {{"max_options", test_case.configured}}}});
+
+        const auto cfg = acecode::load_config_from_path(path.string());
+        EXPECT_EQ(cfg.ask.max_options, test_case.expected)
             << "configured=" << test_case.configured;
         remove_file(path);
     }
@@ -106,6 +127,9 @@ TEST(ConfigAskLoader, InvalidTypesAndSectionKeepDefault) {
     for (const auto& ask_value : {
              nlohmann::json{{"max_questions", "10"}},
              nlohmann::json{{"max_questions", nullptr}},
+             nlohmann::json{{"max_options", "8"}},
+             nlohmann::json{{"max_options", nullptr}},
+             nlohmann::json{{"max_options", 8.5}},
              nlohmann::json::array({10}),
              nlohmann::json("10")}) {
         const auto path = temp_config_path("invalid");
@@ -113,6 +137,7 @@ TEST(ConfigAskLoader, InvalidTypesAndSectionKeepDefault) {
 
         const auto cfg = acecode::load_config_from_path(path.string());
         EXPECT_EQ(cfg.ask.max_questions, 10);
+        EXPECT_EQ(cfg.ask.max_options, 6);
         remove_file(path);
     }
 }
@@ -130,15 +155,18 @@ TEST(ConfigAskSave, NonDefaultValueIsPersistedAndRoundTrips) {
     const auto path = temp_config_path("non-default-save");
     acecode::AppConfig cfg;
     cfg.ask.max_questions = 12;
+    cfg.ask.max_options = 8;
     acecode::save_config(cfg, path.string());
 
     const auto json = read_json(path);
     ASSERT_TRUE(json.contains("ask"));
     ASSERT_TRUE(json["ask"].is_object());
     EXPECT_EQ(json["ask"]["max_questions"], 12);
+    EXPECT_EQ(json["ask"]["max_options"], 8);
 
     const auto loaded = acecode::load_config_from_path(path.string());
     EXPECT_EQ(loaded.ask.max_questions, 12);
+    EXPECT_EQ(loaded.ask.max_options, 8);
     remove_file(path);
 }
 
@@ -148,4 +176,10 @@ TEST(ConfigAskValidation, RejectsManuallyConstructedOutOfRangeValues) {
     auto errors = acecode::validate_config(cfg);
     ASSERT_FALSE(errors.empty());
     EXPECT_NE(errors.front().find("ask.max_questions"), std::string::npos);
+
+    acecode::AppConfig cfg2;
+    cfg2.ask.max_options = 9;
+    auto errors2 = acecode::validate_config(cfg2);
+    ASSERT_FALSE(errors2.empty());
+    EXPECT_NE(errors2.front().find("ask.max_options"), std::string::npos);
 }
