@@ -74,7 +74,9 @@ void route_exception_handler(crow::response& res) {
 
 WebServer::Impl::~Impl() {
     if (global_session_search) global_session_search->stop();
-    if (!shutdown_requested.exchange(true)) {
+    const bool already_stopping = shutdown_requested.exchange(true);
+    stop_side_chat_workers();
+    if (!already_stopping) {
         std::lock_guard<std::mutex> stop_lock(listener_stop_mu);
         app.stop();
     }
@@ -204,6 +206,7 @@ int WebServer::run() {
 void WebServer::stop() {
     if (!impl_) return;
     if (impl_->shutdown_requested.exchange(true)) return;
+    impl_->stop_side_chat_workers();
     std::lock_guard<std::mutex> stop_lock(impl_->listener_stop_mu);
     impl_->app.stop();
 }

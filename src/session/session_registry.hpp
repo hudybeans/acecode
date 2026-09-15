@@ -296,6 +296,11 @@ public:
     // context snapshot. This never mutates AgentLoop/SessionManager state.
     SideQuestionResult ask_side_question(const std::string& id,
                                          const std::string& question);
+    SideChatResult stream_side_chat(const std::string& id,
+                                    const std::string& question,
+                                    const std::vector<SideChatMessage>& history,
+                                    SideChatCancellation& cancellation,
+                                    const SideChatStreamCallback& callback);
 
     // Resolve persisted metadata to displayable model state without activating
     // the session. Used by web endpoints for inactive disk sessions.

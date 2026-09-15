@@ -2933,6 +2933,16 @@ SideQuestionResult AgentLoop::ask_side_question(
     return result;
 }
 
+SideChatResult AgentLoop::stream_side_chat(
+    const std::string& question,
+    const std::vector<SideChatMessage>& history,
+    SideChatCancellation& cancellation,
+    const SideChatStreamCallback& callback) {
+    auto provider = provider_accessor_ ? provider_accessor_() : nullptr;
+    return run_side_chat(std::move(provider), side_question_context_snapshot(),
+                         question, history, cancellation, callback);
+}
+
 bool AgentLoop::ask_side_question_async(
     std::string question,
     SideQuestionCallback callback) {

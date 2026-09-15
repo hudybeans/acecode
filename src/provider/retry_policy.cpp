@@ -214,4 +214,14 @@ void ProviderRetryWaiter::wake() {
     cv_.notify_all();
 }
 
+void ProviderRetryWaiter::notify_cancelled_request() {
+    // Pair with wait_for's mutex so cancellation cannot be lost between its
+    // predicate check and entering the wait. Unlike wake(), no generation is
+    // changed: requests whose own abort flag remains false keep waiting.
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+    }
+    cv_.notify_all();
+}
+
 } // namespace acecode

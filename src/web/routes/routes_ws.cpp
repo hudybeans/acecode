@@ -1,5 +1,6 @@
 // routes_ws.cpp — Route registrations extracted from server.cpp
 #include "../server_impl.hpp"
+#include "../handlers/side_chat_handler.hpp"
 
 namespace acecode::web {
 
@@ -51,7 +52,11 @@ void WebServer::Impl::handle_ws_message(crow::websocket::connection& conn, const
         return;
     }
 
-    auto type = msg.value("type", std::string{});
+    if (!msg.is_object() || !msg.contains("type") || !msg["type"].is_string()) {
+        conn.send_text(R"({"type":"error","payload":{"reason":"message type required"}})");
+        return;
+    }
+    auto type = msg["type"].get<std::string>();
     const auto& payload = msg.contains("payload") ? msg["payload"] : json::object();
 
     std::shared_ptr<WsConnState> state;
@@ -62,6 +67,13 @@ void WebServer::Impl::handle_ws_message(crow::websocket::connection& conn, const
     }
     if (!state) {
         conn.send_text(R"({"type":"error","payload":{"reason":"no connection state"}})");
+        return;
+    }
+
+    // Side connections are private and deliberately do not send hello or
+    // subscribe to the main event stream.
+    if (type == "side_chat_start" || type == "side_chat_stop") {
+        handle_side_chat_message(conn, state, type, payload);
         return;
     }
 
@@ -411,12 +423,127 @@ void WebServer::Impl::handle_ws_close(crow::websocket::connection& conn, const s
             ws_connections.erase(it);
         }
     }
+    if (state) state->side_chat.close();
     if (state && deps.session_client) {
         for (const auto& [sid, sub] : state->subscriptions) {
             deps.session_client->unsubscribe(sid, sub);
         }
     }
     LOG_INFO("[ws] connection closed: " + reason);
+}
+
+void WebServer::Impl::handle_side_chat_message(
+    crow::websocket::connection& conn,
+    const std::shared_ptr<WsConnState>& state,
+    const std::string& type,
+    const json& payload) {
+    const std::string request_id = payload.is_object() && payload.contains("request_id") &&
+        payload["request_id"].is_string() ? payload["request_id"].get<std::string>() : std::string{};
+    const auto send_error = [&](const std::string& code, const std::string& message) {
+        conn.send_text(json{{"type", "side_chat_error"}, {"payload", {
+            {"request_id", request_id}, {"code", code}, {"message", message}}}}.dump());
+    };
+    if (type == "side_chat_stop") {
+        state->side_chat.stop(request_id);
+        return;
+    }
+    auto request = parse_side_chat_start(payload);
+    if (!request.error.empty()) {
+        send_error("INVALID_SIDE_CHAT", request.error);
+        return;
+    }
+    if (!deps.session_registry) {
+        send_error("SESSION_REGISTRY_UNAVAILABLE", "session registry unavailable");
+        return;
+    }
+
+    std::vector<std::shared_ptr<SideChatWorker>> completed;
+    {
+        std::lock_guard<std::mutex> lock(ws_mu);
+        for (auto it = side_chat_workers.begin(); it != side_chat_workers.end();) {
+            if ((*it)->finished.load()) {
+                completed.push_back(*it);
+                it = side_chat_workers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& worker : completed) {
+        if (worker->thread.joinable()) worker->thread.join();
+    }
+
+    auto worker = std::make_shared<SideChatWorker>();
+    auto* connection = &conn;
+    std::lock_guard<std::mutex> lock(ws_mu);
+    auto current = ws_connections.find(connection);
+    if (current == ws_connections.end() || current->second != state) return;
+    if (shutdown_requested.load()) {
+        send_error("SIDE_CHAT_UNAVAILABLE", "server is shutting down");
+        return;
+    }
+    worker->request = state->side_chat.start(request.request_id);
+    if (!worker->request) {
+        send_error("SIDE_CHAT_BUSY", "a side request is already running on this connection");
+        return;
+    }
+    side_chat_workers.push_back(worker);
+    try {
+        worker->thread = std::thread([this, connection, state, worker,
+                                     request = std::move(request)]() {
+            const auto send = [&](const std::string& frame_type, json frame_payload, bool final) {
+                frame_payload["request_id"] = worker->request->request_id;
+                const auto text = json{{"type", frame_type}, {"payload", std::move(frame_payload)}}
+                    .dump(-1, ' ', false, json::error_handler_t::replace);
+                std::lock_guard<std::mutex> guard(ws_mu);
+                auto found = ws_connections.find(connection);
+                // Both identities matter: Crow may recycle the address of a
+                // closed connection while its provider is still returning.
+                if (found == ws_connections.end() || found->second != state) return;
+                state->side_chat.deliver(worker->request, final, [&] {
+                    try { connection->send_text(text); } catch (...) {}
+                });
+            };
+            try {
+                auto result = deps.session_registry->stream_side_chat(
+                    request.session_id, request.question, request.history,
+                    worker->request->cancellation, [&](const std::string& delta, bool reset) {
+                        send(reset ? "side_chat_reset" : "side_chat_delta",
+                             reset ? json::object() : json{{"delta", delta}}, false);
+                    });
+                if (result.response.status == SideQuestionStatus::Ok) {
+                    send("side_chat_done", {{"answer", result.response.answer},
+                                            {"cancelled", result.cancelled}}, true);
+                } else {
+                    send("side_chat_error", {{"code", result.code.empty()
+                        ? side_chat_error_code(result.response.status) : result.code},
+                        {"message", result.response.error}}, true);
+                }
+            } catch (const std::exception& error) {
+                send("side_chat_error", {{"code", "SIDE_CHAT_FAILED"}, {"message", error.what()}}, true);
+            } catch (...) {
+                send("side_chat_error", {{"code", "SIDE_CHAT_FAILED"},
+                     {"message", "side chat failed"}}, true);
+            }
+            worker->finished.store(true);
+        });
+    } catch (...) {
+        state->side_chat.deliver(worker->request, true, {});
+        side_chat_workers.pop_back();
+        send_error("SIDE_CHAT_UNAVAILABLE", "could not start side request");
+    }
+}
+
+void WebServer::Impl::stop_side_chat_workers() {
+    std::vector<std::shared_ptr<SideChatWorker>> workers;
+    {
+        std::lock_guard<std::mutex> lock(ws_mu);
+        workers.swap(side_chat_workers);
+    }
+    for (auto& worker : workers) worker->request->cancellation.cancel();
+    for (auto& worker : workers) {
+        if (worker->thread.joinable()) worker->thread.join();
+    }
 }
 
 } // namespace acecode::web

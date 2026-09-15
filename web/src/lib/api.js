@@ -4,6 +4,7 @@
 // setBase({port, token}) 仍保留给 standalone/desktop bootstrap 与兼容场景。
 
 import { getToken } from './auth.js';
+import { createSideChatStream } from './sideChatStream.js';
 
 export class ApiError extends Error {
   constructor(status, body) {
@@ -459,6 +460,12 @@ export function createApi(base = null) {
     // 同步跑一次完整模型往返(SessionRegistry::ask_side_question),按 LLM 计时。
     askSideQuestion:  (id, question) => request('POST',   `/api/sessions/${encodeURIComponent(id)}/side-question`, { question }, base,
       { timeoutMs: LLM_ROUNDTRIP_TIMEOUT_MS }),
+    streamSideChat: (id, options) => createSideChatStream({
+      ...options,
+      sessionId: id,
+      origin: baseOrigin(base),
+      token: baseToken(base),
+    }),
     getMessages:      (id, since=0, workspaceHash='')  => request(
       'GET',
       sessionMessagesPath(id, since, base, workspaceHash),

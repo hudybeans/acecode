@@ -204,6 +204,9 @@ public:
 
     virtual std::string name() const = 0;
     virtual bool is_authenticated() = 0;
+    // Native agent runtimes may own tools even when ACECode passes an empty
+    // tool list. Detached read-only side chat must reject those runtimes.
+    virtual bool supports_tool_free_chat() const { return true; }
 
     virtual std::string model() const = 0;
     virtual void set_model(const std::string& m) = 0;
@@ -213,6 +216,7 @@ public:
         return retry_waiter_.wait_for(delay, abort_flag);
     }
     void wake_retry_waiter() { retry_waiter_.wake(); }
+    void notify_cancelled_request() { retry_waiter_.notify_cancelled_request(); }
 
     // Native Responses-style compaction requires provider-specific trigger and
     // response-item support. Chat providers remain on local compaction. A

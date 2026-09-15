@@ -1991,6 +1991,24 @@ SideQuestionResult SessionRegistry::ask_side_question(
     return entry->loop->ask_side_question(question);
 }
 
+SideChatResult SessionRegistry::stream_side_chat(
+    const std::string& id,
+    const std::string& question,
+    const std::vector<SideChatMessage>& history,
+    SideChatCancellation& cancellation,
+    const SideChatStreamCallback& callback) {
+    // Keep the entry and loop alive until the provider returns, including when
+    // the main session is removed while its detached request is streaming.
+    auto entry = acquire(id);
+    if (!entry || !entry->loop) {
+        SideChatResult result;
+        result.response.status = SideQuestionStatus::UnknownSession;
+        result.response.error = "unknown session";
+        return result;
+    }
+    return entry->loop->stream_side_chat(question, history, cancellation, callback);
+}
+
 bool SessionRegistry::enqueue_lifecycle_task(std::function<void()> task) {
     if (!task || shutting_down_.load()) return false;
     std::lock_guard<std::mutex> lk(lifecycle_threads_mu_);

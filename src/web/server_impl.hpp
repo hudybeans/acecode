@@ -60,6 +60,7 @@
 #include "handlers/opencode_command_expander.hpp"
 #include "handlers/skill_command_expander.hpp"
 #include "handlers/session_list_handler.hpp"
+#include "handlers/side_chat_handler.hpp"
 #include "handlers/skills_handler.hpp"
 #include "../skills/skill_init.hpp"
 #include "message_payload.hpp"
@@ -125,11 +126,18 @@ namespace acecode::web {
 // =====================================================================
 // WsConnState — per-WebSocket-connection state
 // =====================================================================
+struct SideChatWorker {
+    std::shared_ptr<SideChatRequestState> request;
+    std::atomic<bool> finished{false};
+    std::thread thread;
+};
+
 struct WsConnState {
     std::string session_id;
     std::unordered_map<std::string, SessionClient::SubscriptionId> subscriptions;
     std::unordered_set<std::string> status_workspaces;
     std::unordered_set<std::string> status_sessions;
+    SideChatConnectionState side_chat;
 };
 
 // =====================================================================
@@ -249,6 +257,9 @@ struct WebServer::Impl {
     // ws 注册表: 把 listener / state 与 connection 绑定,断开时清理。
     std::mutex                                                      ws_mu;
     std::unordered_map<crow::websocket::connection*, std::shared_ptr<WsConnState>> ws_connections;
+    // Protected by ws_mu. Finished workers are joined/reaped on the next
+    // request; shutdown cancels and joins the remaining workers.
+    std::vector<std::shared_ptr<SideChatWorker>> side_chat_workers;
 
     // Crow runs HTTP handlers on multiple worker threads. deps.app_config is a
     // shared mutable object, so every web-side read/write must go through this.
@@ -595,6 +606,11 @@ struct WebServer::Impl {
     // WebSocket message/close handlers (defined in routes/routes_ws.cpp)
     void handle_ws_message(crow::websocket::connection& conn, const std::string& data);
     void handle_ws_close(crow::websocket::connection& conn, const std::string& reason);
+    void handle_side_chat_message(crow::websocket::connection& conn,
+                                  const std::shared_ptr<WsConnState>& state,
+                                  const std::string& type,
+                                  const nlohmann::json& payload);
+    void stop_side_chat_workers();
 };
 
 } // namespace acecode::web

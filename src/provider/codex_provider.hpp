@@ -24,6 +24,7 @@ public:
 
     std::string name() const override { return "codex"; }
     bool is_authenticated() override;
+    bool supports_tool_free_chat() const override { return false; }
     bool authenticate() override { return is_authenticated(); }
 
     std::string model() const override { return model_; }

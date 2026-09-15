@@ -1,0 +1,26 @@
+## Why
+
+现有 `/side` 在主聊天内显示一次性问题和回答，不能继续追问，也不能实时查看或停止输出。用户需要参考截图中的独立浮窗，在阅读主会话时连续讨论而不影响主任务。
+
+## What Changes
+
+- Web/Desktop 的 `/side`、`/btw` 和“侧边聊天”入口统一打开顶层浮窗，标题栏右侧只有关闭按钮，支持拖动和四边四角缩放。
+- 旁路聊天保留独立的多轮记录，复用主会话的安全上下文快照，但不写入主历史或执行工具。
+- 提供真实流式输出、等待动画和停止生成，等待及输出期间禁用旁路输入框。
+- 关闭时停止生成并保留当前会话的临时记录；切换主会话时清空，防止上下文串线。
+- 保留旧同步单轮接口及 TUI 行为，新增独立的流式旁路通信接口。
+
+## Capabilities
+
+### New Capabilities
+- `floating-side-chat`: 全局浮窗布局、隔离多轮上下文、流式输出、取消和生命周期。
+
+### Modified Capabilities
+
+无。当前 checkout 没有 `openspec/specs`；本变更替代 `add-desktop-file-editing-and-preview-tab-controls` 中主聊天内嵌旁路输入的设计。
+
+## Impact
+
+- `web/src/components/ChatView.jsx`、旁路组件、共享 API 客户端和 i18n catalog。
+- `src/web` 路由及 `SessionRegistry` / `AgentLoop` 旁路调用边界，`docs/daemon-api.md`。
+- 前后端回归测试及真实浏览器浮窗交互验证。不增加运行时依赖。

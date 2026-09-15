@@ -41,9 +41,10 @@ import { SelectionActionPopover } from './SelectionActionPopover.jsx';
 import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { ExpertPickerDialog } from './ExpertCatalog.jsx';
 import { QueueCardList } from './QueueCardList.jsx';
-import { SideQuestionCard } from './SideQuestionCard.jsx';
 import { TaskSuggestionCards } from './TaskSuggestionCards.jsx';
-import { SideQuestionComposer } from './SideQuestionComposer.jsx';
+import { SideChatWindow } from './SideChatWindow.jsx';
+import { createSideChatController } from '../lib/sideChatController.js';
+import '../styles/side-chat.css';
 import { GitSessionPill } from './GitSessionPill.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
@@ -849,11 +850,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subscribeQueueStore = useCallback((listener) => queueStore.subscribe(listener), [queueStore]);
   const getQueueSnapshot = useCallback(() => queueStore.getState(), [queueStore]);
   const queueState = useSyncExternalStore(subscribeQueueStore, getQueueSnapshot, getQueueSnapshot);
-  const [sideQuestion, setSideQuestion] = useState(null);
-  const [sideQuestionComposerOpen, setSideQuestionComposerOpen] = useState(false);
-  const [sideQuestionDraft, setSideQuestionDraft] = useState('');
-  const sideQuestionInFlightRef = useRef(false);
-  const sideQuestionEpochRef = useRef(0);
+  const sideChat = useMemo(() => createSideChatController({
+    startStream: (options) => api.streamSideChat(sid, options),
+  }), [api, sid]);
+  const sideChatState = useSyncExternalStore(
+    sideChat.subscribe, sideChat.getSnapshot, sideChat.getSnapshot,
+  );
+  // Reset cancels the old request at the session boundary and is StrictMode-safe.
+  useLayoutEffect(() => () => sideChat.reset(), [sideChat]);
   const turnInterruptInFlightRef = useRef(new Set());
   // GitSessionPill 的待生效意图(worktree 勾选 + 基线分支)。ref 不入 dep:
   // 只在发送首条消息那一刻读取,不驱动渲染。
@@ -1204,10 +1208,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   useEffect(() => { sidRef.current = sid; }, [sid]);
   useEffect(() => { draftSessionKeyRef.current = draftSessionKey; }, [draftSessionKey]);
   useEffect(() => {
-    sideQuestionEpochRef.current += 1;
-    setSideQuestion(null);
-    setSideQuestionComposerOpen(false);
-    setSideQuestionDraft('');
     setPreviewPanelHidden(false);
     setPreviewCloseConfirm(null);
   }, [sid]);
@@ -2645,54 +2645,24 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
       return null;
     }
-    if (!question) {
-      toast({ kind: 'err', text: `用法：/${command} <问题>` });
-      return null;
-    }
-    if (sideQuestionInFlightRef.current) {
+    sideChat.open();
+    if (!question) return true;
+    if (sideChat.getSnapshot().busy) {
       toast({ kind: 'err', text: '已有旁路提问正在回答，请稍候' });
-      return null;
+      return false;
     }
-
-    sideQuestionInFlightRef.current = true;
-    const requestEpoch = sideQuestionEpochRef.current;
-    if (recordHistory) recordInputHistory(`/${command} ${question}`);
-    setSideQuestion({ status: 'loading', question, answer: '', error: '' });
-
-    return api.askSideQuestion(targetSid, question)
-      .then((result) => {
-        if (sidRef.current === targetSid && sideQuestionEpochRef.current === requestEpoch) {
-          setSideQuestion({
-            status: 'success',
-            question: String(result?.question || question),
-            answer: String(result?.answer || ''),
-            error: '',
-          });
-        }
-        return true;
-      })
-      .catch((e) => {
-        const message = e?.message || '旁路提问请求失败';
-        if (sidRef.current === targetSid && sideQuestionEpochRef.current === requestEpoch) {
-          setSideQuestion({ status: 'error', question, answer: '', error: message });
-        }
-        return false;
-      })
-      .finally(() => {
-        sideQuestionInFlightRef.current = false;
-      });
-  }, [api, recordInputHistory]);
+    const started = sideChat.submit(question);
+    if (started && recordHistory) recordInputHistory(`/${command} ${question}`);
+    return started;
+  }, [sideChat, recordInputHistory]);
 
   const openSideQuestionComposer = useCallback(() => {
-    setSideQuestionComposerOpen(true);
-  }, []);
-
-  const submitSideQuestionComposer = useCallback(() => {
-    const started = runSideQuestion(sideQuestionDraft, { command: 'side' });
-    if (!started) return;
-    setSideQuestionDraft('');
-    setSideQuestionComposerOpen(false);
-  }, [runSideQuestion, sideQuestionDraft]);
+    if (!sidRef.current) {
+      toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
+      return;
+    }
+    sideChat.open();
+  }, [sideChat]);
 
   const guideQueued = useCallback((queuedId) => {
     const targetSid = sidRef.current;
@@ -2883,7 +2853,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       if (started) {
         clearCurrentSessionDraft();
         clearComposerExtras();
-        restoreChatInputFocusSoon(false);
       }
       return;
     }
@@ -5389,17 +5358,13 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         />
       )}
 
-      <SideQuestionComposer
-        open={sideQuestionComposerOpen}
-        value={sideQuestionDraft}
-        busy={sideQuestion?.status === 'loading'}
-        onChange={setSideQuestionDraft}
-        onSubmit={submitSideQuestionComposer}
-        onClose={() => setSideQuestionComposerOpen(false)}
-      />
-      <SideQuestionCard
-        state={sideQuestion}
-        onDismiss={() => setSideQuestion(null)}
+      <SideChatWindow
+        {...sideChatState}
+        onDraftChange={sideChat.setDraft}
+        onSubmit={() => sideChat.submit()}
+        onStop={sideChat.stop}
+        onClose={sideChat.close}
+        onFileLink={handleTranscriptFileLink}
       />
       <QueueCardList
         items={visibleQueuedItems}

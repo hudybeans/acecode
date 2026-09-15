@@ -7,6 +7,7 @@
 #include "utils/token_tracker.hpp"
 #include "session/session_manager.hpp"
 #include "session/event_dispatcher.hpp"
+#include "session/side_chat.hpp"
 #include "session/permission_prompter.hpp"
 #include "session/ask_user_question_prompter.hpp"
 #include "config/config.hpp"
@@ -315,6 +316,10 @@ public:
     // configuration or restored history has been installed.
     void prime_side_question_context();
     SideQuestionResult ask_side_question(const std::string& question);
+    SideChatResult stream_side_chat(const std::string& question,
+                                    const std::vector<SideChatMessage>& history,
+                                    SideChatCancellation& cancellation,
+                                    const SideChatStreamCallback& callback);
     using SideQuestionCallback =
         std::function<void(SideQuestionResult)>;
     // Runs the detached provider call without blocking the TUI thread. Worker

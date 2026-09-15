@@ -4,6 +4,7 @@
 #include "auth/github_auth.hpp"
 
 #include <chrono>
+#include <mutex>
 
 namespace acecode {
 
@@ -38,8 +39,12 @@ public:
     bool run_device_flow(std::function<void(const std::string&)> status_callback = nullptr);
 
 private:
-    bool ensure_copilot_token();
+    void set_github_token(std::string token);
+    std::string copilot_token_snapshot(const std::string& rejected_token = {});
 
+    // Main and detached side requests share this provider. Only credential
+    // refresh/copy holds this lock; model requests use their own token string.
+    std::mutex token_mu_;
     std::string github_token_;
     CopilotToken copilot_token_;
     DeviceCodeResponse device_code_;

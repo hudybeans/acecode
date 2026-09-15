@@ -213,13 +213,11 @@ run('editable previews retain selection, inactive marks and annotation decoratio
   assert.match(decorations, /\.ace-markdown-code-highlight/);
 });
 
-run('side chat owns a separate draft and dispatches through the existing side-question API', () => {
+run('side chat entries share an isolated floating conversation controller', () => {
   const chat = source('../components/ChatView.jsx');
-  const composer = source('../components/SideQuestionComposer.jsx');
-
-  assert.match(chat, /const \[sideQuestionDraft, setSideQuestionDraft\] = useState\(''\)/);
-  assert.match(chat, /runSideQuestion\(sideQuestionDraft, \{ command: 'side' \}\)/);
-  assert.match(chat, /<SideQuestionComposer[\s\S]*value=\{sideQuestionDraft\}/);
-  assert.match(composer, /不会改变主输入草稿/);
+  assert.match(chat, /createSideChatController\(\{[\s\S]*?api\.streamSideChat\(sid, options\)/);
+  assert.match(chat, /sideChat\.submit\(question\)/);
+  assert.match(chat, /<SideChatWindow[\s\S]*?onDraftChange=\{sideChat\.setDraft\}/);
+  assert.doesNotMatch(chat, /<SideQuestion(?:Composer|Card)/);
   assert.match(chat, /onOpenSideChat=\{openSideQuestionComposer\}/);
 });

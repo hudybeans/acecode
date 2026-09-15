@@ -1376,6 +1376,72 @@ enqueuing: `404` unknown session, `409` session busy, `400` session already
 has messages / already in a worktree / invalid or missing base branch,
 `500` git errors.
 
+### Private streaming side chat over WebSocket
+
+Web/Desktop floating side chat opens its own connection to the existing
+`/ws/sessions/<id>?token=...` endpoint using the same authentication rules. This
+connection does not send `hello` and does not subscribe to main-session events.
+The synchronous HTTP endpoint and TUI `/btw` and `/side` remain single-turn.
+
+Start a request with:
+
+```json
+{
+  "type": "side_chat_start",
+  "payload": {
+    "session_id": "session-id",
+    "request_id": "unique-request-id",
+    "question": "How does that affect the next request?",
+    "history": [
+      {"role": "user", "content": "Why use a mutex?"},
+      {"role": "assistant", "content": "It protects the context snapshot."}
+    ]
+  }
+}
+```
+
+`request_id` must contain 1–128 UTF-8 bytes; `question` is limited to 16,000
+UTF-8 bytes. Optional `history` contains at most 200 messages and 256 KiB of
+combined content, alternating nonempty text-only `user`/`assistant` pairs.
+No tool, system, attachment, or additional message fields are accepted.
+Clients include successful answers and nonempty stopped answers in subsequent
+history; failed or empty stopped turns stay local to the floating transcript.
+
+The model receives the latest safe main context snapshot, detached side-chat
+instructions, the supplied side history, and the new question, with no tools.
+Side messages do not mutate main history, transcript, hooks, goals, busy state,
+or the session event stream. Responses go only to the requesting connection:
+
+```json
+{"type":"side_chat_delta","payload":{"request_id":"unique-request-id","delta":"Text fragment"}}
+{"type":"side_chat_reset","payload":{"request_id":"unique-request-id"}}
+{"type":"side_chat_done","payload":{"request_id":"unique-request-id","answer":"Complete or stopped partial answer","cancelled":false}}
+{"type":"side_chat_error","payload":{"request_id":"unique-request-id","code":"SIDE_CHAT_FAILED","message":"Provider error"}}
+```
+
+`side_chat_reset` clears provisional answer text before a provider retry.
+`side_chat_done` includes the authoritative accumulated answer. On error,
+clients retain already received text for display but exclude the failed turn
+from follow-up context.
+
+Send `{"type":"side_chat_stop","payload":{"request_id":"unique-request-id"}}`
+to cancel only that side request, including its retry backoff. The terminal
+`side_chat_done` then has `cancelled: true` and preserves generated text.
+Closing the connection also cancels the request. At most one side request may
+run per connection; another start returns `SIDE_CHAT_BUSY`. Stop messages with
+an unmatched request ID are harmless. Clients should wait for the terminal
+frame before sending another turn or close the finished connection.
+
+Other structured errors include `INVALID_SIDE_CHAT`, `UNKNOWN_SESSION`,
+`SESSION_REGISTRY_UNAVAILABLE`, `SIDE_CHAT_UNAVAILABLE`,
+`SIDE_QUESTION_CONTEXT_NOT_READY`, and `SIDE_QUESTION_PROVIDER_UNAVAILABLE`.
+`SIDE_CHAT_PROVIDER_UNSUPPORTED` means the current provider cannot guarantee
+tool-free calls. In particular, the native Codex app-server provider owns its
+own tool runtime and is rejected before invocation; selecting a supported
+model enables side chat. Its main-session behavior remains unchanged.
+An older daemon returns its ordinary unknown-message error; clients must show
+that error and release the composer instead of simulating streaming.
+
 ### `POST /api/sessions/:id/attachments`
 
 Uploads bytes into the session attachment store. Body:

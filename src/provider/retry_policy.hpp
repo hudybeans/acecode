@@ -44,6 +44,9 @@ public:
     bool wait_for(std::chrono::milliseconds delay,
                   const std::atomic<bool>* abort_flag);
     void wake();
+    // Notify request-owned abort flags without shortening another request's
+    // retry delay on a shared provider.
+    void notify_cancelled_request();
 
 private:
     std::mutex mu_;

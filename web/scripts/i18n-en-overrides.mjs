@@ -1286,4 +1286,26 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '已创建分支会话': 'Forked session created',
   '主 checkout 在运行期间出现 {{p0}} 处 worktree 之外的改动':
     'The main checkout gained {{p0}} change(s) outside the worktree while this run executed',
+  '关闭侧边聊天': 'Close side chat',
+  '侧边聊天记录': 'Side chat history',
+  '围绕当前会话继续聊，不会打断主任务，也不会加入主会话。':
+    'Chat about this session without interrupting the main task or adding to its conversation.',
+  '旁路提问失败': 'Side chat failed',
+  '正在回答…': 'Answering…',
+  '思考中…': 'Thinking…',
+  '正在停止…': 'Stopping…',
+  '停止生成': 'Stop generating',
+  '问题过长，请缩短后重试。': 'Your question is too long. Shorten it and try again.',
+  '旁路聊天记录过长，无法继续发送。': 'The side chat history is too long to send another question.',
+  '旁路聊天请求失败，请重试。': 'The side chat request failed. Try again.',
+  '旁路聊天连接超时，请重试。': 'The side chat connection timed out. Try again.',
+  '旁路聊天连接失败，请重试。': 'Could not connect to side chat. Try again.',
+  '旁路聊天响应格式错误，请重试。': 'The side chat response was invalid. Try again.',
+  '当前后端不支持流式旁路聊天，请更新 ACECode 后重试。':
+    'This backend does not support streaming side chat. Update ACECode and try again.',
+  '旁路聊天连接已中断，请重试。': 'The side chat connection was interrupted. Try again.',
+  '旁路聊天未返回内容，请重试。': 'Side chat returned no content. Try again.',
+  '当前模型不支持只读旁路聊天，请切换模型后重试。':
+    'This model does not support tool-free side chat. Switch models and try again.',
+  '已停止': 'Stopped',
 });

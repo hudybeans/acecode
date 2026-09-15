@@ -83,15 +83,12 @@ CopilotProvider::CopilotProvider(const std::string& model,
                            std::move(request_options)) {}
 
 bool CopilotProvider::is_authenticated() {
-    return !github_token_.empty() && ensure_copilot_token();
+    return !copilot_token_snapshot().empty();
 }
 
 bool CopilotProvider::try_silent_auth() {
-    github_token_ = load_github_token();
-    if (github_token_.empty()) {
-        return false;
-    }
-    return ensure_copilot_token();
+    set_github_token(load_github_token());
+    return !copilot_token_snapshot().empty();
 }
 
 bool CopilotProvider::run_device_flow(std::function<void(const std::string&)> status_callback) {
@@ -104,19 +101,20 @@ bool CopilotProvider::run_device_flow(std::function<void(const std::string&)> st
     // The caller (TUI) should display device_code_.user_code and verification_uri
     // before we start polling.
 
-    github_token_ = poll_for_access_token(
+    auto github_token = poll_for_access_token(
         device_code_.device_code,
         device_code_.interval,
         device_code_.expires_in,
         status_callback
     );
 
-    if (github_token_.empty()) {
+    set_github_token(github_token);
+    if (github_token.empty()) {
         return false;
     }
 
-    save_github_token(github_token_);
-    return ensure_copilot_token();
+    save_github_token(github_token);
+    return !copilot_token_snapshot().empty();
 }
 
 bool CopilotProvider::authenticate() {
@@ -126,13 +124,26 @@ bool CopilotProvider::authenticate() {
     return run_device_flow();
 }
 
-bool CopilotProvider::ensure_copilot_token() {
+void CopilotProvider::set_github_token(std::string token) {
+    std::lock_guard<std::mutex> lock(token_mu_);
+    if (github_token_ != token) copilot_token_ = {};
+    github_token_ = std::move(token);
+}
+
+std::string CopilotProvider::copilot_token_snapshot(const std::string& rejected_token) {
+    std::lock_guard<std::mutex> lock(token_mu_);
+    if (github_token_.empty()) return {};
+    // A late 401 from one request must not invalidate the replacement another
+    // request has already installed while that first request was in flight.
+    if (!rejected_token.empty() && copilot_token_.token == rejected_token) {
+        copilot_token_ = {};
+    }
     // Check if we already have a valid (non-expired) copilot token
     if (!copilot_token_.token.empty()) {
         int64_t now = static_cast<int64_t>(std::time(nullptr));
         if (now < copilot_token_.expires_at - 60) { // 60s margin
             LOG_DEBUG("Copilot token still valid, expires_at=" + std::to_string(copilot_token_.expires_at));
-            return true;
+            return copilot_token_.token;
         }
     }
 
@@ -140,14 +151,15 @@ bool CopilotProvider::ensure_copilot_token() {
     // Exchange for a new copilot token
     copilot_token_ = exchange_copilot_token(github_token_);
     LOG_INFO("Copilot token exchange result: " + std::string(copilot_token_.token.empty() ? "FAILED" : "OK"));
-    return !copilot_token_.token.empty();
+    return copilot_token_.token;
 }
 
 ChatResponse CopilotProvider::chat(
     const std::vector<ChatMessage>& messages,
     const std::vector<ToolDef>& tools
 ) {
-    if (!ensure_copilot_token()) {
+    const auto token = copilot_token_snapshot();
+    if (token.empty()) {
         return make_copilot_error(
             ProviderErrorKind::Unknown,
             0,
@@ -161,7 +173,7 @@ ChatResponse CopilotProvider::chat(
 
     cpr::Header headers = {
         {"Content-Type", "application/json"},
-        {"Authorization", "Bearer " + copilot_token_.token},
+        {"Authorization", "Bearer " + token},
         {"Editor-Version", "acecode/0.1.0"},
         {"Editor-Plugin-Version", "acecode/0.1.0"},
         {"Copilot-Integration-Id", "vscode-chat"},
@@ -181,9 +193,9 @@ ChatResponse CopilotProvider::chat(
 
     if (r.status_code == 401) {
         // Token expired, try refresh once
-        copilot_token_ = {};
-        if (ensure_copilot_token()) {
-            headers["Authorization"] = "Bearer " + copilot_token_.token;
+        const auto refreshed_token = copilot_token_snapshot(token);
+        if (!refreshed_token.empty()) {
+            headers["Authorization"] = "Bearer " + refreshed_token;
             auto proxy_opts2 = network::proxy_options_for(COPILOT_CHAT_URL);
             r = cpr::Post(
                 cpr::Url{COPILOT_CHAT_URL},
@@ -246,7 +258,8 @@ void CopilotProvider::chat_stream(
     std::atomic<bool>* abort_flag
 ) {
     LOG_INFO("CopilotProvider::chat_stream messages=" + std::to_string(messages.size()) + " tools=" + std::to_string(tools.size()));
-    if (!ensure_copilot_token()) {
+    const auto token = copilot_token_snapshot();
+    if (token.empty()) {
         LOG_ERROR("Copilot token unavailable for streaming");
         StreamEvent evt;
         evt.type = StreamEventType::Error;
@@ -258,7 +271,7 @@ void CopilotProvider::chat_stream(
     nlohmann::json body = build_request_body(messages, tools, true);
 
     std::map<std::string, std::string> extra_headers = {
-        {"Authorization", "Bearer " + copilot_token_.token},
+        {"Authorization", "Bearer " + token},
         {"Editor-Version", "acecode/0.1.0"},
         {"Editor-Plugin-Version", "acecode/0.1.0"},
         {"Copilot-Integration-Id", "vscode-chat"},
