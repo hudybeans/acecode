@@ -3112,12 +3112,11 @@ function SectionUsage() {
       ) : error ? (
         <UsageEmptyState text={`加载失败:${error}`} />
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-6">
+        <div className="ace-usage-summary">
           {summary.map((c) => (
-            <div key={c.label} className="px-4 py-3.5 rounded-md bg-surface border border-border">
-              <div className="text-[10px] text-fg-mute uppercase tracking-wider mb-1.5">{c.label}</div>
-              <div className="text-[24px] font-bold text-fg leading-none mb-1">{c.value}</div>
-              <div className="text-[11px] text-fg-mute truncate">{c.sub}</div>
+            <div key={c.label} title={`${c.label}: ${c.value}\n${c.sub}`} aria-label={`${c.label}: ${c.value}, ${c.sub}`}>
+              <div className="ace-usage-summary-value">{c.value}</div>
+              <div className="ace-usage-summary-label">{c.label}</div>
             </div>
           ))}
         </div>

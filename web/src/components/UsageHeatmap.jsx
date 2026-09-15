@@ -7,6 +7,9 @@ import { buildUsageHeatmap } from '../lib/usageHeatmap.js';
 import { anchoredMenuPosition } from '../lib/anchoredMenuPosition.js';
 import './UsageHeatmap.css';
 
+const CHART_WIDTH = 732;
+const CELL_GAP = 3;
+
 function UsageTooltip({ id, anchor, revision, children }) {
   const ref = useRef(null);
   const [position, setPosition] = useState(null);
@@ -46,10 +49,11 @@ export function UsageHeatmap({ reloadKey = 0 }) {
   const [mode, setMode] = useState('daily');
   const [tip, setTip] = useState(null);
   const [focusedKey, setFocusedKey] = useState(null);
-  const scrollRef = useRef(null);
+  const chartRef = useRef(null);
   const cellsRef = useRef(new Map());
   const titleId = useId();
   const tooltipId = useId();
+  const rangeId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -82,12 +86,6 @@ export function UsageHeatmap({ reloadKey = 0 }) {
     return `${formatDate(cell.date)} 使用了 ${count} 个 Token`;
   };
 
-  useLayoutEffect(() => {
-    if (raw && !error && scrollRef.current) {
-      scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
-    }
-  }, [raw, error]);
-
   useEffect(() => {
     if (!tip) return undefined;
     const close = () => setTip(null);
@@ -97,7 +95,7 @@ export function UsageHeatmap({ reloadKey = 0 }) {
       event.stopPropagation();
       close();
     };
-    const onPointerDown = (event) => { if (!scrollRef.current?.contains(event.target)) close(); };
+    const onPointerDown = (event) => { if (!chartRef.current?.contains(event.target)) close(); };
     const onScroll = () => {
       if (tip.input === 'focus' && document.activeElement === tip.anchor) {
         setTip((current) => current ? { ...current, revision: (current.revision || 0) + 1 } : null);
@@ -120,6 +118,11 @@ export function UsageHeatmap({ reloadKey = 0 }) {
   }
 
   function navigateCell(event, cell) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      showCell(cell, event.currentTarget, 'focus');
+      return;
+    }
     const index = cells.findIndex((item) => item.date === cell.date);
     const horizontalStep = mode === 'weekly' ? 1 : 7;
     const offsets = { ArrowLeft: -horizontalStep, ArrowRight: horizontalStep, ArrowUp: -1, ArrowDown: 1 };
@@ -131,19 +134,28 @@ export function UsageHeatmap({ reloadKey = 0 }) {
     event.preventDefault();
     const next = cells[nextIndex];
     const anchor = cellsRef.current.get(next.date);
-    anchor?.focus();
+    anchor?.focus({ preventScroll: true });
   }
 
-  function renderCell(cell, weekly = false) {
+  const cellSize = (CHART_WIDTH - (calendar.weeks.length - 1) * CELL_GAP) / calendar.weeks.length;
+  const cellStep = cellSize + CELL_GAP;
+  const gridHeight = cellSize * 7 + CELL_GAP * 6;
+
+  function renderCell(cell, column, row = 0, weekly = false) {
     return (
-      <button
+      <rect
         key={cell.date}
         ref={(node) => {
           if (node) cellsRef.current.set(cell.date, node);
           else cellsRef.current.delete(cell.date);
         }}
-        type="button"
+        role="button"
         className={`ace-usage-cell${weekly ? ' ace-usage-week-cell' : ''}`}
+        x={column * cellStep}
+        y={row * cellStep}
+        width={cellSize}
+        height={weekly ? gridHeight : cellSize}
+        rx={3}
         data-level={cell.level}
         data-date={cell.date}
         data-active={tip?.cell.date === cell.date || undefined}
@@ -164,66 +176,64 @@ export function UsageHeatmap({ reloadKey = 0 }) {
     );
   }
 
-  // Avoid colliding month labels at a short first or final month.
-  const months = calendar.months.filter((month, index, all) => index === all.length - 1
-    || all[index + 1].column - month.column >= 3);
+  const months = calendar.months.slice(-12);
 
   return (
-    <section className="ace-usage-activity mb-6" aria-labelledby={titleId} aria-busy={loading}>
-      <div className="ace-usage-heading">
-        <h3 id={titleId} className="text-[14px] font-semibold flex items-center gap-2">
-          Token 活动
-          {loading && <span className="ace-spinner" role="status" aria-label="加载中" />}
-        </h3>
-        <div className="ace-usage-modes" role="group" aria-label="Token 活动视图">
-          {[['daily', '每日'], ['weekly', '每周'], ['cumulative', '累计']].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              aria-pressed={mode === key}
-              onClick={() => { setMode(key); setTip(null); setFocusedKey(null); }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+    <section className="ace-usage-activity" aria-labelledby={titleId} aria-busy={loading}>
+      <svg className="ace-usage-heading-frame" viewBox={`0 0 ${CHART_WIDTH} 32`}>
+        <foreignObject width={CHART_WIDTH} height={32}>
+          <div className="ace-usage-heading">
+            <h3 id={titleId} className="font-semibold flex items-center gap-2">
+              Token 活动
+              {loading && <span className="ace-spinner" role="status" aria-label="加载中" />}
+            </h3>
+            <div className="ace-usage-modes" role="group" aria-label="Token 活动视图">
+              {[['daily', '每日'], ['weekly', '每周'], ['cumulative', '累计']].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={mode === key}
+                  onClick={() => { setMode(key); setTip(null); setFocusedKey(null); }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </foreignObject>
+      </svg>
       {error ? (
         <div className="ace-usage-status" role="status">活动加载失败：{error}</div>
       ) : loading && !raw ? (
         <div className="ace-usage-status" role="status">加载中</div>
       ) : (
         <>
-          <div ref={scrollRef} className="ace-usage-scroll">
-            <div className="ace-usage-calendar" style={{ '--usage-weeks': calendar.weeks.length }}>
-              <div className="ace-usage-grid">
-                {calendar.weeks.map((week) => (
-                  <div key={week.key} className="ace-usage-week">
-                    {mode === 'weekly'
-                      ? renderCell({ ...week, date: week.key }, true)
-                      : week.cells.map((cell, index) => cell
-                        ? renderCell(cell)
-                        : <span key={`padding-${index}`} className="ace-usage-padding" aria-hidden="true" />)}
-                  </div>
-                ))}
-              </div>
-              <div className="ace-usage-months" aria-hidden="true">
-                {months.map((month, index) => (
-                  <span key={month.date} style={{ gridColumn: `${month.column + 1} / ${months[index + 1] ? months[index + 1].column + 1 : -1}` }}>
-                    {monthFormat.format(new Date(`${month.date}T00:00:00Z`))}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="ace-usage-footer">
-            <span>{mode === 'cumulative' ? '近 365 天内累计' : '近 365 天'}</span>
-            <div className="ace-usage-legend" aria-hidden="true">
-              <span>少</span>
-              {[0, 1, 2, 3, 4].map((level) => <span key={level} className="ace-usage-cell" data-level={level} />)}
-              <span>多</span>
-            </div>
-          </div>
+          <span id={rangeId} className="sr-only">{mode === 'cumulative' ? '近 365 天内累计' : '近 365 天'}</span>
+          <svg
+            ref={chartRef}
+            className="ace-usage-calendar"
+            viewBox={`0 0 ${CHART_WIDTH} ${gridHeight + 28}`}
+            role="group"
+            aria-labelledby={titleId}
+            aria-describedby={rangeId}
+          >
+            <g className="ace-usage-grid">
+              {calendar.weeks.map((week, column) => (
+                <g key={week.key} className="ace-usage-week">
+                  {mode === 'weekly'
+                    ? renderCell({ ...week, date: week.key }, column, 0, true)
+                    : week.cells.map((cell, row) => cell ? renderCell(cell, column, row) : null)}
+                </g>
+              ))}
+            </g>
+            <g className="ace-usage-months" aria-hidden="true">
+              {months.map((month, index) => (
+                <text key={month.date} x={12 + index * (CHART_WIDTH - 24) / (months.length - 1)} y={gridHeight + 22} textAnchor="middle">
+                  {monthFormat.format(new Date(`${month.date}T00:00:00Z`))}
+                </text>
+              ))}
+            </g>
+          </svg>
         </>
       )}
       {tip && !error && <UsageTooltip id={tooltipId} anchor={tip.anchor} revision={tip.revision}>{cellLabel(tip.cell)}</UsageTooltip>}

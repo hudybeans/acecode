@@ -5,7 +5,7 @@ Let users scan token activity across the past year in a compact theme-aware cale
 ## ADDED Requirements
 
 ### Requirement: Annual calendar activity
-The usage settings page SHALL display the latest 365 days as a seven-row calendar heatmap with Monday-start week columns and month labels. In-range days without usage SHALL be zero-valued cells; out-of-range padding SHALL remain blank. Existing summary and breakdown statistics SHALL retain their 30-day period.
+The usage settings page SHALL display the latest 365 days as a seven-row calendar heatmap with Monday-start week columns and twelve equally spaced month labels. In-range days without usage SHALL be zero-valued cells; out-of-range padding SHALL remain blank. Existing summary and breakdown statistics SHALL retain their 30-day period. The three summary metrics SHALL occupy one compact bordered row with values above labels and vertical dividers; neither the metrics nor their individual text lines SHALL wrap.
 
 #### Scenario: Calendar crosses a year or leap day
 - **WHEN** the requested range crosses a year boundary or February 29
@@ -30,7 +30,11 @@ Hovering, focusing, or tapping a cell SHALL show the applicable date or date ran
 - **THEN** its date and exact token amount remain readable without clipping
 
 ### Requirement: Theme and responsive states
-Cell intensity SHALL use the current theme accent, empty cells SHALL use neutral theme colors, and details SHALL use theme surface, text, and border colors. Narrow screens SHALL allow horizontal calendar scrolling without overflowing the page. Annual loading or request failures SHALL be shown separately from 30-day statistics and SHALL support refresh. Labels SHALL support Chinese and English.
+Cell intensity SHALL use the current theme accent, empty cells SHALL use neutral theme colors, and details SHALL use theme surface, text, and border colors. The chart SHALL be at most 732 CSS pixels wide, with square daily cells at most 11 CSS pixels wide and small rounded corners. Narrow screens SHALL uniformly scale cells, gaps, corner radii and the month axis to show the whole chart without a horizontal scrollbar. Annual loading or request failures SHALL be shown separately from 30-day statistics and SHALL support refresh. Labels SHALL support Chinese and English. The visible chart SHALL end at its month axis without a range or intensity-legend footer.
+
+#### Scenario: Window width changes
+- **WHEN** the settings content becomes narrower or wider
+- **THEN** the summary remains one row, all twelve month labels remain equally spaced, daily cells remain square, the chart fits the available width without horizontal scrolling, and increasing available width beyond 732 pixels does not enlarge the chart
 
 #### Scenario: Annual request fails
 - **WHEN** the annual request fails while the 30-day summary succeeds
