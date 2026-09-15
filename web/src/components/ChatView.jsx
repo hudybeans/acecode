@@ -205,8 +205,8 @@ import {
   refreshPreviewTab,
   reorderPreviewTab,
   sessionWorkingCwd,
+  syncBrowserTabsForSession,
   updateGitChangesTab,
-  updateBrowserTabMetadata,
   updateFileTabDraft,
   updateSessionChangesTab,
   visiblePreviewTabs,
@@ -222,12 +222,21 @@ import {
 import {
   AGENT_BROWSER_STATE_EVENT,
   agentBrowserActivityFromItems,
+  agentBrowserOwnerForSession,
   closeAgentBrowserPage,
   createAgentBrowserPage,
-  getAgentBrowserState,
   hasNativeAgentBrowser,
   selectAgentBrowserPage,
 } from '../lib/agentBrowser.js';
+import {
+  agentBrowserPageStore,
+  agentBrowserPageStoreSnapshot,
+  agentBrowserPageStoreSubscribe,
+  agentBrowserPagesForSession,
+  agentBrowserSessionTargetPageId,
+  claimUnownedAgentBrowserPage,
+  reconcileAgentBrowserPageStore,
+} from '../lib/agentBrowserPages.js';
 import { nextAutoPreviewRefresh } from '../lib/previewRefresh.js';
 import {
   CHAT_TAIL_FOLLOW_STATE,
@@ -4125,7 +4134,27 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     () => agentBrowserActivityFromItems(items),
     [items],
   );
-  const [agentBrowserActivePageId, setAgentBrowserActivePageId] = useState('');
+  // 浏览器页签从 App 级页面归属登记表派生(lib/agentBrowserPages.js),而不是从
+  // 当前 transcript 的实时工具活动推断:后者只在「正在看这个会话 + 工具正在执行」
+  // 的瞬间成立,用户切走会话时页面就成了孤儿(会话 20260915-120207-bdf9)。
+  const agentBrowserRegistry = useSyncExternalStore(
+    agentBrowserPageStoreSubscribe,
+    agentBrowserPageStoreSnapshot,
+    agentBrowserPageStoreSnapshot,
+  );
+  const sessionBrowserPages = useMemo(
+    () => agentBrowserPagesForSession(agentBrowserRegistry, sid),
+    [agentBrowserRegistry, sid],
+  );
+  const sessionBrowserTargetPageId = useMemo(
+    () => agentBrowserSessionTargetPageId(agentBrowserRegistry, sid),
+    [agentBrowserRegistry, sid],
+  );
+  // 彩虹边框只给 Agent 正在操作的那一页:显式 page_id 优先,否则取本会话的
+  // Agent 默认目标页;没有浏览器工具在跑时为空。
+  const agentBrowserActivePageId = agentBrowserActivity.active
+    ? (agentBrowserActivity.pageId || sessionBrowserTargetPageId)
+    : '';
   // 每轮「本轮改动文件」列表:collectTurnChangeSetsFromItems 按 user 消息切
   // 回合聚合变更;列表渲染在回合末尾 = 下一个 user 行之前,最后一轮挂在
   // transcript 末尾(tail)。锚定基于 renderedItems(折叠投影后的视图)里的
@@ -4492,101 +4521,80 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const openBrowserPreview = useCallback(async () => {
     if (!sid || !hasNativeAgentBrowser()) return;
     if (sidePanelCollapsed) onToggleSidePanel?.();
-    const created = await createAgentBrowserPage();
+    const created = await createAgentBrowserPage(agentBrowserOwnerForSession(ref));
     if (created?.ok === false || !created?.page_id) return;
     showBrowserPage(
       created.page_id,
       created.title || defaultBrowserTabTitle(),
       created.favicon,
     );
-  }, [onToggleSidePanel, showBrowserPage, sid, sidePanelCollapsed]);
+  }, [onToggleSidePanel, ref, showBrowserPage, sid, sidePanelCollapsed]);
 
-  const agentBrowserActivationRef = useRef('');
+  // 切会话时向 Desktop 对账一次 native 页面池;事件流已经在 App 级持续镜像。
   useEffect(() => {
-    const activationKey = agentBrowserActivity.activationKey;
-    if (!activationKey || !sid || !hasNativeAgentBrowser()) return;
-    if (!agentBrowserActivity.active) {
-      setAgentBrowserActivePageId('');
-      return;
-    }
-    const scopedKey = `${sid}:${activationKey}`;
-    if (agentBrowserActivationRef.current === scopedKey) return;
-    agentBrowserActivationRef.current = scopedKey;
-    if (agentBrowserActivity.pageId) {
-      setAgentBrowserActivePageId(agentBrowserActivity.pageId);
-      showBrowserPage(agentBrowserActivity.pageId);
-      void selectAgentBrowserPage(agentBrowserActivity.pageId);
-      return;
-    }
-    if (agentBrowserActivity.toolName === 'browser_open') {
-      setAgentBrowserActivePageId('');
-      return;
-    }
-    void getAgentBrowserState().then((state) => {
-      if (!state?.page_id || state.closed) return;
-      setAgentBrowserActivePageId(state.page_id);
-      showBrowserPage(
-        state.page_id,
-        state.title || defaultBrowserTabTitle(),
-        state.favicon,
-      );
-    });
-  }, [
-    agentBrowserActivity.active,
-    agentBrowserActivity.activationKey,
-    agentBrowserActivity.pageId,
-    agentBrowserActivity.toolName,
-    showBrowserPage,
-    sid,
-  ]);
+    if (!sid || !hasNativeAgentBrowser()) return;
+    void reconcileAgentBrowserPageStore(sid);
+  }, [sid]);
 
+  // 旧版 Desktop 的状态事件不带 owner:退回按「当前会话有正在执行的浏览器工具」
+  // 认领,只影响本地登记表镜像,native 已归属的页面不会被抢走。
   useEffect(() => {
-    const onBrowserState = (event) => {
+    if (!sid || !agentBrowserActivity.active) return undefined;
+    const onLegacyBrowserState = (event) => {
       const detail = event?.detail;
       const pageId = String(detail?.page_id || '');
-      if (!sid || !pageId) return;
-      const tabKey = `browser:${pageId}`;
-      if (detail.closed) {
-        setPreviewTabState((prev) => closePreviewTab(prev, {
-          scopeKey: previewScope,
-          sessionId: sid,
-          tabKey,
-        }));
-        setAgentBrowserActivePageId((current) => (current === pageId ? '' : current));
-        return;
-      }
-      const hasTitle = Object.prototype.hasOwnProperty.call(detail, 'title');
-      const hasFavicon = Object.prototype.hasOwnProperty.call(detail, 'favicon');
-      if (hasTitle || hasFavicon) {
-        setPreviewTabState((prev) => updateBrowserTabMetadata(prev, {
-          sessionId: sid,
-          pageId,
-          ...(hasTitle ? { title: detail.title } : {}),
-          ...(hasFavicon ? { favicon: detail.favicon } : {}),
-        }));
-      }
-      if (!agentBrowserActivity.active || !detail.active) return;
-      const expected = agentBrowserActivity.pageId || agentBrowserActivePageId;
-      if (expected && expected !== pageId) return;
-      if (!expected && agentBrowserActivity.toolName === 'browser_close') return;
-      setAgentBrowserActivePageId(pageId);
-      showBrowserPage(
-        pageId,
-        detail.title || defaultBrowserTabTitle(),
-        detail.favicon,
-      );
+      if (!pageId || detail?.owner || detail?.closed || !detail?.active) return;
+      agentBrowserPageStore().commit((state) => (
+        claimUnownedAgentBrowserPage(state, pageId, sid, ref?.workspaceHash || '')
+      ));
     };
-    window.addEventListener(AGENT_BROWSER_STATE_EVENT, onBrowserState);
-    return () => window.removeEventListener(AGENT_BROWSER_STATE_EVENT, onBrowserState);
-  }, [
-    agentBrowserActivity.active,
-    agentBrowserActivity.pageId,
-    agentBrowserActivity.toolName,
-    agentBrowserActivePageId,
-    previewScope,
-    showBrowserPage,
-    sid,
-  ]);
+    window.addEventListener(AGENT_BROWSER_STATE_EVENT, onLegacyBrowserState);
+    return () => window.removeEventListener(AGENT_BROWSER_STATE_EVENT, onLegacyBrowserState);
+  }, [agentBrowserActivity.active, ref?.workspaceHash, sid]);
+
+  // 登记表 → 页签:补缺、去已关闭、同步标题与图标。本 ChatView 首次见到的页面
+  // 自动打开并激活(包括用户切走期间 Agent 开的页,切回来时页签就在);再次切回
+  // 同一会话不重复抢焦点。
+  const revealedBrowserPagesRef = useRef(new Map());
+  useEffect(() => {
+    if (!sid) return;
+    setPreviewTabState((prev) => syncBrowserTabsForSession(prev, {
+      scopeKey: previewScope,
+      sessionId: sid,
+      pages: sessionBrowserPages,
+    }));
+    let revealed = revealedBrowserPagesRef.current.get(sid);
+    if (!revealed) {
+      revealed = new Set();
+      revealedBrowserPagesRef.current.set(sid, revealed);
+    }
+    for (const page of sessionBrowserPages) {
+      if (revealed.has(page.pageId)) continue;
+      revealed.add(page.pageId);
+      showBrowserPage(page.pageId, page.title, page.favicon);
+    }
+    for (const pageId of Array.from(revealed)) {
+      if (!sessionBrowserPages.some((page) => page.pageId === pageId)) {
+        revealed.delete(pageId);
+      }
+    }
+  }, [previewScope, sessionBrowserPages, showBrowserPage, sid]);
+
+  // Agent 切换默认目标页(browser_open / 显式选页)且有浏览器工具正在执行时,把
+  // 那一页的页签激活到前台;目标不属于本会话(显式操作别的会话的页)则不动。
+  const agentBrowserTargetRef = useRef('');
+  useEffect(() => {
+    const scoped = agentBrowserActivePageId ? `${sid}:${agentBrowserActivePageId}` : '';
+    if (!scoped) {
+      agentBrowserTargetRef.current = '';
+      return;
+    }
+    if (agentBrowserTargetRef.current === scoped) return;
+    agentBrowserTargetRef.current = scoped;
+    if (!sessionBrowserPages.some((page) => page.pageId === agentBrowserActivePageId)) return;
+    showBrowserPage(agentBrowserActivePageId);
+    void selectAgentBrowserPage(agentBrowserActivePageId);
+  }, [agentBrowserActivePageId, sessionBrowserPages, showBrowserPage, sid]);
 
   const openSessionChangePreview = useCallback((filePath, turnUserMessageId = '') => {
     if (!sid || !filePath) return;
@@ -5519,7 +5527,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onOpenBrowser={sid && hasNativeAgentBrowser() ? openBrowserPreview : null}
             onOpenSideChat={openSideQuestionComposer}
             onHide={hidePreviewPanel}
-            agentBrowserActive={agentBrowserActivity.active ? agentBrowserActivePageId : ''}
+            agentBrowserActive={agentBrowserActivePageId}
             nativeSurfacesVisible={nativeSurfacesVisible}
             onAddBrowserContext={addBrowserContext}
             onSelectChangeFile={openSessionChangePreview}

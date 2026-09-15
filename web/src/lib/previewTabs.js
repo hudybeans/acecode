@@ -495,6 +495,55 @@ export function updateBrowserTabMetadata(state, options = {}) {
   };
 }
 
+// 把登记表里某会话的页面集合同步成该会话的浏览器页签:补缺、去已关闭、同步
+// 标题与图标。不改动激活页签与顺序(激活由调用方决定);已不存在的页签经
+// closePreviewTab 关闭,激活回退语义与手工关闭一致。输入未变化时返回原状态。
+export function syncBrowserTabsForSession(state, { scopeKey = '', sessionId = '', pages = [] } = {}) {
+  if (!sessionId) return state || {};
+  const source = state && typeof state === 'object' ? state : {};
+  const wanted = new Map();
+  for (const page of Array.isArray(pages) ? pages : []) {
+    const pageId = String(page?.pageId || page?.page_id || '');
+    if (pageId && !wanted.has(pageId)) wanted.set(pageId, page);
+  }
+  const stored = source.browserTabsBySession?.[sessionId];
+  const existingTabs = Array.isArray(stored) ? stored : (stored ? [stored] : []);
+  let next = source;
+  for (const tab of existingTabs) {
+    if (wanted.has(tab.pageId)) continue;
+    next = closePreviewTab(next, { scopeKey, sessionId, tabKey: tab.key });
+  }
+  for (const [pageId, page] of wanted) {
+    const current = next.browserTabsBySession?.[sessionId];
+    const tabs = Array.isArray(current) ? current : (current ? [current] : []);
+    const existing = tabs.find((tab) => tab.pageId === pageId);
+    if (existing) {
+      next = updateBrowserTabMetadata(next, {
+        sessionId,
+        pageId,
+        ...(page.title !== undefined ? { title: page.title } : {}),
+        ...(page.favicon !== undefined ? { favicon: page.favicon } : {}),
+      });
+      continue;
+    }
+    next = {
+      ...next,
+      browserTabsBySession: {
+        ...(next.browserTabsBySession || {}),
+        [sessionId]: [...tabs, {
+          key: browserTabKey(pageId),
+          type: PREVIEW_TAB_TYPES.BROWSER,
+          sessionId,
+          pageId,
+          title: normalizeBrowserTabTitle(page.title),
+          favicon: normalizeBrowserTabFavicon(page.favicon),
+        }],
+      },
+    };
+  }
+  return next;
+}
+
 export function updateBrowserTabTitle(state, options = {}) {
   return updateBrowserTabMetadata(state, {
     ...options,

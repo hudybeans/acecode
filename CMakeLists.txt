@@ -186,6 +186,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/custom_toast.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/custom_toast_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_navigation_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_page_directory.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/context_items.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/context_picker.cpp

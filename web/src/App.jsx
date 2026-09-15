@@ -12,6 +12,10 @@ import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThem
 import { ThemeDownloadFailureDialog } from './components/ThemeDownloadFailureDialog.jsx';
 import { setToken } from './lib/auth.js';
 import { connection } from './lib/connection.js';
+import {
+  installAgentBrowserPageListener,
+  reconcileAgentBrowserPageStore,
+} from './lib/agentBrowserPages.js';
 import { loadUiLocale } from './lib/uiLocale.js';
 import {
   createDesktopNotificationMonitor,
@@ -371,6 +375,14 @@ export function App() {
       connection.removeEventListener('message', message);
     };
   }, [themeCreationMonitor]);
+  // Agent Browser 页面归属登记表在 App 级镜像 native 状态事件:不管用户正在看
+  // 哪个会话,后台会话的 browser_open 都会被记下,切回去时页签就在;挂载时再向
+  // Desktop 对账一次,把刷新 / 切工作区之前就存在的页面找回来。
+  useEffect(() => {
+    const dispose = installAgentBrowserPageListener();
+    void reconcileAgentBrowserPageStore();
+    return dispose;
+  }, []);
   const healthRef = useRef(health);
   const subagentIndexRef = useRef(subagentIndex);
   const subagentDirectoryRef = useRef(subagentDirectory);

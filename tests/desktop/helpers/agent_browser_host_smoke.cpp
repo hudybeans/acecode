@@ -565,6 +565,97 @@ int main() {
             }
             agent.join();
             if (exit_code == 0) exit_code = agent_exit_code.load();
+            // 页面归属:带 owner 的建页不抢显示页;省略 page_id 只落到本会话自己的
+            // 页(没有就新建,绝不落到别的会话或当前显示页);显式 page_id 仍可跨会话
+            // 操作共享页(之后 B 的默认目标随之钉到 A 的页上)。
+            if (exit_code == 0) {
+                const std::string displayed_before = host.active_page_id();
+                std::atomic<bool> owner_done{false};
+                std::atomic<int> owner_exit_code{0};
+                std::string page_a;
+                std::string page_b;
+                std::thread owner_agent([&] {
+                    std::string owner_error;
+                    acecode::agent_browser::AgentBrowserCdpClient client_a;
+                    acecode::agent_browser::AgentBrowserCdpClient client_b;
+                    acecode::agent_browser::AgentBrowserCdpClient client_a_again;
+                    if (!client_a.connect(std::chrono::seconds(10), nullptr, owner_error) ||
+                        !client_b.connect(std::chrono::seconds(10), nullptr, owner_error) ||
+                        !client_a_again.connect(std::chrono::seconds(10), nullptr, owner_error)) {
+                        owner_exit_code.store(fail(owner_error));
+                        owner_done.store(true);
+                        return;
+                    }
+                    client_a.set_owner({{"session_id", "smoke-session-a"},
+                                        {"workspace_hash", "smoke-ws"}});
+                    client_a_again.set_owner({{"session_id", "smoke-session-a"},
+                                              {"workspace_hash", "smoke-ws"}});
+                    client_b.set_owner({{"session_id", "smoke-session-b"},
+                                        {"workspace_hash", "smoke-ws"}});
+                    if (!client_a.create_page(std::chrono::seconds(10), nullptr, owner_error) ||
+                        !client_b.claim_page(std::chrono::seconds(10), nullptr, owner_error)) {
+                        owner_exit_code.store(fail(owner_error));
+                    } else {
+                        page_a = client_a.page_id();
+                        page_b = client_b.page_id();
+                        if (!client_a_again.claim_page(
+                                std::chrono::seconds(10), nullptr, owner_error) ||
+                            client_a_again.page_id() != page_a) {
+                            owner_exit_code.store(fail(owner_error.empty()
+                                ? "omitted page_id did not resolve to the session's own page"
+                                : owner_error));
+                        } else if (!client_b.select_page(
+                                       page_a, std::chrono::seconds(10), nullptr,
+                                       owner_error)) {
+                            owner_exit_code.store(fail(owner_error.empty()
+                                ? "explicit page_id across sessions was rejected"
+                                : owner_error));
+                        }
+                    }
+                    owner_done.store(true);
+                });
+                if (!pump_until(
+                        [&owner_done] { return owner_done.load(); },
+                        std::chrono::seconds(30))) {
+                    exit_code = fail("Agent Browser ownership smoke timed out");
+                }
+                owner_agent.join();
+                if (exit_code == 0) exit_code = owner_exit_code.load();
+                if (exit_code == 0) {
+                    const auto state_a = host.state(page_a);
+                    const auto state_b = host.state(page_b);
+                    if (page_a.empty() || page_b.empty() || page_a == page_b ||
+                        page_b == displayed_before) {
+                        exit_code = fail(
+                            "owned claim fell back to another session's page");
+                    } else if (host.active_page_id() != displayed_before) {
+                        exit_code = fail(
+                            "an owned Agent page stole the displayed page");
+                    } else if (state_a.owner.session_id != "smoke-session-a" ||
+                               state_b.owner.session_id != "smoke-session-b" ||
+                               state_a.owner.workspace_hash != "smoke-ws") {
+                        exit_code = fail("page ownership was not recorded");
+                    } else if (!state_a.agent_target || state_b.agent_target) {
+                        // A 的目标是自己的页;B 显式选了 A 的页之后目标随之迁移。
+                        exit_code = fail(
+                            "agent target flags did not follow claim/select");
+                    } else if (host.states("smoke-session-a").size() != 1 ||
+                               host.states("smoke-session-b").size() != 1 ||
+                               host.states().size() < 3) {
+                        exit_code = fail(
+                            "per-session page listing did not filter by owner");
+                    } else {
+                        std::cout
+                            << "SMOKE_OWNERSHIP_OK "
+                            << nlohmann::json({
+                                   {"displayed_page_id", displayed_before},
+                                   {"session_a_page_id", page_a},
+                                   {"session_b_page_id", page_b},
+                               }).dump()
+                            << '\n';
+                    }
+                }
+            }
             }
         }
     }

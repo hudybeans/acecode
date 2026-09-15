@@ -116,6 +116,9 @@ nlohmann::json agent_browser_state_json(
         {"error", state.error},
         {"diagnostic", state.diagnostic},
         {"page_id", state.page_id},
+        // 页面归属:前端按 owner.session_id 把页面归到会话页签;null = 未绑定。
+        {"owner", acecode::desktop::agent_browser_page_owner_json(state.owner)},
+        {"agent_target", state.agent_target},
     };
     if (!state.selected_element_json.empty()) {
         const auto selected = nlohmann::json::parse(
@@ -1546,10 +1549,17 @@ int main(int argc, char** argv) {
         return result.dump();
     });
 
+    // 可选参数 [owner:{session_id, workspace_hash, root_session_id}]:UI 自建页
+    // 也绑定到当前会话,这样刷新 / 切工作区之后能按会话对账回页签。
     host.bind("aceDesktop_agentBrowserCreatePage",
-              [&](const std::string& /*req*/) -> std::string {
+              [&](const std::string& req) -> std::string {
         std::string error;
-        const std::string page_id = agent_browser.create_page(&error);
+        AgentBrowserPageOwner owner;
+        const auto args = nlohmann::json::parse(req, nullptr, false);
+        if (args.is_array() && !args.empty()) {
+            owner = parse_agent_browser_page_owner(args[0]);
+        }
+        const std::string page_id = agent_browser.create_page(&error, owner);
         if (page_id.empty()) {
             return nlohmann::json{{"ok", false}, {"error", error}}.dump();
         }
@@ -1557,6 +1567,27 @@ int main(int argc, char** argv) {
             agent_browser.state(page_id));
         result["ok"] = true;
         return result.dump();
+    });
+
+    // 可选参数 [owner:{session_id}]:只列该会话拥有的页面;省略 = 全部页面。
+    // Web UI 在挂载与切会话时用它把 native 页面池对账回会话页签。
+    host.bind("aceDesktop_agentBrowserListPages",
+              [&](const std::string& req) -> std::string {
+        std::string owner_session_id;
+        const auto args = nlohmann::json::parse(req, nullptr, false);
+        if (args.is_array() && !args.empty()) {
+            owner_session_id = parse_agent_browser_page_owner(args[0]).session_id;
+        }
+        nlohmann::json pages = nlohmann::json::array();
+        for (const auto& state : agent_browser.states(owner_session_id)) {
+            pages.push_back(agent_browser_state_json(state));
+        }
+        return nlohmann::json{
+            {"ok", true},
+            {"supported", agent_browser.supported()},
+            {"displayed_page_id", agent_browser.active_page_id()},
+            {"pages", std::move(pages)},
+        }.dump();
     });
 
     auto bind_agent_browser_page_lifecycle =

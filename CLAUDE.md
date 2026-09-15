@@ -552,6 +552,18 @@ JS↔C++ bridge(同进程,webview `bind`,无 HTTP):
 - **重试全页最多一次**。重试会以新的 navigation id 重新开始一次导航,所以「已用掉重试」必须靠 `carry_retry_marker_` 跨过那一次 `begin_navigation` —— 去掉它,证书始终失败的站点就无限重试。回归测试 `tests/desktop/agent_browser_navigation_state_test.cpp::CertificateRetryHappensAtMostOnce`。
 - 系统已注册的外部 URI/SSO scheme 静默交给操作系统(mac `NSWorkspace`,Windows `ShellExecuteW` + `ICoreWebView2_18::LaunchingExternalUriScheme` 取消自带确认框),`javascript:`/`data:`/`blob:` 不参与交接;没有 handler 时如实记一次外部启动失败,不谎称 HTTP(S) 页面自己出了证书问题。
 
+### Agent Browser 页面归属(bind-agent-browser-pages-to-sessions)
+
+起因(会话 20260915-120207-bdf9):用户让 AI「延迟 6 秒后用浏览器打开百度」,延迟期间切到别的会话,`browser_open` 在 Desktop 侧成功建页,但页签从未出现。根因是**页面归属在整个系统里没有被建模**:原生 host 是进程级页面池 + 单一全局 `active_page`,daemon 工具不上报会话身份,前端只在「当前渲染的 ChatView 的 transcript 里恰好有正在执行的 browser_* 工具 + 收到状态事件」那一瞬间认领页面并建页签。四个断点:执行时没在看该会话、工具结束后再回来(历史不重建)、刷新 / 切工作区(ChatView 内存态清零而 native 页面还活着)、子代理 / 后台会话。同一个全局 active 还导致后台会话的 `browser_open` 把用户正在看的页面挤成隐藏(`apply_bounds` 只显示 active 页),以及省略 `page_id` 的工具落到别的会话的页面上。
+
+现在归属落在 Desktop host,再向两端发散,改这块要守住的几条:
+
+- **[src/desktop/agent_browser_page_directory.{hpp,cpp}](src/desktop/agent_browser_page_directory.hpp) 是两端 host 共用的纯逻辑簿记**(Windows / macOS 各自的 `page_order` + `active_page` 都换成了它,单测 `tests/desktop/agent_browser_page_directory_test.cpp`)。它把旧的 active 拆成两个概念:**显示页**(全局唯一,只由 UI select / 关闭回退设置)与**每会话的 Agent 目标页**(`browser_open` / 隐式 claim / 显式 select 更新,状态位 `agent_target`)。带 owner 的 Agent 建页**不**改显示页 —— `create_page_on_ui` 里 `if (!agent_created || owner.empty())` 才 select,这一行是防「后台会话挤掉当前页面」的关键,两端 host 各一份,架构测试盯着。
+- **联结键只有 `session_id`**。`workspace_hash` 与 `root_session_id` 是附带信息:前者在 junction / no-workspace 会话下两侧形态未必一致,后者让子代理的页在父会话页签里可见。daemon 侧 `ToolContext::{session_id, parent_session_id, workspace_hash}` 由 `build_tool_context` 填(workspace_hash 手工切 `current_project_dir()` 的最后一段,**别**经 `std::filesystem::path`,中文目录会抛),`browser_tools.cpp::connect_client` 每次连接后 `client.set_owner(...)`,`cdp_client` 的 `build_agent_browser_proxy_request` 只在 owner 是对象时写入该键。协议版本 4→5(`kAgentBrowserRuntimeProtocolVersion`),不一致时 manifest 校验直接拒,不做跨版本猜测。
+- **省略 `page_id` 的解析顺序**:有 owner → 本会话目标页 > 显示页(仅当它也属于本会话,保住「用户手工开页共享后让 AI 读这页」)> 新建;无 owner(旧协议)→ 显示页 > 新建。显式 `page_id` 跨会话放行(仍过 shared 门),之后本会话目标随之钉过去。
+- **前端页签只有一个来源**:`web/src/lib/agentBrowserPages.js`(App 级单写者登记表,`App.jsx` 挂载时 `installAgentBrowserPageListener()` + 全量 `reconcileAgentBrowserPageStore()`,ChatView 切会话再按会话对账)→ `previewTabs.js::syncBrowserTabsForSession` 派生页签;本 ChatView 首次见到的页面自动打开并激活(`revealedBrowserPagesRef` 按会话记)。**不要**再从 `agentBrowserActivityFromItems` 创建页签或调无参 `getAgentBrowserState()` 猜全局活动页,活动推断现在只决定彩虹边框与「Agent 切目标页时前置该页签」。旧 Desktop 不带 owner 的事件走 `claimUnownedAgentBrowserPage` 本地认领兜底。
+- 回归测试:`tests/desktop/agent_browser_page_directory_test.cpp`、`tests/tool/agent_browser_tools_test.cpp` 的 owner 两条、Windows smoke 的 `SMOKE_OWNERSHIP_OK` 段、前端 `agentBrowserPages.test.js` + `previewTabs.test.js::syncBrowserTabsForSession` + `agentBrowserArchitecture.test.js` 的归属合同。设计全文见 [docs/agent-browser.md](docs/agent-browser.md)「页面归属」。
+
 ### Web UI: 控制台停靠区(ConsoleDock)
 
 `add-console-dock`:TopBar `>_` 按钮(icon `terminal` = TerminalReadWrite.svg)或 ``Ctrl+` `` toggle 主内容列底部的终端停靠区(横跨 ChatView+SidePanel,不动 Sidebar/TopBar)。前端 xterm.js(`@xterm/xterm` + `@xterm/addon-fit`,bundle +~190KB gzip);多 tab(+ 新建 / 逐 tab × 杀会话 / 整体收起保活);顶边拖高(`clampDockHeight`,[120, 视口 80%]);偏好 `acecode.consoleDock.v1` `{open, height}`。纯函数层 `web/src/lib/consoleDock.js`(tab 状态机/帧分流/退避/URL,Node 单测)。**xterm 聚焦时 ``Ctrl+` `` 靠 `attachCustomKeyEventHandler` 放行冒泡** — 删掉它快捷键在终端内失灵。
