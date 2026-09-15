@@ -2803,8 +2803,8 @@ body {
 [data-theme-user-message-background="true"] .ace-user-message-bubble {
   background-color: var(--ace-user-message-background-color, var(--ace-accent-bg));
   background-image: var(--ace-user-message-background-image);
-  background-position: center bottom;
-  background-size: var(--ace-user-message-background-size, 100% auto);
+  background-position: right bottom;
+  background-size: var(--ace-user-message-background-size, 720px auto);
   background-repeat: no-repeat;
 }
 [data-theme-extend-to-titlebar="false"] .ace-app-shell[data-home-wallpaper="true"]::before { top: var(--ace-topbar-height); }

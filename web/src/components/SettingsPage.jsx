@@ -2850,7 +2850,8 @@ function SectionArchived() {
         </div>
       </div>
 
-      <div data-archived-filters className="flex flex-wrap items-center gap-2.5 mb-6">
+      {/* Match the scroll container's responsive top padding so no list content shows above the sticky bar. */}
+      <div data-archived-filters className="sticky -top-3 z-10 -mx-4 -mt-3 mb-3 flex flex-wrap items-center gap-2.5 bg-surface px-4 py-3 sm:-top-5 sm:-mx-6 sm:px-6">
         <label data-settings-control className="flex min-w-0 grow-[2] basis-60 items-center gap-2 rounded-md border border-border bg-surface px-3 focus-within:border-accent transition">
           <VsIcon name="search" size={16} className="shrink-0 text-fg-mute" />
           <input

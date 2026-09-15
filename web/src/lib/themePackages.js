@@ -111,8 +111,9 @@ export function themeCssProperties(definition, backgroundUrl, extraUrls = {}) {
     const veil = opacity === undefined ? '' : `linear-gradient(rgba(${rgb(color)}, ${1 - opacity}), rgba(${rgb(color)}, ${1 - opacity})), `;
     result[`--ace-${resource.region}-background-image`] = `${veil}url("${url}")`;
     if (resource.region === 'user-message') {
-      // The color veil fills the bubble; artwork keeps its ratio at the bottom.
-      result['--ace-user-message-background-size'] = veil ? '100% 100%, 100% auto' : '100% auto';
+      // A shared artwork width keeps decorations identical in every message.
+      // Only the color veil stretches with the bubble; artwork is cropped.
+      result['--ace-user-message-background-size'] = veil ? '100% 100%, 720px auto' : '720px auto';
     }
   }
   return result;
