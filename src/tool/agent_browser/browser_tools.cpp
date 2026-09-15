@@ -18,6 +18,19 @@
 #include <thread>
 
 namespace acecode::agent_browser {
+
+nlohmann::json agent_browser_owner_from_context(const ToolContext& context) {
+    if (context.session_id.empty()) return nullptr;
+    nlohmann::json owner{
+        {"session_id", context.session_id},
+        {"workspace_hash", context.workspace_hash},
+    };
+    // 子代理开的页面在展示上归父会话;权限与默认目标仍按子会话自身。
+    owner["root_session_id"] = context.parent_session_id.empty()
+        ? context.session_id : context.parent_session_id;
+    return owner;
+}
+
 namespace {
 
 using json = nlohmann::json;
@@ -182,6 +195,7 @@ bool connect_client(AgentBrowserCdpClient& client,
                      const json* args = nullptr,
                      bool claim_page = true) {
     if (!client.connect(kConnectTimeout, context.abort_flag, error)) return false;
+    client.set_owner(agent_browser_owner_from_context(context));
     const std::string requested_page = args && args->is_object()
         ? args->value("page_id", "") : std::string();
     if (!requested_page.empty()) {

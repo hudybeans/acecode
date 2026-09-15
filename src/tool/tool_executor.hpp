@@ -119,6 +119,14 @@ struct ToolContext {
     // 拒写统一在 AgentLoop 的路径校验里做。
     std::string write_root;
 
+    // 会话身份(AgentLoop::build_tool_context 填)。Agent Browser 页面按
+    // session_id 归属到会话;子代理另带 parent_session_id 供展示归父。
+    // workspace_hash 是 projects/<hash> 的目录名,只作附带信息不参与匹配。
+    // 三者为空 = 未接线,工具按未绑定会话的旧式请求处理。
+    std::string session_id;
+    std::string parent_session_id;
+    std::string workspace_hash;
+
     // Called zero or more times with non-empty cleaned chunks (ANSI stripped,
     // UTF-8 boundary safe, carriage-return overwrites resolved). Only bash_tool
     // uses this currently — other tools return their output atomically.

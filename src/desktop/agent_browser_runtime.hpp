@@ -8,7 +8,9 @@
 
 namespace acecode::desktop {
 
-inline constexpr int kAgentBrowserRuntimeProtocolVersion = 4;
+// v5:代理请求与页面状态携带 owner(会话归属)与 agent_target。daemon 与
+// Desktop 版本不一致时 manifest 校验直接拒绝,不做跨版本猜测。
+inline constexpr int kAgentBrowserRuntimeProtocolVersion = 5;
 inline constexpr std::uint32_t kAgentBrowserProxyMaxRequestBytes =
     8u * 1024u * 1024u;
 inline constexpr std::uint32_t kAgentBrowserProxyMaxResponseBytes =

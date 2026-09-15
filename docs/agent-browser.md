@@ -111,13 +111,55 @@ macOS 的交互工具（click/fill/type/press/hover/drag/scroll）额外暴露
 3. 把 `@eN` 与同一次读取返回的 `revision` 一起传给点击、填写、输入、悬停或
    拖拽工具；页面变化后重新读取。缺少 revision 或引用过期会明确失败，不会猜测。
 4. 需要视觉证据时调用 `browser_screenshot`；输出 PNG 同时作为会话附件返回。
-5. 后续工具省略 `page_id` 时会锁定工具开始时的活动页；需要明确操作某页时传入
-   `browser_open` 返回的 `page_id`。用户在工具执行中切换页签不会改变该调用的目标。
-6. `browser_close` 只关闭指定页（省略时关闭活动页）并同步移除对应详情页签，不会
-   删除持久化 Profile，也不会影响其它 Browser 页面。
+5. 后续工具省略 `page_id` 时落到**本会话**的 Agent 默认目标页：`browser_open`
+   创建的页或上一次显式选定的页；本会话从未开过页时新建一页，绝不会落到别的
+   会话的页面或用户正在看的别的会话的页签。需要明确操作某页时传入
+   `browser_open` 返回的 `page_id`；显式 `page_id` 可以指向任何共享给 Agent 的页，
+   包括别的会话开的页，之后本会话的默认目标也随之钉到那一页。一次工具调用首次
+   选定页面后保持锁定，用户在工具执行中切换页签不会改变该调用的目标。
+6. `browser_close` 只关闭指定页（省略时关闭本会话的默认目标页）并同步移除对应
+   详情页签，不会删除持久化 Profile，也不会影响其它 Browser 页面。
 
-Browser 工具出现时，Web UI 会自动打开当前任务的 Browser 页签。加载已有会话
-时，历史上已经完成的工具调用不会抢占当前页签。
+每个页面都归属于创建它的会话（见下面「页面归属」）。当前显示的会话有新页面
+出现或 Agent 切换目标页时，Web UI 自动打开并激活对应页签；后台会话的页面只被
+登记，用户切回那个会话时页签已经在那里。加载已有会话时不回放历史工具调用，
+页签来自 Desktop 页面池的实时对账。
+
+## 页面归属
+
+页面属于哪个会话是 Desktop host 里的一等数据，不是前端从工具活动里推断出来的。
+引入它之前，页签只在「当前渲染的会话 transcript 里恰好有一条正在执行的 browser_*
+工具」那一瞬间被认领：用户在 `browser_open` 前的延迟里切走会话，事件无人接收，
+页面成了孤儿，切回来时工具已结束、页签永远不出现（会话 20260915-120207-bdf9）。
+同一个全局「活动页」还让后台会话的 `browser_open` 把用户正在看的页面挤成隐藏，
+并让省略 `page_id` 的工具落到别的会话的页面上。
+
+- **owner**：`{session_id, workspace_hash, root_session_id}`。`session_id` 是唯一的
+  联结键，daemon 工具、Desktop host 与 Web UI 三方都用它对账；`workspace_hash` 只作
+  跨工作区导航的附带信息（junction / no-workspace 会话下两侧形态未必一致，不参与
+  匹配）；`root_session_id` 让子代理开的页面在父会话的页签里可见。daemon 从
+  `ToolContext` 的会话身份推导 owner（`agent_browser_owner_from_context`），随每个
+  代理请求发送；UI 点地球图标自建页时把当前会话作为 owner 传给
+  `aceDesktop_agentBrowserCreatePage`。
+- **显示页与 Agent 目标页是两个概念**（`AgentBrowserPageDirectory`）。显示页全局
+  唯一，只由 Web UI 的 select 请求或关闭回退设置；带 owner 的 Agent 建页**不**改变
+  它。Agent 默认目标按会话各存一份，`browser_open`、隐式 claim 与显式 select 会更新
+  它；页面状态里的 `agent_target` 位（每会话至多一页为 true）就是它的镜像。
+- **解析规则**：显式 `page_id` 原样使用；省略时，有 owner 的请求取本会话目标页 >
+  当前显示页（仅当它也属于本会话，覆盖「用户手工开页并共享后让 AI 读这页」）>
+  新建；没有 owner 的旧协议请求沿用「当前显示页 > 新建」。关闭显示页后优先切到
+  同会话最近的一页。
+- **Web UI**：`web/src/lib/agentBrowserPages.js` 是 App 级单写者登记表，挂载时安装
+  `acecode:agent-browser-state` 监听并调 `aceDesktop_agentBrowserListPages` 全量对账，
+  切会话时按会话再对账一次；ChatView 只从登记表派生浏览器页签
+  （`syncBrowserTabsForSession`），本视图首次见到的页面自动打开并激活。页面刷新与
+  切工作区后 native 页面池还在，对账即可找回页签；Desktop 重启后页面不存在，
+  transcript 里的 `page_id` 只用于展示，不尝试复活。
+- **兼容**：协议版本升到 5，daemon 与 Desktop 版本不一致时 manifest 校验直接拒绝。
+  状态事件不带 owner（旧 Desktop）时，前端退回按「当前会话有浏览器工具正在执行」
+  本地认领，且不会抢走 native 已归属的页面。
+- **已知限制**：非显示页面的 WebView2 处于隐藏状态，Chromium 会节流定时器；后台
+  会话里的 `browser_screenshot` 是否总能出帧需要按站点实测。
 
 ## 运行时和安全边界
 
@@ -174,6 +216,9 @@ Browser 工具出现时，Web UI 会自动打开当前任务的 Browser 页签�
 - 浏览器聊天附件：`web/src/lib/agentBrowserChatContext.js`
 - 页签生命周期：`web/src/lib/previewTabs.js`
 - 活动态和 Desktop bridge：`web/src/lib/agentBrowser.js`
+- 页面归属登记表（App 级 store）：`web/src/lib/agentBrowserPages.js`
+- 页面归属与显示页 / 目标页簿记（两端 host 共用纯逻辑）：
+  `src/desktop/agent_browser_page_directory.{hpp,cpp}`
 - welcome/加载/失败状态映射：`web/src/lib/agentBrowserSurface.js`
 - 公共 native host API：`src/desktop/agent_browser_host.hpp`
 - Windows WebView2 host：`src/desktop/agent_browser_host.cpp`
@@ -194,7 +239,8 @@ cmake --build build --config Release --target agent_browser_host_smoke
 
 成功输出包含 `SMOKE_OK`、两个不同 page id/URL/网页标题、favicon 同步、控制台采集、元素选择、
 关闭一页后的剩余页数、截图尺寸、`native_widget_top: true`，以及
-`acecode_bindings: 0`。
+`acecode_bindings: 0`；随后一行 `SMOKE_OWNERSHIP_OK` 验证带 owner 的建页不抢显示页、
+省略 `page_id` 只落到本会话的页、按会话列页只返回该会话的页面。
 
 macOS 14+：
 

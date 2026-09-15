@@ -322,6 +322,8 @@ struct AgentBrowserCdpClient::Impl {
 #endif
     std::string page_id;
     std::string acecode_dir;
+    // 调用方会话身份;对象 = 随每个请求透传给 Desktop,null = 旧式未绑定请求。
+    nlohmann::json owner;
     bool ready = false;
 };
 
@@ -440,6 +442,39 @@ const std::string& AgentBrowserCdpClient::page_id() const {
     return impl_ ? impl_->page_id : empty;
 }
 
+void AgentBrowserCdpClient::set_owner(nlohmann::json owner) {
+    if (!impl_) return;
+    impl_->owner = owner.is_object() ? std::move(owner) : nlohmann::json();
+}
+
+const nlohmann::json& AgentBrowserCdpClient::owner() const {
+    static const nlohmann::json null_owner;
+    return impl_ ? impl_->owner : null_owner;
+}
+
+nlohmann::json build_agent_browser_proxy_request(
+    const std::string& auth_token,
+    const std::string& operation,
+    const std::string& page_id,
+    const std::string& method,
+    const nlohmann::json& params,
+    std::int64_t timeout_ms,
+    const nlohmann::json& owner) {
+    nlohmann::json request{
+        {"auth_token", auth_token},
+        {"operation", operation},
+        {"page_id", page_id},
+        {"method", method},
+        {"params", params.is_object() ? params : nlohmann::json::object()},
+        {"timeout_ms", (std::max)(std::int64_t{100},
+                                  (std::min)(std::int64_t{120000}, timeout_ms))},
+    };
+    // 只有绑定了会话的请求才带 owner;旧 Desktop 会忽略未知字段,新 Desktop 据此
+    // 把页面归到会话并按会话解析默认目标页。
+    if (owner.is_object()) request["owner"] = owner;
+    return request;
+}
+
 bool AgentBrowserCdpClient::create_page(
     std::chrono::milliseconds timeout,
     const std::atomic<bool>* abort_flag,
@@ -534,17 +569,9 @@ nlohmann::json AgentBrowserCdpClient::request(
         }
     };
 #endif
-    const auto timeout_count = (std::max)(
-        std::int64_t{100},
-        (std::min)(std::int64_t{120000}, timeout.count()));
-    std::string request = nlohmann::json{
-        {"auth_token", impl_->auth_token},
-        {"operation", operation},
-        {"page_id", impl_->page_id},
-        {"method", method},
-        {"params", params.is_object() ? params : nlohmann::json::object()},
-        {"timeout_ms", timeout_count},
-    }.dump();
+    std::string request = build_agent_browser_proxy_request(
+        impl_->auth_token, operation, impl_->page_id, method, params,
+        static_cast<std::int64_t>(timeout.count()), impl_->owner).dump();
     if (request.empty() ||
         request.size() > acecode::desktop::kAgentBrowserProxyMaxRequestBytes) {
         close_pipe();

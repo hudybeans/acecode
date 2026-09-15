@@ -22,6 +22,7 @@ import {
   reorderPreviewTab,
   resolveSessionChangesTabContent,
   sessionWorkingCwd,
+  syncBrowserTabsForSession,
   updateBrowserTabFavicon,
   updateBrowserTabMetadata,
   updateBrowserTabTitle,
@@ -881,4 +882,50 @@ run('closeVisiblePreviewTabs clears visible order keys', () => {
 
   assert.equal(visiblePreviewTabs(state, { scopeKey: 'workspace-a', sessionId: 's1' }).length, 0);
   assert.deepEqual(state.tabOrderByView, {});
+});
+
+// 场景:native 页面归属登记表 → 会话页签同步(syncBrowserTabsForSession)。
+// 触发:会话 s1 已有 p1 页签(激活中)与文件页签;登记表现在说 s1 拥有 p1、p2。
+// 期望:p2 补进页签末尾但不抢激活;p1 标题按登记表更新;再次同步同样输入返回
+// 原状态引用(effect 里 setState 不会空转);登记表少了 p1 → p1 页签关闭且激活
+// 回退到相邻页签;别的会话的页签不受影响。
+run('syncBrowserTabsForSession adds missing pages, drops vanished ones and keeps activation', () => {
+  const context = previewTabContext({ scopeKey: 'workspace-a', sessionId: 's1' });
+  let state = openFileTab({}, { ...context, cwd: '/project', path: 'README.md' });
+  state = openBrowserTab(state, { ...context, pageId: 'p1', title: '首页' });
+  state = openBrowserTab(state, { scopeKey: 'workspace-b', sessionId: 's2', pageId: 'p-other' });
+  assert.equal(activePreviewTab(state, context).pageId, 'p1');
+
+  const synced = syncBrowserTabsForSession(state, {
+    ...context,
+    pages: [
+      { pageId: 'p1', title: '首页(已加载)', favicon: 'https://a.example/favicon.ico' },
+      { pageId: 'p2', title: '' },
+    ],
+  });
+  const tabs = visiblePreviewTabs(synced, context);
+  assert.deepEqual(tabs.map((tab) => tab.key), ['file:workspace-a:README.md', 'browser:p1', 'browser:p2']);
+  assert.equal(tabs[1].title, '首页(已加载)');
+  assert.equal(tabs[1].favicon, 'https://a.example/favicon.ico');
+  assert.equal(tabs[2].title, '新标签页', '空标题回退默认名');
+  assert.equal(activePreviewTab(synced, context).pageId, 'p1', '补缺不抢激活');
+  assert.equal(visiblePreviewTabs(synced, { scopeKey: 'workspace-b', sessionId: 's2' }).length, 1);
+
+  const again = syncBrowserTabsForSession(synced, {
+    ...context,
+    pages: [
+      { pageId: 'p1', title: '首页(已加载)', favicon: 'https://a.example/favicon.ico' },
+      { pageId: 'p2', title: '' },
+    ],
+  });
+  assert.equal(again, synced, '输入未变化必须返回原状态引用');
+
+  const dropped = syncBrowserTabsForSession(synced, { ...context, pages: [{ pageId: 'p2', title: '' }] });
+  assert.deepEqual(visiblePreviewTabs(dropped, context).map((tab) => tab.key), ['file:workspace-a:README.md', 'browser:p2']);
+  assert.equal(activePreviewTab(dropped, context).pageId, 'p2', '激活页被关闭后回退到相邻页签');
+
+  // 没有 sessionId 的调用是 no-op;pages 里没有 id 的条目忽略。
+  assert.equal(syncBrowserTabsForSession(dropped, { scopeKey: 'workspace-a', pages: [] }), dropped);
+  const emptied = syncBrowserTabsForSession(dropped, { ...context, pages: [{ title: 'no id' }] });
+  assert.deepEqual(visiblePreviewTabs(emptied, context).map((tab) => tab.key), ['file:workspace-a:README.md']);
 });

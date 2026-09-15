@@ -229,3 +229,49 @@ TEST(AgentBrowserTools, InteractionResultMetadataIsMacOnly) {
     EXPECT_EQ(agent_browser_input_result_metadata(base, "native"), base);
 #endif
 }
+
+// 触发场景:AgentLoop 填了 ToolContext 的会话身份 / 没填 / 是子代理。
+// 期望行为:有 session_id 时输出 {session_id, workspace_hash, root_session_id},
+// 子代理的 root_session_id 指向父会话;没有 session_id(TUI 旧路径或单测直接
+// 调用)返回 null,代理请求就不带 owner,Desktop 按未绑定处理。
+TEST(AgentBrowserTools, OwnerFromContextFollowsSessionIdentity) {
+    ToolContext context;
+    EXPECT_TRUE(agent_browser_owner_from_context(context).is_null());
+
+    context.session_id = "20260915-120207-bdf9";
+    context.workspace_hash = "68951b50df177045";
+    const auto owner = agent_browser_owner_from_context(context);
+    ASSERT_TRUE(owner.is_object());
+    EXPECT_EQ(owner.value("session_id", ""), "20260915-120207-bdf9");
+    EXPECT_EQ(owner.value("workspace_hash", ""), "68951b50df177045");
+    EXPECT_EQ(owner.value("root_session_id", ""), "20260915-120207-bdf9");
+
+    context.parent_session_id = "20260915-120000-aaaa";
+    const auto child = agent_browser_owner_from_context(context);
+    EXPECT_EQ(child.value("session_id", ""), "20260915-120207-bdf9");
+    EXPECT_EQ(child.value("root_session_id", ""), "20260915-120000-aaaa");
+}
+
+// 回归测试:引入归属前代理请求没有任何会话信息,Desktop 只能把新页设成全局
+// active、把省略 page_id 的调用落到全局 active 页(跨会话串页)。
+// 触发场景:构造带 / 不带 owner 的代理请求报文。
+// 期望行为:owner 是对象时原样透传;null 时报文里根本没有 owner 键(旧 Desktop
+// 与旧式请求形态完全一致);timeout 钳到 [100, 120000];params 非对象时归空对象。
+TEST(AgentBrowserTools, ProxyRequestCarriesOwnerOnlyWhenBound) {
+    const nlohmann::json owner{{"session_id", "s1"}, {"workspace_hash", "w1"}};
+    const auto bound = build_agent_browser_proxy_request(
+        "token", "claim_page", "", "", nlohmann::json::array(), 5, owner);
+    EXPECT_EQ(bound.value("auth_token", ""), "token");
+    EXPECT_EQ(bound.value("operation", ""), "claim_page");
+    EXPECT_EQ(bound["owner"], owner);
+    EXPECT_EQ(bound.value("timeout_ms", 0), 100);
+    EXPECT_TRUE(bound["params"].is_object());
+
+    const auto unbound = build_agent_browser_proxy_request(
+        "token", "cdp", "browser-1-2", "Runtime.evaluate",
+        nlohmann::json{{"expression", "1"}}, 500000, nullptr);
+    EXPECT_FALSE(unbound.contains("owner"));
+    EXPECT_EQ(unbound.value("page_id", ""), "browser-1-2");
+    EXPECT_EQ(unbound.value("method", ""), "Runtime.evaluate");
+    EXPECT_EQ(unbound.value("timeout_ms", 0), 120000);
+}

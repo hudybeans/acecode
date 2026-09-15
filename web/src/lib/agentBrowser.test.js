@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import {
   agentBrowserActivityFromItems,
   agentBrowserLayoutFromRect,
+  agentBrowserOwnerForSession,
   createAgentBrowserPage,
   getAgentBrowserConsoleLogs,
   hasNativeAgentBrowser,
+  listAgentBrowserPages,
   normalizeAgentBrowserAddress,
   parseAgentBrowserBridgeResult,
   setAgentBrowserLayout,
@@ -129,10 +131,11 @@ await run('Agent Browser desktop bridge detection and JSON parsing are defensive
 });
 
 await run('Agent Browser page creation checks its dedicated desktop bridge', async () => {
-  assert.deepEqual(await createAgentBrowserPage({}), {
+  assert.deepEqual(await createAgentBrowserPage(null, {}), {
     ok: false,
     error: 'Agent Browser 桌面桥不可用',
   });
+  // 旧签名 createAgentBrowserPage(win) 仍然兼容。
   assert.deepEqual(await createAgentBrowserPage({
     aceDesktop_agentBrowserCreatePage() {
       return '{"ok":true,"page_id":"browser-2"}';
@@ -140,6 +143,45 @@ await run('Agent Browser page creation checks its dedicated desktop bridge', asy
   }), {
     ok: true,
     page_id: 'browser-2',
+  });
+});
+
+// 场景:UI 自建页与页面列表都把会话归属传给 Desktop。
+// 期望:owner 参数原样作为 bridge 的唯一参数;没有 owner 时不传参数(旧 Desktop
+// 的 CreatePage 忽略参数,新 Desktop 视为未绑定);ListPages 按 session_id 过滤。
+await run('Agent Browser page creation and listing forward the session owner', async () => {
+  const calls = [];
+  const win = {
+    aceDesktop_agentBrowserCreatePage(arg) {
+      calls.push(['create', arg]);
+      return '{"ok":true,"page_id":"browser-3"}';
+    },
+    aceDesktop_agentBrowserListPages(arg) {
+      calls.push(['list', arg]);
+      return '{"ok":true,"pages":[]}';
+    },
+  };
+  assert.deepEqual(agentBrowserOwnerForSession({ sessionId: 's1', workspaceHash: 'w1' }), {
+    session_id: 's1', workspace_hash: 'w1',
+  });
+  assert.deepEqual(agentBrowserOwnerForSession({ id: 's2' }), { session_id: 's2' });
+  assert.deepEqual(agentBrowserOwnerForSession('s3'), { session_id: 's3' });
+  assert.equal(agentBrowserOwnerForSession(null), null);
+  assert.equal(agentBrowserOwnerForSession({ workspaceHash: 'w1' }), null);
+
+  await createAgentBrowserPage({ session_id: 's1', workspace_hash: 'w1' }, win);
+  await createAgentBrowserPage(null, win);
+  await listAgentBrowserPages('s1', win);
+  await listAgentBrowserPages('', win);
+  assert.deepEqual(calls, [
+    ['create', { session_id: 's1', workspace_hash: 'w1' }],
+    ['create', undefined],
+    ['list', { session_id: 's1' }],
+    ['list', undefined],
+  ]);
+  assert.deepEqual(await listAgentBrowserPages('s1', {}), {
+    ok: false,
+    error: 'Agent Browser 桌面桥不可用',
   });
 });
 
