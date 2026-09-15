@@ -62,6 +62,7 @@ import {
   toggleAllArchivedSessionSelection,
 } from '../lib/archivedSessions.js';
 import { formatUsageTokens, normalizeUsageStats, usageDataNote } from '../lib/usageStats.js';
+import { UsageHeatmap } from './UsageHeatmap.jsx';
 import {
   hookActionState,
   hookEmptyState,
@@ -3030,12 +3031,6 @@ const USAGE_COLORS = [
   '#06b6d4',
 ];
 
-function shortUsageDate(date) {
-  const text = String(date || '');
-  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? `${Number(m[2])}/${Number(m[3])}` : text;
-}
-
 function UsageEmptyState({ text }) {
   return (
     <div className="px-3.5 py-8 rounded-md bg-surface border border-border text-[12px] text-fg-mute text-center">
@@ -3116,55 +3111,24 @@ function SectionUsage() {
         <UsageEmptyState text="加载中" />
       ) : error ? (
         <UsageEmptyState text={`加载失败:${error}`} />
-      ) : !stats.hasData ? (
-        <>
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-6">
-            {summary.map((c) => (
-              <div key={c.label} className="px-4 py-3.5 rounded-md bg-surface border border-border">
-                <div className="text-[10px] text-fg-mute uppercase tracking-wider mb-1.5">{c.label}</div>
-                <div className="text-[24px] font-bold text-fg leading-none mb-1">{c.value}</div>
-                <div className="text-[11px] text-fg-mute">{c.sub}</div>
-              </div>
-            ))}
-          </div>
-          <UsageEmptyState text={note} />
-        </>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-6">
+          {summary.map((c) => (
+            <div key={c.label} className="px-4 py-3.5 rounded-md bg-surface border border-border">
+              <div className="text-[10px] text-fg-mute uppercase tracking-wider mb-1.5">{c.label}</div>
+              <div className="text-[24px] font-bold text-fg leading-none mb-1">{c.value}</div>
+              <div className="text-[11px] text-fg-mute truncate">{c.sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <UsageHeatmap reloadKey={reloadKey} />
+
+      {raw && !error && (!stats.hasData ? (
+        <UsageEmptyState text={note} />
       ) : (
         <>
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-6">
-            {summary.map((c) => (
-              <div key={c.label} className="px-4 py-3.5 rounded-md bg-surface border border-border">
-                <div className="text-[10px] text-fg-mute uppercase tracking-wider mb-1.5">{c.label}</div>
-                <div className="text-[24px] font-bold text-fg leading-none mb-1">{c.value}</div>
-                <div className="text-[11px] text-fg-mute truncate">{c.sub}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="text-[14px] font-semibold mb-1">每日用量趋势</div>
-          <p className="text-[12px] text-fg-mute mb-3">近 {stats.metadata.days} 天 token 消耗</p>
-          <div className="px-4 pt-4 pb-2 rounded-md bg-surface border border-border mb-6">
-            <div className="flex items-stretch gap-1.5 h-[150px]">
-              {stats.daily.map((d) => {
-                const h = stats.maxDailyTokens > 0 ? (d.tokens / stats.maxDailyTokens) * 100 : 0;
-                return (
-                  <div key={d.date} className="flex-1 min-w-[24px] h-full flex flex-col items-center gap-1.5">
-                    <div className="text-[9px] text-fg-mute opacity-80 whitespace-nowrap">
-                      {d.tokens > 0 ? formatUsageTokens(d.tokens) : ''}
-                    </div>
-                    <div className="w-full flex-1 flex items-end">
-                      <div
-                        className="w-full rounded-sm bg-accent transition-all"
-                        style={{ height: `${h}%`, minHeight: d.tokens > 0 ? 6 : 2, opacity: d.tokens > 0 ? 0.9 : 0.18 }}
-                      />
-                    </div>
-                    <div className="text-[10px] text-fg-mute whitespace-nowrap">{shortUsageDate(d.date)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
             {tokenDetails.map(([label, value]) => (
               <div key={label} className="px-3 py-2.5 rounded-md bg-surface border border-border">
@@ -3251,7 +3215,7 @@ function SectionUsage() {
             {note}
           </div>
         </>
-      )}
+      ))}
     </>
   );
 }

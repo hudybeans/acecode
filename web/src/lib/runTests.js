@@ -144,6 +144,7 @@ import './permissionSidebarArchitecture.test.js';
 import './tokenBudget.test.js';
 import './tokenBudgetPanelArchitecture.test.js';
 import './usageStats.test.js';
+import './usageHeatmap.test.js';
 import './desktopFeedback.test.js';
 import './desktopFeedbackCommandArchitecture.test.js';
 import './pinnedSessions.test.js';
