@@ -52,9 +52,10 @@ The default Skill bundle contains:
 The expert bundle contains the OPC one-person-company team, its lead, and eight
 stage experts under the `opc-*` package IDs.
 
-The managed hook bundle contains `agent-reporting`, which connects the generic
-ACECode lifecycle events to Herdr when ACECode is launched inside a Herdr pane.
-It is a guarded no-op elsewhere. Seed reconciliation does not rewrite
+The managed hook bundle contains `agent-reporting`, installed disabled by default.
+Unchanged official copies from older versions are upgraded to the disabled
+definition. For an explicitly enabled Herdr integration, see [Herdr hooks](herdr-hooks.md).
+Seed reconciliation does not rewrite
 `~/.acecode/hooks.json`, `~/.codex/hooks.json`, or project hook files.
 
 Missing resources are installed. A previously seeded Skill, expert, or hook is updated

@@ -501,6 +501,7 @@ public:
 
 private:
     void worker_main();
+    void recover_worker_task_error(const char* detail, bool chat_task);
     bool has_queued_user_work_locked() const;
     void join_side_question_threads();
     void run_agent(const std::string& user_message);

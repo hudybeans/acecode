@@ -4,24 +4,37 @@
 
 namespace acecode {
 
-// Check if a string is valid UTF-8
-inline bool is_valid_utf8(const std::string& str) {
-    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(str.data());
-    size_t len = str.size();
-    for (size_t i = 0; i < len; ) {
-        unsigned char c = bytes[i];
-        int seq_len = 0;
-        if (c <= 0x7F) { seq_len = 1; }
-        else if ((c & 0xE0) == 0xC0) { seq_len = 2; }
-        else if ((c & 0xF0) == 0xE0) { seq_len = 3; }
-        else if ((c & 0xF8) == 0xF0) { seq_len = 4; }
-        else { return false; }
+namespace encoding_detail {
 
-        if (i + seq_len > len) return false;
-        for (int j = 1; j < seq_len; j++) {
-            if ((bytes[i + j] & 0xC0) != 0x80) return false;
-        }
-        i += seq_len;
+// Returns the complete sequence length, 0 for a valid but incomplete prefix,
+// or -1 for malformed UTF-8. Only Unicode scalar values are accepted.
+inline int utf8_sequence(const unsigned char* bytes, size_t available) {
+    if (available == 0) return 0;
+    const unsigned char lead = bytes[0];
+    if (lead <= 0x7F) return 1;
+    const int length = lead >= 0xC2 && lead <= 0xDF ? 2 :
+        (lead >= 0xE0 && lead <= 0xEF ? 3 :
+         (lead >= 0xF0 && lead <= 0xF4 ? 4 : -1));
+    if (length < 0) return -1;
+    for (int j = 1; j < length && static_cast<size_t>(j) < available; ++j) {
+        const unsigned char byte = bytes[j];
+        if (byte < 0x80 || byte > 0xBF) return -1;
+        if (j == 1 && ((lead == 0xE0 && byte < 0xA0) ||
+                       (lead == 0xED && byte > 0x9F) ||
+                       (lead == 0xF0 && byte < 0x90) ||
+                       (lead == 0xF4 && byte > 0x8F))) return -1;
+    }
+    return available < static_cast<size_t>(length) ? 0 : length;
+}
+
+} // namespace encoding_detail
+
+inline bool is_valid_utf8(const std::string& str) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(str.data());
+    for (size_t i = 0; i < str.size();) {
+        const int length = encoding_detail::utf8_sequence(bytes + i, str.size() - i);
+        if (length <= 0) return false;
+        i += static_cast<size_t>(length);
     }
     return true;
 }
@@ -89,7 +102,9 @@ inline void trim_trailing_partial_utf8(std::string& buf) {
         else if ((b & 0xF0) == 0xE0) need = 3;
         else if ((b & 0xF8) == 0xF0) need = 4;
         else return;                // invalid lead byte → let ensure_utf8() decide
-        if (cont + 1 < need) buf.resize(i - 1); // trailing sequence is truncated → drop it
+        if (cont + 1 < need && encoding_detail::utf8_sequence(
+                reinterpret_cast<const unsigned char*>(buf.data()) + i - 1,
+                cont + 1) == 0) buf.resize(i - 1); // trailing sequence is truncated → drop it
         return;
     }
 }
@@ -98,7 +113,7 @@ inline void trim_trailing_partial_utf8(std::string& buf) {
 // Falls back to replacing invalid bytes with '?'.
 std::string ensure_utf8(const std::string& src);
 
-// Incremental, never-throwing decoder for subprocess output streams.
+// Incremental decoder for subprocess output streams.
 //
 // Subprocess stdout/stderr arrives in arbitrary byte chunks: a single multibyte
 // character (UTF-8 up to 4 bytes, GBK/DBCS 2 bytes) can be split across two
@@ -113,8 +128,7 @@ std::string ensure_utf8(const std::string& src);
 //      so legacy cmd.exe output decodes to the correct characters, not '?'.
 //      It holds back a trailing partial lead byte so a split DBCS pair is not
 //      decoded until its second byte arrives;
-//   3. last resort, replace undecodable bytes with '?' — it NEVER throws and
-//      NEVER emits invalid UTF-8.
+//   3. last resort, replace undecodable bytes with '?' — it never emits invalid UTF-8.
 //
 // Output of push()/flush() is always valid UTF-8 and safe to hand to JSON, the
 // TUI, and the model context.
@@ -140,6 +154,7 @@ private:
     std::string pending_;
     unsigned int codepage_ = 0;
     bool bom_checked_ = false;
+    bool codepage_fallback_ = false;
 };
 
 } // namespace acecode

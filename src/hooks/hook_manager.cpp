@@ -5,6 +5,7 @@
 #include "../utils/logger.hpp"
 
 #include <chrono>
+#include <optional>
 #include <utility>
 
 namespace acecode {
@@ -48,6 +49,23 @@ std::string command_for_current_platform(const NormalizedHook& hook) {
     if (!hook.command.command_windows.empty()) return hook.command.command_windows;
 #endif
     return hook.command.command;
+}
+
+// Hook failures use the same non-decision path as process start failures.
+// Catch here so both synchronous and asynchronous dispatch retain their owner.
+template <typename Run>
+HookProcessResult invoke_hook_safely(Run&& run) {
+    try {
+        return run();
+    } catch (const std::exception& error) {
+        HookProcessResult result;
+        result.error = "hook exception: " + ensure_utf8(error.what());
+        return result;
+    } catch (...) {
+        HookProcessResult result;
+        result.error = "hook exception: unknown exception";
+        return result;
+    }
 }
 
 } // namespace
@@ -152,8 +170,7 @@ HookAggregateOutcome HookManager::dispatch_codex(const HookDispatchRequest& requ
     if (!registry.feature_enabled) return aggregate;
 
     std::vector<HookDiagnostic> matcher_diagnostics;
-    const std::string payload_text =
-        request.payload.is_object() ? request.payload.dump() : nlohmann::json::object().dump();
+    std::optional<std::string> payload_text;
 
     for (const auto& hook : registry.hooks) {
         if (!hook_matcher_matches(hook,
@@ -187,17 +204,23 @@ HookAggregateOutcome HookManager::dispatch_codex(const HookDispatchRequest& requ
                  " event=" + request.event_name +
                  " command=" + log_truncate(command, 300) +
                  " timeout_ms=" + std::to_string(timeout_ms));
-        HookEnvironment environment;
-        if (request.event_name == kCodexHookEventSessionTitleChanged) {
-            environment["ACECODE_HOOK_SESSION_TITLE"] =
-                request.payload.value("title", std::string{});
-        }
-        HookProcessResult result = shell_runner_(
-            command,
-            payload_text,
-            timeout_ms,
-            request.cwd,
-            environment);
+        HookProcessResult result = invoke_hook_safely([&] {
+            // External tool text must not make JSON serialization fatal. Keep
+            // this lazy so inactive/untrusted/unmatched hooks do no extra work.
+            if (!payload_text.has_value()) {
+                payload_text = request.payload.is_object()
+                    ? request.payload.dump(-1, ' ', false,
+                        nlohmann::json::error_handler_t::replace)
+                    : "{}";
+            }
+            HookEnvironment environment;
+            if (request.event_name == kCodexHookEventSessionTitleChanged) {
+                environment["ACECODE_HOOK_SESSION_TITLE"] =
+                    request.payload.value("title", std::string{});
+            }
+            return shell_runner_(command, *payload_text, timeout_ms,
+                                 request.cwd, environment);
+        });
 
         const std::string status = result.timed_out ? "timeout" :
             (result.started && result.exit_code == 0 ? "ok" :
@@ -330,18 +353,18 @@ void HookManager::worker_loop(std::shared_ptr<AsyncState> state,
 
 void HookManager::run_invocation_with_runner(const Invocation& invocation,
                                              const HookProcessRunner& runner) {
-    std::string payload_text = invocation.payload.dump();
     LOG_INFO("[hooks] start id=" + invocation.hook.id +
              " event=" + invocation.hook.event +
              " mode=" + mode_name(invocation.hook.mode) +
              " command=" + invocation.command.command +
              " timeout_ms=" + std::to_string(invocation.hook.timeout_ms));
 
-    HookProcessResult result = runner(
-        invocation.command,
-        payload_text,
-        invocation.hook.timeout_ms,
-        invocation.cwd);
+    HookProcessResult result = invoke_hook_safely([&] {
+        const std::string payload_text = invocation.payload.dump(
+            -1, ' ', false, nlohmann::json::error_handler_t::replace);
+        return runner(invocation.command, payload_text,
+                      invocation.hook.timeout_ms, invocation.cwd);
+    });
 
     std::string status = result.timed_out ? "timeout" :
         (result.started && result.exit_code == 0 ? "ok" : "error");

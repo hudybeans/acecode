@@ -208,78 +208,67 @@ std::string getenv_utf8(const char* name) {
 
 namespace {
 
-// Length of the UTF-8 sequence introduced by lead byte c, or 0 if c is not a
-// valid lead byte (i.e. it is a continuation byte or 0xF8-0xFF).
-int utf8_seq_len(unsigned char c) {
-    if (c <= 0x7F) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 0;
+// Preserve valid Unicode and replace each malformed byte without guessing a
+// different encoding. Used when no legacy conversion is appropriate/possible.
+std::string replace_invalid_utf8(const std::string& src) {
+    std::string out;
+    out.reserve(src.size());
+    const auto* bytes = reinterpret_cast<const unsigned char*>(src.data());
+    for (size_t i = 0; i < src.size();) {
+        const int length = encoding_detail::utf8_sequence(bytes + i, src.size() - i);
+        if (length > 0) {
+            out.append(src, i, static_cast<size_t>(length));
+            i += static_cast<size_t>(length);
+        } else {
+            out.push_back('?');
+            ++i;
+        }
+    }
+    return out;
 }
 
-// Compute the largest prefix length of `buf` that can be emitted now without
-// cutting a multibyte character in half. `buf` MUST start on a character
-// boundary (the IncrementalTextDecoder maintains this invariant).
-//
-// Prefers a UTF-8 interpretation: if the buffer is valid UTF-8 up to a clean
-// incomplete trailing sequence, that boundary is returned. Otherwise, on
-// Windows with a non-UTF-8 console codepage, the buffer is treated as DBCS
-// (e.g. GBK/CP936) and scanned pair-by-pair from the boundary so a split
-// lead/trail pair is held back as a unit.
-size_t decoder_emit_boundary(const std::string& buf, unsigned int codepage) {
-    const size_t n = buf.size();
-    if (n == 0) return 0;
-    const unsigned char* b = reinterpret_cast<const unsigned char*>(buf.data());
-
-    // --- UTF-8 forward scan ---
-    bool utf8_ok = true;
-    size_t i = 0;
-    while (i < n) {
-        int len = utf8_seq_len(b[i]);
-        if (len == 0) { utf8_ok = false; break; }      // stray continuation / invalid lead
-        if (i + static_cast<size_t>(len) > n) {
-            // Valid UTF-8 so far, with a clean incomplete trailing sequence.
-            return i;
+size_t decoder_emit_boundary(const std::string& buf, unsigned int codepage,
+                             bool& codepage_fallback) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(buf.data());
+    size_t boundary = buf.size();
+    bool malformed = false;
+    if (!codepage_fallback) {
+        for (size_t i = 0; i < buf.size();) {
+            const int length = encoding_detail::utf8_sequence(bytes + i, buf.size() - i);
+            if (length == 0) {
+                boundary = i;
+                break;
+            }
+            if (length < 0) malformed = true;
+            i += length > 0 ? static_cast<size_t>(length) : 1;
         }
-        bool ok = true;
-        for (int j = 1; j < len; ++j) {
-            if ((b[i + j] & 0xC0) != 0x80) { ok = false; break; }
-        }
-        if (!ok) { utf8_ok = false; break; }
-        i += static_cast<size_t>(len);
+        if (!malformed) return boundary;
     }
-    if (utf8_ok) return n;  // entire buffer is well-formed UTF-8
-
 #ifdef _WIN32
-    // --- DBCS (codepage) forward scan ---
-    // Only meaningful for double-byte codepages; for single-byte / UTF-8
-    // codepages every byte is independent so the whole buffer is emittable.
     if (codepage != CP_UTF8) {
-        size_t k = 0;
-        while (k < n) {
-            if (b[k] < 0x80) { ++k; continue; }   // ASCII single byte
-            // DBCS lead byte: needs a trailing byte.
-            if (k + 1 >= n) return k;             // incomplete trailing lead → hold
-            k += 2;
+        // Keep the detected codepage for the rest of this stream. A later GBK
+        // pair may independently look like valid UTF-8 (e.g. D4 B4).
+        codepage_fallback = true;
+        for (size_t i = 0; i < buf.size();) {
+            if (IsDBCSLeadByteEx(codepage, bytes[i])) {
+                if (i + 1 == buf.size()) return i;
+                i += 2;
+            } else {
+                ++i;
+            }
         }
-        return n;
+        return buf.size();
     }
 #else
     (void)codepage;
 #endif
-
-    // Non-Windows or UTF-8 codepage with invalid bytes: emit everything and let
-    // the lossy decode below replace the offending bytes. (POSIX subprocess
-    // output is virtually always UTF-8.)
-    return n;
+    return boundary;
 }
 
-// Lossily decode a byte run that starts and ends on a character boundary into
-// valid UTF-8. Never throws, never returns invalid UTF-8.
-std::string decoder_decode_safe(const std::string& safe, unsigned int codepage) {
+std::string decoder_decode_safe(const std::string& safe, unsigned int codepage,
+                                bool codepage_fallback) {
     if (safe.empty()) return {};
-    if (is_valid_utf8(safe)) return safe;
+    if (!codepage_fallback && is_valid_utf8(safe)) return safe;
 #ifdef _WIN32
     if (codepage != CP_UTF8) {
         std::string converted = codepage_to_utf8(safe, codepage);
@@ -288,8 +277,7 @@ std::string decoder_decode_safe(const std::string& safe, unsigned int codepage) 
 #else
     (void)codepage;
 #endif
-    // ensure_utf8 does ACP conversion + '?' replacement as a final fallback.
-    return ensure_utf8(safe);
+    return replace_invalid_utf8(safe);
 }
 
 } // namespace
@@ -309,6 +297,7 @@ IncrementalTextDecoder::IncrementalTextDecoder(unsigned int codepage)
 void IncrementalTextDecoder::reset() {
     pending_.clear();
     bom_checked_ = false;
+    codepage_fallback_ = false;
 }
 
 std::string IncrementalTextDecoder::push(const char* data, size_t len) {
@@ -334,20 +323,20 @@ std::string IncrementalTextDecoder::push(const char* data, size_t len) {
         if (!bom_checked_) return {};  // still possibly a partial BOM
     }
 
-    size_t boundary = decoder_emit_boundary(pending_, codepage_);
+    size_t boundary = decoder_emit_boundary(pending_, codepage_, codepage_fallback_);
     if (boundary == 0) return {};
 
     std::string safe = pending_.substr(0, boundary);
     pending_.erase(0, boundary);
-    return decoder_decode_safe(safe, codepage_);
+    return decoder_decode_safe(safe, codepage_, codepage_fallback_);
 }
 
 std::string IncrementalTextDecoder::flush() {
-    if (pending_.empty()) return {};
     std::string rest;
     rest.swap(pending_);
-    bom_checked_ = false;
-    return decoder_decode_safe(rest, codepage_);
+    const bool codepage_fallback = codepage_fallback_;
+    reset();
+    return decoder_decode_safe(rest, codepage_, codepage_fallback);
 }
 
 std::string ensure_utf8(const std::string& src) {
@@ -379,35 +368,7 @@ std::string ensure_utf8(const std::string& src) {
     if (is_valid_utf8(converted)) return strip_utf8_bom(converted);
 #endif
 
-    // Fallback: strip invalid bytes
-    std::string result;
-    result.reserve(src.size());
-    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(src.data());
-    size_t len = src.size();
-    for (size_t i = 0; i < len; ) {
-        unsigned char c = bytes[i];
-        int seq_len = 0;
-        if (c <= 0x7F) { seq_len = 1; }
-        else if ((c & 0xE0) == 0xC0) { seq_len = 2; }
-        else if ((c & 0xF0) == 0xE0) { seq_len = 3; }
-        else if ((c & 0xF8) == 0xF0) { seq_len = 4; }
-        else { result += '?'; i++; continue; }
-
-        if (i + seq_len > len) { result += '?'; i++; continue; }
-
-        bool valid = true;
-        for (int j = 1; j < seq_len; j++) {
-            if ((bytes[i + j] & 0xC0) != 0x80) { valid = false; break; }
-        }
-        if (valid) {
-            result.append(src, i, seq_len);
-            i += seq_len;
-        } else {
-            result += '?';
-            i++;
-        }
-    }
-    return strip_utf8_bom(result);
+    return strip_utf8_bom(replace_invalid_utf8(src));
 }
 
 } // namespace acecode
