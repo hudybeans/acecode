@@ -439,6 +439,9 @@ int run(const std::vector<std::string>& tokens, const std::string& exe_path) {
     if (a.sub == "start" || a.sub == "foreground") {
         a.cwd_override = resolve_startup_cwd(a, acecode::current_path_utf8());
     }
+    if ((a.sub == "stop" || a.sub == "status") && !a.run_dir_override.empty()) {
+        acecode::set_run_dir_override(a.run_dir_override);
+    }
 
     // argv[0] is only ever a hint: a POSIX shell passes the bare word the user
     // typed ("acecode" when it was found on PATH), and spawn_detached execv()s

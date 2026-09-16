@@ -1,4 +1,6 @@
 #include "worker.hpp"
+#include "../channels/runtime.hpp"
+#include "../session/session_serializer.hpp"
 
 #include "../desktop/folder_picker.hpp"
 #include "../desktop/daemon_protocol.hpp"
@@ -559,6 +561,28 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
 
     acecode::SessionRegistry registry(std::move(reg_deps));
     acecode::LocalSessionClient client(registry);
+    acecode::channels::GatewayDeps channel_deps{client};
+    channel_deps.permissions = [&registry](const std::string& id) {
+        auto entry = registry.acquire(id);
+        return entry && entry->prompter ? entry->prompter->snapshot_pending_requests()
+                                        : std::vector<nlohmann::json>{};
+    };
+    channel_deps.session_cwd = [&registry](const std::string& id) {
+        auto entry = registry.acquire(id);
+        if (!entry) throw std::runtime_error("Unknown channel session");
+        return entry->cwd;
+    };
+    channel_deps.transcript = [&registry](const std::string& id) {
+        nlohmann::json result = nlohmann::json::array();
+        auto entry = registry.acquire(id);
+        if (!entry || !entry->sm) return result;
+        const auto messages = entry->sm->load_active_messages();
+        const auto begin = messages.size() > 100 ? messages.size() - 100 : 0;
+        for (std::size_t i = begin; i < messages.size(); ++i)
+            result.push_back(nlohmann::json::parse(acecode::serialize_message(messages[i])));
+        return result;
+    };
+    acecode::channels::Runtime channel_runtime(std::move(channel_deps));
     subagent_deps->registry = &registry;
     subagent_deps->client   = &client;
     subagent_deps->config   = &cfg_mut;
@@ -880,7 +904,9 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
         server.stop();
     });
 
+    channel_runtime.start();
     int rc = server.run();
+    channel_runtime.stop();
     // Remove the external listener before any daemon-owned service begins
     // teardown. The controller destructor is a second, idempotent safety net.
     remote_web_proxy.stop();

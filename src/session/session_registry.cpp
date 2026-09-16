@@ -964,7 +964,7 @@ SessionRegistry::make_entry_locked(const std::string& id,
     }
     // LOOP permission is definition-scoped. A daemon-wide --dangerous flag
     // must not silently turn a LOOP configured as Default into Yolo.
-    if (opts.loop_execution) entry->perm->set_dangerous(false);
+    if (opts.loop_execution || !opts.inherit_dangerous_mode) entry->perm->set_dangerous(false);
     // 显式传入的 permission_mode 优先于 resume meta 恢复值:headless
     // `-p --resume <id> --permission-mode accept-edits` 若被静默忽略,脚本
     // 会在 default 模式下被写权限门自动拒绝,极难排查。web resume 不传该
@@ -1169,6 +1169,7 @@ bool SessionRegistry::resume(const std::string& id, const SessionOptions& opts) 
     // web resume 不传这两个字段,行为不变。
     entry_opts.model_name = resolved.model_name;
     entry_opts.permission_mode = resolved.permission_mode;
+    entry_opts.inherit_dangerous_mode = resolved.inherit_dangerous_mode;
     entry_opts.expert_id = meta.expert_id;
     entry_opts.expert_member_id = meta.expert_member_id;
     auto entry = make_entry_locked(id, entry_opts, &meta);

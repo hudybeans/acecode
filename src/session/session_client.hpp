@@ -185,6 +185,9 @@ struct SessionOptions {
     std::string loop_id;
     std::string loop_run_id;
     std::string loop_system_context;
+
+    // External channel sessions must not inherit a host's local-only bypass.
+    bool inherit_dangerous_mode = true;
 };
 
 // ----- Current session model state -----

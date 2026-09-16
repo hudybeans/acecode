@@ -115,9 +115,13 @@ mkdir -p "$temporary_root/share/acecode"
     "$temporary_root/share/acecode/models_dev"
 /usr/bin/ditto "$seed_dir" \
     "$temporary_root/share/acecode/seed"
+if [[ -d "$app_path/Contents/Resources/channels" ]]; then
+    /usr/bin/ditto "$app_path/Contents/Resources/channels" "$temporary_root/channels"
+fi
 (
     cd "$temporary_root"
     /usr/bin/zip -qr "$temporary_zip" acecode share
+    if [[ -d channels ]]; then /usr/bin/zip -qr "$temporary_zip" channels; fi
 )
 mkdir -p "$verify_root"
 /usr/bin/ditto -x -k "$temporary_zip" "$verify_root"

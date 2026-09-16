@@ -46,6 +46,7 @@
 #include "config/config.hpp"
 #include "headless/headless_options.hpp"
 #include "headless/headless_runner.hpp"
+#include "channels/command.hpp"
 #include "utils/encoding.hpp"
 #include "utils/power_inhibitor.hpp"
 #include "network/proxy_resolver.hpp"
@@ -2281,6 +2282,7 @@ static void print_top_level_help() {
         "  acecode -p [options] \"<prompt>\"    Headless print mode (acecode -p --help)\n"
         "  acecode configure                  Interactive provider/model setup\n"
         "  acecode daemon <subcommand>        Background daemon + Web UI (acecode daemon help)\n"
+        "  acecode channels <command>         WhatsApp channel management (acecode channels help)\n"
 #ifdef _WIN32
         "  acecode service <subcommand>       Windows service management (acecode service help)\n"
 #endif
@@ -2422,6 +2424,10 @@ static std::optional<int> dispatch_non_tui_command(int argc, char* argv[]) {
 #else
         tokens = argv_tail(argc, argv, 1);
 #endif
+        if (!tokens.empty() && tokens.front() == "channels") {
+            return acecode::channels::run_cli(
+                std::vector<std::string>(tokens.begin() + 1, tokens.end()), std::cout, std::cerr);
+        }
         if (acecode::headless::should_enter_print_mode(tokens)) {
             auto opts = acecode::headless::parse_headless_cli_options(tokens);
             // --help 优先于用法报错:`-p --help` 后面跟什么都先出帮助。
