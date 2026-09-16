@@ -4165,12 +4165,19 @@ a.ace-thread-link:focus-visible {
 /* Slate composer: inline void tags and plain text share one native caret/layout
    surface. InputBar owns the outer spacing, height and bottom controls. */
 .ace-rich-composer-input {
+  --ace-composer-selection-bg: Highlight;
+  --ace-composer-selection-fg: HighlightText;
   position: relative;
   display: block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
   scrollbar-width: thin;
+}
+.ace-rich-composer-input::selection,
+.ace-rich-composer-input ::selection {
+  background: var(--ace-composer-selection-bg);
+  color: var(--ace-composer-selection-fg);
 }
 .ace-rich-composer-placeholder {
   /* Do not use `inset`: Chromium < 87 ignores it and the placeholder
@@ -4279,6 +4286,24 @@ a.ace-thread-link:focus-visible {
 .ace-cmd-token:focus-visible {
   background: var(--ace-accent-bg);
   border-color: var(--ace-accent);
+}
+
+/* Inline voids need a whole-tag selection fill; native selection only paints text. */
+.ace-cmd-token.ace-slate-inline-tag[data-composer-selected="true"] {
+  background: var(--ace-composer-selection-bg);
+  border-color: var(--ace-composer-selection-bg);
+  color: var(--ace-composer-selection-fg);
+  opacity: 1;
+}
+.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-name,
+.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-glyph,
+.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
+  /* File icons carry inline type colors, which must not obscure selection. */
+  color: inherit !important;
+  opacity: 1;
+}
+.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
+  background: transparent;
 }
 
 /* 描述气泡:portal 到 body + position:fixed,坐标由 JS 计算(锚右对齐徽标右缘)。

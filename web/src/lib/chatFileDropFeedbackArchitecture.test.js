@@ -121,7 +121,10 @@ run('ChatView stages home attachments without creating or navigating a session',
     'home submit must materialize staged files before sending',
   );
   assert.match(chatView, /pending_upload: true,[\s\S]*upload_error: error\?\.message/);
-  assert.match(chatView, /if \(removed\?\.local_id\) releaseAttachmentReservation\(removed\.local_id\)/);
+  assert.match(chatView, /removeComposerAttachmentReference\(composerContentRef\.current, key\)/);
+  const removeFlow = chatView.slice(chatView.indexOf('const removeComposerAttachment ='), chatView.indexOf('const removeComposerContext ='));
+  assert.doesNotMatch(removeFlow, /releaseAttachmentReservation|revokeObjectURL|setComposerAttachments/,
+    'deleting a reference must retain its resource until the draft is cleared so undo remains usable');
   assert.match(chatView, /const clearComposerExtras = useCallback\(\(\) => \{\s*clearAttachmentReservations\(\)/);
 });
 

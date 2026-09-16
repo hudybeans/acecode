@@ -5,7 +5,7 @@
 // 消息底部同侧的复制 + 分叉按钮(左消息在左下角,右消息在右下角)。复制走 navigator.clipboard.writeText;分叉
 // 调上层 onFork(messageId) — disabled 当 messageId 缺失。
 
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { renderMarkdownBlocks } from '../lib/markdown.js';
@@ -14,11 +14,16 @@ import { clsx, relativeTime } from '../lib/format.js';
 import { buildCompactMessagePreview } from '../lib/compactMessagePreview.js';
 import { assistantChromeState } from '../lib/assistantAvatarDisplay.js';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
-import { VsIcon, CommandGlyph } from './Icon.jsx';
+import { VsIcon, CommandGlyph, FileTypeIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import { resolveLeadingSlashCommand } from '../lib/slashCommands.js';
 import { useSlashCommands } from './SlashCommandsContext.jsx';
 import { AttachmentStrip } from './AttachmentStrip.jsx';
+import { ImageLightbox } from './ImageLightbox.jsx';
+import { attachmentsFromContentParts, isImageAttachment } from '../lib/messageAttachments.js';
+import { composerContentAttachments, composerContentClipboardText, normalizeComposerContent } from '../lib/composerContent.js';
+import { extractSessionReferences } from '../lib/sessionReference.js';
+import { DESKTOP_CONTEXT_ACTION_EVENT, DESKTOP_CONTEXT_ACTIONS } from '../lib/desktopContextMenu.js';
 
 export function MessageActions({ messageId, getCopyText, onFork, forkPending = false, forkLoading = false }) {
   const handleCopy = async (event) => {
@@ -139,9 +144,85 @@ function UserMessageBody({ content }) {
   );
 }
 
+function OrderedUserMessageBody({ composerContent, contentParts, onOpenFilePreview, onLocateInFileTree }) {
+  const { commands } = useSlashCommands();
+  const [preview, setPreview] = useState(null);
+  const attachments = useMemo(() => composerContentAttachments(
+    composerContent, attachmentsFromContentParts(contentParts),
+  ), [composerContent, contentParts]);
+  const previewAttachment = useCallback((attachment) => {
+    const url = attachment.blob_url || attachment.preview_url || attachment.url || '';
+    if (isImageAttachment(attachment) && url) {
+      setPreview({ src: url, alt: attachment.name || 'attachment' });
+    } else if (attachment.path) onOpenFilePreview?.(attachment.path);
+  }, [onOpenFilePreview]);
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event.detail || {};
+      if (detail.action !== DESKTOP_CONTEXT_ACTIONS.PREVIEW_ATTACHMENT || detail.target?.type !== 'attachment') return;
+      const attachment = attachments.find((item) => (item.id || item.local_id) === detail.target.id);
+      if (!attachment) return;
+      detail.handled = true;
+      previewAttachment(attachment);
+    };
+    window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+    return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+  }, [attachments, previewAttachment]);
+  return (
+    <>
+      {composerContent.parts.map((part, index) => {
+        if (part.type === 'text') {
+          const displayText = extractSessionReferences(part.text).displayText;
+          return index === 0 ? <UserMessageBody key={index} content={displayText} /> : displayText;
+        }
+        if (part.type === 'skill') {
+          const command = commands.find((item) => part.path
+            ? (item.path || item.skill_path) === part.path
+            : item.name === part.name);
+          return <CommandToken key={index} token={part.token} name={part.name} kind="skill" description={command?.description || part.path} />;
+        }
+        if (part.type === 'path') {
+          return (
+            <button key={index} type="button" className="ace-cmd-token" title={part.path}
+              data-file-path={part.path} data-file-kind={part.directory ? 'directory' : 'file'}
+              onClick={() => part.directory ? onLocateInFileTree?.(part.path) : onOpenFilePreview?.(part.path)}>
+              {part.directory ? <VsIcon name="folder" size={12} className="ace-cmd-token-glyph" />
+                : <FileTypeIcon path={part.path} size={12} className="ace-cmd-token-glyph" />}
+              <span className="ace-cmd-token-name">{part.path}</span>
+            </button>
+          );
+        }
+        const attachment = attachments.find((item) => (part.id && item.id === part.id) || item.local_id === part.key) || part;
+        const url = attachment.blob_url || attachment.preview_url || attachment.url || '';
+        const imageUrl = isImageAttachment(attachment) ? url : '';
+        return (
+          <button key={index} type="button" className="ace-cmd-token" title={attachment.source_path || attachment.name}
+            data-desktop-attachment-id={attachment.id || part.key}
+            data-desktop-attachment-name={attachment.name}
+            data-desktop-attachment-url={url || undefined}
+            data-desktop-attachment-path={attachment.path || undefined}
+            data-desktop-attachment-preview-url={imageUrl || undefined}
+            data-desktop-attachment-copy-image-url={imageUrl || undefined}
+            data-desktop-attachment-mime-type={attachment.mime_type || undefined}
+            data-desktop-attachment-kind={attachment.kind}
+            data-desktop-attachment-mutable="false"
+            onClick={() => previewAttachment(attachment)}>
+            <FileTypeIcon path={attachment.name} size={12} className="ace-cmd-token-glyph" />
+            <span className="ace-cmd-token-name">{attachment.name}</span>
+          </button>
+        );
+      })}
+      <ImageLightbox preview={preview} onClose={() => setPreview(null)} />
+    </>
+  );
+}
+
 function UserBubble({
   content,
   contentParts,
+  composerContent,
+  onOpenFilePreview,
+  onLocateInFileTree,
   ts,
   messageId,
   onFork,
@@ -150,16 +231,27 @@ function UserBubble({
   showFooter,
   annotationPresentations,
 }) {
+  const inlineReferences = (composerContent?.parts || []).filter((part) => part.type === 'attachment');
+  const inlineIds = new Set(inlineReferences.map((part) => part.id).filter(Boolean));
+  const inlineKeys = new Set(inlineReferences.map((part) => part.key).filter(Boolean));
+  const remainingParts = composerContent
+    ? (contentParts || []).filter((part) => !part.attachment || !(
+      inlineIds.has(part.attachment.id) || inlineKeys.has(part.attachment.local_id)
+    ))
+    : contentParts;
   return (
     <div className="self-end min-w-0 max-w-[70%] flex flex-col items-end gap-0.5 group">
       <AttachmentStrip
-        contentParts={contentParts}
+        contentParts={remainingParts}
         annotationPresentations={annotationPresentations}
         align="right"
       />
-      {content ? (
+      {(composerContent ? composerContent.parts.length > 0 : content) ? (
         <div className="ace-user-message-bubble ace-chat-message-content px-3.5 py-2 rounded-[14px] rounded-br-[4px] bg-accent-bg border border-accent-soft text-fg text-[13px] leading-[1.5] whitespace-pre-wrap break-words">
-          <UserMessageBody content={content} />
+          {composerContent ? (
+            <OrderedUserMessageBody composerContent={composerContent} contentParts={contentParts}
+              onOpenFilePreview={onOpenFilePreview} onLocateInFileTree={onLocateInFileTree} />
+          ) : <UserMessageBody content={content} />}
         </div>
       ) : null}
       {showFooter && (
@@ -167,7 +259,9 @@ function UserBubble({
           {ts != null && <span className="text-[10px] text-fg-mute">{relativeTime(ts)}</span>}
           <MessageActions
             messageId={messageId}
-            getCopyText={() => content}
+            getCopyText={() => composerContent
+              ? extractSessionReferences(composerContentClipboardText(composerContent)).displayText
+              : content}
             onFork={onFork}
             forkPending={forkPending}
             forkLoading={forkLoading}
@@ -372,6 +466,7 @@ export const Message = memo(function Message({
   role,
   content,
   contentParts,
+  composerContent,
   ts,
   streaming,
   messageId,
@@ -396,7 +491,11 @@ export const Message = memo(function Message({
     const displayContent = hasDisplayText
       ? metadata.display_text
       : content;
+    const orderedContent = composerContent || metadata?.composer_content;
     return <UserBubble content={displayContent} contentParts={contentParts} ts={ts}
+                        composerContent={orderedContent ? normalizeComposerContent(orderedContent) : null}
+                        onOpenFilePreview={onOpenFilePreview}
+                        onLocateInFileTree={onLocateInFileTree}
                         messageId={messageId}
                         onFork={onFork}
                         forkPending={forkPending}

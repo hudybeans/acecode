@@ -297,3 +297,19 @@ TEST_F(SkillActivationTest, AgentLoopInjectsOnlyTheMentioningTurnAndKeepsDisplay
 }
 
 } // namespace
+
+TEST_F(SkillActivationTest, LinkedSkillInParenthesizedPathActivatesInsideProse) {
+    const auto nested = root / "skills (local)";
+    write_skill(nested, "review", "Review", "Review body");
+    registry.set_scan_roots({nested});
+    registry.scan();
+    const auto skill = registry.find("review");
+    ASSERT_TRUE(skill);
+    const auto token = acecode::build_skill_invocation_hint(*skill, {});
+    EXPECT_NE(token.find("](<"), std::string::npos);
+    const auto expanded = acecode::inject_explicit_skill_instructions(
+        "prefix" + token + "suffix", registry);
+    EXPECT_EQ(expanded.injected_skill_names, (std::vector<std::string>{"review"}));
+    const auto old_token = "[$other](" + acecode::path_to_utf8_generic(skill->skill_md_path) + ")";
+    EXPECT_EQ(acecode::collect_explicit_skill_mentions(old_token, registry).size(), 1u);
+}

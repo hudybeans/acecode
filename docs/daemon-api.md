@@ -984,7 +984,7 @@ Workspace-scoped and compatibility paths share the same behavior:
 | DELETE | `.../sessions/:id/archive` | none | updated `SessionSummary` |
 | PUT | `.../sessions/:id/title` | `{"title":"..."}` | updated `SessionSummary` |
 | GET | `.../sessions/:id/draft` | none | `{"session_id","id","text"}` |
-| PUT | `.../sessions/:id/draft` | `{"text":"..."}` | `{"session_id","id","text"}` |
+| PUT | `.../sessions/:id/draft` | `{"text":"...","composer_content":{...}}` (content optional) | `{"session_id","id","text","composer_content"?}` |
 | DELETE | `.../sessions/:id/todos` | none | `{"session_id","id","workspace_hash","todos":[],"todo_summary":{...}}` |
 
 Title writes trim whitespace and validate with `sanitize_title`.
@@ -1150,6 +1150,54 @@ does not mutate the session. Errors use `400` for invalid JSON or destination
 paths, `404` for unknown sessions/workspaces, `501` when the native picker is
 unavailable, `503` when its callback is unavailable, and `500` for picker, file
 creation, or write failures.
+
+### Ordered composer content
+
+Messages, turn steering/interruption and session draft writes accept optional
+`composer_content`. Its editor-independent version 1 schema preserves the order
+of text and references:
+
+```json
+{"version":1,"parts":[
+  {"type":"text","text":"Use "},
+  {"type":"skill","name":"review","token":"[$review](C:/skills/review/SKILL.md)","path":"C:/skills/review/SKILL.md"},
+  {"type":"text","text":" with "},
+  {"type":"attachment","key":"local-1","id":"att-...","name":"notes.txt","kind":"file"},
+  {"type":"text","text":" and "},
+  {"type":"path","path":"src/main.cpp","token":"@src/main.cpp","directory":false}
+]}
+```
+
+Required fields are shown above except `skill.path` and `path.directory`, which
+are optional. Attachments may also carry optional `mime_type` and `path` strings.
+`key` identifies an occurrence across upload reconciliation; `id` identifies the
+uploaded resource. Draft placeholders may omit `id`; submitted messages must
+include each attachment's ID in the regular `attachments` payload, and the daemon
+must successfully load that record from the target session. Display name, kind,
+MIME and path are then hydrated from those verified records. Client preview URLs
+and unknown fields are stripped.
+
+The limit is 4096 parts and 2 MiB of declared string fields. Path/token fields
+allow 64 KiB, names 16 KiB, MIME 1024 bytes, kind 64 bytes and key/id 256 bytes.
+Unknown versions/types, invalid field types or unresolved attachment identities
+return HTTP 400. Canonical text concatenates text parts and path/skill tokens;
+attachment parts contribute no text. Messages normally derive their text from
+this structure; the compatibility `text` is retained when `session_references`
+requires its existing display projection. Skills activate through the existing
+explicit-mention mechanism; their visual order does not define execution order.
+
+The sanitized structure is persisted as `metadata.composer_content` and returned
+in live message events and history. Provider `content_parts` retain their existing
+contract. Legacy messages and clients without this field remain supported.
+
+Draft GET/PUT responses return optional `composer_content`; PUT derives its text
+from the content and saves both atomically. A text-only PUT or explicit null
+clears the structured draft. Forking a structured user prompt returns
+`restored_composer_content` plus `restored_attachments`, copies referenced uploads
+into the new session with new IDs, and saves the restored structured draft.
+Structured attachment references in the retained history are also copied and
+remapped, including their provider content parts and preview records; recalling
+those messages does not depend on the source session's attachment storage.
 
 ### `POST /api/sessions/:id/messages`
 
@@ -2083,6 +2131,10 @@ and prefix-checked against `cwd` (`400` outside the workspace). Patches over
 ## 8. Commands, Skills, and Hooks
 
 ### `GET /api/commands?workspace=<hash>`
+
+Skill entries include `path` and `mention` (the canonical linked explicit-skill
+reference) for stable inline selection; `/api/skills` includes the same fields
+for filesystem-backed entries.
 
 Returns builtin slash commands. A non-empty `workspace` hash also returns
 project commands plus merged workspace/global skills. An explicitly empty

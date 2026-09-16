@@ -9,6 +9,7 @@
 #include "../config/saved_models_revision.hpp"
 #include "../prompt/context_usage_breakdown.hpp"
 #include "../session/session_user_message_search.hpp"
+#include "../session/composer_content.hpp"
 #include "../utils/encoding.hpp"
 
 namespace acecode::web {
@@ -1280,6 +1281,7 @@ std::optional<SessionMeta> WebServer::Impl::find_session_meta_for_workspace(
                 meta.title = entry->sm->current_title();
                 meta.title_source = entry->sm->current_title_source();
                 meta.input_draft = entry->sm->current_input_draft();
+                meta.input_draft_content = entry->sm->current_input_draft_content();
             }
             return meta;
         }
@@ -1428,8 +1430,11 @@ crow::response WebServer::Impl::purge_session_data(
 crow::response WebServer::Impl::session_input_draft_response(
     const crow::request& req,
     const std::string& id,
-    const std::string& text) {
-    crow::response r(json{{"session_id", id}, {"id", id}, {"text", text}}.dump());
+    const std::string& text,
+    const json& composer_content) {
+    json payload{{"session_id", id}, {"id", id}, {"text", text}};
+    if (composer_content.is_object()) payload["composer_content"] = composer_content;
+    crow::response r(payload.dump());
     r.add_header("Content-Type", "application/json");
     return with_cors(req, std::move(r));
 }
@@ -1452,7 +1457,8 @@ crow::response WebServer::Impl::session_todos_response(
 
 std::optional<crow::response> WebServer::Impl::parse_session_input_draft_request(
     const crow::request& req,
-    std::string& text) {
+    std::string& text,
+    json& composer_content) {
     try {
         auto j = json::parse(req.body);
         if (!j.contains("text") || !j["text"].is_string()) {
@@ -1462,6 +1468,17 @@ std::optional<crow::response> WebServer::Impl::parse_session_input_draft_request
             return with_cors(req, std::move(r));
         }
         text = j["text"].get<std::string>();
+        if (j.contains("composer_content") && !j["composer_content"].is_null()) {
+            auto normalized = normalize_composer_content(j["composer_content"]);
+            if (!normalized.ok) {
+                crow::response r(400);
+                r.body = json{{"error", normalized.error}}.dump();
+                r.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(r));
+            }
+            text = std::move(normalized.text);
+            composer_content = std::move(normalized.content);
+        }
         return std::nullopt;
     } catch (const std::exception& e) {
         crow::response r(400);
@@ -1631,7 +1648,8 @@ crow::response WebServer::Impl::get_session_input_draft(
     const std::string& id) {
     if (auto entry = active_session_entry_for_workspace(ws, id)) {
         const std::string text = entry->sm ? entry->sm->current_input_draft() : std::string{};
-        return session_input_draft_response(req, id, text);
+        return session_input_draft_response(req, id, text,
+            entry->sm ? entry->sm->current_input_draft_content() : json{});
     }
 
     auto maybe_meta = find_session_meta_for_workspace(ws, id);
@@ -1641,7 +1659,7 @@ crow::response WebServer::Impl::get_session_input_draft(
         r.add_header("Content-Type", "application/json");
         return with_cors(req, std::move(r));
     }
-    return session_input_draft_response(req, id, maybe_meta->input_draft);
+    return session_input_draft_response(req, id, maybe_meta->input_draft, maybe_meta->input_draft_content);
 }
 
 crow::response WebServer::Impl::set_session_input_draft(
@@ -1649,12 +1667,14 @@ crow::response WebServer::Impl::set_session_input_draft(
     const acecode::desktop::WorkspaceMeta& ws,
     const std::string& id) {
     std::string text;
-    if (auto err = parse_session_input_draft_request(req, text)) return std::move(*err);
+    json composer_content;
+    if (auto err = parse_session_input_draft_request(req, text, composer_content)) return std::move(*err);
 
     if (auto entry = active_session_entry_for_workspace(ws, id)) {
         if (entry->sm) {
-            entry->sm->set_input_draft(text);
-            return session_input_draft_response(req, id, entry->sm->current_input_draft());
+            entry->sm->set_input_draft(text, composer_content);
+            return session_input_draft_response(req, id, entry->sm->current_input_draft(),
+                entry->sm->current_input_draft_content());
         }
     }
 
@@ -1668,10 +1688,11 @@ crow::response WebServer::Impl::set_session_input_draft(
 
     SessionMeta meta = *maybe_meta;
     meta.input_draft = text;
+    meta.input_draft_content = composer_content;
     const auto project_dir = SessionStorage::get_project_dir(
         meta.no_workspace && !meta.cwd.empty() ? meta.cwd : ws.cwd);
     SessionStorage::write_meta(SessionStorage::meta_path(project_dir, id), meta);
-    return session_input_draft_response(req, id, text);
+    return session_input_draft_response(req, id, text, composer_content);
 }
 
 crow::response WebServer::Impl::clear_session_todos(

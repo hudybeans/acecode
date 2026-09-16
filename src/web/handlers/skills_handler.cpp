@@ -1,6 +1,7 @@
 #include "skills_handler.hpp"
 
 #include "../../skills/skill_init.hpp"
+#include "../../skills/skill_activation.hpp"
 #include "../../skills/skill_registry.hpp"
 #include "../../skills/skill_usage_store.hpp"
 #include "../../utils/utf8_path.hpp"
@@ -182,6 +183,8 @@ nlohmann::json build_skills_payload_with_roots(
         nlohmann::json o;
         o["name"]        = s.name;
         o["command_key"] = s.command_key;
+        o["path"] = path_to_utf8_generic(s.skill_md_path);
+        o["mention"] = build_skill_invocation_hint(s, {});
         o["description"] = s.description;
         o["category"]    = s.category;
         o["enabled"]     = disabled.count(s.name) == 0;

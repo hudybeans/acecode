@@ -6,6 +6,7 @@
 // 输出是给 QueueCardList.jsx 一个稳定的 props 形状。
 
 import { QUEUED_INPUT_STATE } from './chatInputQueue.js';
+import { composerContentFromText } from './composerContent.js';
 
 export function buildQueueCardItem(item) {
   const queued = item?.queued || {};
@@ -44,7 +45,9 @@ export function buildQueueCardItem(item) {
     queuedId: queued.id || '',
     content: String(rawContent || fallbackContent || ''),
     editText: rawContent,
+    composerContent: payload.composer_content || (attachmentCount ? composerContentFromText(rawContent, payload.attachments) : null),
     hasExtras,
+    hasContexts: contextCount > 0,
     state,
     statusLabel,
     statusKind,

@@ -7,6 +7,12 @@ import { transcriptTimestampMs } from './timestamps.js';
 import { fallbackToolSummary } from './toolSummaryFallback.js';
 import { normalizeToolInvocationItems } from './transcriptProjection.js';
 import { createSingleWriterStore } from './singleWriterStore.js';
+import { composerContentFromMessage } from './composerContent.js';
+
+function composerContentFields(message, fallback = null) {
+  const content = composerContentFromMessage(message) || composerContentFromMessage(fallback);
+  return content ? { composerContent: content } : {};
+}
 
 export function messageKey(role, content) {
   return `${role || ''}\u0000${content || ''}`;
@@ -568,6 +574,7 @@ function genericHistoryMessageItem(next, m, extra = {}) {
     content: extra.content ?? m?.content ?? '',
     contentParts: extra.contentParts || (Array.isArray(m?.content_parts) ? m.content_parts : []),
     metadata: extra.metadata ?? m?.metadata,
+    ...composerContentFields(extra, m),
     ts: extra.ts || transcriptTimestampMs(m) || Date.now(),
   };
   const ordinal = messageOrdinalValue(extra.messageOrdinal, messageOrdinal(m));
@@ -831,6 +838,7 @@ function replaceAssistantItemWithFinal(item, payload, msg) {
     contentParts: Array.isArray(payload.content_parts) ? payload.content_parts : item.contentParts,
     messageId: payload.id || item.messageId || '',
     metadata: payload.metadata ?? item.metadata,
+    ...composerContentFields(payload, item),
     ts: eventTs(msg),
     streaming: false,
     streamDraft: false,
@@ -1176,7 +1184,8 @@ export function reduceTranscriptEvent(state, msg) {
           messageId: '',
           role: 'user',
           content: String(p.content || ''),
-          contentParts: [],
+          contentParts: Array.isArray(p.content_parts) ? p.content_parts : [],
+          ...composerContentFields(p),
           metadata: {
             client_message_id: clientMessageId,
             optimistic_queued_input: true,
@@ -1256,6 +1265,7 @@ export function reduceTranscriptEvent(state, msg) {
               content: incomingContent || item.content || '',
               contentParts: Array.isArray(p.content_parts) ? p.content_parts : item.contentParts,
               metadata: p.metadata ?? item.metadata,
+              ...composerContentFields(p, item),
               ts: eventTs(msg),
             }
           : item));
@@ -1280,8 +1290,9 @@ export function reduceTranscriptEvent(state, msg) {
               messageId: incomingMessageId,
               role,
               content: incomingContent,
-              contentParts: Array.isArray(p.content_parts) ? p.content_parts : [],
+              contentParts: Array.isArray(p.content_parts) ? p.content_parts : item.contentParts,
               metadata: p.metadata,
+              ...composerContentFields(p, item),
               ts: eventTs(msg),
             }
           : item));
@@ -1297,6 +1308,7 @@ export function reduceTranscriptEvent(state, msg) {
           content: incomingContent,
           contentParts: Array.isArray(p.content_parts) ? p.content_parts : [],
           metadata: p.metadata,
+          ...composerContentFields(p),
           ts: eventTs(msg),
         },
       ];

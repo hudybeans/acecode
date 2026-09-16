@@ -6090,6 +6090,9 @@ TEST(WebServerHttp, TurnSteerValidatesIdentityAndCommitsAcceptedInput) {
         cpr::Header{{"Content-Type", "application/json"}},
         cpr::Body{json{
             {"text", "keep the API stable"},
+            {"composer_content", {{"version", 1}, {"parts", json::array({
+                json{{"type", "text"}, {"text", "keep the API stable"}}
+            })}}},
             {"expected_turn_id", turn_id},
             {"client_message_id", "guide-http-1"},
         }.dump()});
@@ -6118,6 +6121,9 @@ TEST(WebServerHttp, TurnSteerValidatesIdentityAndCommitsAcceptedInput) {
         second_request.back().metadata.value("client_message_id", ""),
         "guide-http-1");
     EXPECT_TRUE(second_request.back().metadata.value("turn_steer", false));
+    ASSERT_TRUE(second_request.back().metadata.contains("composer_content"));
+    EXPECT_EQ(second_request.back().metadata["composer_content"]["parts"][0]["text"],
+              "keep the API stable");
     EXPECT_EQ(second_request.back().metadata.value("turn_id", ""), turn_id);
 }
 
@@ -10532,6 +10538,171 @@ TEST(WebServerHttp, WorkspaceReasoningCreationAndBusyMutation) {
     EXPECT_EQ(json::parse(busy.text)["error"], "SESSION_BUSY");
     EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
     EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+}
+
+TEST(WebServerHttp, ComposerContentDraftAndMessagePreserveOrderAndRejectMissingAttachments) {
+    WebServerFixture fx;
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto url = "/api/sessions/" + sid;
+    auto upload = cpr::Post(cpr::Url{fx.url(url + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"name":"notes.txt","mime_type":"text/plain","data_base64":"YWJj"})"});
+    ASSERT_EQ(upload.status_code, 201) << upload.text;
+    const auto attachment = json::parse(upload.text)["attachment"];
+    const auto aid = attachment["id"].get<std::string>();
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "before "}},
+        json{{"type", "attachment"}, {"key", "local-1"}, {"id", aid}, {"name", "notes.txt"}, {"kind", "file"}},
+        json{{"type", "text"}, {"text", " after"}},
+    })}};
+    auto draft = cpr::Put(cpr::Url{fx.url(url + "/draft")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "stale compatibility text"}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(draft.status_code, 200) << draft.text;
+    EXPECT_EQ(json::parse(draft.text)["text"], "before  after");
+    auto read_draft = cpr::Get(cpr::Url{fx.url(url + "/draft")});
+    ASSERT_EQ(read_draft.status_code, 200);
+    EXPECT_EQ(json::parse(read_draft.text)["composer_content"], content);
+    auto missing = cpr::Post(cpr::Url{fx.url(url + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "before  after"}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(missing.status_code, 400) << missing.text;
+    EXPECT_NE(missing.text.find("submitted attachment"), std::string::npos);
+    auto accepted = cpr::Post(cpr::Url{fx.url(url + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "stale compatibility text"}, {"composer_content", content},
+            {"client_message_id", "ordered-http"}, {"attachments", json::array({json{{"id", aid}}})}}.dump()});
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    json saved;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline && saved.is_null()) {
+        const auto response = cpr::Get(cpr::Url{fx.url(url + "/messages")});
+        ASSERT_EQ(response.status_code, 200);
+        const auto response_body = json::parse(response.text);
+        for (const auto& message : response_body["messages"]) {
+            if (message.value("role", "") == "user" && message.contains("metadata") &&
+                message["metadata"].value("client_message_id", "") == "ordered-http") saved = message;
+        }
+        if (saved.is_null()) std::this_thread::sleep_for(20ms);
+    }
+    ASSERT_FALSE(saved.is_null());
+    EXPECT_EQ(saved["content"], "before  after");
+    const auto& parts = saved["metadata"]["composer_content"]["parts"];
+    ASSERT_EQ(parts.size(), 3u);
+    EXPECT_EQ(parts[1]["id"], aid);
+    EXPECT_EQ(parts[2]["text"], " after");
+    const auto disk = fx.registry->acquire(sid)->sm->load_active_messages();
+    ASSERT_FALSE(disk.empty());
+    EXPECT_EQ(disk.front().metadata["composer_content"], saved["metadata"]["composer_content"]);
+    const auto clear = cpr::Put(cpr::Url{fx.url(url + "/draft")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({"text":"legacy"})"});
+    ASSERT_EQ(clear.status_code, 200);
+    EXPECT_FALSE(json::parse(clear.text).contains("composer_content"));
+}
+
+TEST(WebServerHttp, ComposerContentForkCopiesRestoredAttachmentsIntoTargetSession) {
+    WebServerFixture fx;
+    const auto sid = create_workspace_session(fx, fx.cwd_dir.string());
+    ASSERT_FALSE(sid.empty());
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto project_dir = acecode::SessionStorage::get_project_dir(entry->cwd);
+    auto attachment = acecode::save_attachment(project_dir, sid, "notes.txt", "text/plain", "abc");
+    ASSERT_TRUE(attachment);
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.uuid = "ordered-fork-user";
+    message.content = "before  after";
+    message.metadata["attachments"] = json::array({acecode::attachment_to_json(*attachment)});
+    message.metadata["composer_content"] = json{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "before "}},
+        json{{"type", "attachment"}, {"key", "local-1"}, {"id", attachment->id}, {"name", "notes.txt"}, {"kind", "file"}},
+        json{{"type", "text"}, {"text", " after"}}
+    })}};
+    entry->sm->on_message(message);
+    auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"at_message_id":"ordered-fork-user"})"});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    const auto body = json::parse(fork.text);
+    const auto target = body["session_id"].get<std::string>();
+    ASSERT_TRUE(body.contains("restored_composer_content"));
+    const auto content = body["restored_composer_content"];
+    const auto copied_id = content["parts"][1]["id"].get<std::string>();
+    EXPECT_NE(copied_id, attachment->id);
+    EXPECT_EQ(content["parts"][1]["key"], "local-1");
+    const auto copy = acecode::load_attachment(project_dir, target, copied_id);
+    ASSERT_TRUE(copy);
+    EXPECT_EQ(acecode::read_attachment_bytes(*copy), std::optional<std::string>{"abc"});
+    const auto blob = cpr::Get(cpr::Url{fx.url(copy->blob_url)});
+    ASSERT_EQ(blob.status_code, 200) << blob.text;
+    EXPECT_EQ(blob.text, "abc");
+    const auto draft = cpr::Get(cpr::Url{fx.url("/api/sessions/" + target + "/draft")});
+    ASSERT_EQ(draft.status_code, 200);
+    EXPECT_EQ(json::parse(draft.text)["composer_content"], content);
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + target + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "before  after"}, {"composer_content", content},
+            {"attachments", json::array({json{{"id", copied_id}}})}}.dump()});
+    EXPECT_EQ(sent.status_code, 202) << sent.text;
+}
+
+TEST(WebServerHttp, ComposerContentForkRetainsEarlierUploadsAfterSourceAttachmentRemoval) {
+    WebServerFixture fx;
+    const auto sid = create_workspace_session(fx, fx.cwd_dir.string());
+    ASSERT_FALSE(sid.empty());
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto project_dir = acecode::SessionStorage::get_project_dir(entry->cwd);
+    const auto attachment = acecode::save_attachment(project_dir, sid, "earlier.txt", "text/plain", "earlier bytes");
+    ASSERT_TRUE(attachment);
+    acecode::ChatMessage earlier;
+    earlier.role = "user";
+    earlier.uuid = "earlier-structured";
+    earlier.content = "review  please";
+    earlier.content_parts = json::array({
+        json{{"type", "text"}, {"text", earlier.content}},
+        json{{"type", "file"}, {"attachment", acecode::attachment_to_json(*attachment)}}
+    });
+    earlier.metadata["attachments"] = json::array({acecode::attachment_to_json(*attachment)});
+    earlier.metadata["composer_content"] = json{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "review "}},
+        json{{"type", "attachment"}, {"key", "earlier-key"}, {"id", attachment->id}, {"name", "earlier.txt"}, {"kind", "file"}},
+        json{{"type", "text"}, {"text", " please"}}
+    })}};
+    entry->sm->on_message(earlier);
+    append_message(entry.get(), "assistant", "reviewed", "earlier-answer");
+    append_message(entry.get(), "user", "later prompt", "later-user");
+    const auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"at_message_id":"later-user"})"});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    const auto target = json::parse(fork.text)["session_id"].get<std::string>();
+    const auto target_entry = fx.registry->acquire(target);
+    ASSERT_TRUE(target_entry);
+    const auto messages = target_entry->sm->load_active_messages();
+    ASSERT_EQ(messages.size(), 2u);
+    const auto content = messages[0].metadata["composer_content"];
+    const auto copied_id = content["parts"][1]["id"].get<std::string>();
+    EXPECT_NE(copied_id, attachment->id);
+    EXPECT_EQ(messages[0].metadata["attachments"][0]["session_id"], target);
+    EXPECT_EQ(messages[0].content_parts[1]["attachment"]["id"], copied_id);
+    EXPECT_EQ(entry->sm->load_active_messages()[0].metadata["composer_content"]["parts"][1]["id"], attachment->id);
+    // Remove only this fixture's generated source-session attachments.
+    std::filesystem::remove_all(path_from_utf8(project_dir) / "attachments" / sid);
+    const auto copy = acecode::load_attachment(project_dir, target, copied_id);
+    ASSERT_TRUE(copy);
+    const auto blob = cpr::Get(cpr::Url{fx.url(copy->blob_url)});
+    ASSERT_EQ(blob.status_code, 200) << blob.text;
+    EXPECT_EQ(blob.text, "earlier bytes");
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + target + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "review  please"}, {"composer_content", content},
+            {"attachments", json::array({json{{"id", copied_id}}})}}.dump()});
+    EXPECT_EQ(sent.status_code, 202) << sent.text;
 }
 
 // 场景(openspec add-security-center):安全中心的沙盒配置路由。GET 默认快照 →

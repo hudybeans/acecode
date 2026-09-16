@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { setTimeout as nextTask } from 'node:timers/promises';
 import { parseSync } from '@babel/core';
 import { forkRestoredPrompt } from './sessionFork.js';
+import { normalizeComposerContent, reconcileComposerContentAttachments } from './composerContent.js';
+import { composerDraftFingerprint } from './composerDraft.js';
 
 function run(name, fn) {
   try {
@@ -56,10 +59,14 @@ async function verifyForkDraftLifecycle(dirty, activateDestination = true) {
     pendingForkComposerRef: { current: null },
     preserveComposerInputOnSessionChangeRef: { current: false },
     composerDirtyRef: { current: dirty }, composerValueRef: { current: composer },
+    composerContentRef: { current: null }, composerAttachmentsRef: { current: [] },
     draftEditVersionRef: { current: 0 }, draftLastSavedRef: { current: {} },
+    draftSaveQueueRef: { current: new Map() },
     draftSessionKeyRef: { current: 'workspace:source' },
     setDraftReadyKey() {}, setComposerSubmitting() {},
     setComposerValue(text) { composer = text; },
+    restoreComposerDraft(draft) { composer = draft.text; },
+    normalizeComposerContent, reconcileComposerContentAttachments, composerDraftFingerprint,
     persistDraftValue: (sid, workspace, key, text) => saved.push({ sid, text }),
     forkRestoredPrompt, newSessionRefFrom: (ref, sid) => ({ ...ref, sessionId: sid }),
     onSessionPromoted() {}, notifySessionListChanged() {}, toast() {},
@@ -75,7 +82,7 @@ async function verifyForkDraftLifecycle(dirty, activateDestination = true) {
   cleanup();
   assert.deepEqual(saved, dirty ? [{ sid: 'source', text: 'source draft' }] : []);
   evaluate(loadNode)();
-  await Promise.resolve();
+  await nextTask();
   assert.equal(composer, activateDestination ? 'historical prompt' : 'other draft');
   assert.deepEqual(loaded, activateDestination ? [] : ['other']);
   assert.equal(context.pendingForkComposerRef.current, null);

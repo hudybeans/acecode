@@ -28,6 +28,9 @@ import { useSlashCommands } from './SlashCommandsContext.jsx';
 import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHistory } from '../lib/inputHistoryNavigation.js';
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
 import { isComposerImageAttachment } from '../lib/richComposerModel.js';
+import { composerDraftEditFingerprint } from '../lib/composerDraft.js';
+import { commandQueryAtCursor } from '../lib/slashCommands.js';
+import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
 import {
   captureComposerTextareaSelection,
   isComposerEditorFocused,
@@ -179,8 +182,9 @@ export const InputBar = forwardRef(function InputBar({
   disabled, submitting = false,
   placeholder = '输入消息或 / 命令…', onSubmit, onAbort, busy, goal = null,
   onGoalEdit, onGoalStatusChange, onGoalClear,
-  history = [], variant = 'default', attentionRequest = 0,
+  history = [], historyEntries = [], variant = 'default', attentionRequest = 0,
   value: controlledValue, onChange,
+  composerContent: controlledComposerContent, onComposerContentChange,
   attachments = EMPTY_COMPOSER_ATTACHMENTS, contexts = [], annotationPresentations = null,
   onMediaFiles, onRemoveAttachment, onRemoveContext,
   swarmMode = false, onSwarmModeChange,
@@ -202,6 +206,10 @@ export const InputBar = forwardRef(function InputBar({
   const { t } = useTranslation();
   const isControlled = controlledValue != null;
   const [internalValue, setInternalValue] = useState('');
+  const [internalContent, setInternalContent] = useState(null);
+  const composerContent = controlledComposerContent !== undefined ? controlledComposerContent : internalContent;
+  const contentRef = useRef(composerContent);
+  contentRef.current = composerContent;
   const value = isControlled ? String(controlledValue || '') : internalValue;
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -218,6 +226,10 @@ export const InputBar = forwardRef(function InputBar({
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const ta = useRef(null);
   const rootRef = useRef(null);
+  const removeAttachment = useCallback((key) => {
+    if (ta.current?.removeAttachment) ta.current.removeAttachment(key);
+    else onRemoveAttachment?.(key);
+  }, [onRemoveAttachment]);
   const attentionRingRef = useRef(null);
   const lastAttentionRequestRef = useRef(attentionRequest);
   const fileInputRef = useRef(null);
@@ -266,10 +278,12 @@ export const InputBar = forwardRef(function InputBar({
   const textareaBaseHeight = LINE_HEIGHT * 2 + textareaVerticalPadding;
   const textareaMaxHeight = LINE_HEIGHT * MAX_ROWS + textareaVerticalPadding;
   const attachmentItems = Array.isArray(attachments) ? attachments : EMPTY_COMPOSER_ATTACHMENTS;
-  const { imageAttachments, fileAttachments } = useMemo(() => ({
-    imageAttachments: attachmentItems.filter(isComposerImageAttachment),
-    fileAttachments: attachmentItems.filter((item) => !isComposerImageAttachment(item)),
-  }), [attachmentItems]);
+  const activeAttachmentItems = useMemo(() => (
+    normalizeComposerContent(composerContent)
+      ? composerContentAttachments(composerContent, attachmentItems)
+      : attachmentItems
+  ), [composerContent, attachmentItems]);
+  const imageAttachments = useMemo(() => activeAttachmentItems.filter(isComposerImageAttachment), [activeAttachmentItems]);
   const contextItems = Array.isArray(contexts) ? contexts : [];
   const recentExpertItems = Array.isArray(expertOptions) ? expertOptions.slice(0, 5) : [];
   const selectionContextItems = contextItems.filter((item) => item?.type === SELECTION_CONTEXT_TYPE);
@@ -277,7 +291,7 @@ export const InputBar = forwardRef(function InputBar({
   const otherContextItems = contextItems.filter((item) => (
     item?.type !== SELECTION_CONTEXT_TYPE && item?.type !== 'browser'
   ));
-  const hasExtras = attachmentItems.length > 0 || contextItems.length > 0;
+  const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0;
   const nativeContextPickerAvailable = hasNativeContextPicker();
   const nativeFilesystemMaterializerAvailable = hasNativeFilesystemMaterializer();
   const nativeFilesystemClipboardAvailable = hasNativeFilesystemClipboard();
@@ -313,12 +327,12 @@ export const InputBar = forwardRef(function InputBar({
         setAttachmentPreview({ src: match.context.url, alt: match.context.name });
       } else if (action === DESKTOP_CONTEXT_ACTIONS.REMOVE_ATTACHMENT) {
         detail.handled = true;
-        onRemoveAttachment?.(match.context.key);
+        removeAttachment(match.context.key);
       }
     };
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
-  }, [attachmentItems, onRemoveAttachment]);
+  }, [attachmentItems, removeAttachment]);
 
   const previewComposerAttachment = useCallback((item) => {
     const src = String(item?.url || item?.preview_url || item?.blob_url || '');
@@ -326,11 +340,19 @@ export const InputBar = forwardRef(function InputBar({
     setAttachmentPreview({ src, alt: String(item?.name || 'attachment') });
   }, []);
 
-  const updateValue = useCallback((next) => {
+  const updateValue = useCallback((next, content, replacementRange) => {
     const text = String(next || '');
+    const nextContent = content === undefined
+      ? (ta.current?.replaceTextPreservingReferences?.(text, replacementRange) || composerContentFromText(text))
+      : normalizeComposerContent(content);
+    if (valueRef.current === text && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
+    valueRef.current = text;
+    contentRef.current = nextContent;
     if (!isControlled) setInternalValue(text);
-    onChange?.(text);
-  }, [isControlled, onChange]);
+    if (controlledComposerContent === undefined) setInternalContent(nextContent);
+    onChange?.(text, nextContent);
+    onComposerContentChange?.(nextContent);
+  }, [isControlled, controlledComposerContent, onChange, onComposerContentChange]);
 
   const slashCtx = useSlashCommands();
   const commands = slashCtx?.commands || [];
@@ -435,8 +457,10 @@ export const InputBar = forwardRef(function InputBar({
   );
 
   // 触发条件:value 非空、首字符 /、整段无空白
-  const showDropdownRaw = value.length > 0 && value[0] === '/' && !/\s/.test(value);
-  const showDropdown = showDropdownRaw && !dropdownClosed && commands.length > 0;
+  const commandQuery = commandQueryAtCursor(value, composerSelection.end);
+  const commandItems = commandQuery?.leading ? commands : commands.filter((item) => item.kind === 'skill');
+  const showDropdownRaw = !!commandQuery;
+  const showDropdown = showDropdownRaw && !dropdownClosed && !composerComposing && commandItems.length > 0;
 
   // value 变化:首段不再是 / 时复位 dropdownClosed,允许下次重新出现
   useEffect(() => {
@@ -451,16 +475,25 @@ export const InputBar = forwardRef(function InputBar({
   }, [showDropdownRaw]);
 
   const handleSelectCommand = (item) => {
-    if (!item) return;
-    const next = '/' + item.name + ' ';
-    updateValue(next);
+    if (!item || !commandQuery) return;
+    let cursor;
+    if (item.kind === 'skill') {
+      const content = ta.current?.insertSkill?.(item, commandQuery.begin, commandQuery.end);
+      if (content) updateValue(composerContentText(content), content);
+      cursor = commandQuery.begin + String(item.mention || `$${item.name}`).length + 1;
+    } else {
+      if (!commandQuery.leading) return;
+      const next = '/' + item.name + ' ' + value.slice(commandQuery.end);
+      updateValue(next, undefined, commandQuery);
+      cursor = item.name.length + 2;
+    }
     setEditedSinceHistory(true);
     setDropdownClosed(true);
     requestAnimationFrame(() => {
       const el = ta.current;
       if (el) {
         el.focus();
-        el.setSelectionRange(next.length, next.length);
+        el.setSelectionRange(cursor, cursor);
       }
     });
   };
@@ -609,7 +642,7 @@ export const InputBar = forwardRef(function InputBar({
     });
     mentionGenerationRef.current += 1;
     setPathMention(null);
-    updateValue(replacement.text);
+    updateValue(replacement.text, undefined, { ...pathMention.token, plainText: enterDirectory });
     setEditedSinceHistory(true);
     restorePathCaret(replacement.cursor);
   }, [pathMention?.token, restorePathCaret, updateValue, value]);
@@ -619,7 +652,7 @@ export const InputBar = forwardRef(function InputBar({
     const replacement = replaceQueryWithSessionReference(value, pathMention.token, item);
     mentionGenerationRef.current += 1;
     setPathMention(null);
-    updateValue(replacement.text);
+    updateValue(replacement.text, undefined, pathMention.token);
     setEditedSinceHistory(true);
     restorePathCaret(replacement.cursor);
   }, [pathMention?.token, restorePathCaret, updateValue, value]);
@@ -631,6 +664,7 @@ export const InputBar = forwardRef(function InputBar({
     if (disabled || !onMediaFiles || fileList.length === 0) return false;
     setCapabilityOpen(false);
     requestComposerCaretRestore({ requestNativeFocus });
+    ta.current?.reserveAttachmentSelection?.();
     onMediaFiles(fileList);
     return true;
   }, [disabled, onMediaFiles, requestComposerCaretRestore]);
@@ -647,7 +681,7 @@ export const InputBar = forwardRef(function InputBar({
     if (insertion.text === currentValue) return false;
 
     valueRef.current = insertion.text;
-    updateValue(insertion.text);
+    updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
     setEditedSinceHistory(true);
     restorePathCaret(insertion.cursor);
     return true;
@@ -716,7 +750,7 @@ export const InputBar = forwardRef(function InputBar({
         const insertion = insertPathReferenceAtCaret(value, savedCursor, referencePath, {
           directory: true,
         });
-        updateValue(insertion.text);
+        updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
         setEditedSinceHistory(true);
         restorePathCaret(insertion.cursor);
         return;
@@ -856,8 +890,21 @@ export const InputBar = forwardRef(function InputBar({
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
+    getComposerContent: () => ta.current?.getComposerContent?.() || contentRef.current,
+    setComposerContent: (content, options) => {
+      const normalized = normalizeComposerContent(content) || composerContentFromText('');
+      ta.current?.setComposerContent?.(normalized, options);
+      updateValue(composerContentText(normalized), normalized);
+    },
+    replaceText: (text) => {
+      const content = composerContentFromText(text);
+      ta.current?.setComposerContent?.(content);
+      updateValue(text, content);
+    },
     clear: () => {
-      updateValue('');
+      const content = composerContentFromText('');
+      ta.current?.setComposerContent?.(content);
+      updateValue('', content);
       setHistPtr(-1);
       setEditedSinceHistory(false);
     },
@@ -865,7 +912,7 @@ export const InputBar = forwardRef(function InputBar({
       const insertion = insertPathReferenceAtCaret(value, composerSelection.end, path, {
         directory,
       });
-      updateValue(insertion.text);
+      updateValue(insertion.text, undefined, { begin: composerSelection.end, end: composerSelection.end });
       setEditedSinceHistory(true);
       restorePathCaret(insertion.cursor);
       return insertion;
@@ -874,7 +921,7 @@ export const InputBar = forwardRef(function InputBar({
       const insertion = insertPathReferenceAtCaret(value, composerSelection.end, relativePath, {
         directory: true,
       });
-      updateValue(insertion.text);
+      updateValue(insertion.text, undefined, { begin: composerSelection.end, end: composerSelection.end });
       setEditedSinceHistory(true);
       restorePathCaret(insertion.cursor);
       return insertion;
@@ -1072,13 +1119,27 @@ export const InputBar = forwardRef(function InputBar({
     };
   }, [capabilityOpen, closeExpertSubmenu, expertSubmenuOpen, restoreCapabilityMenuFocus]);
 
-  const handleComposerChange = (next) => {
-    // 编辑器的 onChange 回声(程序化设值同步 / 光标移动)文本与当前 value 相同,
-    // 不算用户编辑 —— 否则历史导航刚填入的文本会被误标为已编辑,上下键随即失效。
-    if (!isUserComposerEdit({ nextValue: next, currentValue: value })) return;
-    updateValue(next);
-    setEditedSinceHistory(next.length > 0);
+  const handleComposerChange = (next, content) => {
+    const textChanged = isUserComposerEdit({ nextValue: next, currentValue: valueRef.current });
+    const contentChanged = composerContentSignature(content) !== composerContentSignature(contentRef.current);
+    if (!textChanged && !contentChanged) return;
+    const edited = composerDraftEditFingerprint(next, content)
+      !== composerDraftEditFingerprint(valueRef.current, contentRef.current);
+    if (edited) {
+      // A picker/drag focus request belongs to the old draft selection. Once
+      // editing resumes, a later upload/layout update must not replay it.
+      caretRestoreUntilRef.current = 0;
+      caretRestoreSelectionRef.current = null;
+      clearCaretRestoreSchedule();
+    }
+    updateValue(next, content);
+    if (edited) setEditedSinceHistory(next.length > 0 || !!content?.parts?.length);
   };
+
+  const handleComposerSelection = useCallback((selection) => {
+    setComposerSelection(selection);
+    if (caretRestoreUntilRef.current) caretRestoreSelectionRef.current = selection;
+  }, []);
 
   const onKey = (e) => {
     // 下拉打开时,Enter / Tab / Esc / 方向键 由 SlashDropdown 在捕获阶段处理。
@@ -1102,10 +1163,12 @@ export const InputBar = forwardRef(function InputBar({
       });
       if (next === -1) {
         setHistPtr(-1);
-        updateValue('');
+        updateValue('', composerContentFromText(''));
       } else {
         setHistPtr(next);
-        updateValue(history[next] || '');
+        const entry = historyEntries[next];
+        const content = normalizeComposerContent(entry?.composer_content || entry) || composerContentFromText(history[next] || '');
+        updateValue(composerContentText(content), content);
       }
       setEditedSinceHistory(false);
       return;
@@ -1387,8 +1450,8 @@ export const InputBar = forwardRef(function InputBar({
         )}
         {showDropdown && !activePathDropdown && (
           <SlashDropdown
-            items={commands}
-            query={value.slice(1)}
+            items={commandItems}
+            query={commandQuery?.query || ''}
             onSelect={handleSelectCommand}
             onClose={() => setDropdownClosed(true)}
           />
@@ -1450,7 +1513,7 @@ export const InputBar = forwardRef(function InputBar({
                     className="absolute right-[5px] top-[5px] w-[17px] h-[17px] rounded-full bg-black/75 hover:bg-black/85 text-white flex items-center justify-center"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onRemoveAttachment?.(context.key);
+                      removeAttachment(context.key);
                     }}
                     aria-label="移除附件"
                   >
@@ -1503,16 +1566,17 @@ export const InputBar = forwardRef(function InputBar({
             value={value}
             syncKey={currentSessionId}
             commands={commands}
-            attachments={fileAttachments}
+            composerContent={composerContent}
+            attachments={attachmentItems}
             onChange={handleComposerChange}
             onKeyDown={onKey}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}
-            onSelectionChange={setComposerSelection}
+            onSelectionChange={handleComposerSelection}
             isComposingKeyEvent={isComposingKeyEvent}
             onSubmit={submit}
             onPreviewAttachment={previewComposerAttachment}
-            onRemoveAttachment={onRemoveAttachment}
+            onRemoveAttachment={removeAttachment}
             onPasteFiles={addMediaFiles}
             onPasteFilesystemItems={
               nativeFilesystemClipboardAvailable || nativeFilesystemMaterializerAvailable

@@ -311,3 +311,27 @@ TEST(SessionManagerResume, InputDraftSurvivesMetadataRewrite) {
     fs::remove_all(project_dir);
     fs::remove_all(cwd);
 }
+
+TEST(SessionManagerResume, ComposerDraftSurvivesResumeAndMetadataRewriteThenLegacyClear) {
+    auto cwd = make_temp_cwd("composer_draft");
+    const auto project_dir = SessionStorage::get_project_dir(cwd.string());
+    const auto content = nlohmann::json::parse(R"({"version":1,"parts":[
+        {"type":"text","text":"use "},{"type":"skill","name":"review","token":"$review"}
+    ]})");
+    SessionManager sm;
+    sm.start_session(cwd.string(), "test-provider", "test-model");
+    sm.set_input_draft("use $review", content);
+    const auto sid = sm.current_session_id();
+    sm.on_message(message("user", "earlier"));
+    auto meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, sid));
+    EXPECT_EQ(meta.input_draft_content, content);
+    sm.resume_session(sid);
+    EXPECT_EQ(sm.current_input_draft_content(), content);
+    EXPECT_EQ(sm.current_input_draft(), "use $review");
+    sm.set_input_draft("");
+    meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, sid));
+    EXPECT_TRUE(meta.input_draft_content.is_null());
+    EXPECT_TRUE(sm.current_input_draft_content().is_null());
+    fs::remove_all(project_dir);
+    fs::remove_all(cwd);
+}

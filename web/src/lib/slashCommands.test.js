@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { applyLocalePreference } from '../i18n/index.js';
 import {
   rankCommands,
+  commandQueryAtCursor,
   flattenCommands,
   commandsWithFallback,
   fallbackCommands,
@@ -561,5 +562,32 @@ await runAsync('已知 builtin 元数据随语言切换，未知后端文案保�
     assert.equal(slashCommandKindPresentation(items[0]).label, 'Built-in tool');
   } finally {
     await applyLocalePreference('zh-CN', { cache: false, effectiveLocale: 'zh-CN' });
+  }
+});
+
+run('skill queries follow the caret in prose while builtin commands remain leading-only', () => {
+  assert.deepEqual(commandQueryAtCursor('Please /rev then continue', 11), {
+    begin: 7, end: 11, query: 'rev', leading: false, trigger: '/',
+  });
+  assert.equal(commandQueryAtCursor('/compact ', 8).leading, true);
+  assert.equal(commandQueryAtCursor('Use $review ', 11).leading, false);
+  assert.equal(commandQueryAtCursor('src/path', 8), null);
+  assert.equal(commandQueryAtCursor('plain text ', 11), null);
+});
+
+run('skill command catalog retains canonical explicit mention identity', () => {
+  const commands = flattenCommands({ skills: [{ name: 'review', path: '/skills/review/SKILL.md', mention: '$review' }] });
+  assert.equal(commands[0].path, '/skills/review/SKILL.md');
+  assert.equal(commands[0].mention, '$review');
+});
+
+run('Chinese prose and punctuation bound inline skill queries without consuming following prose', () => {
+  assert.deepEqual(commandQueryAtCursor('请用/rev检查这个文件', 6), {
+    begin: 2, end: 6, query: 'rev', leading: false, trigger: '/',
+  });
+  assert.equal(commandQueryAtCursor('使用（$review）', 10).end, 10);
+  assert.equal(commandQueryAtCursor('请用/review检查', 6).end, 9);
+  for (const text of ['https://host/review', 'src/review', 'C:/review', 'foo$review']) {
+    assert.equal(commandQueryAtCursor(text, text.length), null);
   }
 });

@@ -3,6 +3,8 @@
 #include "../session_reference_context.hpp"
 #include "../trajectory_legacy_projection.hpp"
 #include "../../session/compact_checkpoint.hpp"
+#include "../../session/composer_content.hpp"
+#include "../../session/fork_attachment_context.hpp"
 #include "../../session/global_session_catalog.hpp"
 #include "../../session/session_rewind.hpp"
 #include "../../session/session_trajectory.hpp"
@@ -11,6 +13,8 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace acecode::web {
 
@@ -178,6 +182,8 @@ WebServer::Impl::parse_session_user_input_request(
     std::string client_message_id;
     json attachment_refs = json::array();
     json contexts = json::array();
+    json composer_content;
+    std::string composer_text;
     std::vector<SessionReferenceDescriptor> session_references;
     bool swarm_mode = false;
 
@@ -205,6 +211,18 @@ WebServer::Impl::parse_session_user_input_request(
                 return result;
             }
             session_references = std::move(parsed_references.references);
+        }
+        if (payload.contains("composer_content")) {
+            auto normalized = normalize_composer_content(payload["composer_content"]);
+            if (!normalized.ok) {
+                result.error = normalized.error;
+                return result;
+            }
+            composer_content = std::move(normalized.content);
+            composer_text = std::move(normalized.text);
+            // Session-reference tokens have a separately normalized display
+            // string. Preserve that compatibility projection when supplied.
+            if (session_references.empty() || !payload.contains("text")) text = composer_text;
         }
         if (payload.contains("swarm_mode")) {
             if (!payload["swarm_mode"].is_boolean()) {
@@ -441,6 +459,7 @@ WebServer::Impl::parse_session_user_input_request(
     if (swarm_mode) {
         result.input.metadata["swarm_mode"] = true;
     }
+    json verified_attachment_records = json::array();
     if (session_references_expanded) {
         result.input.metadata["session_references"] =
             session_reference_context.meta;
@@ -493,6 +512,7 @@ WebServer::Impl::parse_session_user_input_request(
 
             json metadata = attachment_to_json(*record);
             attachment_meta.push_back(metadata);
+            verified_attachment_records.push_back(metadata);
             if (auto source_path = attachment_source_path(*record)) {
                 parts.push_back(json{
                     {"type", "text"},
@@ -544,6 +564,11 @@ WebServer::Impl::parse_session_user_input_request(
         }
     }
 
+    if (!composer_content.is_null()) {
+        if (!resolve_composer_content_attachments(
+                composer_content, verified_attachment_records, result.error)) return result;
+        result.input.metadata["composer_content"] = std::move(composer_content);
+    }
     result.ok = true;
     result.status = 200;
     return result;
@@ -2373,9 +2398,48 @@ void WebServer::Impl::register_sessions() {
             // 由前端回填输入框待用户修改后重发。
             const std::string target_role = messages[*idx].role;
             std::string restored_prompt;
+            json restored_composer_content;
+            std::vector<AttachmentRecord> restored_attachment_sources;
             std::vector<ChatMessage> retained;
             if (target_role == "user") {
                 restored_prompt = fork_restored_prompt_text(messages[*idx]);
+                const auto& metadata = messages[*idx].metadata;
+                if (metadata.is_object() && metadata.contains("composer_content")) {
+                    auto normalized = normalize_composer_content(metadata["composer_content"]);
+                    if (!normalized.ok) {
+                        crow::response r(400);
+                        r.body = json{{"error", normalized.error}}.dump();
+                        r.add_header("Content-Type", "application/json");
+                        return with_cors(req, std::move(r));
+                    }
+                    restored_composer_content = std::move(normalized.content);
+                    // Validate source records before creating the target session.
+                    std::unordered_set<std::string> seen;
+                    const auto project_dir = SessionStorage::get_project_dir(entry->cwd);
+                    for (const auto& part : restored_composer_content["parts"]) {
+                        if (part.value("type", std::string{}) != "attachment") continue;
+                        const auto attachment_id = part.value("id", std::string{});
+                        if (!seen.insert(attachment_id).second) continue;
+                        std::string source_session = id;
+                        if (metadata.contains("attachments") && metadata["attachments"].is_array()) {
+                            for (const auto& record : metadata["attachments"]) {
+                                if (record.is_object() && record.value("id", std::string{}) == attachment_id) {
+                                    source_session = record.value("session_id", id);
+                                    break;
+                                }
+                            }
+                        }
+                        std::string error;
+                        auto record = load_attachment(project_dir, source_session, attachment_id, &error);
+                        if (!record) {
+                            crow::response r(400);
+                            r.body = json{{"error", "fork attachment unavailable: " + error}}.dump();
+                            r.add_header("Content-Type", "application/json");
+                            return with_cors(req, std::move(r));
+                        }
+                        restored_attachment_sources.push_back(std::move(*record));
+                    }
+                }
                 const auto anchor = resolve_fork_anchor_index(messages, *idx);
                 retained = anchor.has_value()
                     ? retained_prefix_before_index(messages, *anchor + 1)
@@ -2416,6 +2480,38 @@ void WebServer::Impl::register_sessions() {
 
             // 把新 session 装进 registry — 走 resume 路径(磁盘 → 内存)。
             // resume 不会自动启动 turn,符合 spec "不自动启动 turn"。
+            json restored_attachments = json::array();
+            if (restored_composer_content.is_object()) {
+                std::unordered_map<std::string, std::string> attachment_ids;
+                std::string error;
+                for (const auto& source : restored_attachment_sources) {
+                    const auto copied = copy_attachment_to_session(project_dir, new_id, source, error);
+                    if (!copied) {
+                        crow::response r(500);
+                        r.body = json{{"error", "fork attachment copy failed: " + error}}.dump();
+                        r.add_header("Content-Type", "application/json");
+                        return with_cors(req, std::move(r));
+                    }
+                    attachment_ids.emplace(source.id, copied->id);
+                    restored_attachments.push_back(attachment_to_json(*copied));
+                }
+                for (auto& part : restored_composer_content["parts"]) {
+                    if (part.value("type", std::string{}) == "attachment") {
+                        part["id"] = attachment_ids.at(part.value("id", std::string{}));
+                    }
+                }
+                if (!resolve_composer_content_attachments(restored_composer_content, restored_attachments, error)) {
+                    crow::response r(500);
+                    r.body = json{{"error", error}}.dump();
+                    r.add_header("Content-Type", "application/json");
+                    return with_cors(req, std::move(r));
+                }
+                auto draft_meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, new_id));
+                draft_meta.input_draft = restored_prompt;
+                draft_meta.input_draft_content = restored_composer_content;
+                SessionStorage::write_meta(SessionStorage::meta_path(project_dir, new_id), draft_meta);
+            }
+
             SessionOptions resume_opts;
             resume_opts.cwd = entry->cwd;
             resume_opts.no_workspace = entry->no_workspace;
@@ -2431,6 +2527,10 @@ void WebServer::Impl::register_sessions() {
             resp["forked_from"]     = id;
             resp["fork_message_id"] = at_message_id;
             resp["fork_anchor_role"] = target_role;
+            if (restored_composer_content.is_object()) {
+                resp["restored_composer_content"] = restored_composer_content;
+                resp["restored_attachments"] = restored_attachments;
+            }
             if (!restored_prompt.empty()) {
                 resp["restored_prompt"] = restored_prompt;
             }

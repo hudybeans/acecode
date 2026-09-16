@@ -80,8 +80,22 @@ ToolMentions extract_tool_mentions(const std::string& text) {
                 }
                 if (path_start < text.size() && bytes[path_start] == '(') {
                     std::size_t path_end = path_start + 1;
-                    while (path_end < text.size() && bytes[path_end] != ')') {
-                        ++path_end;
+                    while (path_end < text.size() && std::isspace(bytes[path_end])) ++path_end;
+                    const bool angle_path = path_end < text.size() && bytes[path_end] == '<';
+                    if (angle_path) {
+                        while (path_end < text.size() && bytes[path_end] != '>') ++path_end;
+                        if (path_end < text.size()) ++path_end;
+                        while (path_end < text.size() && std::isspace(bytes[path_end])) ++path_end;
+                        if (path_end < text.size() && bytes[path_end] != ')') path_end = text.size();
+                    } else {
+                        // Keep ordinary linked paths compatible, including
+                        // balanced parentheses in existing folder names.
+                        std::size_t depth = 1;
+                        while (path_end < text.size()) {
+                            if (bytes[path_end] == '(') ++depth;
+                            if (bytes[path_end] == ')' && --depth == 0) break;
+                            ++path_end;
+                        }
                     }
                     if (path_end < text.size()) {
                         std::size_t value_start = path_start + 1;
@@ -92,6 +106,11 @@ ToolMentions extract_tool_mentions(const std::string& text) {
                         }
                         while (value_end > value_start &&
                                std::isspace(bytes[value_end - 1])) {
+                            --value_end;
+                        }
+                        if (angle_path && value_end > value_start + 1 &&
+                            bytes[value_start] == '<' && bytes[value_end - 1] == '>') {
+                            ++value_start;
                             --value_end;
                         }
                         const std::string name =
@@ -224,8 +243,10 @@ std::string build_skill_invocation_hint(const SkillMetadata& meta,
     const std::string mention_name = is_valid_mention_name(meta.name)
         ? meta.name
         : meta.command_key;
-    std::string prompt = "[$" + mention_name + "](" +
-        path_to_utf8_generic(meta.skill_md_path) + ")";
+    const std::string path = path_to_utf8_generic(meta.skill_md_path);
+    const std::string destination = path.find_first_of("()") == std::string::npos
+        ? path : "<" + path + ">";
+    std::string prompt = "[$" + mention_name + "](" + destination + ")";
     const std::string trimmed_args = strip_ascii_whitespace(args);
     if (!trimmed_args.empty()) prompt += "\n\n" + trimmed_args;
     return prompt;

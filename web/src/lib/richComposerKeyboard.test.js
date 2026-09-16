@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { parseSync, traverse } from '@babel/core';
 import { createEditor, Editor, Range, Transforms } from 'slate';
+import { HistoryEditor, withHistory } from 'slate-history';
+import * as contentModel from './composerContent.js';
+import { composerDraftEditFingerprint } from './composerDraft.js';
+import { isUserComposerEdit } from './inputHistoryNavigation.js';
 import * as composerModel from './richComposerModel.js';
 import { formatSessionReferenceToken } from './sessionReference.js';
 
@@ -47,8 +51,8 @@ function fixture({ kind = 'path', key = 'Backspace', selected = false } = {}) {
     submissions: 0,
     removed: [],
   };
-  const context = vm.createContext({ ...composerModel, Editor, Range, Transforms });
-  const editor = loadFunction('withComposerInlineTags', context)(createEditor());
+  const context = vm.createContext({ ...composerModel, ...contentModel, Editor, Range, Transforms, HistoryEditor, COMPOSER_CLIPBOARD_TYPE: 'application/x-acecode-composer-content' });
+  const editor = withHistory(loadFunction('withComposerInlineTags', context)(createEditor()));
   editor.children = composerModel.composerDocumentFromText(tokens[kind], commands, attachments);
   const offset = key === 'Delete' ? 0 : tokens[kind].length;
   editor.selection = composerModel.composerSelectionFromPlainTextRange(editor.children, offset, offset);
@@ -61,6 +65,7 @@ function fixture({ kind = 'path', key = 'Backspace', selected = false } = {}) {
   Object.assign(context, {
     editor,
     disabled: false,
+    submitOnEnter: true,
     compositionStateRef: { current: state },
     isComposingKeyEvent: () => state.parentComposing,
     ReactEditor: { isComposing: () => state.slateComposing },
@@ -69,6 +74,7 @@ function fixture({ kind = 'path', key = 'Backspace', selected = false } = {}) {
     onSubmit: () => { state.submissions += 1; },
     onRemoveAttachment: (attachmentKey) => state.removed.push(attachmentKey),
     deleteAdjacentTag: loadFunction('deleteAdjacentTag', context),
+    removeAttachmentReference: loadFunction('removeAttachmentReference', context),
     deleteSelectedPlainText: loadFunction('deleteSelectedPlainText', context),
   });
   const handleKeyDown = loadFunction('handleKeyDown', context);
@@ -124,7 +130,9 @@ for (const kind of ['path', 'command', 'session', 'attachment']) {
       test.handleKeyDown(test.event);
       assert.equal(test.event.defaultPrevented, true);
       if (kind === 'attachment') {
-        assert.deepEqual(test.state.removed, ['file-1']);
+        assert.equal(composerModel.composerContentFromDocument(test.editor.children).parts.some((part) => part.type === 'attachment'), false);
+        HistoryEditor.undo(test.editor);
+        assert.equal(composerModel.composerContentFromDocument(test.editor.children).parts.some((part) => part.type === 'attachment'), true);
       } else {
         assert.equal(composerModel.composerTextFromDocument(test.editor.children), '');
         assert.equal(test.editor.children.some((paragraph) => paragraph.children.some(composerModel.isComposerInlineTag)), false);
@@ -199,4 +207,215 @@ run('IME Enter is protected while normal Enter and desktop line breaks retain th
   assert.equal(test.handleKeyDown(test.event), undefined);
   assert.equal(test.event.defaultPrevented, false);
   assert.equal(test.state.submissions, 0);
+});
+
+function orderedFixture() {
+  const test = fixture();
+  const content = { version: 1, parts: [
+    { type: 'text', text: 'Review ' },
+    { type: 'skill', name: 'review', token: '$review' },
+    { type: 'text', text: ' with ' },
+    { type: 'attachment', key: 'local-file', id: 'att-file', name: 'notes.md', kind: 'file' },
+    { type: 'text', text: ' then compare ' },
+    { type: 'path', path: 'src/main.cpp', token: '@src/main.cpp', directory: false },
+  ] };
+  test.editor.children = composerModel.composerDocumentFromContent(content);
+  test.editor.selection = Editor.range(test.editor, []);
+  test.editor.history.undos = [];
+  test.editor.history.redos = [];
+  test.content = content;
+  test.resources = [{ local_id: 'local-file', id: 'att-file', name: 'notes.md', kind: 'file' }];
+  test.context.currentPlainSelection = loadFunction('currentPlainSelection', test.context);
+  return test;
+}
+
+run('mixed text/skill/file selection deletes atomically and undo restores exact reference order', () => {
+  const test = orderedFixture();
+  loadFunction('deleteSelectedPlainText', test.context)(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children).parts, []);
+  HistoryEditor.undo(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), test.content);
+});
+
+run('copy/paste preserves mixed references while external text retains readable filenames', () => {
+  const test = orderedFixture();
+  const formats = new Map();
+  const event = { clipboardData: { setData: (type, value) => formats.set(type, value) }, preventDefault() {} };
+  assert.equal(loadFunction('writeSelectedPlainText', test.context)(event, test.editor), true);
+  assert.equal(formats.get('text/plain'), 'Review $review with [notes.md] then compare @src/main.cpp');
+  const copied = JSON.parse(formats.get('application/x-acecode-composer-content'));
+  assert.deepEqual(copied, test.content);
+  test.editor.children = composerModel.composerDocumentFromText('');
+  test.editor.selection = Editor.range(test.editor, []);
+  assert.equal(loadFunction('insertComposerContent', test.context)(test.editor, copied, [], test.resources), true);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), test.content);
+});
+
+run('clipboard references from a different resource registry use the safe plain-text fallback', () => {
+  const test = orderedFixture();
+  const before = JSON.stringify(test.editor.children);
+  assert.equal(loadFunction('insertComposerContent', test.context)(test.editor, test.content, [], []), false);
+  assert.equal(JSON.stringify(test.editor.children), before);
+});
+
+run('programmatic file/path insertion preserves existing skill and attachment positions', () => {
+  const test = orderedFixture();
+  const previous = composerModel.composerTextFromDocument(test.editor.children);
+  const next = 'Please ' + previous;
+  const changed = loadFunction('replaceComposerTextPreservingReferences', test.context)(test.editor, next, []);
+  assert.equal(contentModel.composerContentText(changed), next);
+  assert.deepEqual(changed.parts.filter((part) => part.type !== 'text'), test.content.parts.filter((part) => part.type !== 'text'));
+  HistoryEditor.undo(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), test.content);
+});
+
+for (const completion of [
+  { query: '@', token: formatSessionReferenceToken({ id: 'referenced-task', title: 'Referenced task' }, { trailingSpace: false }), type: composerModel.COMPOSER_SESSION_TAG },
+  { query: '@src/m', token: '@src/main.cpp', type: composerModel.COMPOSER_PATH_TAG },
+  { query: '@docs/', token: '@"docs/my notes.md"', type: composerModel.COMPOSER_PATH_TAG },
+]) {
+  run(`mention completion replaces the entire ${completion.query} query with an atomic reference`, () => {
+    const test = orderedFixture();
+    const original = { ...test.content, parts: [
+      ...test.content.parts.slice(0, 4),
+      { type: 'text', text: ` before ${completion.query} after` },
+    ] };
+    test.editor.children = composerModel.composerDocumentFromContent(original);
+    const previous = composerModel.composerTextFromDocument(test.editor.children);
+    const begin = previous.indexOf(completion.query);
+    const end = begin + completion.query.length;
+    Transforms.select(test.editor, composerModel.composerSelectionFromPlainTextRange(test.editor.children, end, end));
+    const next = previous.slice(0, begin) + completion.token + ' ' + previous.slice(end);
+    const changed = loadFunction('replaceComposerTextPreservingReferences', test.context)(test.editor, next, [], { begin, end });
+    assert.equal(contentModel.composerContentText(changed), next);
+    assert.ok(test.editor.children[0].children.some((node) => node.type === completion.type && node.token === completion.token));
+    assert.deepEqual(changed.parts.filter((part) => part.type === 'attachment'), original.parts.filter((part) => part.type === 'attachment'));
+    assert.deepEqual(changed.parts.filter((part) => part.type === 'skill'), original.parts.filter((part) => part.type === 'skill'));
+    HistoryEditor.undo(test.editor);
+    assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), original);
+  });
+}
+
+run('completing a query between two adjacent file occurrences preserves both and undo', () => {
+  const test = orderedFixture();
+  const file = test.content.parts.find((part) => part.type === 'attachment');
+  const original = { version: 1, parts: [{ type: 'text', text: 'before ' }, file, { type: 'text', text: '@' }, file, { type: 'text', text: ' after' }] };
+  test.editor.children = composerModel.composerDocumentFromContent(original);
+  const next = 'before @src/main.cpp  after';
+  const changed = loadFunction('replaceComposerTextPreservingReferences', test.context)(test.editor, next, [], { begin: 7, end: 8 });
+  assert.equal(changed.parts.filter((part) => part.type === 'attachment').length, 2);
+  assert.equal(contentModel.composerContentText(changed), next);
+  HistoryEditor.undo(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), original);
+});
+
+run('inserting a new path before an existing path retains both complete references', () => {
+  const test = orderedFixture();
+  test.editor.children = composerModel.composerDocumentFromText('@old.js ');
+  Transforms.select(test.editor, Editor.start(test.editor, []));
+  const changed = loadFunction('replaceComposerTextPreservingReferences', test.context)(test.editor, '@new.js @old.js ', [], { begin: 0, end: 0 });
+  assert.equal(contentModel.composerContentText(changed), '@new.js @old.js ');
+  assert.deepEqual(changed.parts.filter((part) => part.type === 'path').map((part) => part.path), ['new.js', 'old.js']);
+  HistoryEditor.undo(test.editor);
+  assert.equal(composerModel.composerTextFromDocument(test.editor.children), '@old.js ');
+});
+
+for (const directory of ['@src/', '@"my docs/"']) run('entering a directory keeps the next path query editable instead of committing a tag', () => {
+  const test = orderedFixture();
+  test.editor.children = composerModel.composerDocumentFromContent({ version: 1, parts: [{ type: 'text', text: 'before @sr after' }] });
+  const changed = loadFunction('replaceComposerTextPreservingReferences', test.context)(test.editor, `before ${directory} after`, [], { begin: 7, end: 10, plainText: true });
+  assert.equal(contentModel.composerContentText(changed), `before ${directory} after`);
+  assert.equal(changed.parts.some((part) => part.type === 'path'), false);
+});
+
+run('queue editor lets Enter reach Slate when submitOnEnter is disabled', () => {
+  const test = fixture({ key: 'Enter' });
+  test.context.submitOnEnter = false;
+  test.handleKeyDown(test.event);
+  assert.equal(test.state.submissions, 0);
+  assert.equal(test.event.defaultPrevented, false);
+});
+
+run('repeated attachment references paste twice and Backspace removes only the selected occurrence', () => {
+  const test = orderedFixture();
+  const one = { version: 1, parts: [test.content.parts.find((part) => part.type === 'attachment')] };
+  test.editor.children = composerModel.composerDocumentFromText('');
+  test.editor.selection = Editor.range(test.editor, []);
+  const insert = loadFunction('insertComposerContent', test.context);
+  assert.equal(insert(test.editor, one, [], test.resources), true);
+  assert.equal(insert(test.editor, one, [], test.resources), true);
+  assert.equal(composerModel.composerContentFromDocument(test.editor.children).parts.length, 2);
+  const before = composerModel.composerContentFromDocument(test.editor.children);
+  Transforms.select(test.editor, Editor.end(test.editor, []));
+  const path = composerModel.composerAdjacentAttachmentPath(test.editor.children, test.editor.selection, 'backward');
+  assert.ok(path);
+  loadFunction('removeAttachmentReference', test.context)(test.editor, null, path);
+  assert.equal(composerModel.composerContentFromDocument(test.editor.children).parts.length, 1);
+  HistoryEditor.undo(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), before);
+});
+
+const inputBarSource = fs.readFileSync(new URL('../components/InputBar.jsx', import.meta.url), 'utf8');
+const inputBarAst = parseSync(inputBarSource, { configFile: false, babelrc: false, parserOpts: { plugins: ['jsx'] } });
+let inputChangeSource = '';
+traverse(inputBarAst, {
+  VariableDeclarator({ node }) {
+    if (node.id.name === 'handleComposerChange') inputChangeSource = inputBarSource.slice(node.init.start, node.init.end);
+  },
+});
+
+run('resuming edits cancels an earlier picker caret restore before upload completion', () => {
+  const test = orderedFixture();
+  const oldText = contentModel.composerContentText(test.content);
+  const state = { cleared: false, edited: false, updated: null };
+  const context = vm.createContext({
+    ...contentModel, composerDraftEditFingerprint, isUserComposerEdit,
+    valueRef: { current: oldText }, contentRef: { current: test.content },
+    caretRestoreUntilRef: { current: 999999 }, caretRestoreSelectionRef: { current: { start: 1, end: 1 } },
+    clearCaretRestoreSchedule: () => { state.cleared = true; },
+    updateValue: (text, content) => { state.updated = { text, content }; },
+    setEditedSinceHistory: (value) => { state.edited = value; },
+  });
+  const handler = vm.runInContext(`(${inputChangeSource})`, context);
+  const edited = { ...test.content, parts: [{ type: 'text', text: 'Typed ' }, ...test.content.parts] };
+  handler(contentModel.composerContentText(edited), edited);
+  assert.equal(context.caretRestoreUntilRef.current, 0);
+  assert.equal(context.caretRestoreSelectionRef.current, null);
+  assert.equal(state.cleared, true);
+  assert.equal(state.edited, true);
+});
+
+run('legacy path tokenization and upload metadata echoes preserve input history navigation', () => {
+  const source = { version: 1, parts: [{ type: 'text', text: '@src/main.cpp' }] };
+  const tokenized = composerModel.composerContentFromDocument(composerModel.composerDocumentFromText('@src/main.cpp'));
+  const state = { edits: 0, updates: 0 };
+  const context = vm.createContext({
+    ...contentModel, composerDraftEditFingerprint, isUserComposerEdit,
+    valueRef: { current: '@src/main.cpp' }, contentRef: { current: source },
+    caretRestoreUntilRef: { current: 100 }, caretRestoreSelectionRef: { current: { start: 1, end: 1 } },
+    clearCaretRestoreSchedule: () => { throw new Error('semantic echo must not clear caret state'); },
+    updateValue: () => { state.updates += 1; },
+    setEditedSinceHistory: () => { state.edits += 1; },
+  });
+  vm.runInContext(`(${inputChangeSource})`, context)('@src/main.cpp', tokenized);
+  assert.equal(state.updates, 1);
+  assert.equal(state.edits, 0);
+});
+
+run('deleting a skill beside a zero-text file preserves that adjacent file occurrence', () => {
+  const test = orderedFixture();
+  const skill = test.content.parts.find((part) => part.type === 'skill');
+  const attachment = test.content.parts.find((part) => part.type === 'attachment');
+  const content = { version: 1, parts: [skill, attachment] };
+  test.editor.children = composerModel.composerDocumentFromContent(content);
+  const children = test.editor.children[0].children;
+  const index = children.findIndex(composerModel.isComposerSkillTag);
+  test.editor.selection = {
+    anchor: { path: [0, index + 1], offset: 0 },
+    focus: { path: [0, index + 1], offset: 0 },
+  };
+  assert.equal(loadFunction('deleteAdjacentTag', test.context)(test.editor, 'backward'), true);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children).parts, [attachment]);
+  HistoryEditor.undo(test.editor);
+  assert.deepEqual(composerModel.composerContentFromDocument(test.editor.children), content);
 });

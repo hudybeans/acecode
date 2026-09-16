@@ -36,7 +36,7 @@ run('composer runtime depends on Slate and no longer depends on Lexical', () => 
   assert.doesNotMatch(composer, /lexical/i);
 });
 
-run('command, path, session, and attachment tags are Slate inline void elements with fixed order', () => {
+run('command, skill, path, session, and attachment tags use Slate inline void elements', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /editor\.isInline = \(element\) => \(\s+isComposerInlineTag\(element\) \? true : isInline\(element\)/s);
   assert.match(composer, /editor\.isVoid = \(element\) => \(\s+isComposerInlineTag\(element\) \? true : isVoid\(element\)/s);
@@ -127,9 +127,11 @@ run('slash candidate confirmation commits the command with a trailing space and 
   const handler = inputBar.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(handler, /const next = '\/' \+ item\.name \+ ' ';/);
-  assert.match(handler, /updateValue\(next\)/);
-  assert.match(handler, /setSelectionRange\(next\.length, next\.length\)/);
+  assert.match(handler, /if \(!commandQuery\.leading\) return/);
+  assert.match(handler, /insertSkill\?\.\(item, commandQuery\.begin, commandQuery\.end\)/);
+  assert.match(handler, /value\.slice\(commandQuery\.end\)/);
+  assert.match(handler, /updateValue\(next, undefined, commandQuery\)/);
+  assert.match(handler, /setSelectionRange\(cursor, cursor\)/);
 });
 
 run('composer external sync is composition-safe, generation-aware, and semantic', () => {
@@ -158,7 +160,7 @@ run('composer external sync is composition-safe, generation-aware, and semantic'
   assert.match(syncEffect, /classifyComposerExternalSync\(\{/);
   assert.match(
     syncEffect,
-    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*commandSignature,\s*editor,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
+    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*commandSignature,\s*editor,\s*externalSignature,\s*hasExternalContent,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
   );
   assert.doesNotMatch(syncEffect, /\[attachmentSignature, attachments/);
   assert.doesNotMatch(syncEffect, /commandSignature, commands/);
@@ -182,28 +184,23 @@ run('composer document replacement never removes the last root before inserting 
   assert.match(replacement, /return replaced/);
 });
 
-run('ordinary files render inside Slate while images use linked previews outside the editor', () => {
+run('attachment registry feeds Slate while active references determine image previews and send gating', () => {
   const inputBar = source('components/InputBar.jsx');
   const composer = source('components/RichComposer.jsx');
   const imagePreviewIndex = inputBar.indexOf('data-composer-image-preview="true"');
   const editorIndex = inputBar.indexOf('<RichComposer');
   const footerIndex = inputBar.indexOf('<ComposerSessionControls', editorIndex);
-
-  assert.ok(imagePreviewIndex >= 0);
-  assert.ok(editorIndex >= 0);
-  assert.ok(imagePreviewIndex < editorIndex);
+  assert.ok(imagePreviewIndex >= 0 && imagePreviewIndex < editorIndex);
   assert.ok(footerIndex > editorIndex);
-  assert.match(inputBar.slice(0, editorIndex), /selectionContextItems\.map/);
-  assert.match(inputBar, /const \{ imageAttachments, fileAttachments \} = useMemo\(\(\) => \(\{/);
-  assert.match(inputBar, /imageAttachments: attachmentItems\.filter\(isComposerImageAttachment\)/);
-  assert.match(inputBar, /fileAttachments: attachmentItems\.filter\(\(item\) => !isComposerImageAttachment\(item\)\)/);
-  assert.match(inputBar, /\}\), \[attachmentItems\]\);/);
-  assert.match(inputBar.slice(0, editorIndex), /imageAttachments\.map/);
-  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{fileAttachments\}/);
-  assert.doesNotMatch(inputBar.slice(editorIndex, footerIndex), /attachments=\{attachmentItems\}/);
+  assert.match(inputBar, /composerContentAttachments\(composerContent, attachmentItems\)/);
+  assert.match(inputBar, /activeAttachmentItems\.filter\(isComposerImageAttachment\)/);
+  assert.match(inputBar, /const hasExtras = activeAttachmentItems\.length > 0/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{attachmentItems\}/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /composerContent=\{composerContent\}/);
   assert.match(composer, /data-composer-inline-tag="attachment"/);
-  assert.match(composer, /contentEditable=\{false\}[\s\S]*draggable=\{false\}[\s\S]*ace-slate-attachment-tag/);
-  assert.match(composer, /composerAdjacentAttachmentKey\([\s\S]*onRemoveAttachment\(attachmentKey\)/);
+  assert.match(composer, /seenAttachmentKeysRef/);
+  assert.match(composer, /Transforms\.setNodes\(editor, metadata, \{ at: path \}\)/);
+  assert.match(composer, /removeAttachmentReference\(editor, null, attachmentPath\)/);
   assert.doesNotMatch(composer, /ComposerSessionControls|AttachmentStrip|ComposerSelectionCard/);
 });
 
@@ -227,7 +224,7 @@ run('image previews retain image rendering, file-link metadata, and existing tra
   assert.match(preview, /data-desktop-attachment-kind="image"/);
   assert.match(preview, /data-desktop-attachment-mutable="true"/);
   assert.match(preview, /setAttachmentPreview\(\{ src: context\.url, alt: context\.name \}\)/);
-  assert.match(preview, /onRemoveAttachment\?\.\(context\.key\)/);
+  assert.match(preview, /removeAttachment\(context\.key\)/);
   assert.match(composer, /data-desktop-attachment-id=\{`composer:\$\{attachmentKey\}`\}/);
   assert.match(composer, /data-desktop-attachment-preview-url=\{element\?\.url \|\| undefined\}/);
   assert.match(composer, /onClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
@@ -270,7 +267,7 @@ run('rich context paste mutates Slate state while send gating reads the controll
   assert.doesNotMatch(composer, /execCommand/);
   assert.match(inputBar, /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting \}\)/);
   assert.match(inputBar, /<RichComposer[\s\S]*onChange=\{handleComposerChange\}/);
-  assert.match(chatView, /const handleComposerChange = useCallback\(\(next\) => \{[\s\S]*setComposerValue\(next\)/);
+  assert.match(chatView, /const handleComposerChange = useCallback\(\(next, content[^)]*\) => \{[\s\S]*setComposerValue\(next, normalized\)/);
 });
 
 run('keyboard paste uses native capture, React fallback, and beforeinput through one Slate transaction', () => {

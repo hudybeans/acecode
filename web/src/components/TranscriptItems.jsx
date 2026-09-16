@@ -383,6 +383,7 @@ function TranscriptItem({
           streaming={item?.streaming}
           messageId={forkMessageId}
           metadata={item?.metadata}
+          composerContent={item?.composerContent}
           onFork={capabilities.forkMessages ? onFork : undefined}
           forkPending={capabilities.forkMessages && forkingMessageId !== ''}
           forkLoading={capabilities.forkMessages

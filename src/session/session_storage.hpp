@@ -61,6 +61,7 @@ struct SessionMeta {
     // metadata that already had a title.
     std::string title_source;
     std::string input_draft;  // optional unsubmitted chat input draft; empty = unset
+    nlohmann::json input_draft_content;  // optional versioned composer_content
     std::string permission_mode = "default";  // default | accept-edits | plan | yolo
     std::string pre_plan_permission_mode;  // previous non-plan mode while permission_mode == plan
     int turn_count = 0;  // visible user turns, excluding internal hidden prompts

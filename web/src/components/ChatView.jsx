@@ -31,7 +31,6 @@ import {
   clearComposerAttachmentReservations,
   composerAttachmentFilesForLocalIds,
   createComposerAttachmentReservations,
-  releaseComposerAttachmentFile,
   reserveComposerAttachmentFiles,
 } from '../lib/composerAttachmentReservations.js';
 import { ActivityLine } from './ActivityLine.jsx';
@@ -101,7 +100,7 @@ import {
   revealEarlierAnchorKey,
   windowTranscriptItems,
 } from '../lib/transcriptWindow.js';
-import { buildComposerHistory } from '../lib/inputHistoryNavigation.js';
+import { buildComposerHistoryEntries } from '../lib/inputHistoryNavigation.js';
 import {
   completedTurnSelfHealEnabled,
   createCompletedTurnSelfHealScheduler,
@@ -111,7 +110,17 @@ import { usePreference } from '../lib/usePreference.js';
 import { pickExistingWorkspace } from '../lib/workspacePicker.js';
 import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
-import { homeComposerDraftText } from '../lib/homeComposerDrafts.js';
+import { homeComposerDraft, homeComposerDraftText } from '../lib/homeComposerDrafts.js';
+import {
+  composerContentAttachments, composerContentSignature,
+  normalizeComposerContent, reconcileComposerContentAttachments,
+} from '../lib/composerContent.js';
+import {
+  composerDraftSnapshot, composerDraftFingerprint, composerDraftEditFingerprint, mergeComposerAttachmentResources,
+  removeComposerAttachmentReference,
+  completeDetachedComposerUpload,
+  composerContentForGuidance,
+} from '../lib/composerDraft.js';
 import { homeComposerScopedWorkspace } from '../lib/aiThemeCreation.js';
 import {
   createPendingNewSessionFirstUserMessage,
@@ -325,7 +334,7 @@ function fileToBase64(file) {
   });
 }
 
-function normalizeComposerPayload(text, attachments = [], contexts = [], swarmMode = false) {
+function normalizeComposerPayload(text, attachments = [], contexts = [], swarmMode = false, composerContent = null) {
   const sessionReferences = extractSessionReferences(String(text || ''));
   const payload = {
     text: sessionReferences.displayText,
@@ -338,6 +347,8 @@ function normalizeComposerPayload(text, attachments = [], contexts = [], swarmMo
     payload.session_references = sessionReferences.references;
   }
   if (swarmMode) payload.swarm_mode = true;
+  const content = reconcileComposerContentAttachments(composerContent, attachments);
+  if (content) payload.composer_content = content;
   return payload;
 }
 
@@ -350,7 +361,12 @@ function payloadWithAttachmentIds(payload, attachments = []) {
     seen.add(id);
     nextAttachments.push({ id });
   }
-  return { ...payload, attachments: nextAttachments };
+  return {
+    ...payload, attachments: nextAttachments,
+    ...(payload.composer_content ? {
+      composer_content: reconcileComposerContentAttachments(payload.composer_content, attachments),
+    } : {}),
+  };
 }
 
 function payloadHasExtras(payload) {
@@ -828,10 +844,20 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subagentPanelResizeCleanupRef = useRef(null);
   const renderedPreviewPanelWidthRef = useRef(previewPanelWidth);
   const renderedSubagentPanelWidthRef = useRef(subagentPanelWidth);
-  const [composerValue, setComposerValue] = useState(
+  const [composerValue, setComposerText] = useState(
     () => stagedExpertDraft.text,
   );
   const [composerAttachments, setComposerAttachments] = useState([]);
+  const [composerContent, setComposerContent] = useState(null);
+  const composerContentRef = useRef(null);
+  const composerAttachmentsRef = useRef([]);
+  const setComposerValue = useCallback((text, content = null) => {
+    const normalized = normalizeComposerContent(content);
+    composerValueRef.current = String(text || '');
+    composerContentRef.current = normalized;
+    setComposerText(String(text || ''));
+    setComposerContent((previous) => composerContentSignature(previous) === composerContentSignature(normalized) ? previous : normalized);
+  }, []);
   const [composerContexts, setComposerContexts] = useState([]);
   const [composerSwarmMode, setComposerSwarmMode] = useState(false);
   const [selectionPreview, setSelectionPreview] = useState(null);
@@ -841,6 +867,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const draftEditVersionRef = useRef(0);
   const draftSessionKeyRef = useRef('');
   const draftLastSavedRef = useRef({ key: '', text: '' });
+  const draftSaveQueueRef = useRef(new Map());
   const composerValueRef = useRef('');
   const composerDirtyRef = useRef(false);
   const preserveComposerExtrasOnSessionChangeRef = useRef(false);
@@ -932,6 +959,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     homeDraftWorkspaceHash,
   );
   composerValueRef.current = composerValue;
+  composerContentRef.current = composerContent;
+  composerAttachmentsRef.current = composerAttachments;
   const rawItems = useMemo(
     () => withPendingNewSessionFirstUserMessage(
       items,
@@ -944,10 +973,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const rawItemsLengthRef = useRef(0);
   rawItemsLengthRef.current = rawItems.length;
   // 上下键翻的历史:per-cwd 输入历史 + 当前 transcript 会话中用户发过的消息
-  const composerHistory = useMemo(
-    () => buildComposerHistory({ cwdHistory: history, transcriptItems: rawItems }),
+  const composerHistoryEntries = useMemo(
+    () => buildComposerHistoryEntries({ cwdHistory: history, transcriptItems: rawItems }),
     [history, rawItems],
   );
+  const composerHistory = useMemo(() => composerHistoryEntries.map((entry) => entry.text), [composerHistoryEntries]);
   const renderedItems = useMemo(
     () => projectCollapsedTranscriptItems(rawItems, {
       deferTrailingToolSummary: busy,
@@ -1226,16 +1256,38 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     setPreviewCloseConfirm(null);
   }, [sid]);
 
-  const handleComposerChange = useCallback((next) => {
-    draftEditVersionRef.current += 1;
-    composerDirtyRef.current = true;
-    setComposerValue(next);
-    if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, next);
-  }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, sid]);
+  const handleComposerChange = useCallback((next, content = null) => {
+    const normalized = normalizeComposerContent(content);
+    if (composerDraftFingerprint(next, normalized) === composerDraftFingerprint(composerValueRef.current, composerContentRef.current)) return;
+    const userEdit = composerDraftEditFingerprint(next, normalized)
+      !== composerDraftEditFingerprint(composerValueRef.current, composerContentRef.current);
+    if (userEdit) {
+      draftEditVersionRef.current += 1;
+      composerDirtyRef.current = true;
+    }
+    setComposerValue(next, normalized);
+    const restored = composerContentAttachments(normalized, composerAttachmentsRef.current, { sessionId: sid });
+    setComposerAttachments((current) => mergeComposerAttachmentResources(current, restored));
+    if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, composerDraftSnapshot(next, normalized, composerAttachmentsRef.current));
+  }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, setComposerValue, sid]);
 
-  const releaseAttachmentReservation = useCallback((localId) => {
-    releaseComposerAttachmentFile(attachmentReservationsRef.current, localId);
-  }, []);
+  const restoreComposerDraft = useCallback((draft, targetSid = '') => {
+    const content = normalizeComposerContent(draft?.composer_content);
+    const resources = composerContentAttachments(content, draft?.attachments || [], { sessionId: targetSid });
+    for (const resource of composerAttachmentsRef.current) {
+      if (resource?.preview_url?.startsWith('blob:')) URL.revokeObjectURL(resource.preview_url);
+    }
+    clearComposerAttachmentReservations(attachmentReservationsRef.current);
+    for (const resource of resources) {
+      if (resource.file) {
+        reserveComposerAttachmentFiles(attachmentReservationsRef.current, [resource.file], () => resource.local_id);
+        if (resource.kind === 'image' && typeof URL.createObjectURL === 'function') resource.preview_url = URL.createObjectURL(resource.file);
+      }
+    }
+    setComposerAttachments(resources);
+    composerAttachmentsRef.current = resources;
+    setComposerValue(String(draft?.text || ''), content);
+  }, [setComposerValue]);
 
   const clearAttachmentReservations = useCallback(() => {
     clearComposerAttachmentReservations(attachmentReservationsRef.current);
@@ -1270,6 +1322,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const createHomeComposerSession = useCallback(async (text, {
     createOptions = null,
     firstUserMessageText = '',
+    firstUserMessageContent = null,
+    firstUserMessageAttachments = [],
     preserveExtras = false,
     title = '',
   } = {}) => {
@@ -1323,6 +1377,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       const pendingFirstUserMessage = createPendingNewSessionFirstUserMessage({
         sessionId: id,
         text: firstUserMessageText,
+        composerContent: firstUserMessageContent,
+        attachments: firstUserMessageAttachments,
       });
       if (pendingFirstUserMessage) {
         setPendingNewSessionFirstUserMessage(pendingFirstUserMessage);
@@ -1358,6 +1414,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       const previewUrl = kind === 'image' ? URL.createObjectURL(file) : '';
       const sourcePath = sourceReference?.sourcePath || fileSourcePath(file);
       const localItem = {
+        file,
         local_id: localId,
         name: file.name || 'attachment',
         kind,
@@ -1434,6 +1491,26 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             ? { ...uploadedItem, preview_url: item.preview_url || '' }
             : item
         )));
+        if (sidRef.current === targetSid) {
+          // Persist the completed identity even when navigation beats the debounce.
+          const content = reconcileComposerContentAttachments(composerContentRef.current, [uploadedItem]);
+          if (composerContentSignature(content) !== composerContentSignature(composerContentRef.current)) {
+            composerDirtyRef.current = true;
+            setComposerValue(composerValueRef.current, content);
+          }
+        } else {
+          const targetKey = [...draftSaveQueueRef.current.keys()].find((key) => key.endsWith(`:${targetSid}`))
+            || `session:${targetSid}`;
+          const previous = draftSaveQueueRef.current.get(targetKey) || Promise.resolve();
+          const save = previous.catch(() => null)
+            .then(() => completeDetachedComposerUpload(api, targetSid, uploadedItem));
+          draftSaveQueueRef.current.set(targetKey, save);
+          try {
+            await save;
+          } finally {
+            if (draftSaveQueueRef.current.get(targetKey) === save) draftSaveQueueRef.current.delete(targetKey);
+          }
+        }
         return uploadedItem;
       } catch (error) {
         setComposerAttachments((items) => items.map((item) => (
@@ -1452,7 +1529,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
     const uploaded = await Promise.all(Array.from(reservedFiles || []).map(persistOne));
     return uploaded.filter(Boolean);
-  }, [api]);
+  }, [api, setComposerValue]);
 
   const handleMediaFiles = useCallback((files) => {
     const reservedFiles = reserveUniqueComposerFiles(files);
@@ -1471,15 +1548,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   ]);
 
   const removeComposerAttachment = useCallback((key) => {
-    setComposerAttachments((items) => {
-      const removed = items.find((item) => (item.local_id || item.id || item.name) === key);
-      if (removed?.local_id) releaseAttachmentReservation(removed.local_id);
-      if (removed?.preview_url && removed.preview_url.startsWith('blob:')) {
-        URL.revokeObjectURL(removed.preview_url);
-      }
-      return items.filter((item) => (item.local_id || item.id || item.name) !== key);
-    });
-  }, [releaseAttachmentReservation]);
+    const next = removeComposerAttachmentReference(composerContentRef.current, key);
+    handleComposerChange(composerValueRef.current, next);
+  }, [handleComposerChange]);
 
   const removeComposerContext = useCallback((key) => {
     setComposerContexts((items) => items.filter((item) => (item.local_id || item.id || item.type) !== key));
@@ -1664,6 +1735,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
   const composerInputProps = useMemo(() => ({
     attachments: composerAttachments,
+    composerContent,
     contexts: composerContexts,
     annotationPresentations: selectionAnnotationPresentations,
     selectionPreview: visibleSelectionPreview,
@@ -1675,6 +1747,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     onSwarmModeChange: setComposerSwarmMode,
   }), [
     composerAttachments,
+    composerContent,
     composerContexts,
     composerSwarmMode,
     handleMediaFiles,
@@ -1693,35 +1766,49 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     resetComposerContextSelections();
   }, [draftSessionKey, resetComposerContextSelections]);
 
-  const persistDraftValue = useCallback((targetSid, targetWorkspaceHash, targetKey, text) => {
+  const persistDraftValue = useCallback((targetSid, targetWorkspaceHash, targetKey, text, content = null) => {
     if (!targetSid || !targetKey) return Promise.resolve(null);
-    return api.setSessionDraft(targetSid, text, targetWorkspaceHash)
+    const normalized = normalizeComposerContent(content);
+    const fingerprint = composerDraftFingerprint(text, normalized);
+    const previous = Promise.all([...draftSaveQueueRef.current.entries()]
+      .filter(([key]) => key === targetKey || key.endsWith(`:${targetSid}`))
+      .map(([, save]) => save.catch(() => null)));
+    const save = previous.catch(() => null)
+      .then(() => api.setSessionDraft(targetSid, text, targetWorkspaceHash, normalized))
       .then((result) => {
         if (draftSessionKeyRef.current === targetKey) {
-          draftLastSavedRef.current = { key: targetKey, text };
-          if (composerValueRef.current === text) {
+          draftLastSavedRef.current = { key: targetKey, text, fingerprint };
+          if (composerDraftFingerprint(composerValueRef.current, composerContentRef.current) === fingerprint) {
             composerDirtyRef.current = false;
           }
         }
         return result;
       })
       .catch(() => null);
+    draftSaveQueueRef.current.set(targetKey, save);
+    void save.finally(() => {
+      if (draftSaveQueueRef.current.get(targetKey) === save) draftSaveQueueRef.current.delete(targetKey);
+    });
+    return save;
   }, [api]);
 
-  const clearCurrentSessionDraft = useCallback(({ expectedText = null } = {}) => {
+  const clearCurrentSessionDraft = useCallback(({ expectedText = null, expectedContent = undefined } = {}) => {
     const targetSid = sid;
     const targetWorkspaceHash = draftWorkspaceHash;
     const targetKey = draftSessionKey;
-    if (!targetSid || !targetKey) return;
+    if (!targetSid || !targetKey) return false;
+    if (draftSessionKeyRef.current !== targetKey) return false;
     // 提交期间编辑区不再只读,所以一次发送的回执可能晚于用户写下的下一条。
     // expectedText 对不上就整条放弃清理,让草稿保存 effect 接着管新内容。
-    if (expectedText !== null && composerValueRef.current !== expectedText) return;
+    if (expectedText !== null && composerValueRef.current !== expectedText) return false;
+    if (expectedContent !== undefined && composerDraftEditFingerprint('', composerContentRef.current) !== composerDraftEditFingerprint('', expectedContent)) return false;
     if (draftSessionKeyRef.current === targetKey) {
       draftEditVersionRef.current += 1;
       setComposerValue('');
     }
     void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, '');
-  }, [draftSessionKey, draftWorkspaceHash, persistDraftValue, sid]);
+    return true;
+  }, [draftSessionKey, draftWorkspaceHash, persistDraftValue, setComposerValue, sid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1738,7 +1825,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
     if (!targetSid || !targetKey) {
       composerDirtyRef.current = !!currentHomeDraftText;
-      setComposerValue(currentHomeDraftText);
+      restoreComposerDraft(homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash));
       draftLastSavedRef.current = { key: '', text: '' };
       return () => { cancelled = true; };
     }
@@ -1746,7 +1833,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     if (forkDraft?.key === targetKey) {
       composerDirtyRef.current = true;
       draftEditVersionRef.current += 1;
-      setComposerValue(forkDraft.text);
+      restoreComposerDraft(forkDraft, targetSid);
       draftLastSavedRef.current = { key: targetKey, text: '' };
       setDraftReadyKey(targetKey);
       return () => { cancelled = true; };
@@ -1760,14 +1847,16 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
 
     composerDirtyRef.current = false;
-    setComposerValue('');
-    api.getSessionDraft(targetSid, targetWorkspaceHash)
+    restoreComposerDraft({ text: '' }, targetSid);
+    Promise.all([...draftSaveQueueRef.current.entries()]
+      .filter(([key]) => key.endsWith(`:${targetSid}`)).map(([, save]) => save.catch(() => null)))
+      .then(() => api.getSessionDraft(targetSid, targetWorkspaceHash))
       .then((result) => {
         if (cancelled || draftSessionKeyRef.current !== targetKey) return;
         const text = typeof result?.text === 'string' ? result.text : '';
-        draftLastSavedRef.current = { key: targetKey, text };
+        draftLastSavedRef.current = { key: targetKey, text, fingerprint: composerDraftFingerprint(text, result?.composer_content) };
         if (draftEditVersionRef.current === editVersionAtLoad) {
-          setComposerValue(text);
+          restoreComposerDraft({ ...result, text }, targetSid);
         }
         setDraftReadyKey(targetKey);
       })
@@ -1780,7 +1869,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     return () => { cancelled = true; };
   // Home edits update App's draft store without triggering restoration again.
   // Only session/workspace changes should reset or load the scoped draft.
-  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, sid]);
+  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, restoreComposerDraft, sid]);
 
   useEffect(() => {
     const targetSid = sid;
@@ -1788,14 +1877,16 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     const targetKey = draftSessionKey;
     return () => {
       if (!targetSid || !targetKey || !composerDirtyRef.current) return;
-      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, composerValueRef.current);
+      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, composerValueRef.current,
+        reconcileComposerContentAttachments(composerContentRef.current, composerAttachmentsRef.current));
     };
   }, [draftSessionKey, draftWorkspaceHash, persistDraftValue, sid]);
 
   useEffect(() => {
     if (!sid || !draftSessionKey || draftReadyKey !== draftSessionKey) return undefined;
+    const content = reconcileComposerContentAttachments(composerContent, composerAttachments);
     if (draftLastSavedRef.current.key === draftSessionKey &&
-        draftLastSavedRef.current.text === composerValue) {
+        draftLastSavedRef.current.fingerprint === composerDraftFingerprint(composerValue, content)) {
       return undefined;
     }
 
@@ -1804,10 +1895,10 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     const targetKey = draftSessionKey;
     const text = composerValue;
     const timer = setTimeout(() => {
-      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, text);
+      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, text, content);
     }, 350);
     return () => clearTimeout(timer);
-  }, [composerValue, draftReadyKey, draftSessionKey, draftWorkspaceHash, persistDraftValue, sid]);
+  }, [composerValue, composerContent, composerAttachments, draftReadyKey, draftSessionKey, draftWorkspaceHash, persistDraftValue, sid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2632,7 +2723,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     updateQueueState((prev) => retryQueuedInput(prev, queuedId));
   }, [updateQueueState]);
 
-  const saveQueuedEdit = useCallback((queuedId, text) => {
+  const saveQueuedEdit = useCallback((queuedId, text, composerContent) => {
     const queuedItem = queueStore.getState().items.find(
       (item) => item?.queued?.id === queuedId,
     );
@@ -2648,7 +2739,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '消息不能为空' });
       return;
     }
-    updateQueueState((prev) => updateQueuedInputContent(prev, queuedId, nextText));
+    updateQueueState((prev) => updateQueuedInputContent(prev, queuedId, nextText, { composerContent }));
   }, [queueStore, updateQueueState]);
 
   const runSideQuestion = useCallback((
@@ -2775,11 +2866,17 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   }, [api, executeBuiltinCommand]);
 
   const submit = useCallback((text) => {
-    if (composerAttachments.some((item) => item.uploading)) {
+    const submittedContent = reconcileComposerContentAttachments(composerContentRef.current, composerAttachments);
+    const activeAttachments = submittedContent ? composerContentAttachments(submittedContent, composerAttachments, { sessionId: sid }) : composerAttachments;
+    if (activeAttachments.some((item) => item.error || (!item.id && !item.pending_upload && !item.uploading))) {
+      toast({ kind: 'err', text: tr('composerAttachment.stagedUnavailable') });
+      return;
+    }
+    if (activeAttachments.some((item) => item.uploading)) {
       toast({ kind: 'err', text: '附件仍在上传，请稍后发送' });
       return;
     }
-    const pendingAttachmentLocalIds = composerAttachments
+    const pendingAttachmentLocalIds = activeAttachments
       .filter((item) => item?.pending_upload && item?.local_id)
       .map((item) => item.local_id);
     const pendingAttachmentFiles = composerAttachmentFilesForLocalIds(
@@ -2797,13 +2894,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
     const payload = normalizeComposerPayload(
       text,
-      composerAttachments,
+      activeAttachments,
       composerContexts,
       composerSwarmMode,
+      submittedContent,
     );
     // 提交那一刻输入框里的原文。发送回执回来时拿它比对,用户在等待窗口里
     // 写下的下一条就不会被这次发送的清理吞掉。
     const submittedComposerText = composerValueRef.current;
+    const submittedComposerContent = composerContentRef.current;
     const hasExtras = payloadHasExtras(payload) || hasPendingAttachments;
     const hasSwarmMode = payload.swarm_mode === true;
     if (!payload.text.trim() && !hasExtras) return;
@@ -2896,6 +2995,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       const steerPayload = {
         ...payload,
         text: route.guidance,
+        ...(payload.composer_content ? { composer_content: composerContentForGuidance(payload.composer_content) } : {}),
         expected_turn_id: expectedTurnId,
         client_message_id:
           `turn-${targetSid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2905,8 +3005,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       api.interruptTurn(targetSid, steerPayload)
         .then(() => {
           recordInputHistory(route.display_text);
-          clearCurrentSessionDraft();
-          clearComposerExtras();
+          if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
           toast({ kind: 'ok', text: '插话已提交，正在打断当前回合' });
         })
         .catch((e) => {
@@ -2935,14 +3034,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       const trimmed = String(payload.text || '').trim();
       if ((!trimmed && !hasExtras) || homeSubmitting || composerSubmitting) return;
       const submittedHomeDraftWorkspaceHash = homeDraftWorkspaceHash;
-      const submittedHomeDraftText = payload.text;
+      const submittedHomeDraftText = homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash);
       // GitSessionPill 的 worktree 意图:命中时改走 auto_start:false +
       // 首条消息携带 worktree 字段(daemon 在入队前创建并切 cwd)。
       // builtin(/init 等)不带 worktree —— 意图只作用于普通消息。
       const worktreeIntent = !isBuiltin
         ? buildWorktreeIntent({ ...gitPillIntentRef.current, sessionStarted: false })
         : null;
-      const explicitHomeSend = !isBuiltin && (hasExtras || hasSwarmMode || !!worktreeIntent);
+      const explicitHomeSend = !isBuiltin && (hasExtras || hasSwarmMode || !!worktreeIntent || !!payload.composer_content);
       const createOptions = explicitHomeSend
         ? { auto_start: false }
         : sessionCreateOptionsForText(payload.text);
@@ -2952,9 +3051,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       createHomeComposerSession(payload.text, {
         createOptions,
         firstUserMessageText: !isBuiltin ? payload.text : '',
-        preserveExtras: hasExtras || hasSwarmMode,
+        firstUserMessageContent: !isBuiltin ? payload.composer_content : null,
+        firstUserMessageAttachments: !isBuiltin ? activeAttachments : [],
+        preserveExtras: hasExtras || hasSwarmMode || !!payload.composer_content,
         title: !payload.text.trim() && hasPendingAttachments
-          ? (composerAttachments[0]?.name || '附件消息')
+          ? (activeAttachments[0]?.name || '附件消息')
           : '',
       })
         .then(async (created) => {
@@ -2966,6 +3067,17 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             ? await persistMediaFilesToSession(id, pendingAttachmentFiles)
             : [];
           const materializedPayload = payloadWithAttachmentIds(payload, materializedAttachments);
+          if (!isBuiltin && materializedPayload.composer_content) {
+            setPendingNewSessionFirstUserMessage((pending) => pending?.sessionId === id
+              ? createPendingNewSessionFirstUserMessage({
+                  sessionId: id,
+                  text: materializedPayload.text,
+                  composerContent: materializedPayload.composer_content,
+                  attachments: materializedAttachments,
+                  timestampMs: pending.item.ts,
+                })
+              : pending);
+          }
           if (isBuiltin) {
             await executeBuiltinCommand(id, route.command);
           } else if (explicitHomeSend) {
@@ -2993,10 +3105,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             }
           }
           if (payload.text.trim()) recordInputHistory(payload.text);
-          if (!isBuiltin && (hasExtras || hasSwarmMode)) {
-            clearComposerExtras();
-          }
-          if (!isBuiltin && explicitHomeSend) {
+          const stillSubmittedDraft = sidRef.current === id
+            && composerDraftEditFingerprint(composerValueRef.current, composerContentRef.current)
+              === composerDraftEditFingerprint(submittedComposerText, submittedComposerContent);
+          if (!isBuiltin && stillSubmittedDraft && (hasExtras || hasSwarmMode)) clearComposerExtras();
+          if (!isBuiltin && explicitHomeSend && stillSubmittedDraft) {
             draftEditVersionRef.current += 1;
             composerDirtyRef.current = false;
             setComposerValue('');
@@ -3070,16 +3183,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           });
         }
         if (payload.text.trim()) recordInputHistory(payload.text);
-        if (!ref?.title) setTranscriptTitle(payload.text || composerAttachments[0]?.name || '附件消息');
-        clearCurrentSessionDraft({ expectedText: submittedComposerText });
-        clearComposerExtras();
+        if (!ref?.title) setTranscriptTitle(payload.text || activeAttachments[0]?.name || '附件消息');
+        if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
       })
       .catch((e) => {
         toast({ kind: 'err', text: '发送失败:' + (e.message || '') });
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -3531,10 +3643,13 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       // 这里回填输入框待用户修改后重发,不自动发送。
       // 先保留源会话输入,让旧会话 cleanup 保存自己的草稿;目标会话加载时再回填。
       const restoredPrompt = forkRestoredPrompt(r);
-      if (restoredPrompt) {
+      const restoredContent = normalizeComposerContent(r.restored_composer_content);
+      if (restoredPrompt || restoredContent) {
         pendingForkComposerRef.current = {
           key: `${workspaceHash}:${r.session_id}`,
           text: restoredPrompt,
+          composer_content: restoredContent,
+          attachments: Array.isArray(r.restored_attachments) ? r.restored_attachments : [],
         };
       }
 
@@ -4844,6 +4959,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                 onRemoveExpert={detachComposerExpert}
                 onOpenExpertComponents={() => setExpertPickerOpen(true)}
                 history={composerHistory}
+                historyEntries={composerHistoryEntries}
                 value={composerValue}
                 onChange={handleComposerChange}
                 onSubmit={submit}
@@ -5430,6 +5546,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onGoalStatusChange={changeGoalStatus}
             onGoalClear={clearGoal}
             history={composerHistory}
+            historyEntries={composerHistoryEntries}
             value={composerValue}
             onChange={handleComposerChange}
             onSubmit={submit}

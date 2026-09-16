@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { setTimeout as nextTask } from 'node:timers/promises';
 import { parseSync } from '@babel/core';
 import { expertDispatchDraftFromRef } from './expertComponents.js';
 import { homeRefFromWorkspace } from './homeWorkspaceSelection.js';
-import { homeComposerDraftText, updateHomeComposerDrafts } from './homeComposerDrafts.js';
+import { homeComposerDraft, homeComposerDraftText, updateHomeComposerDrafts } from './homeComposerDrafts.js';
+import { composerDraftFingerprint } from './composerDraft.js';
 import { aiThemeCreationRef, homeComposerScopedWorkspace } from './aiThemeCreation.js';
 import { commandsWithFallback } from './slashCommands.js';
 import {
@@ -65,6 +67,7 @@ function fixture(workspaceHash = 'workspace-a') {
     draftEditVersionRef: { current: 0 },
     draftLastSavedRef: { current: {} },
     draftSessionKeyRef: { current: '' },
+    draftSaveQueueRef: { current: new Map() },
   };
   const navigate = (next) => {
     route = typeof next === 'function' ? next(route) : next;
@@ -88,7 +91,7 @@ function fixture(workspaceHash = 'workspace-a') {
     },
   });
   const scope = {
-    ...refs, api, homeRefFromWorkspace, aiThemeCreationRef, health: {},
+    ...refs, api, homeRefFromWorkspace, aiThemeCreationRef, health: {}, homeComposerDraft, composerDraftFingerprint,
     createApi: () => api, refreshWorkspaceGitInfo: async () => {},
     navigateToRef: navigate, replaceActiveRef: navigate,
     rememberRecentExpert() {}, onRememberExpert() {},
@@ -97,6 +100,10 @@ function fixture(workspaceHash = 'workspace-a') {
     setComposerValue(text) {
       if (composer !== text) pendingRender = true;
       composer = text;
+    },
+    restoreComposerDraft(draft) {
+      if (composer !== draft.text) pendingRender = true;
+      composer = draft.text;
     },
     toast(error) { assert.fail(JSON.stringify(error)); },
     setBusyKey() {}, onClose() {},
@@ -124,6 +131,7 @@ function fixture(workspaceHash = 'workspace-a') {
       refs.draftSessionKeyRef.current = draftSessionKey;
       const context = {
         ...scope, sid, draftSessionKey, draftWorkspaceHash: workspace,
+        homeComposerDrafts: drafts,
         homeDraftWorkspaceHash: sid ? '' : homeDraftWorkspace,
         stagedExpertDraft: expertDispatchDraftFromRef(route),
         currentHomeDraftText: homeComposerDraftText(drafts, homeDraftWorkspace),
@@ -278,7 +286,7 @@ const cases = [
   ['new-task payloads do not replace an existing-session draft', async () => {
     const view = fixture();
     view.navigate({ workspaceHash: 'workspace-a', sessionId: 'existing', initialDraftText: 'new-task only' });
-    await Promise.resolve();
+    await nextTask();
     view.render();
     assert.equal(view.text, 'saved session draft');
     assert.equal(view.consumed, 0);

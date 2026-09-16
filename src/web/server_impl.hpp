@@ -448,13 +448,15 @@ struct WebServer::Impl {
                                       bool require_archived);
     crow::response session_input_draft_response(const crow::request& req,
                                                  const std::string& id,
-                                                 const std::string& text);
+                                                 const std::string& text,
+                                                 const nlohmann::json& composer_content = nullptr);
     crow::response session_todos_response(const crow::request& req,
                                            const acecode::desktop::WorkspaceMeta& ws,
                                            const std::string& id,
                                            const std::vector<TodoItem>& todos);
     std::optional<crow::response> parse_session_input_draft_request(const crow::request& req,
-                                                                     std::string& text);
+                                                                     std::string& text,
+                                                                     nlohmann::json& composer_content);
     std::shared_ptr<SessionEntry> active_session_entry_for_workspace(
         const acecode::desktop::WorkspaceMeta& ws,
         const std::string& id) const;

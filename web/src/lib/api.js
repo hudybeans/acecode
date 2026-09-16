@@ -394,8 +394,11 @@ export function createApi(base = null) {
     purgeSession:     (id)           => request('DELETE', `/api/sessions/${encodeURIComponent(id)}?purge=1`, undefined, base),
     getSessionDraft:  (id, workspaceHash = '') =>
       request('GET', sessionDraftPath(id, workspaceHash), undefined, base),
-    setSessionDraft:  (id, text = '', workspaceHash = '') =>
-      request('PUT', sessionDraftPath(id, workspaceHash), { text }, base),
+    setSessionDraft:  (id, text = '', workspaceHash = '', composerContent = null) =>
+      request('PUT', sessionDraftPath(id, workspaceHash), {
+        text,
+        ...(composerContent ? { composer_content: composerContent } : {}),
+      }, base),
     setSessionTitle:  (id, title = '', workspaceHash = '') =>
       request('PUT', sessionTitlePath(id, workspaceHash), { title }, base),
     setSessionExpert: (id, expertId, options = {}) => {

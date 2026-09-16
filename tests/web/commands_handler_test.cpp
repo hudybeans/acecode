@@ -139,6 +139,9 @@ static std::optional<std::string> find_skill_desc(const nlohmann::json& payload,
     if (!payload.contains("skills")) return std::nullopt;
     for (const auto& s : payload["skills"]) {
         if (s["name"].get<std::string>() == name) {
+            EXPECT_TRUE(s.contains("path"));
+            EXPECT_TRUE(s.contains("mention"));
+            EXPECT_NE(s.value("mention", "").find(s.value("path", "")), std::string::npos);
             return s["description"].get<std::string>();
         }
     }
