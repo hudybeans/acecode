@@ -10,14 +10,12 @@ import {
   buildQuestionCancelPayload,
   getNavigationState,
   hasSelectedTextWithin,
-  isQuestionAnswered,
   makeInitialAnswers,
   normalizeQuestionRequest,
   recommendedOptionIndex,
   selectAnswerCustom,
   setAnswerCustom,
   toggleAnswerSelection,
-  unselectAnswerCustom,
 } from '../lib/questionPicker.js';
 
 const READABLE_TEXT_STYLE = { overflowWrap: 'anywhere', wordBreak: 'break-word' };
@@ -55,12 +53,14 @@ async function copyText(text) {
   }
 }
 
-export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '', className = '' }) {
+export function QuestionPicker({ request, onResolve, originLabel = '' }) {
+
   const normalized = useMemo(() => normalizeQuestionRequest(request), [request]);
   const { questions } = normalized;
   const [answers, setAnswers] = useState(() => makeInitialAnswers(questions));
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [focusIndex, setFocusIndex] = useState(0);
+  const [focusIndex, setFocusIndex] = useState(-1);
+  const [hoverIndex, setHoverIndex] = useState(-1);
   const [collapsed, setCollapsed] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(-1);
   const [editingCustom, setEditingCustom] = useState(false);
@@ -73,14 +73,18 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
   useEffect(() => {
     setAnswers(makeInitialAnswers(questions));
     setCurrentIndex(0);
-    setFocusIndex(0);
+    setFocusIndex(-1);
+    setHoverIndex(-1);
     setCollapsed(false);
     setEditingCustom(false);
+    if (escTimerRef.current) clearTimeout(escTimerRef.current);
+    escTimerRef.current = null;
     focusSoon(rootRef);
   }, [normalized.requestId, questions]);
 
   useEffect(() => () => {
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    if (escTimerRef.current) clearTimeout(escTimerRef.current);
   }, []);
 
   const question = questions[currentIndex];
@@ -89,6 +93,8 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
   const customIndex = optionCount;
   const nav = getNavigationState(currentIndex, questions, answers);
   const isMulti = !!question?.multiSelect;
+  const activeOptionIndex = hoverIndex >= 0 ? hoverIndex
+    : (focusIndex >= 0 ? focusIndex : recommendedOptionIndex(question));
 
   const updateAnswer = useCallback((index, updater) => {
     setAnswers((prev) => prev.map((item, i) => i === index ? updater(item) : item));
@@ -108,11 +114,12 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
   const cancel = useCallback(() => {
     connection.sendQuestionAnswer(buildQuestionCancelPayload(normalized));
     resolve();
-  }, [normalized, onFeedback, resolve]);
+  }, [normalized, resolve]);
 
   const submitCurrent = useCallback((i) => {
     setCurrentIndex(Math.min(questions.length - 1, i + 1));
-    setFocusIndex(0);
+    setFocusIndex(-1);
+    setHoverIndex(-1);
     focusSoon(rootRef);
   }, [questions.length]);
 
@@ -121,11 +128,12 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     if (!state.canSubmit) return;
     connection.sendQuestionAnswer(buildQuestionAnswerPayload(normalized, questions, answers));
     resolve();
-  }, [answers, currentIndex, normalized, onFeedback, questions, resolve]);
+  }, [answers, currentIndex, normalized, questions, resolve]);
 
   const goPrev = useCallback(() => {
     setCurrentIndex((value) => Math.max(0, value - 1));
-    setFocusIndex(0);
+    setFocusIndex(-1);
+    setHoverIndex(-1);
     focusSoon(rootRef);
   }, []);
 
@@ -136,7 +144,8 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     setAnswers((prev) => prev.map((item, i) =>
       i === currentIndex && !state.currentAnswered ? { ...item, skipped: true } : item));
     setCurrentIndex((value) => Math.min(questions.length - 1, value + 1));
-    setFocusIndex(0);
+    setFocusIndex(-1);
+    setHoverIndex(-1);
     focusSoon(rootRef);
   }, [answers, currentIndex, questions]);
 
@@ -145,8 +154,8 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
   const primaryAction = useCallback(() => {
     const state = getNavigationState(currentIndex, questions, answers);
     if (state.isLast) submitAll();
-    else if (state.canGoNext) submitCurrent(currentIndex);
-  }, [currentIndex, questions, answers, submitAll, submitCurrent]);
+    else goNext();
+  }, [currentIndex, questions, answers, submitAll, goNext]);
 
   const skipCurrent = useCallback(() => {
     if (!nav.canSkip) return;
@@ -166,17 +175,18 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     const opt = question?.options?.[optionIndex];
     if (!opt) return;
     setFocusIndex(optionIndex);
-    updateAnswer(currentIndex, (item) => toggleAnswerSelection(item, opt.value, isMulti));
-    const state = getNavigationState(currentIndex, questions, { ...answers, [currentIndex]: answers[currentIndex] });
-    if (!state.isLast) {
+    // 确认操作保留已选答案;只有单击选项或 Space 才切换多选状态。
+    updateAnswer(currentIndex, (item) => isMulti && item.selected.includes(opt.value)
+      ? item : toggleAnswerSelection(item, opt.value, isMulti));
+    if (currentIndex < questions.length - 1) {
       submitCurrent(currentIndex);
     }
-  }, [answers, currentIndex, isMulti, question, questions, submitCurrent, updateAnswer]);
+  }, [currentIndex, isMulti, question, questions.length, submitCurrent, updateAnswer]);
 
   const selectCustom = useCallback(() => {
     setFocusIndex(customIndex);
     setEditingCustom(true);
-    if (!isMulti) updateAnswer(currentIndex, (item) => selectAnswerCustom(item, false));
+    updateAnswer(currentIndex, (item) => selectAnswerCustom(item, isMulti));
   }, [customIndex, currentIndex, isMulti, updateAnswer]);
 
   const setCustom = useCallback((value) => {
@@ -186,8 +196,9 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
 
   const moveFocus = useCallback((delta) => {
     const count = optionCount + 1;
-    setFocusIndex((value) => Math.min(count - 1, Math.max(0, value + delta)));
-  }, [optionCount]);
+    setFocusIndex(Math.min(count - 1, Math.max(0, activeOptionIndex + delta)));
+    setHoverIndex(-1);
+  }, [activeOptionIndex, optionCount]);
 
   const copyOption = useCallback(async (optionIndex, event) => {
     if (event) event.stopPropagation();
@@ -202,6 +213,8 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
 
   const onKeyDown = useCallback((event) => {
     if (!question) return;
+    // 输入法的确认/取消按键只交给输入法,不能收卷或改变题目。
+    if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229) return;
     const target = event.target;
     const tag = target?.tagName;
     const inTextInput = tag === 'INPUT' || tag === 'TEXTAREA';
@@ -210,6 +223,7 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
 
     if (event.key === 'Escape') {
       event.preventDefault();
+      if (event.repeat) return;
       if (inTextInput) {
         // 自定义输入框内:先退出编辑态,不参与连按判定。
         setEditingCustom(false);
@@ -231,6 +245,14 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
       return;
     }
 
+    if (collapsed) return;
+
+    if (ctrlEnter) {
+      event.preventDefault();
+      if (nav.isLast) submitAll();
+      return;
+    }
+
     if (inTextInput) {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -239,11 +261,9 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
       return;
     }
 
-    if (ctrlEnter) {
-      event.preventDefault();
-      if (nav.isLast) submitAll();
-      return;
-    }
+    if (withCtrl || event.altKey) return;
+    // 复制/取消/展开等原生按钮保留 Enter 和 Space 的激活行为。
+    if ((event.key === 'Enter' || event.key === ' ') && target?.closest?.('button')) return;
 
     if (event.key === 'Tab') {
       event.preventDefault();
@@ -287,7 +307,7 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     }
     if (event.key === ' ') {
       event.preventDefault();
-      if (focusIndex < optionCount) selectOption(focusIndex);
+      if (activeOptionIndex >= 0 && activeOptionIndex < optionCount) selectOption(activeOptionIndex);
       else {
         setEditingCustom(true);
         customRef.current?.focus();
@@ -296,9 +316,10 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     }
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (focusIndex < optionCount) commitEnter(focusIndex);
+      if (activeOptionIndex >= 0 && activeOptionIndex < optionCount) commitEnter(activeOptionIndex);
+      else customRef.current?.focus();
     }
-  }, [cancel, commitEnter, focusIndex, goNext, goPrev, moveFocus, nav.isLast, optionCount, primaryAction, question, resetAllSelections, selectOption, submitAll]);
+  }, [activeOptionIndex, cancel, collapsed, commitEnter, goNext, goPrev, moveFocus, nav.isLast, optionCount, primaryAction, question, resetAllSelections, selectOption, submitAll]);
 
   if (!question) return null;
 
@@ -319,9 +340,15 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
       tabIndex={-1}
       onKeyDown={onKeyDown}
       aria-label="AskUserQuestion"
-      className={clsx('mb-2 shrink min-h-0 rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col', className)}
+      className="mx-2.5 mb-2 shrink min-h-0 rounded-lg border border-border bg-surface outline-none overflow-hidden flex flex-col"
+
     >
-      <div className="min-h-11 shrink-0 px-4 py-2 border-b border-border bg-surface flex items-center gap-2">
+      <div className="min-h-10 shrink-0 px-3 py-1.5 border-b border-border bg-surface flex items-center gap-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-fg-mute" aria-hidden="true">
+          <path d="M20 15a3 3 0 0 1-3 3H9l-5 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z" />
+          <path d="M9.5 8a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.5-2.5 3" />
+          <path d="M12 14h.01" />
+        </svg>
         <div className="min-w-0 flex-1 overflow-hidden">
           {originLabel && (
             <div className="text-[10px] text-fg-mute mb-0.5 truncate" title={originLabel}>
@@ -330,7 +357,7 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
           )}
           {!collapsed && (
             <div
-              className="text-[15px] font-semibold text-fg whitespace-pre-wrap break-words"
+              className="text-[14px] leading-5 font-semibold text-fg whitespace-pre-wrap break-words"
               style={READABLE_TEXT_STYLE}
             >
               {question.text}
@@ -382,15 +409,18 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
 
       {collapsed ? null : (
         <>
-          <div className="px-2 py-2.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
+          <div className="px-2 py-1.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
             {question.options.map((opt, index) => {
               const selected = answer.selected?.includes(opt.value);
-              const focused = focusIndex === index;
+              const focused = activeOptionIndex === index;
               const copied = copiedIndex === index;
               return (
                 <div
                   key={`${opt.value}-${index}`}
+                  onMouseEnter={() => setHoverIndex(index)}
+                  onMouseLeave={() => setHoverIndex(-1)}
                   onMouseDown={(event) => {
+                    if (event.target?.closest?.('button')) return;
                     if (event.detail > 0 && event.detail >= 2) {
                       event.preventDefault();
                       commitEnter(index);
@@ -403,17 +433,18 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
                   }}
                   style={SELECTABLE_OPTION_STYLE}
                   className={clsx(
-                    'group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition',
+                    'group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer transition',
                     selected
                       ? 'bg-accent-bg border border-accent text-accent'
                       : focused
                         ? 'bg-accent-bg border border-accent'
                         : 'border border-transparent hover:bg-accent-bg hover:border-accent',
+
                   )}
                 >
                   <span
                     className={clsx(
-                      'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                      'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
                       selected
                         ? 'bg-accent text-white border-accent'
                         : 'border-fg-mute text-fg-mute',
@@ -426,7 +457,7 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
                     )}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[15px] font-semibold text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
+                    <span className="block text-[13px] leading-5 font-medium text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
                       {opt.label}
                       {opt.recommended && (
                         <span className="ml-1.5 align-middle text-[11px] font-medium text-fg-mute border border-border rounded px-1 py-0.5">
@@ -471,17 +502,18 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
 
             <div
               className={clsx(
-                'flex items-center gap-3 rounded-lg px-3 py-2.5 transition',
+                'flex items-center gap-2 rounded-md px-2 py-1.5 transition',
                 customActive
                   ? 'bg-accent-bg border border-accent'
                   : focusIndex === customIndex
                     ? 'bg-accent-bg border border-accent'
                     : 'border border-transparent hover:bg-accent-bg hover:border-accent',
+
               )}
             >
               <span
                 className={clsx(
-                  'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                  'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
                   customActive
                     ? 'bg-accent text-white border-accent'
                     : 'border-fg-mute text-fg-mute',
@@ -503,9 +535,10 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
                 placeholder="输入你的答案"
                 maxLength={MAX_CUSTOM_LENGTH}
                 className={clsx(
-                  'min-w-0 flex-1 h-9 bg-transparent text-[14px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
+                  'min-w-0 flex-1 h-7 bg-transparent text-[13px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
                   customDraft ? 'text-fg-mute font-normal' : 'text-fg',
                 )}
+
               />
               <span className="shrink-0 text-[12px] text-fg-mute tabular-nums">
                 {(answer.custom || '').length}/{MAX_CUSTOM_LENGTH}
@@ -513,6 +546,7 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
             </div>
           </div>
           <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+
               <button
                 type="button"
                 onClick={cancel}

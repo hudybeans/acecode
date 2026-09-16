@@ -15,6 +15,7 @@
 #include <regex>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 namespace fs = std::filesystem;
@@ -208,6 +209,64 @@ TEST_F(AiThemeSeedTest, SurfaceRevisionUpdatesPreviouslyManagedThemeSkillAndRefe
     EXPECT_EQ(read_bytes(home_ / relative / "references" / "palette-example.json"),
               read_bytes(packaged_ / relative / "references" / "palette-example.json"));
     EXPECT_EQ(read_bytes(home_ / "seed.version"), read_bytes(packaged_ / "seed.version"));
+}
+
+TEST_F(AiThemeSeedTest, MessageScaleRevisionUpdatesPreviousManagedThemeAndPreview) {
+    const fs::path previous = root_ / "previous-seed";
+    fs::copy(packaged_, previous, fs::copy_options::recursive);
+    write(previous / "seed.version", "2026-09-15.2\n");
+    const fs::path relative = fs::path("skills") / "acecode" / "ai-theme";
+    const std::string previous_skill =
+        "---\nname: ai-theme\ndescription: Previous official theme workflow\n"
+        "metadata:\n  source_id: acecode:ai-theme@2026-09-15.2\n---\n"
+        "Scale user-message artwork to each bubble width, centered at the bottom.\n";
+    write(previous / relative / "SKILL.md", previous_skill);
+    const std::vector<fs::path> previews = {
+        fs::path("scripts") / "preview.js",
+        fs::path("assets") / "preview-light.html",
+        fs::path("assets") / "preview-dark.html",
+    };
+    for (const auto& preview : previews) {
+        auto bytes = read_bytes(previous / relative / preview);
+        const auto size_at = bytes.find("720px auto");
+        ASSERT_NE(size_at, std::string::npos) << preview;
+        bytes.replace(size_at, std::string("720px auto").size(), "100% auto");
+        const auto position_at = bytes.find("right bottom");
+        if (position_at != std::string::npos)
+            bytes.replace(position_at, std::string("right bottom").size(), "center bottom");
+        write(previous / relative / preview, bytes);
+    }
+
+    const auto initial = acecode::reconcile_default_global_skills(home_, previous / "skills");
+    ASSERT_TRUE(initial.error.empty()) << initial.error;
+    ASSERT_TRUE(initial.version_written);
+    ASSERT_EQ(read_bytes(home_ / "seed.version"), "2026-09-15.2\n");
+    auto previous_state = nlohmann::json::parse(read_bytes(initial.state_path));
+    for (auto& entry : previous_state.at("skills"))
+        if (entry.at("name") == "ai-theme")
+            entry["source_id"] = "acecode:ai-theme@2026-09-15.2";
+    write(initial.state_path, previous_state.dump(2));
+
+    const auto updated = acecode::reconcile_default_global_skills(home_, packaged_ / "skills");
+    ASSERT_TRUE(updated.error.empty()) << updated.error;
+    ASSERT_TRUE(updated.version_written);
+    const auto* outcome = theme_outcome(updated);
+    ASSERT_NE(outcome, nullptr);
+    EXPECT_EQ(outcome->result, "updated");
+    EXPECT_EQ(outcome->source_id, "acecode:ai-theme@2026-09-15.3");
+    EXPECT_TRUE(outcome->acecode_owned);
+    EXPECT_EQ(outcome->source_tree_sha256, outcome->installed_tree_sha256);
+    EXPECT_EQ(read_bytes(home_ / "seed.version"), "2026-09-15.3\n");
+    EXPECT_EQ(read_bytes(home_ / relative / "SKILL.md"), read_bytes(packaged_ / relative / "SKILL.md"));
+    for (const auto& preview : previews) {
+        const auto installed = read_bytes(home_ / relative / preview);
+        EXPECT_EQ(installed, read_bytes(packaged_ / relative / preview));
+        EXPECT_NE(installed.find("720px auto"), std::string::npos) << preview;
+        if (preview.extension() == ".html")
+            EXPECT_NE(installed.find("background-position: right bottom"), std::string::npos) << preview;
+    }
+    EXPECT_EQ(read_bytes(home_ / relative / "scripts" / "artboard.js"),
+              read_bytes(packaged_ / relative / "scripts" / "artboard.js"));
 }
 
 TEST_F(AiThemeSeedTest, UpgradePreservesUserAuthoredThemeSkill) {

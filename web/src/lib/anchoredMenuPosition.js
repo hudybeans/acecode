@@ -7,6 +7,7 @@ export function anchoredMenuPosition({
   viewportWidth,
   viewportHeight,
   maxHeight = viewportHeight,
+  preferredPlacement = 'below',
   gap = 4,
   margin = 8,
 }) {
@@ -14,7 +15,9 @@ export function anchoredMenuPosition({
   const desiredHeight = Math.min(menuHeight, maxHeight);
   const below = Math.max(0, viewportHeight - margin - anchorRect.bottom - gap);
   const above = Math.max(0, anchorRect.top - gap - margin);
-  const placement = desiredHeight <= below || below >= above ? 'below' : 'above';
+  const placement = preferredPlacement === 'above'
+    ? (desiredHeight <= above || above >= below ? 'above' : 'below')
+    : (desiredHeight <= below || below >= above ? 'below' : 'above');
   const heightLimit = Math.min(maxHeight, placement === 'below' ? below : above);
   const height = Math.min(menuHeight, heightLimit);
   const clamp = (value, min, max) => Math.max(min, Math.min(value, max));

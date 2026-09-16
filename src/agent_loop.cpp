@@ -1190,6 +1190,17 @@ ControlEnqueueReceipt AgentLoop::enqueue_control(
     return receipt;
 }
 
+bool AgentLoop::try_run_idle_control(const std::function<void()>& control) {
+    if (!control) return false;
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    if (shutdown_requested_ || worker_task_active_ || busy_.load() ||
+        !priority_task_queue_.empty() || !task_queue_.empty()) {
+        return false;
+    }
+    control();
+    return true;
+}
+
 TurnSteerResult AgentLoop::steer_input(
     const std::string& expected_turn_id,
     const UserInput& input) {
@@ -3586,6 +3597,18 @@ ToolContext AgentLoop::build_tool_context(
     tool_ctx.write_root = write_root();
     tool_ctx.abort_flag = &abort_requested_;
     tool_ctx.session_manager = session_manager_;
+    if (session_manager_) {
+        tool_ctx.session_id = session_manager_->current_session_id();
+        tool_ctx.parent_session_id =
+            session_manager_->current_parent_session_id();
+        // 工作区 hash = projects/<hash> 目录名。手工切最后一段,不经
+        // std::filesystem::path:UTF-8 路径按系统代码页隐式转换会在中文目录下
+        // 抛异常(见 CLAUDE.md「cwd 一律以 UTF-8 std::string 传递」)。
+        const std::string project_dir = session_manager_->current_project_dir();
+        const std::size_t cut = project_dir.find_last_of("/\\");
+        tool_ctx.workspace_hash = cut == std::string::npos
+            ? project_dir : project_dir.substr(cut + 1);
+    }
     tool_ctx.skill_registry = skill_registry_;
     tool_ctx.scratch_dir = build_session_scratch_dir(cwd_, session_manager_);
     tool_ctx.preserve_full_output = true;

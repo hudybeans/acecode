@@ -42,17 +42,14 @@ run('Agent Browser grants local file navigation on macOS and Windows', () => {
   assert.match(runtime, /windows_drive_path\(value\) \|\| unc_path\(value\)/);
 });
 
-run('native document titles and favicons update matching tabs before Agent-activity filtering', () => {
+run('native document titles and favicons reach tabs through the page registry, never gated by Agent activity', () => {
   const header = source('src/desktop/agent_browser_host.hpp');
   const host = source('src/desktop/agent_browser_host.cpp');
   const desktop = source('src/desktop/main.cpp');
   const chatView = source('web/src/components/ChatView.jsx');
   const preview = source('web/src/components/PreviewDetailsPanel.jsx');
-  const stateHandlerStart = chatView.indexOf('const onBrowserState = (event) =>');
-  const stateHandlerEnd = chatView.indexOf('window.addEventListener(AGENT_BROWSER_STATE_EVENT', stateHandlerStart);
-  const stateHandler = chatView.slice(stateHandlerStart, stateHandlerEnd);
-  const metadataUpdate = stateHandler.indexOf('updateBrowserTabMetadata(prev');
-  const activityGate = stateHandler.indexOf('if (!agentBrowserActivity.active || !detail.active) return;');
+  const previewTabs = source('web/src/lib/previewTabs.js');
+  const registry = source('web/src/lib/agentBrowserPages.js');
 
   assert.match(header, /kAgentBrowserDefaultTitle\[\] = u8"新标签页"/);
   assert.match(header, /std::string favicon/);
@@ -63,8 +60,76 @@ run('native document titles and favicons update matching tabs before Agent-activ
   assert.match(desktop, /\{"favicon", state\.favicon\}/);
   assert.match(preview, /<BrowserTabIcon favicon=\{tab\.favicon\}/);
   assert.match(preview, /onError=\{\(\) => setFailed\(true\)\}/);
-  assert.ok(metadataUpdate >= 0, 'native title/favicon state must update the preview tab');
-  assert.ok(activityGate > metadataUpdate, 'metadata updates must not be gated by live Agent activity');
+  // 标题 / 图标经登记表记录进入页签同步;登记表本身不看工具活动。
+  assert.match(registry, /title: stringField\(detail\?\.title\)/);
+  assert.match(registry, /favicon: stringField\(detail\?\.favicon\)/);
+  assert.match(previewTabs, /export function syncBrowserTabsForSession/);
+  assert.match(previewTabs, /updateBrowserTabMetadata\(next, \{/);
+  assert.match(chatView, /syncBrowserTabsForSession\(prev, \{/);
+  assert.doesNotMatch(chatView, /updateBrowserTabMetadata\(prev/);
+  assert.doesNotMatch(chatView, /if \(!agentBrowserActivity\.active \|\| !detail\.active\) return;/);
+});
+
+// 场景:Agent Browser 页面必须绑定到会话,而不是靠当前 ChatView 的实时工具活动
+// 认领。回归:会话 20260915-120207-bdf9 在 6 秒延迟里切走会话,browser_open 成功
+// 但页签从未出现;以及后台会话建页会挤掉用户正在看的页面、省略 page_id 的工具
+// 落到别的会话的页面。
+run('Agent Browser pages are owned by sessions across daemon, desktop host and Web UI', () => {
+  const directory = source('src/desktop/agent_browser_page_directory.hpp');
+  const header = source('src/desktop/agent_browser_host.hpp');
+  const host = source('src/desktop/agent_browser_host.cpp');
+  const macHost = source('src/desktop/agent_browser_host_mac.mm');
+  const desktop = source('src/desktop/main.cpp');
+  const runtime = source('src/desktop/agent_browser_runtime.hpp');
+  const cdpClient = source('src/tool/agent_browser/cdp_client.cpp');
+  const tools = source('src/tool/agent_browser/browser_tools.cpp');
+  const toolContext = source('src/tool/tool_executor.hpp');
+  const agentLoop = source('src/agent_loop.cpp');
+  const chatView = source('web/src/components/ChatView.jsx');
+  const app = source('web/src/App.jsx');
+  const bridge = source('web/src/lib/agentBrowser.js');
+  const registry = source('web/src/lib/agentBrowserPages.js');
+
+  // 归属与显示页 / Agent 目标页拆分是共享纯逻辑,两端 host 都用它。
+  assert.match(directory, /class AgentBrowserPageDirectory/);
+  assert.match(directory, /resolve_agent_page\(/);
+  assert.match(directory, /next_displayed_after_close\(/);
+  assert.match(header, /AgentBrowserPageOwner owner;/);
+  assert.match(header, /bool agent_target = false;/);
+  for (const nativeHost of [host, macHost]) {
+    assert.match(nativeHost, /AgentBrowserPageDirectory directory;/);
+    assert.match(nativeHost, /resolve_agent_page_id\(requested_page, owner, true\)/);
+    assert.match(nativeHost, /parse_agent_browser_page_owner\(/);
+    // daemon 为某个会话建页不改变显示页;旧协议与 UI 自建页沿用「新页即显示」。
+    assert.match(nativeHost, /if \(!agent_created \|\| owner\.empty\(\)\) \{/);
+    assert.doesNotMatch(nativeHost, /std::vector<std::string> page_order;/);
+    assert.doesNotMatch(nativeHost, /std::string active_page;/);
+  }
+  // 协议版本随 owner 字段一起升级,daemon 与 Desktop 不一致时 manifest 校验直接拒绝。
+  assert.match(runtime, /kAgentBrowserRuntimeProtocolVersion = 5;/);
+  // daemon 侧:会话身份从 ToolContext 进代理请求。
+  assert.match(toolContext, /std::string session_id;/);
+  assert.match(toolContext, /std::string parent_session_id;/);
+  assert.match(toolContext, /std::string workspace_hash;/);
+  assert.match(agentLoop, /tool_ctx\.session_id = session_manager_->current_session_id\(\);/);
+  assert.match(tools, /client\.set_owner\(agent_browser_owner_from_context\(context\)\);/);
+  assert.match(cdpClient, /if \(owner\.is_object\(\)\) request\["owner"\] = owner;/);
+  // Desktop → Web:状态事件带 owner,ListPages 按会话对账,CreatePage 接 owner。
+  assert.match(desktop, /\{"owner", acecode::desktop::agent_browser_page_owner_json\(state\.owner\)\}/);
+  assert.match(desktop, /\{"agent_target", state\.agent_target\}/);
+  assert.match(desktop, /aceDesktop_agentBrowserListPages/);
+  assert.match(desktop, /agent_browser\.create_page\(&error, owner\)/);
+  assert.match(bridge, /aceDesktop_agentBrowserListPages/);
+  assert.match(bridge, /export function agentBrowserOwnerForSession/);
+  // Web:登记表在 App 级安装,ChatView 只从登记表派生页签;不再按全局活动页猜。
+  assert.match(app, /installAgentBrowserPageListener\(\)/);
+  assert.match(app, /reconcileAgentBrowserPageStore\(\)/);
+  assert.match(registry, /createSingleWriterStore/);
+  assert.match(chatView, /agentBrowserPagesForSession\(agentBrowserRegistry, sid\)/);
+  assert.match(chatView, /reconcileAgentBrowserPageStore\(sid\)/);
+  assert.match(chatView, /createAgentBrowserPage\(agentBrowserOwnerForSession\(ref\)\)/);
+  assert.doesNotMatch(chatView, /getAgentBrowserState\(\)/);
+  assert.doesNotMatch(chatView, /agentBrowserActivationRef/);
 });
 
 run('Agent Browser collaboration chrome mirrors the VS Code page actions', () => {

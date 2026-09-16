@@ -1,8 +1,8 @@
 const MARGIN = 12;
 const MIN_WIDTH = 300;
 const MIN_HEIGHT = 260;
-const DEFAULT_WIDTH = 640;
-const DEFAULT_HEIGHT = 680;
+const DEFAULT_WIDTH = 880;
+const DEFAULT_HEIGHT = 800;
 
 const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
@@ -44,6 +44,10 @@ export function createSideChatGeometry(viewport = {}) {
     left: finite(viewport.left) + (finite(viewport.width) - rect.width) / 2,
     top: finite(viewport.top) + (finite(viewport.height) - rect.height) / 2,
   }, viewport);
+}
+
+export function anchorSideChatGeometry(rect, anchor, viewport) {
+  return clampSideChatGeometry({ ...rect, left: anchor.left, top: anchor.top }, viewport);
 }
 
 export function moveSideChatGeometry(rect, deltaX, deltaY, viewport) {

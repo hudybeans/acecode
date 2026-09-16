@@ -26,7 +26,7 @@ Web 端 `AskUserQuestion`（`QuestionPicker`）与 TUI 版存在明显交互落�
 
 ## Impact
 
-- **Web 前端**：`web/src/components/QuestionPicker.jsx`、`web/src/components/QuestionFeedbackCard.jsx`（反馈卡）、`web/src/components/ChatView.jsx`（集成点）、`web/src/components/ToolBlock.jsx`（移除旧的结果卡渲染，避免与反馈卡重叠）、`web/src/lib/questionPicker.js`、`web/src/lib/questionFeedback.js`（反馈卡派生）、`web/src/lib/sessionTranscript.js`（归一化 `cancelled` / `multi_select`）。
+- **Web 前端**：`web/src/components/QuestionPicker.jsx`、`web/src/components/QuestionFeedbackCard.jsx`（反馈卡）、`web/src/components/ChatView.jsx`（集成点）、`web/src/components/ToolBlock.jsx`（在公共工具渲染路径展示新反馈卡）、`web/src/lib/questionPicker.js`、`web/src/lib/questionFeedback.js`（反馈卡派生）、`web/src/lib/sessionTranscript.js`（归一化 `cancelled` / `multi_select`）。
 - **daemon**：`src/tool/ask_user_question_tool.cpp`（取消路径落 `cancelled`、提交与超时路径落 `multi_select`）、`src/agent_loop.cpp`（答案派生 `not_answered`）。
 - **测试**：`web/src/lib/questionPicker.test.js`、`web/src/lib/questionFeedback.test.js`（新增）、`web/src/lib/sessionTranscript.test.js`、`tests/tool/ask_user_question_tool_test.cpp`；`web/src/lib/runTests.js` 注册新测试文件。
 - **文档**：`docs/specs/2026-09-13-web-ask-user-question-requirements.md`、`docs/design/web-ask-user-question-design.md` 为验收基线，均已记录本轮决策变更。

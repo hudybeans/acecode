@@ -100,6 +100,10 @@ void WebServer::Impl::register_models() {
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
         });
+        CROW_ROUTE(app, "/api/sessions/<string>/reasoning").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
         CROW_ROUTE(app, "/api/sessions/<string>/model/reload").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
@@ -551,6 +555,49 @@ void WebServer::Impl::register_models() {
             crow::response r(model_state_to_json(state).dump());
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        // Session reasoning is validated and applied behind the worker's idle gate.
+        CROW_ROUTE(app, "/api/sessions/<string>/reasoning").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& sid) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (!deps.session_registry) return crow::response(503);
+            auto failure = [&](int status, const char* code, const std::string& message) {
+                crow::response response(status);
+                response.add_header("Content-Type", "application/json");
+                response.body = json{{"error", code}, {"message", message}}.dump();
+                return with_cors(req, std::move(response));
+            };
+            const auto body = json::parse(req.body, nullptr, false);
+            if (!body.is_object() || !body.contains("effort") ||
+                (!body["effort"].is_null() && !body["effort"].is_string())) {
+                return failure(400, "INVALID_REASONING_EFFORT", "effort must be a string or null");
+            }
+            const std::optional<std::string> effort = body["effort"].is_null()
+                ? std::nullopt : std::optional<std::string>{body["effort"].get<std::string>()};
+            SessionReasoningResult result;
+            try {
+                result = deps.session_registry->set_reasoning_effort(sid, effort);
+            } catch (...) {
+                return failure(500, "REASONING_UPDATE_FAILED", "reasoning update failed");
+            }
+            switch (result.status) {
+                case SessionReasoningStatus::UnknownSession:
+                    return failure(404, "SESSION_NOT_FOUND", result.error);
+                case SessionReasoningStatus::Busy:
+                    return failure(409, "SESSION_BUSY", result.error);
+                case SessionReasoningStatus::InvalidEffort:
+                    return failure(400, "INVALID_REASONING_EFFORT", result.error);
+                case SessionReasoningStatus::Unavailable:
+                    return failure(409, "MODEL_UNAVAILABLE", result.error);
+                case SessionReasoningStatus::Failed:
+                    return failure(500, "REASONING_UPDATE_FAILED", result.error);
+                case SessionReasoningStatus::Updated:
+                    break;
+            }
+            crow::response response(model_state_to_json(result.state).dump());
+            response.add_header("Content-Type", "application/json");
+            return with_cors(req, std::move(response));
         });
 
         // POST /api/models: 新增 saved_models 条目。body = SavedModelDraft JSON。

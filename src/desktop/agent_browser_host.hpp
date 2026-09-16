@@ -1,5 +1,7 @@
 #pragma once
 
+#include "agent_browser_page_directory.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -47,6 +49,10 @@ struct AgentBrowserState {
     bool can_go_back = false;
     bool can_go_forward = false;
     bool shared_with_agent = false;
+    // 页面归属的会话;空 = 旧协议或未绑定。`agent_target` 表示这一页是该会话
+    // 工具省略 page_id 时的默认目标(每个会话至多一页为 true)。
+    AgentBrowserPageOwner owner;
+    bool agent_target = false;
     bool element_selection_active = false;
     std::uint64_t element_selection_serial = 0;
     std::string url = "about:blank";
@@ -88,10 +94,16 @@ public:
 
     bool supported() const;
     AgentBrowserState state(const std::string& page_id = {}) const;
-    std::vector<AgentBrowserState> states() const;
+    // 非空 owner_session_id 只返回该会话拥有的页面(Web UI 切会话时对账用)。
+    std::vector<AgentBrowserState> states(
+        const std::string& owner_session_id = {}) const;
+    // 当前显示页(Web UI 详情栏里的那一页)。它不再是工具的默认目标,见
+    // AgentBrowserPageDirectory。
     std::string active_page_id() const;
 
-    std::string create_page(std::string* error = nullptr);
+    // UI 自建页:带 owner 时页面归属该会话,但不成为该会话的 Agent 默认目标。
+    std::string create_page(std::string* error = nullptr,
+                            const AgentBrowserPageOwner& owner = {});
     bool close_page(const std::string& page_id, std::string* error = nullptr);
     bool select_page(const std::string& page_id, std::string* error = nullptr);
     bool set_bounds(const std::string& page_id,

@@ -3,6 +3,7 @@ import { clsx } from '../lib/format.js';
 import { loadTier, loadTierTextClass } from '../lib/modelLoad.js';
 import { PERMISSION_MODES, normalizePermissionMode, permissionModeOption } from '../lib/permissionMode.js';
 import { buildStatusBarModelMenu } from '../lib/sessionModel.js';
+import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { RefreshIcon, VsIcon } from './Icon.jsx';
 import { SwarmModeIcon } from './SwarmModeIcon.jsx';
 import { TokenBudgetRing } from './TokenBudgetRing.jsx';
@@ -185,6 +186,10 @@ export function ComposerSessionControls({
   selectedModelName = '',
   modelSwitching = false,
   modelRefreshing = false,
+  reasoningOptions = null,
+  reasoningDisabled = false,
+  onReasoningChange,
+  onCaptureComposerSelection,
   onModelChange,
   onRefreshModels,
   onOpenModelSettings,
@@ -206,9 +211,17 @@ export function ComposerSessionControls({
   const [localMode, setLocalMode] = useState(normalizePermissionMode(permissionMode));
   const [openMenu, setOpenMenu] = useState('');
   const rootRef = useRef(null);
+  const reasoningAnchorRef = useRef(null);
+  const reasoningCaretRestoreRef = useRef(null);
+  const closeReasoningMenu = () => {
+    setOpenMenu('');
+    const restore = reasoningCaretRestoreRef.current;
+    reasoningCaretRestoreRef.current = null;
+    if (restore) window.requestAnimationFrame(restore);
+  };
   const compactControls = useAdaptiveComposerControls(
     rootRef,
-    `${swarmMode}|${expertName}|${permissionMode}|${selectedModelName}|${model}`,
+    `${swarmMode}|${expertName}|${permissionMode}|${selectedModelName}|${model}|${reasoningOptions?.label || ''}`,
   );
 
   useEffect(() => {
@@ -216,7 +229,7 @@ export function ComposerSessionControls({
   }, [permissionMode]);
 
   useEffect(() => {
-    if (!openMenu) return undefined;
+    if (!openMenu || openMenu === 'reasoning') return undefined;
     const onPointerDown = (event) => {
       if (!rootRef.current?.contains(event.target)) setOpenMenu('');
     };
@@ -230,6 +243,10 @@ export function ComposerSessionControls({
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [openMenu]);
+
+  useEffect(() => {
+    if (openMenu === 'reasoning' && (!reasoningOptions || reasoningDisabled)) closeReasoningMenu();
+  }, [reasoningOptions, reasoningDisabled, openMenu]);
 
   const mode = normalizePermissionMode(onPermissionModeChange ? permissionMode : localMode);
   const permission = permissionModeOption(mode);
@@ -551,6 +568,66 @@ export function ComposerSessionControls({
             </div>
           )}
         </div>
+
+        {reasoningOptions && (
+          <div data-composer-control="reasoning" className="ace-composer-reasoning-control">
+            <button
+              ref={reasoningAnchorRef}
+              type="button"
+              disabled={reasoningDisabled}
+              title="思考深度"
+              aria-label={`思考深度：${reasoningOptions.label}`}
+              aria-haspopup="menu"
+              aria-expanded={openMenu === 'reasoning'}
+              className="ace-composer-control-button ace-composer-reasoning-button text-fg disabled:cursor-not-allowed disabled:opacity-50"
+              onPointerDown={() => {
+                if (openMenu !== 'reasoning') reasoningCaretRestoreRef.current = onCaptureComposerSelection?.();
+              }}
+              onClick={() => {
+                if (reasoningDisabled) return;
+                if (openMenu === 'reasoning') closeReasoningMenu();
+                else setOpenMenu('reasoning');
+              }}
+            >
+              <span>{reasoningOptions.label}</span>
+              <VsIcon name="glyphDown" size={10} className="shrink-0 opacity-75" />
+            </button>
+            {openMenu === 'reasoning' && (
+              <AnchoredMenu
+                anchorRef={reasoningAnchorRef}
+                onClose={closeReasoningMenu}
+                width={168}
+                preferredPlacement="above"
+                role="menu"
+                aria-label="思考深度"
+                className="ace-composer-reasoning-menu"
+              >
+                <div className="px-2 py-1.5 text-[11px] font-medium text-fg-mute">思考深度</div>
+                {reasoningOptions.items.map((item) => (
+                  <button
+                    key={item.effort || 'default'}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={item.effort === reasoningOptions.selectedEffort}
+                    disabled={reasoningDisabled}
+                    className={clsx(
+                      'flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-[12px] focus:outline-none focus-visible:bg-surface-hi',
+                      item.effort === reasoningOptions.selectedEffort ? 'bg-accent-bg text-accent' : 'text-fg hover:bg-surface-hi',
+                    )}
+                    onClick={() => {
+                      if (reasoningDisabled) return;
+                      closeReasoningMenu();
+                      if (item.effort !== reasoningOptions.selectedEffort) onReasoningChange?.(item.effort);
+                    }}
+                  >
+                    <span>{item.label}</span>
+                    {item.effort === reasoningOptions.selectedEffort && <VsIcon name="ok" size={11} mono={false} />}
+                  </button>
+                ))}
+              </AnchoredMenu>
+            )}
+          </div>
+        )}
 
         <div data-composer-control="submit" className="flex shrink-0 items-center gap-1">
           {actions}

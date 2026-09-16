@@ -7,7 +7,7 @@ const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const picker = fs.readFileSync(path.join(srcRoot, 'components/QuestionPicker.jsx'), 'utf8');
 const chatView = fs.readFileSync(path.join(srcRoot, 'components/ChatView.jsx'), 'utf8');
 const toolBlock = fs.readFileSync(path.join(srcRoot, 'components/ToolBlock.jsx'), 'utf8');
-const rootClasses = picker.match(/clsx\('([^']*rounded-\[14px\][^']*)'/)?.[1] || '';
+const rootClasses = picker.match(/className="([^"]*border-border[^\"]*overflow-hidden[^\"]*)"/)?.[1] || '';
 
 assert.ok(rootClasses, 'QuestionPicker root classes must be discoverable');
 assert.doesNotMatch(

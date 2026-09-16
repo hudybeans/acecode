@@ -52,22 +52,31 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
     'homeSubmitting 进 disabled 会让主页输入框在建会话期间变成只读',
   );
 
+  assert.doesNotMatch(
+    chatView,
+    /disabled=\{[^}]*reasoningSwitching[^}]*\}/,
+    'reasoning mutation must disable submission without making the editor read-only',
+  );
+
   // 主页与会话 composer 都在提问挂起时**根本不渲染** —— dock 整体换成
   // 提问框,所以它们不需要 disabled,也不该留「请先回答上方问题」这类旧提示。
   assert.doesNotMatch(chatView, /disabled=\{!!questionForView\}/);
   assert.match(chatView, /<div className="ace-composer-dock">\s*\{questionForView \? \(/);
+
   assert.doesNotMatch(chatView, /请先回答上方问题/);
-  assert.match(chatView, /submitting=\{composerSubmitting\}/);
-  assert.match(chatView, /submitting=\{homeSubmitting\}/);
+  assert.match(chatView, /submitting=\{composerSubmitting \|\| reasoningSwitching\}/);
+  assert.match(chatView, /submitting=\{homeSubmitting \|\| reasoningSwitching\}/);
 });
 
 run('提问挂起时 composer 整体让位给提问框,不留插话入口', () => {
   const chatView = source('components/ChatView.jsx');
 
-  // 提问框承担提问期间唯一的交互面:提交/取消经 resolveQuestion 回流,结果由
-  // onFeedback 落成反馈卡。
+  // 提问框承担提问期间唯一的交互面:提交/取消经 resolveQuestion 回流,反馈
+  // 由共享 ToolBlock 按 tool_end 的持久化结果渲染。
   assert.match(chatView, /\{questionForView \? \(\s*<QuestionPicker/);
-  assert.match(chatView, /onFeedback=\{handleQuestionFeedback\}/);
+  assert.match(chatView, /onResolve=\{resolveQuestion\}/);
+  assert.doesNotMatch(chatView, /setQuestionFeedback|renderFeedbackAfterQuestion|onFeedback=\{handleQuestionFeedback\}/);
+
 
   // 输入区只挂在「没有待答问题」的分支里,提问期间 dock 中不存在 InputBar。
   const dockStart = chatView.indexOf('<div className="ace-composer-dock">');

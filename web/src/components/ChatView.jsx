@@ -157,6 +157,7 @@ import {
   sessionModelReloadFeedback,
   withCreateSessionPreferences,
 } from '../lib/sessionModel.js';
+import { composerReasoningOptions } from '../lib/modelReasoning.js';
 import { normalizePermissionMode, permissionModeOption } from '../lib/permissionMode.js';
 import { ATTACHMENT_HARD_LIMIT_BYTES, normalizeImageFile } from '../lib/imageNormalize.js';
 import { PanelToggleIcon, VsIcon } from './Icon.jsx';
@@ -205,8 +206,8 @@ import {
   refreshPreviewTab,
   reorderPreviewTab,
   sessionWorkingCwd,
+  syncBrowserTabsForSession,
   updateGitChangesTab,
-  updateBrowserTabMetadata,
   updateFileTabDraft,
   updateSessionChangesTab,
   visiblePreviewTabs,
@@ -222,12 +223,21 @@ import {
 import {
   AGENT_BROWSER_STATE_EVENT,
   agentBrowserActivityFromItems,
+  agentBrowserOwnerForSession,
   closeAgentBrowserPage,
   createAgentBrowserPage,
-  getAgentBrowserState,
   hasNativeAgentBrowser,
   selectAgentBrowserPage,
 } from '../lib/agentBrowser.js';
+import {
+  agentBrowserPageStore,
+  agentBrowserPageStoreSnapshot,
+  agentBrowserPageStoreSubscribe,
+  agentBrowserPagesForSession,
+  agentBrowserSessionTargetPageId,
+  claimUnownedAgentBrowserPage,
+  reconcileAgentBrowserPageStore,
+} from '../lib/agentBrowserPages.js';
 import { nextAutoPreviewRefresh } from '../lib/previewRefresh.js';
 import {
   CHAT_TAIL_FOLLOW_STATE,
@@ -725,6 +735,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const [modelOptions, setModelOptions] = useState([]);
   const [modelListLoaded, setModelListLoaded] = useState(false);
   const [homeModelName, setHomeModelName] = useState('');
+  const [homeReasoningEffort, setHomeReasoningEffort] = useState(null);
+  const [reasoningSwitching, setReasoningSwitching] = useState(false);
+  const reasoningRequestRef = useRef(0);
   const [experts, setExperts] = useState([]);
   const [homeExpertId, setHomeExpertId] = useState(() => String(
     ref?.expertId || ref?.expert_id || ref?.expert?.id || '',
@@ -850,6 +863,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subscribeQueueStore = useCallback((listener) => queueStore.subscribe(listener), [queueStore]);
   const getQueueSnapshot = useCallback(() => queueStore.getState(), [queueStore]);
   const queueState = useSyncExternalStore(subscribeQueueStore, getQueueSnapshot, getQueueSnapshot);
+  const [sideChatAnchor, setSideChatAnchor] = useState(null);
   const sideChat = useMemo(() => createSideChatController({
     startStream: (options) => api.streamSideChat(sid, options),
   }), [api, sid]);
@@ -1216,7 +1230,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     draftEditVersionRef.current += 1;
     composerDirtyRef.current = true;
     setComposerValue(next);
-    if (next) setQuestionFeedback(null);
     if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, next);
   }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, sid]);
 
@@ -1260,14 +1273,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     preserveExtras = false,
     title = '',
   } = {}) => {
-    if (homeSubmitting) return null;
+    if (homeSubmitting || reasoningSwitching) return null;
     const target = selectedHomeWorkspace || fallbackWorkspaceOption(ref, health);
     const targetHash = target?.hash || '';
     const targetNoWorkspace = !!target?.noWorkspace;
     void refreshWorkspaceGitInfo(api, target).catch(() => {});
     const baseOptions = withCreateSessionPreferences(
       createOptions || sessionCreateOptionsForText(text),
-      { modelName: homeModelName, permissionMode },
+      { modelName: homeModelName, permissionMode, reasoningEffort: homeReasoningEffort },
     );
     const expertOptions = homeExpertId ? { expert_id: homeExpertId, expertId: homeExpertId } : {};
     const options = targetNoWorkspace
@@ -1331,7 +1344,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setHomeSubmitting(false);
     }
-  }, [api, experts, health, homeExpertId, homeModelName, homeSubmitting, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
+  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
 
   const stageMediaFiles = useCallback((reservedFiles) => {
     const stagedItems = [];
@@ -1800,6 +1813,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     let cancelled = false;
     setPendingModelName('');
     setModelSwitching(false);
+    setReasoningSwitching(false);
+    reasoningRequestRef.current += 1;
     setModelRefreshing(false);
     setModelListLoaded(false);
 
@@ -1857,7 +1872,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   }, [api, modelProfileRevision, ref?.context_window, ref?.deleted, ref?.model, ref?.modelDeleted, ref?.model_deleted, ref?.model_name, ref?.model_preset, ref?.provider, ref?.workspaceHash, sid]);
 
   const refreshSessionModels = useCallback(async () => {
-    if (modelRefreshing) return;
+    if (modelRefreshing || reasoningSwitching) return;
     const targetSid = sid;
     setModelRefreshing(true);
     try {
@@ -1899,7 +1914,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setModelRefreshing(false);
     }
-  }, [api, modelOptions, modelRefreshing, sid]);
+  }, [api, modelOptions, modelRefreshing, sid, reasoningSwitching]);
 
   useEffect(() => {
     if (!sid) {
@@ -2646,6 +2661,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
       return null;
     }
+    setSideChatAnchor(null);
     sideChat.open();
     if (!question) return true;
     if (sideChat.getSnapshot().busy) {
@@ -2662,6 +2678,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
       return;
     }
+    setSideChatAnchor(null);
     sideChat.open();
   }, [sideChat]);
 
@@ -3201,7 +3218,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const selectHomeModel = useCallback(async (name) => {
     const nextName = String(name || '');
     const previousName = String(homeModelName || '');
-    if (!nextName || nextName === previousName || modelRefreshing || modelSwitching) return;
+    if (!nextName || nextName === previousName || modelRefreshing || modelSwitching || reasoningSwitching) return;
     setHomeModelName(nextName);
     setModelSwitching(true);
     try {
@@ -3215,12 +3232,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setModelSwitching(false);
     }
-  }, [api, homeModelName, modelRefreshing, modelSwitching]);
+  }, [api, homeModelName, modelRefreshing, modelSwitching, reasoningSwitching]);
 
   const switchSessionModel = useCallback(async (name) => {
     const nextName = String(name || '');
     const currentName = selectedModelName(modelState);
-    if (!sid || !nextName || nextName === currentName || modelSwitching) return;
+    if (!sid || !nextName || nextName === currentName || modelSwitching || reasoningSwitching) return;
     setPendingModelName(nextName);
     setModelSwitching(true);
     try {
@@ -3233,12 +3250,47 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       setPendingModelName('');
       setModelSwitching(false);
     }
-  }, [api, modelState, modelSwitching, sid]);
+  }, [api, modelState, modelSwitching, reasoningSwitching, sid]);
 
   const changeComposerModel = useCallback((name) => {
     if (sid) void switchSessionModel(name);
     else void selectHomeModel(name);
   }, [selectHomeModel, sid, switchSessionModel]);
+
+  useEffect(() => {
+    setHomeReasoningEffort(null);
+  }, [homeModelName, sid]);
+
+  useEffect(() => {
+    const selected = modelOptions.find((option) => option.name === homeModelName);
+    setHomeReasoningEffort((current) => composerReasoningOptions(selected, current)?.selectedEffort ?? null);
+  }, [homeModelName, modelOptions]);
+
+  const changeComposerReasoning = useCallback(async (effort) => {
+    if (busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing) return;
+    const selected = sid ? modelState : modelOptions.find((option) => option.name === homeModelName);
+    const choices = composerReasoningOptions(selected, sid ? undefined : homeReasoningEffort);
+    if (!choices || !choices.items.some((item) => item.effort === effort)) return;
+    if (!sid) {
+      setHomeReasoningEffort(effort);
+      return;
+    }
+    const targetSid = sid;
+    const request = ++reasoningRequestRef.current;
+    setReasoningSwitching(true);
+    try {
+      const state = await api.setSessionReasoning(targetSid, effort);
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) {
+        setModelState(normalizeModelState(state));
+      }
+    } catch (error) {
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) {
+        toast({ kind: 'err', text: '思考深度设置失败：' + (error?.message || '') });
+      }
+    } finally {
+      if (sidRef.current === targetSid && reasoningRequestRef.current === request) setReasoningSwitching(false);
+    }
+  }, [api, busy, composerSubmitting, homeModelName, homeReasoningEffort, homeSubmitting, modelOptions, modelRefreshing, modelState, modelSwitching, reasoningSwitching, sid]);
 
   const switchHomeDefaultPermissionMode = useCallback(async (mode) => {
     const nextMode = normalizePermissionMode(mode);
@@ -4069,7 +4121,27 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     () => agentBrowserActivityFromItems(items),
     [items],
   );
-  const [agentBrowserActivePageId, setAgentBrowserActivePageId] = useState('');
+  // 浏览器页签从 App 级页面归属登记表派生(lib/agentBrowserPages.js),而不是从
+  // 当前 transcript 的实时工具活动推断:后者只在「正在看这个会话 + 工具正在执行」
+  // 的瞬间成立,用户切走会话时页面就成了孤儿(会话 20260915-120207-bdf9)。
+  const agentBrowserRegistry = useSyncExternalStore(
+    agentBrowserPageStoreSubscribe,
+    agentBrowserPageStoreSnapshot,
+    agentBrowserPageStoreSnapshot,
+  );
+  const sessionBrowserPages = useMemo(
+    () => agentBrowserPagesForSession(agentBrowserRegistry, sid),
+    [agentBrowserRegistry, sid],
+  );
+  const sessionBrowserTargetPageId = useMemo(
+    () => agentBrowserSessionTargetPageId(agentBrowserRegistry, sid),
+    [agentBrowserRegistry, sid],
+  );
+  // 彩虹边框只给 Agent 正在操作的那一页:显式 page_id 优先,否则取本会话的
+  // Agent 默认目标页;没有浏览器工具在跑时为空。
+  const agentBrowserActivePageId = agentBrowserActivity.active
+    ? (agentBrowserActivity.pageId || sessionBrowserTargetPageId)
+    : '';
   // 每轮「本轮改动文件」列表:collectTurnChangeSetsFromItems 按 user 消息切
   // 回合聚合变更;列表渲染在回合末尾 = 下一个 user 行之前,最后一轮挂在
   // transcript 末尾(tail)。锚定基于 renderedItems(折叠投影后的视图)里的
@@ -4283,9 +4355,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [onQuestionResolve]);
 
-  // Results are rendered from persisted ToolBlock metadata; retain the callback
-  // prop for picker compatibility without creating a transient feedback card.
-  const handleQuestionFeedback = useCallback(() => {}, []);
 
   const sidePanelMounted = showSidePanel;
   const sidePanelNavigationCollapsed = sidePanelCollapsed || sidePanelListCollapsed;
@@ -4440,101 +4509,80 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const openBrowserPreview = useCallback(async () => {
     if (!sid || !hasNativeAgentBrowser()) return;
     if (sidePanelCollapsed) onToggleSidePanel?.();
-    const created = await createAgentBrowserPage();
+    const created = await createAgentBrowserPage(agentBrowserOwnerForSession(ref));
     if (created?.ok === false || !created?.page_id) return;
     showBrowserPage(
       created.page_id,
       created.title || defaultBrowserTabTitle(),
       created.favicon,
     );
-  }, [onToggleSidePanel, showBrowserPage, sid, sidePanelCollapsed]);
+  }, [onToggleSidePanel, ref, showBrowserPage, sid, sidePanelCollapsed]);
 
-  const agentBrowserActivationRef = useRef('');
+  // 切会话时向 Desktop 对账一次 native 页面池;事件流已经在 App 级持续镜像。
   useEffect(() => {
-    const activationKey = agentBrowserActivity.activationKey;
-    if (!activationKey || !sid || !hasNativeAgentBrowser()) return;
-    if (!agentBrowserActivity.active) {
-      setAgentBrowserActivePageId('');
-      return;
-    }
-    const scopedKey = `${sid}:${activationKey}`;
-    if (agentBrowserActivationRef.current === scopedKey) return;
-    agentBrowserActivationRef.current = scopedKey;
-    if (agentBrowserActivity.pageId) {
-      setAgentBrowserActivePageId(agentBrowserActivity.pageId);
-      showBrowserPage(agentBrowserActivity.pageId);
-      void selectAgentBrowserPage(agentBrowserActivity.pageId);
-      return;
-    }
-    if (agentBrowserActivity.toolName === 'browser_open') {
-      setAgentBrowserActivePageId('');
-      return;
-    }
-    void getAgentBrowserState().then((state) => {
-      if (!state?.page_id || state.closed) return;
-      setAgentBrowserActivePageId(state.page_id);
-      showBrowserPage(
-        state.page_id,
-        state.title || defaultBrowserTabTitle(),
-        state.favicon,
-      );
-    });
-  }, [
-    agentBrowserActivity.active,
-    agentBrowserActivity.activationKey,
-    agentBrowserActivity.pageId,
-    agentBrowserActivity.toolName,
-    showBrowserPage,
-    sid,
-  ]);
+    if (!sid || !hasNativeAgentBrowser()) return;
+    void reconcileAgentBrowserPageStore(sid);
+  }, [sid]);
 
+  // 旧版 Desktop 的状态事件不带 owner:退回按「当前会话有正在执行的浏览器工具」
+  // 认领,只影响本地登记表镜像,native 已归属的页面不会被抢走。
   useEffect(() => {
-    const onBrowserState = (event) => {
+    if (!sid || !agentBrowserActivity.active) return undefined;
+    const onLegacyBrowserState = (event) => {
       const detail = event?.detail;
       const pageId = String(detail?.page_id || '');
-      if (!sid || !pageId) return;
-      const tabKey = `browser:${pageId}`;
-      if (detail.closed) {
-        setPreviewTabState((prev) => closePreviewTab(prev, {
-          scopeKey: previewScope,
-          sessionId: sid,
-          tabKey,
-        }));
-        setAgentBrowserActivePageId((current) => (current === pageId ? '' : current));
-        return;
-      }
-      const hasTitle = Object.prototype.hasOwnProperty.call(detail, 'title');
-      const hasFavicon = Object.prototype.hasOwnProperty.call(detail, 'favicon');
-      if (hasTitle || hasFavicon) {
-        setPreviewTabState((prev) => updateBrowserTabMetadata(prev, {
-          sessionId: sid,
-          pageId,
-          ...(hasTitle ? { title: detail.title } : {}),
-          ...(hasFavicon ? { favicon: detail.favicon } : {}),
-        }));
-      }
-      if (!agentBrowserActivity.active || !detail.active) return;
-      const expected = agentBrowserActivity.pageId || agentBrowserActivePageId;
-      if (expected && expected !== pageId) return;
-      if (!expected && agentBrowserActivity.toolName === 'browser_close') return;
-      setAgentBrowserActivePageId(pageId);
-      showBrowserPage(
-        pageId,
-        detail.title || defaultBrowserTabTitle(),
-        detail.favicon,
-      );
+      if (!pageId || detail?.owner || detail?.closed || !detail?.active) return;
+      agentBrowserPageStore().commit((state) => (
+        claimUnownedAgentBrowserPage(state, pageId, sid, ref?.workspaceHash || '')
+      ));
     };
-    window.addEventListener(AGENT_BROWSER_STATE_EVENT, onBrowserState);
-    return () => window.removeEventListener(AGENT_BROWSER_STATE_EVENT, onBrowserState);
-  }, [
-    agentBrowserActivity.active,
-    agentBrowserActivity.pageId,
-    agentBrowserActivity.toolName,
-    agentBrowserActivePageId,
-    previewScope,
-    showBrowserPage,
-    sid,
-  ]);
+    window.addEventListener(AGENT_BROWSER_STATE_EVENT, onLegacyBrowserState);
+    return () => window.removeEventListener(AGENT_BROWSER_STATE_EVENT, onLegacyBrowserState);
+  }, [agentBrowserActivity.active, ref?.workspaceHash, sid]);
+
+  // 登记表 → 页签:补缺、去已关闭、同步标题与图标。本 ChatView 首次见到的页面
+  // 自动打开并激活(包括用户切走期间 Agent 开的页,切回来时页签就在);再次切回
+  // 同一会话不重复抢焦点。
+  const revealedBrowserPagesRef = useRef(new Map());
+  useEffect(() => {
+    if (!sid) return;
+    setPreviewTabState((prev) => syncBrowserTabsForSession(prev, {
+      scopeKey: previewScope,
+      sessionId: sid,
+      pages: sessionBrowserPages,
+    }));
+    let revealed = revealedBrowserPagesRef.current.get(sid);
+    if (!revealed) {
+      revealed = new Set();
+      revealedBrowserPagesRef.current.set(sid, revealed);
+    }
+    for (const page of sessionBrowserPages) {
+      if (revealed.has(page.pageId)) continue;
+      revealed.add(page.pageId);
+      showBrowserPage(page.pageId, page.title, page.favicon);
+    }
+    for (const pageId of Array.from(revealed)) {
+      if (!sessionBrowserPages.some((page) => page.pageId === pageId)) {
+        revealed.delete(pageId);
+      }
+    }
+  }, [previewScope, sessionBrowserPages, showBrowserPage, sid]);
+
+  // Agent 切换默认目标页(browser_open / 显式选页)且有浏览器工具正在执行时,把
+  // 那一页的页签激活到前台;目标不属于本会话(显式操作别的会话的页)则不动。
+  const agentBrowserTargetRef = useRef('');
+  useEffect(() => {
+    const scoped = agentBrowserActivePageId ? `${sid}:${agentBrowserActivePageId}` : '';
+    if (!scoped) {
+      agentBrowserTargetRef.current = '';
+      return;
+    }
+    if (agentBrowserTargetRef.current === scoped) return;
+    agentBrowserTargetRef.current = scoped;
+    if (!sessionBrowserPages.some((page) => page.pageId === agentBrowserActivePageId)) return;
+    showBrowserPage(agentBrowserActivePageId);
+    void selectAgentBrowserPage(agentBrowserActivePageId);
+  }, [agentBrowserActivePageId, sessionBrowserPages, showBrowserPage, sid]);
 
   const openSessionChangePreview = useCallback((filePath, turnUserMessageId = '') => {
     if (!sid || !filePath) return;
@@ -4786,7 +4834,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   request={questionForView}
                   onResolve={resolveQuestion}
                   originLabel={questionOriginLabel}
-                  onFeedback={handleQuestionFeedback}
                 />
               ) : (
                 <InputBar
@@ -4808,7 +4855,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   value={composerValue}
                   onChange={handleComposerChange}
                   onSubmit={submit}
-                  submitting={homeSubmitting}
+                  submitting={homeSubmitting || reasoningSwitching}
                   placeholder="向 ACECode 描述任务，或输入 / 命令..."
                   {...composerInputProps}
                   fileDropManagedExternally
@@ -4818,8 +4865,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                     modelOptions,
                     selectedModelName: homeModelName,
                     modelLoad: homeModelLoad,
-                    modelSwitching,
+                    modelSwitching: modelSwitching || reasoningSwitching,
                     modelRefreshing,
+                    reasoningOptions: composerReasoningOptions(selectedHomeModel, homeReasoningEffort),
+                    reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
+                    onReasoningChange: changeComposerReasoning,
                     onModelChange: changeComposerModel,
                     onRefreshModels: refreshSessionModels,
                     onOpenModelSettings,
@@ -4830,6 +4880,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   }}
                 />
               )}
+
             </div>
             <div className="flex items-center gap-2 mr-auto ml-0">
             <div className="relative">
@@ -4932,6 +4983,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             </div>
           </div>
         </div>
+
         {createProjectOpen && (
           <CreateProjectModal
             api={api}
@@ -5028,7 +5080,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           {sid && !readOnlyExternalSession && (
             <button
               type="button"
-              onClick={openSideQuestionComposer}
+              onClick={(event) => {
+                const { left, top } = event.currentTarget.getBoundingClientRect();
+                openSideQuestionComposer();
+                setSideChatAnchor({ left, top });
+              }}
               className={clsx(
                 'w-6 h-6 rounded-md flex items-center justify-center shrink-0 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25',
                 sideChatState.open
@@ -5323,8 +5379,10 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </Suspense>
       )}
 
+
       <SideChatWindow
         {...sideChatState}
+        anchor={sideChatAnchor}
         onDraftChange={sideChat.setDraft}
         onSubmit={() => sideChat.submit()}
         onStop={sideChat.stop}
@@ -5354,7 +5412,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               request={questionForView}
               onResolve={resolveQuestion}
               originLabel={questionOriginLabel}
-              onFeedback={handleQuestionFeedback}
             />
           ) : (
             <>
@@ -5386,7 +5443,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             {...composerInputProps}
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
-            submitting={composerSubmitting}
+            submitting={composerSubmitting || reasoningSwitching}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{
@@ -5394,8 +5451,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               modelOptions: displayedModelOptions,
               selectedModelName: currentModelName,
               modelLoad: currentModelLoad,
-              modelSwitching,
+              modelSwitching: modelSwitching || reasoningSwitching,
               modelRefreshing,
+              reasoningOptions: composerReasoningOptions(modelState),
+              reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
+              onReasoningChange: changeComposerReasoning,
               onModelChange: changeComposerModel,
               onRefreshModels: refreshSessionModels,
               onOpenModelSettings,
@@ -5473,7 +5533,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onOpenBrowser={sid && hasNativeAgentBrowser() ? openBrowserPreview : null}
             onOpenSideChat={openSideQuestionComposer}
             onHide={hidePreviewPanel}
-            agentBrowserActive={agentBrowserActivity.active ? agentBrowserActivePageId : ''}
+            agentBrowserActive={agentBrowserActivePageId}
             nativeSurfacesVisible={nativeSurfacesVisible}
             onAddBrowserContext={addBrowserContext}
             onSelectChangeFile={openSessionChangePreview}

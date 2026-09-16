@@ -247,9 +247,38 @@ ModelConfigSnapshot snapshot_model_config(const SessionRegistryDeps& deps) {
     };
 }
 
+// Only explicitly enabled effort-capable HTTP routes accept a session choice.
+bool supports_session_reasoning_effort(const ModelProfile& profile,
+                                       const std::string& effort) {
+    if ((profile.provider != "openai" && profile.provider != "anthropic") ||
+        !profile.reasoning.has_value()) return false;
+    const auto& reasoning = *profile.reasoning;
+    return reasoning.supported &&
+        (reasoning.mandatory || reasoning.enabled.value_or(reasoning.default_enabled)) &&
+        !effort.empty() &&
+        std::find(reasoning.supported_efforts.begin(),
+                  reasoning.supported_efforts.end(), effort) != reasoning.supported_efforts.end();
+}
+
+std::optional<std::string> apply_session_reasoning_effort(
+    ModelProfile& profile, const std::optional<std::string>& effort,
+    bool strict = false) {
+    if (!effort.has_value()) return std::nullopt;
+    if (!supports_session_reasoning_effort(profile, *effort)) {
+        if (strict) throw SessionReasoningValidationError();
+        return std::nullopt;
+    }
+    profile.reasoning->enabled = true;
+    profile.reasoning->effort = *effort;
+    profile.reasoning->max_tokens.reset();
+    return effort;
+}
+
 SessionModelResolvedTarget resolve_target_for_name(
     const SessionRegistryDeps& deps,
-    const std::string& name) {
+    const std::string& name,
+    const std::optional<std::string>& effort = std::nullopt,
+    bool strict_effort = false) {
     auto snapshot = snapshot_model_config(deps);
     SessionModelResolvedTarget target;
     target.revision = snapshot.revision;
@@ -263,7 +292,10 @@ SessionModelResolvedTarget resolve_target_for_name(
         });
     if (found != snapshot.config->saved_models.end()) {
         target.profile = *found;
-        target.state = session_model_state_from_profile(*snapshot.config, *found);
+        const auto applied = apply_session_reasoning_effort(
+            *target.profile, effort, strict_effort);
+        target.state = session_model_state_from_profile(*snapshot.config, *target.profile);
+        target.state.reasoning_effort = applied;
     }
     return target;
 }
@@ -338,19 +370,18 @@ SessionModelTransitionCallback transition_for_entry(
     const std::shared_ptr<SessionEntry>& entry) {
     return [weak = std::weak_ptr<SessionEntry>(entry)](
                const SessionModelState& state,
-               const SessionModelTransition& transition) {
+               const SessionModelTransition&) {
         auto active = weak.lock();
         if (!active) return true;
         if (active->loop && state.context_window > 0) {
             active->loop->set_context_window(state.context_window);
         }
-        if (!active->sm || (!transition.provider_published &&
-                            !transition.selection_changed)) {
+        if (!active->sm) {
             return true;
         }
         try {
-            return active->sm->set_active_provider(
-                state.provider, state.model, state.name);
+            return active->sm->set_active_model_state(
+                state.provider, state.model, state.name, state.reasoning_effort);
         } catch (...) {
             LOG_WARN("[session_model_binding] session metadata persistence failed");
             return false;
@@ -790,6 +821,13 @@ std::string SessionRegistry::create(const SessionOptions& opts) {
     SessionOptions resolved = with_resolved_workspace(deps_, create_opts, id);
 
     auto entry = make_entry_locked(id, resolved, nullptr);
+    if (resolved.reasoning_effort) {
+        const auto state = entry->model_binding->state_snapshot();
+        if (!entry->sm->set_active_model_state(
+                state.provider, state.model, state.name, state.reasoning_effort, true)) {
+            throw std::runtime_error("session reasoning metadata could not be persisted");
+        }
+    }
     {
         std::lock_guard<std::mutex> lk(mu_);
         entries_.emplace(id, std::move(entry));
@@ -814,6 +852,19 @@ SessionRegistry::make_entry_locked(const std::string& id,
                                    const SessionOptions& opts,
                                    const SessionMeta* resumed_meta) {
     auto resolved_model = resolve_session_model(deps_, opts, resumed_meta);
+    auto requested_effort = opts.reasoning_effort;
+    if (!requested_effort && resumed_meta &&
+        (opts.model_name.empty() || opts.model_name == resumed_meta->model_preset)) {
+        requested_effort = resumed_meta->reasoning_effort;
+    }
+    if (resolved_model.profile && resolved_model.config) {
+        const auto applied = apply_session_reasoning_effort(
+            *resolved_model.profile, requested_effort, opts.reasoning_effort.has_value());
+        resolved_model.state = state_from_profile(*resolved_model.config, *resolved_model.profile);
+        resolved_model.state.reasoning_effort = applied;
+    } else if (opts.reasoning_effort) {
+        throw SessionReasoningValidationError();
+    }
 
     auto entry = std::make_shared<SessionEntry>();
     entry->id = id;
@@ -863,12 +914,16 @@ SessionRegistry::make_entry_locked(const std::string& id,
         // before publication, including during initial create/resume. Ad-hoc
         // `(session:<id>)` profiles stay on the explicit target inside the
         // binding and never enter this saved-model resolver.
-        auto initial_resolver = [this](const std::string& name) {
-            return resolve_target_for_name(deps_, name);
+        auto initial_resolver = [this, effort = resolved_model.state.reasoning_effort,
+                                 strict = opts.reasoning_effort.has_value()](const std::string& name) {
+            return resolve_target_for_name(deps_, name, effort, strict);
         };
         const auto installed = entry->model_binding->install_explicit(
             std::move(target), initial_resolver);
         if (!installed.ok) {
+            if (opts.reasoning_effort) {
+                throw std::runtime_error("session reasoning provider construction failed");
+            }
             LOG_WARN("[registry] initial session provider construction failed");
             entry->model_binding->install_runtime_snapshot(
                 nullptr, resolved_model.state, resolved_model.revision);
@@ -940,6 +995,9 @@ SessionRegistry::make_entry_locked(const std::string& id,
                              initial_model_state.name,
                              "daemon",
                              entry->no_workspace);
+    entry->sm->set_active_model_state(
+        initial_model_state.provider, initial_model_state.model,
+        initial_model_state.name, initial_model_state.reasoning_effort);
     if (!entry->parent_session_id.empty()) {
         // 子会话身份写进 meta(lazy:首条消息落盘时随初始 meta 一起写)。
         entry->sm->set_parent_session_id(entry->parent_session_id);
@@ -1186,6 +1244,7 @@ bool SessionRegistry::resume(const std::string& id, const SessionOptions& opts) 
     // web resume 不传这两个字段,行为不变。
     entry_opts.model_name = resolved.model_name;
     entry_opts.permission_mode = resolved.permission_mode;
+    entry_opts.reasoning_effort = resolved.reasoning_effort;
     entry_opts.expert_id = meta.expert_id;
     entry_opts.expert_member_id = meta.expert_member_id;
     auto entry = make_entry_locked(id, entry_opts, &meta);
@@ -1194,6 +1253,9 @@ bool SessionRegistry::resume(const std::string& id, const SessionOptions& opts) 
         LOG_WARN("[registry] resume " + id + " failed: " + entry->sm->last_error());
         return false;
     }
+    const auto resumed_model = entry->model_binding->state_snapshot();
+    entry->sm->set_active_model_state(resumed_model.provider, resumed_model.model,
+                                     resumed_model.name, resumed_model.reasoning_effort);
     restore_loop_history(*entry, messages);
     // worktree 会话恢复:meta 记录的 worktree 目录还在就把 AgentLoop 的
     // 工作目录切回去(SessionEntry::cwd / 会话存储位置不动 —— worktree
@@ -1889,13 +1951,16 @@ bool SessionRegistry::switch_model(const std::string& id,
         }
     }
 
+    std::lock_guard<std::mutex> model_lock(entry->model_control_mu);
+    const auto before = entry->model_binding->state_snapshot();
+    const auto effort = before.name == profile.name ? before.reasoning_effort : std::nullopt;
     auto config_snapshot = snapshot_model_config(deps_);
     if (!config_snapshot.config) {
         if (error) *error = "config unavailable";
         return false;
     }
-    SessionModelResolver resolver = [this](const std::string& name) {
-        return resolve_target_for_name(deps_, name);
+    SessionModelResolver resolver = [this, effort](const std::string& name) {
+        return resolve_target_for_name(deps_, name, effort);
     };
 
     ApplyModelDeps apply_deps;
@@ -1935,8 +2000,10 @@ SessionRegistry::reload_model_profile(const std::string& id, bool force) {
         return result;
     }
 
-    SessionModelResolver resolver = [this](const std::string& name) {
-        return resolve_target_for_name(deps_, name);
+    std::lock_guard<std::mutex> model_lock(entry->model_control_mu);
+    const auto effort = entry->model_binding->state_snapshot().reasoning_effort;
+    SessionModelResolver resolver = [this, effort](const std::string& name) {
+        return resolve_target_for_name(deps_, name, effort);
     };
 
     auto result = entry->model_binding->ensure_current(
@@ -1946,6 +2013,67 @@ SessionRegistry::reload_model_profile(const std::string& id, bool force) {
         transition_for_entry(entry));
     if (!result.ok) {
         LOG_WARN("[session_registry] model profile reload failed");
+    }
+    return result;
+}
+
+SessionReasoningResult SessionRegistry::set_reasoning_effort(
+    const std::string& id, const std::optional<std::string>& effort) {
+    auto entry = acquire(id);
+    if (!entry) return {SessionReasoningStatus::UnknownSession, {}, "session not found"};
+    SessionReasoningResult result;
+    if (!entry->loop || !entry->model_binding || !deps_.config) {
+        result.status = SessionReasoningStatus::Unavailable;
+        result.error = "session model unavailable";
+        return result;
+    }
+    // The queue gate covers pending submissions as well as running turns.
+    // Lock order: queue gate -> model control -> binding -> session metadata.
+    const bool ran = entry->loop->try_run_idle_control([&] {
+        std::lock_guard<std::mutex> model_lock(entry->model_control_mu);
+        result.state = entry->model_binding->state_snapshot();
+        SessionModelResolver resolver = [this, effort](const std::string& name) {
+            return resolve_target_for_name(deps_, name, effort, true);
+        };
+        SessionModelResolvedTarget target;
+        try {
+            target = resolver(result.state.name);
+        } catch (const SessionReasoningValidationError& ex) {
+            result.status = SessionReasoningStatus::InvalidEffort;
+            result.error = ex.what();
+            return;
+        }
+        if (!target.profile || !target.config) {
+            result.status = SessionReasoningStatus::Unavailable;
+            result.error = "session model unavailable";
+            return;
+        }
+        auto previous = entry->model_binding->runtime_snapshot();
+        const auto installed = entry->model_binding->install_explicit(
+            std::move(target), resolver);
+        result.state = installed.state;
+        if (!installed.ok) {
+            result.error = installed.error;
+            return;
+        }
+        // An empty session must retain an explicit selection across restart.
+        if (!entry->sm->set_active_model_state(
+                result.state.provider, result.state.model, result.state.name,
+                result.state.reasoning_effort, true)) {
+            entry->model_binding->install_cloned_snapshot(std::move(previous));
+            result.state = entry->model_binding->state_snapshot();
+            result.error = "session reasoning metadata could not be persisted";
+            return;
+        }
+        if (result.state.context_window > 0) {
+            entry->loop->set_context_window(result.state.context_window);
+        }
+        result.status = SessionReasoningStatus::Updated;
+    });
+    if (!ran) {
+        result.status = SessionReasoningStatus::Busy;
+        result.state = entry->model_binding->state_snapshot();
+        result.error = "session is busy";
     }
     return result;
 }
@@ -1962,7 +2090,9 @@ SessionRegistry::model_state_from_meta(const SessionMeta& meta) const {
     }
     auto profile = resolve_effective_model(
         config, std::nullopt, std::optional<SessionMeta>{meta});
+    const auto effort = apply_session_reasoning_effort(profile, meta.reasoning_effort);
     auto state = state_from_profile(config, profile);
+    state.reasoning_effort = effort;
     mark_deleted_if_model_name_missing(config, state);
     return state;
 }

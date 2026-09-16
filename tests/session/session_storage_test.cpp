@@ -672,3 +672,22 @@ TEST(SessionStorage, MetaRoundtripsThroughUtf8ProjectDirectory) {
     ASSERT_EQ(sessions.size(), 1u);
     EXPECT_EQ(sessions[0].summary, u8"中文摘要");
 }
+
+
+TEST(SessionStorage, ReasoningOverrideRoundTripsAndDefaultRemainsAbsent) {
+    auto dir = make_unique_tmp_dir("reasoning_override");
+    const auto path = (dir / "reasoning.meta.json").string();
+    SessionMeta meta;
+    meta.id = "reasoning";
+    meta.reasoning_effort = "high";
+    SessionStorage::write_meta(path, meta);
+    EXPECT_EQ(SessionStorage::read_meta(path).reasoning_effort, "high");
+    meta.reasoning_effort.reset();
+    SessionStorage::write_meta(path, meta);
+    EXPECT_FALSE(SessionStorage::read_meta(path).reasoning_effort);
+    std::ifstream stream(path);
+    const auto raw = nlohmann::json::parse(stream);
+    EXPECT_FALSE(raw.contains("reasoning_effort"));
+    stream.close();
+    fs::remove_all(dir);
+}

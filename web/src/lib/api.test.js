@@ -1995,3 +1995,24 @@ await run('native theme Save As has no request timeout and package download acce
     globalThis.fetch = previousFetch; globalThis.setTimeout = previousTimeout; globalThis.clearTimeout = previousClear;
   }
 });
+
+await run('session reasoning mutation encodes the session ID and sends explicit override or null', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ name: 'fake', reasoning_effort: JSON.parse(options.body).effort }) };
+  };
+  try {
+    const api = createApi({ origin: 'http://127.0.0.1:49000', token: 'fake-token' });
+    const selected = await api.setSessionReasoning('session/one', 'high');
+    const reset = await api.setSessionReasoning('session/one', null);
+    assert.equal(calls[0].url, 'http://127.0.0.1:49000/api/sessions/session%2Fone/reasoning');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['X-ACECode-Token'], 'fake-token');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { effort: 'high' });
+    assert.deepEqual(JSON.parse(calls[1].options.body), { effort: null });
+    assert.equal(selected.reasoning_effort, 'high');
+    assert.equal(reset.reasoning_effort, null);
+  } finally { globalThis.fetch = original; }
+});

@@ -2980,3 +2980,239 @@ TEST(SessionRegistry, ExternalCommandHandlerReceivesNonBuiltinCommands) {
 
     fx.registry.destroy(id);
 }
+
+
+namespace {
+class SessionReasoningTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        home = temp_cwd("reasoning_home");
+        home_override = std::make_unique<ScopedHomeOverride>(home);
+        cwd = home / "workspace";
+        std::filesystem::create_directories(cwd);
+        cfg = make_openai_model_cfg();
+        auto& profile = cfg.saved_models.front();
+        profile.context_window = 128000;
+        profile.models_dev_provider_id = "acemodel";
+        profile.capabilities_source = "manual";
+        profile.capabilities = {"reasoning"};
+        acecode::ModelReasoningOptions reasoning;
+        reasoning.supported = true;
+        reasoning.default_enabled = true;
+        reasoning.supported_efforts = {"low", "high"};
+        reasoning.default_effort = "low";
+        reasoning.effort = "low";
+        reasoning.supports_max_tokens = true;
+        reasoning.max_tokens = 4096;
+        profile.reasoning = reasoning;
+        profile.max_output_tokens = 8192;
+        auto alternate = profile;
+        alternate.name = "alternate";
+        alternate.model = "model-b";
+        cfg.saved_models.push_back(alternate);
+        SessionRegistryDeps deps;
+        deps.tools = &tools;
+        deps.template_permissions = &permissions;
+        deps.config = &cfg;
+        deps.cwd = cwd.string();
+        registry = std::make_unique<SessionRegistry>(deps);
+    }
+    void TearDown() override {
+        registry.reset();
+        home_override.reset();
+        std::filesystem::remove_all(home);
+    }
+    std::string create(std::optional<std::string> effort = std::nullopt) {
+        SessionOptions opts;
+        opts.model_name = "active";
+        opts.reasoning_effort = effort;
+        return registry->create(opts);
+    }
+    acecode::SessionMeta meta(const std::string& id) {
+        return SessionStorage::read_meta(SessionStorage::meta_path(
+            SessionStorage::get_project_dir(cwd.string()), id));
+    }
+    std::filesystem::path home, cwd;
+    std::unique_ptr<ScopedHomeOverride> home_override;
+    AppConfig cfg;
+    ToolExecutor tools;
+    PermissionManager permissions;
+    std::unique_ptr<SessionRegistry> registry;
+};
+} // namespace
+
+TEST_F(SessionReasoningTest, CreateAndUpdateAreIsolatedAndDefaultRestoresBudget) {
+    const auto a = create("high");
+    const auto b = create();
+    auto a_state = registry->current_model_state(a);
+    auto b_state = registry->current_model_state(b);
+    ASSERT_TRUE(a_state && a_state->reasoning && b_state && b_state->reasoning);
+    EXPECT_EQ(a_state->reasoning_effort, "high");
+    EXPECT_EQ(a_state->reasoning->effort, "high");
+    EXPECT_FALSE(a_state->reasoning->max_tokens);
+    EXPECT_EQ(a_state->models_dev_provider_id, "acemodel");
+    EXPECT_FALSE(b_state->reasoning_effort);
+    EXPECT_EQ(b_state->reasoning->max_tokens, 4096);
+
+    auto changed = registry->set_reasoning_effort(a, "low");
+    ASSERT_EQ(changed.status, acecode::SessionReasoningStatus::Updated) << changed.error;
+    EXPECT_EQ(changed.state.reasoning_effort, "low");
+    EXPECT_EQ(meta(a).reasoning_effort, "low");
+    EXPECT_FALSE(registry->current_model_state(b)->reasoning_effort);
+    EXPECT_EQ(cfg.saved_models.front().reasoning->effort, "low");
+    EXPECT_EQ(cfg.saved_models.front().reasoning->max_tokens, 4096);
+
+    auto reset = registry->set_reasoning_effort(a, std::nullopt);
+    ASSERT_EQ(reset.status, acecode::SessionReasoningStatus::Updated) << reset.error;
+    EXPECT_FALSE(reset.state.reasoning_effort);
+    ASSERT_TRUE(reset.state.reasoning);
+    EXPECT_EQ(reset.state.reasoning->effort, "low");
+    EXPECT_EQ(reset.state.reasoning->max_tokens, 4096);
+    EXPECT_FALSE(meta(a).reasoning_effort);
+}
+
+TEST_F(SessionReasoningTest, InvalidAndDisabledChoicesHaveNoSideEffects) {
+    EXPECT_THROW(create("max"), acecode::SessionReasoningValidationError);
+    EXPECT_TRUE(registry->list_active().empty());
+    const auto id = create("high");
+    auto entry = registry->acquire(id);
+    const auto provider = entry->model_binding->provider_snapshot();
+    for (const auto& effort : {"", "max", "HIGH"}) {
+        auto rejected = registry->set_reasoning_effort(id, effort);
+        EXPECT_EQ(rejected.status, acecode::SessionReasoningStatus::InvalidEffort);
+        EXPECT_EQ(rejected.state.reasoning_effort, "high");
+        EXPECT_EQ(entry->model_binding->provider_snapshot(), provider);
+    }
+    cfg.saved_models.front().reasoning->enabled = false;
+    EXPECT_EQ(registry->set_reasoning_effort(id, "low").status,
+              acecode::SessionReasoningStatus::InvalidEffort);
+    EXPECT_EQ(entry->model_binding->provider_snapshot(), provider);
+    EXPECT_EQ(registry->set_reasoning_effort("missing", "low").status,
+              acecode::SessionReasoningStatus::UnknownSession);
+}
+
+TEST_F(SessionReasoningTest, ReloadRetainsValidChoiceAndDropsRemovedCapability) {
+    const auto id = create("high");
+    auto models = cfg.saved_models;
+    models.front().model = "revised-model";
+    ASSERT_TRUE(acecode::publish_live_saved_models(cfg, models));
+    auto reloaded = registry->reload_model_profile(id, false);
+    ASSERT_TRUE(reloaded && reloaded->ok);
+    EXPECT_EQ(reloaded->state.reasoning_effort, "high");
+    EXPECT_EQ(reloaded->state.reasoning->effort, "high");
+    EXPECT_EQ(reloaded->state.model, "revised-model");
+
+    models.front().reasoning->supported_efforts = {"low"};
+    ASSERT_TRUE(acecode::publish_live_saved_models(cfg, models));
+    reloaded = registry->reload_model_profile(id, false);
+    ASSERT_TRUE(reloaded && reloaded->ok);
+    EXPECT_FALSE(reloaded->state.reasoning_effort);
+    EXPECT_EQ(reloaded->state.reasoning->max_tokens, 4096);
+    EXPECT_EQ(reloaded->state.reasoning->effort, "low");
+}
+
+TEST_F(SessionReasoningTest, SameModelRetainsChoiceAndDifferentModelClearsIt) {
+    const auto id = create("high");
+    SessionModelState state;
+    std::string error;
+    ASSERT_TRUE(registry->switch_model(id, cfg.saved_models.front(), &state, &error)) << error;
+    EXPECT_EQ(state.reasoning_effort, "high");
+    ASSERT_TRUE(registry->switch_model(id, cfg.saved_models.back(), &state, &error)) << error;
+    EXPECT_EQ(state.name, "alternate");
+    EXPECT_FALSE(state.reasoning_effort);
+    EXPECT_EQ(state.reasoning->max_tokens, 4096);
+}
+
+TEST_F(SessionReasoningTest, ResumeAndForkRetainOverrideAndInvalidResumeFallsBack) {
+    const auto id = create("high");
+    auto entry = registry->acquire(id);
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.content = "a persisted reasoning choice";
+    message.uuid = "reasoning-anchor";
+    entry->sm->on_message(message);
+    EXPECT_EQ(meta(id).reasoning_effort, "high");
+    const auto fork = entry->sm->fork_session_to_new_id(
+        {message}, "Reasoning fork", id, message.uuid);
+    ASSERT_FALSE(fork.empty());
+    EXPECT_EQ(meta(fork).reasoning_effort, "high");
+    ASSERT_TRUE(registry->resume(fork));
+    EXPECT_EQ(registry->current_model_state(fork)->reasoning_effort, "high");
+
+    registry->destroy(id);
+    entry.reset();
+    ASSERT_TRUE(registry->resume(id));
+    EXPECT_EQ(registry->current_model_state(id)->reasoning_effort, "high");
+    registry->destroy(id);
+    cfg.saved_models.front().reasoning->supported_efforts = {"low"};
+    ASSERT_TRUE(registry->resume(id));
+    EXPECT_FALSE(registry->current_model_state(id)->reasoning_effort);
+    EXPECT_FALSE(meta(id).reasoning_effort);
+}
+
+TEST_F(SessionReasoningTest, BusyTurnAndQueuedChatBeforeBusyRejectChanges) {
+    const auto id = create("high");
+    auto entry = registry->acquire(id);
+    auto blocker = std::make_shared<BlockingProvider>();
+    install_test_provider(*entry, blocker);
+    entry->loop->submit("hold active request");
+    EXPECT_TRUE(blocker->wait_for_started(2s));
+    EXPECT_EQ(registry->set_reasoning_effort(id, "low").status,
+              acecode::SessionReasoningStatus::Busy);
+    EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+    blocker->release();
+    auto drained = entry->loop->enqueue_control([] { return true; });
+    ASSERT_TRUE(drained.wait_for_completion(2s));
+
+    // Hold a non-busy worker control task and queue a chat behind it. This
+    // deterministically covers the submitted-but-not-busy window.
+    std::mutex gate_mu;
+    std::condition_variable gate_cv;
+    bool entered = false, release = false;
+    auto gate = entry->loop->enqueue_control([&] {
+        std::unique_lock<std::mutex> lock(gate_mu);
+        entered = true;
+        gate_cv.notify_all();
+        return gate_cv.wait_for(lock, 5s, [&] { return release; });
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate_mu);
+        EXPECT_TRUE(gate_cv.wait_for(lock, 2s, [&] { return entered; }));
+    }
+    entry->loop->submit("queued request");
+    EXPECT_FALSE(entry->loop->is_busy());
+    EXPECT_EQ(registry->set_reasoning_effort(id, "low").status,
+              acecode::SessionReasoningStatus::Busy);
+    EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
+    {
+        std::lock_guard<std::mutex> lock(gate_mu);
+        release = true;
+    }
+    gate_cv.notify_all();
+    EXPECT_TRUE(gate.wait_for_completion(2s));
+    drained = entry->loop->enqueue_control([] { return true; });
+    EXPECT_TRUE(drained.wait_for_completion(2s));
+}
+
+
+TEST_F(SessionReasoningTest, PersistenceFailureRestoresProviderAndEffort) {
+    const auto id = create("high");
+    auto entry = registry->acquire(id);
+    const auto original = entry->model_binding->provider_snapshot();
+    const auto meta_path = SessionStorage::meta_path(
+        SessionStorage::get_project_dir(cwd.string()), id);
+    ASSERT_TRUE(std::filesystem::remove(meta_path));
+    ASSERT_TRUE(std::filesystem::create_directory(meta_path));
+    auto changed = registry->set_reasoning_effort(id, "low");
+    EXPECT_EQ(changed.status, acecode::SessionReasoningStatus::Failed);
+    EXPECT_EQ(changed.state.reasoning_effort, "high");
+    EXPECT_EQ(entry->model_binding->provider_snapshot(), original);
+    EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
+    std::filesystem::remove(meta_path);
+    // A later successful write proves the manager rolled back its memory too.
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.content = "preserve original choice";
+    entry->sm->on_message(message);
+    EXPECT_EQ(meta(id).reasoning_effort, "high");
+}

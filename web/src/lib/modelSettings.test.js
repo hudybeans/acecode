@@ -9,10 +9,13 @@ import {
   emptyModelProfileDraft,
   hasAdvancedModelValues,
   isAutoModelAlias,
+  isCustomReasoningDraft,
   markModelMetadataOverrides,
   modelAliasProviderName,
   modelFieldPolicy,
   modelNameSuggestion,
+  modelRowsFromProbe,
+  updateModelReasoningEfforts,
   modelProfileDraftFromSaved,
   normalizeModelCatalogSummary,
   normalizeProviderModelQuery,
@@ -1274,4 +1277,106 @@ run('自定义 Provider 保留手动模型、完整端点和请求头', () => {
 run('有高级值的编辑草稿会自动展开高级设置', () => {
   assert.equal(hasAdvancedModelValues({ request_headers_json: '{"X":"1"}' }), true);
   assert.equal(hasAdvancedModelValues({ endpoint_mode: 'base_url' }), false);
+});
+
+run('ACEModel discovery preserves exact per-model effort declarations and clears stale capability guesses', () => {
+  const response = {
+    models: ['with-effort', 'no-effort'],
+    model_capabilities: { 'with-effort': ['vision'], 'no-effort': ['reasoning', 'tool_use'] },
+    model_reasoning: {
+      'with-effort': { supported: true, default_enabled: true, supported_efforts: ['low', 'high'], default_effort: 'high' },
+      'no-effort': null,
+    },
+  };
+  const rows = modelRowsFromProbe(response, aceModelProvider);
+  assert.deepEqual(rows[0].capabilities, ['vision', 'reasoning']);
+  assert.deepEqual(rows[1].capabilities, ['tool_use']);
+  const draft = { ...applyCatalogProviderToDraft(emptyModelProfileDraft(), aceModelProvider), api_key: 'fake-key' };
+  const selected = replaceDraftModelsFromProbe(draft, rows, response.models, { allowMultiple: true });
+  const built = buildModelMutationPayloads(selected, aceModelProvider);
+  assert.equal(built.ok, true);
+  assert.deepEqual(built.payloads[0].reasoning.supported_efforts, ['low', 'high']);
+  assert.equal(built.payloads[0].reasoning.default_effort, 'high');
+  assert.equal(Object.hasOwn(built.payloads[1], 'reasoning'), false);
+
+  const previous = markModelMetadataOverrides({ ...selected, model: 'with-effort' }, {
+    reasoning: rows[0].reasoning, capabilities: rows[0].capabilities,
+  });
+  const legacyRows = modelRowsFromProbe({ models: ['with-effort'], model_capabilities: { 'with-effort': ['reasoning'] } }, aceModelProvider);
+  const removed = replaceDraftModelsFromProbe(previous, legacyRows, ['with-effort']);
+  assert.equal(removed.reasoning.supported, false);
+  assert.deepEqual(removed.capabilities, ['vision']);
+  const updated = buildModelMutationPayload({ ...removed, name: 'saved' }, aceModelProvider, { editing: true });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.payload.reasoning, null);
+});
+
+run('custom OpenAI and Anthropic require manual reasoning opt-in and maintain editable effort lists', () => {
+  for (const provider of [customProvider, anthropicProvider]) {
+    const draft = addManualModelToDraft({ ...applyCatalogProviderToDraft(emptyModelProfileDraft(), provider), name: 'fake', api_key: 'fake-key' }, 'thinking-max');
+    assert.equal(draft.reasoning.supported, false);
+    const enabled = toggleModelCapability(draft, 'reasoning');
+    assert.equal(enabled.reasoning.enabled, true);
+    assert.deepEqual(enabled.reasoning.supported_efforts, ['low', 'medium', 'high']);
+    const highest = updateModelReasoningEfforts(enabled, 'max', true);
+    const chosen = markModelMetadataOverrides(highest, { reasoning: { ...highest.reasoning, default_effort: 'max', effort: 'max' } });
+    const removedChoice = updateModelReasoningEfforts(chosen, 'max', false);
+    assert.equal(removedChoice.reasoning.default_effort, '');
+    assert.equal(removedChoice.reasoning.effort, '');
+    assert.deepEqual(removedChoice.reasoning.supported_efforts, ['low', 'medium', 'high']);
+    assert.equal(buildModelMutationPayload(removedChoice, provider).ok, true);
+    const disabled = toggleModelCapability(chosen, 'reasoning');
+    assert.equal(disabled.reasoning.supported, false);
+    assert.equal(disabled.reasoning.effort, '');
+    assert.equal(buildModelMutationPayload(disabled, provider, { editing: true }).payload.reasoning, null);
+
+    if (provider.id === 'custom-openai') {
+      const rows = modelRowsFromProbe({ models: ['thinking-max'], model_capabilities: { 'thinking-max': ['reasoning'] }, model_reasoning: { 'thinking-max': enabled.reasoning } }, provider);
+      assert.equal(rows[0].reasoning, null);
+      assert.deepEqual(rows[0].capabilities, []);
+    }
+  }
+});
+
+run('manually configured Anthropic reasoning remains editable on reopen', () => {
+  const draft = addManualModelToDraft({ ...applyCatalogProviderToDraft(emptyModelProfileDraft(), anthropicProvider), name: 'fake', api_key: 'fake-key' }, 'fake-manual-model');
+  const enabled = toggleModelCapability(draft, 'reasoning');
+  const built = buildModelMutationPayload(enabled, anthropicProvider);
+  assert.equal(built.ok, true);
+  assert.equal(built.payload.models_dev_provider_id, 'anthropic');
+  const reopened = modelProfileDraftFromSaved(built.payload);
+  assert.equal(reopened.catalog_provider_id, 'anthropic');
+  assert.equal(isCustomReasoningDraft(reopened), true);
+  assert.deepEqual(reopened.reasoning.supported_efforts, ['low', 'medium', 'high']);
+});
+
+run('ACEModel reasoning refresh preserves same-model manual capabilities without copying them to other IDs', () => {
+  const reasoning = { supported: true, default_enabled: true, supported_efforts: ['low', 'high'], default_effort: 'high' };
+  const base = { ...applyCatalogProviderToDraft(emptyModelProfileDraft(), aceModelProvider), name: 'fake', api_key: 'fake-key', model: 'existing', capabilities: ['vision', 'tool_use', 'reasoning'], capabilities_source: 'manual', reasoning };
+  const rows = modelRowsFromProbe({ models: ['existing', 'new-model'], model_reasoning: { existing: null, 'new-model': reasoning } }, aceModelProvider);
+  const removed = replaceDraftModelsFromProbe(base, rows, ['existing']);
+  assert.deepEqual(removed.capabilities, ['vision', 'tool_use']);
+  assert.equal(removed.reasoning.supported, false);
+  const freshReasoning = { ...reasoning, supported_efforts: ['medium'], default_effort: 'medium' };
+  const refreshRows = modelRowsFromProbe({ models: ['existing', 'new-model'], model_reasoning: { existing: freshReasoning, 'new-model': reasoning } }, aceModelProvider);
+  const refreshed = replaceDraftModelsFromProbe(removed, refreshRows, ['existing']);
+  assert.deepEqual(refreshed.capabilities, ['vision', 'tool_use', 'reasoning']);
+  assert.deepEqual(refreshed.reasoning.supported_efforts, ['medium']);
+  const switched = replaceDraftModelsFromProbe(base, refreshRows, ['new-model']);
+  assert.deepEqual(switched.capabilities, ['reasoning']);
+  const batch = replaceDraftModelsFromProbe(base, rows, ['existing', 'new-model'], { allowMultiple: true });
+  const built = buildModelMutationPayloads(batch, aceModelProvider);
+  assert.equal(built.ok, true);
+  assert.deepEqual(built.payloads[0].capabilities, ['vision', 'tool_use']);
+  assert.deepEqual(built.payloads[1].capabilities, ['reasoning']);
+  const manualEdit = markModelMetadataOverrides(batch, { capabilities: ['vision'] });
+  const rebuilt = buildModelMutationPayloads(manualEdit, aceModelProvider);
+  assert.equal(rebuilt.ok, true);
+  assert.deepEqual(rebuilt.payloads[0].capabilities, ['vision']);
+  assert.deepEqual(rebuilt.payloads[1].capabilities, ['reasoning']);
+  const reprobed = replaceDraftModelsFromProbe(manualEdit, refreshRows, ['existing', 'new-model'], { allowMultiple: true });
+  const reprobedPayloads = buildModelMutationPayloads(reprobed, aceModelProvider);
+  assert.equal(reprobedPayloads.ok, true);
+  assert.deepEqual(reprobedPayloads.payloads[0].capabilities, ['vision', 'reasoning']);
+  assert.deepEqual(reprobedPayloads.payloads[1].capabilities, ['reasoning']);
 });

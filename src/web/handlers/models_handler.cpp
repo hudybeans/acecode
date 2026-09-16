@@ -55,6 +55,29 @@ nlohmann::json entry_to_json(const ModelProfile& entry) {
     return o;
 }
 
+std::optional<ModelReasoningOptions> parse_discovered_reasoning(
+    const nlohmann::json& declaration) {
+    if (!declaration.is_object()) return std::nullopt;
+    const auto efforts = declaration.find("supported_efforts");
+    if (efforts == declaration.end() || !efforts->is_array() || efforts->empty()) {
+        return std::nullopt;
+    }
+    nlohmann::json normalized{
+        {"supported", true},
+        {"mandatory", false},
+        {"default_enabled", true},
+        {"supported_efforts", *efforts},
+        {"supports_max_tokens", false},
+    };
+    if (const auto effort = declaration.find("default_effort");
+        effort != declaration.end()) {
+        if (!effort->is_string()) return std::nullopt;
+        normalized["default_effort"] = *effort;
+    }
+    std::string error;
+    return parse_model_reasoning_options(normalized, error);
+}
+
 } // namespace
 
 std::string model_probe_connection_fingerprint(const ModelProbeRequest& request) {
@@ -89,7 +112,9 @@ std::string model_probe_connection_fingerprint(const ModelProbeRequest& request)
 
 std::map<std::string, std::vector<std::string>>
 model_probe_capabilities(const ModelProbeRequest& request,
-                         const std::vector<std::string>& model_ids) {
+                         const std::vector<std::string>& model_ids,
+                         const std::map<std::string,
+                             std::optional<ModelReasoningOptions>>& reasoning) {
     if (!is_acemodel_provider_id(request.catalog_provider_id) &&
         !is_acemodel_base_url(request.base_url)) {
         return {};
@@ -98,11 +123,32 @@ model_probe_capabilities(const ModelProbeRequest& request,
     std::map<std::string, std::vector<std::string>> result;
     for (const auto& id : model_ids) {
         const ModelEntry* model = find_acemodel_catalog_model(id);
-        if (!model) continue;
-        auto capabilities = model_capability_tags(*model);
+        auto capabilities = model ? model_capability_tags(*model)
+                                  : std::vector<std::string>{};
+        capabilities.erase(std::remove(capabilities.begin(), capabilities.end(),
+                                       "reasoning"), capabilities.end());
+        const auto declared = reasoning.find(id);
+        if (declared != reasoning.end() && declared->second.has_value() &&
+            declared->second->supported &&
+            !declared->second->supported_efforts.empty()) {
+            capabilities.push_back("reasoning");
+        }
         if (!capabilities.empty()) {
             result.emplace(id, std::move(capabilities));
         }
+    }
+    return result;
+}
+
+nlohmann::json model_probe_reasoning_to_json(
+    const std::vector<std::string>& model_ids,
+    const std::map<std::string, std::optional<ModelReasoningOptions>>& reasoning) {
+    nlohmann::json result = nlohmann::json::object();
+    for (const auto& id : model_ids) {
+        const auto found = reasoning.find(id);
+        result[id] = found != reasoning.end() && found->second.has_value()
+            ? model_reasoning_options_to_json(*found->second)
+            : nlohmann::json(nullptr);
     }
     return result;
 }
@@ -137,6 +183,13 @@ nlohmann::json model_state_to_json(const SessionModelState& state) {
     o["model"] = state.model;
     o["context_window"] = state.context_window;
     o["deleted"] = state.deleted;
+    o["models_dev_provider_id"] = state.models_dev_provider_id;
+    o["reasoning"] = state.reasoning.has_value()
+        ? model_reasoning_options_to_json(*state.reasoning)
+        : nlohmann::json(nullptr);
+    o["reasoning_effort"] = state.reasoning_effort.has_value()
+        ? nlohmann::json(*state.reasoning_effort)
+        : nlohmann::json(nullptr);
     return o;
 }
 
@@ -373,6 +426,7 @@ ParsedOpenAiModels parse_openai_models(const nlohmann::json& body) {
 
     std::set<std::string> unique;
     std::map<std::string, int> context_windows;
+    std::map<std::string, std::optional<ModelReasoningOptions>> reasoning;
     for (const auto& item : *list) {
         std::string value;
         if (item.is_string()) {
@@ -388,12 +442,18 @@ ParsedOpenAiModels parse_openai_models(const nlohmann::json& body) {
         }
         if (value.empty()) continue;
         unique.insert(value);
+        reasoning[value] = std::nullopt;
         if (item.is_object()) {
+            if (const auto declaration = item.find("reasoning");
+                declaration != item.end()) {
+                reasoning[value] = parse_discovered_reasoning(*declaration);
+            }
             int context_window = model_context_window_from_metadata(item);
             if (context_window > 0) context_windows[value] = context_window;
         }
     }
-    return {{unique.begin(), unique.end()}, std::move(context_windows)};
+    return {{unique.begin(), unique.end()}, std::move(context_windows),
+            std::move(reasoning)};
 }
 
 void apply_acemodel_context_fallbacks(ParsedOpenAiModels& parsed) {

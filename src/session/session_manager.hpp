@@ -91,6 +91,13 @@ public:
     bool set_active_provider(const std::string& provider,
                              const std::string& model,
                              const std::string& model_preset);
+    // Update model selection and its independent session override together.
+    // persist_immediately also materializes an otherwise empty session.
+    bool set_active_model_state(const std::string& provider,
+                                const std::string& model,
+                                const std::string& model_preset,
+                                const std::optional<std::string>& reasoning_effort,
+                                bool persist_immediately = false);
     std::string current_model_preset() const;
 
     // End current session (mark it done) so next on_message starts a new one.
@@ -272,6 +279,7 @@ private:
     std::string provider_name_;
     std::string model_name_;
     std::string model_preset_;
+    std::optional<std::string> reasoning_effort_;
     std::string surface_ = "tui";
     bool no_workspace_ = false;
     std::string project_dir_;

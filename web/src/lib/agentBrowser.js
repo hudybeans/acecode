@@ -138,8 +138,40 @@ export async function getAgentBrowserState(pageId = '', win = globalThis.window)
   );
 }
 
-export async function createAgentBrowserPage(win = globalThis.window) {
-  return runAgentBrowserBridgeAction('aceDesktop_agentBrowserCreatePage', undefined, win);
+// 页面归属参数:daemon 工具与 UI 自建页都用同一形态,session_id 是唯一联结键,
+// workspace_hash 只作附带信息。
+export function agentBrowserOwnerForSession(sessionRef) {
+  const sessionId = String(
+    typeof sessionRef === 'string' ? sessionRef : (sessionRef?.sessionId || sessionRef?.id || ''),
+  ).trim();
+  if (!sessionId) return null;
+  const workspaceHash = String(
+    typeof sessionRef === 'object' && sessionRef ? (sessionRef.workspaceHash || '') : '',
+  ).trim();
+  return workspaceHash
+    ? { session_id: sessionId, workspace_hash: workspaceHash }
+    : { session_id: sessionId };
+}
+
+// UI 自建页:带 owner 时页面归属该会话(刷新 / 切工作区后能对账回页签),但不
+// 成为该会话的 Agent 默认目标。旧签名 createAgentBrowserPage(win) 仍然兼容。
+export async function createAgentBrowserPage(owner = null, win = globalThis.window) {
+  if (owner && typeof owner === 'object' && typeof owner.aceDesktop_agentBrowserCreatePage === 'function') {
+    return runAgentBrowserBridgeAction('aceDesktop_agentBrowserCreatePage', undefined, owner);
+  }
+  const ownerArg = owner && typeof owner === 'object' && owner.session_id ? owner : undefined;
+  return runAgentBrowserBridgeAction('aceDesktop_agentBrowserCreatePage', ownerArg, win);
+}
+
+// 列 Desktop 页面池:给 sessionId 只列该会话拥有的页面。旧版 Desktop 没有这个
+// bridge 时返回 ok:false,调用方按「无法对账」处理。
+export async function listAgentBrowserPages(sessionId = '', win = globalThis.window) {
+  const sid = String(sessionId || '').trim();
+  return runAgentBrowserBridgeAction(
+    'aceDesktop_agentBrowserListPages',
+    sid ? { session_id: sid } : undefined,
+    win,
+  );
 }
 
 export async function selectAgentBrowserPage(pageId, win = globalThis.window) {

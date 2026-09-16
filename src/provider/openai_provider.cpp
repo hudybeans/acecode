@@ -816,6 +816,21 @@ nlohmann::json OpenAiCompatProvider::build_request_body(
             }
         }
         body["reasoning"] = std::move(wire_reasoning);
+    } else if (request_options_.reasoning_protocol == ReasoningWireProtocol::OpenAi &&
+               request_options_.reasoning.has_value() &&
+               request_options_.reasoning->supported) {
+        const auto& reasoning = *request_options_.reasoning;
+        const bool enabled = reasoning.mandatory ||
+            reasoning.enabled.value_or(reasoning.default_enabled);
+        const auto effort = reasoning.effort.has_value()
+            ? reasoning.effort
+            : reasoning.default_effort;
+        if (enabled && effort.has_value() &&
+            std::find(reasoning.supported_efforts.begin(),
+                      reasoning.supported_efforts.end(), *effort) !=
+                reasoning.supported_efforts.end()) {
+            body["reasoning_effort"] = *effort;
+        }
     }
 
     // Build messages array.

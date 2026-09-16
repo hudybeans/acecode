@@ -5,7 +5,7 @@ import {
   reduceTranscriptEvent,
 } from './sessionTranscript.js';
 import { projectCollapsedTranscriptItems } from './transcriptProjection.js';
-import { renderQuestionFeedbackCardForTest } from './questionFeedback.test.js';
+import { renderQuestionToolForTest } from './questionFeedback.test.js';
 import { reconcileLatestCompletedTurn } from './transcriptSelfHeal.js';
 
 async function run(name, fn) {
@@ -77,7 +77,7 @@ function renderedFeedbackSequence(items, options = {}) {
       sequence.push(`${item.kind}:${item.role || ''}`);
     }
     if (item.kind === 'tool') {
-      const html = renderQuestionFeedbackCardForTest(item);
+      const html = renderQuestionToolForTest(item);
       for (const match of html.matchAll(/data-question-feedback="(submit|cancel)"/g)) {
         sequence.push(`card:${match[1]}`);
       }
@@ -243,7 +243,7 @@ await run('缺少调用或工具被改名的取消结果不会折叠进历史活
     const projected = projectCollapsedTranscriptItems(state.items);
     const feedbackItems = projected.filter((item) => item.kind === 'tool');
     assert.equal(feedbackItems.length, 1);
-    assert.match(renderQuestionFeedbackCardForTest(feedbackItems[0]), /data-question-feedback="cancel"/);
+    assert.match(renderQuestionToolForTest(feedbackItems[0]), /data-question-feedback="cancel"/);
     assert.equal(renderedFeedbackSequence(state.items).filter((entry) => entry === 'card:cancel').length, 1);
   }
 });
@@ -254,7 +254,10 @@ await run('历史问答保留多选标记和完整答案', () => {
   const state = loadMessages(turn);
   const item = projectCollapsedTranscriptItems(state.items).find((entry) => entry.kind === 'tool');
   assert.equal(item.tool.askUserQuestionResult.items[0].multiSelect, true);
-  assert.match(renderQuestionFeedbackCardForTest(item), /A, B\nC/);
+  const html = renderQuestionToolForTest(item);
+  assert.match(html, /data-question-feedback="submit"/);
+  assert.match(html, /data-ask-user-question-result="true"/);
+  assert.doesNotMatch(html, /A, B\nC/, '答案默认折叠,只在用户展开活动行后显示');
 });
 
 console.log('questionFeedbackPersistence tests passed');

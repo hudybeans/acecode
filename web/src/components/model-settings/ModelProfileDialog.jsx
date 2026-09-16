@@ -6,6 +6,9 @@ import {
   buildModelMutationPayloads,
   hasAdvancedModelValues,
   isCustomOpenAiCompatibilityProvider,
+  isCustomReasoningDraft,
+  MODEL_REASONING_EFFORTS,
+  updateModelReasoningEfforts,
   markModelMetadataOverrides,
   modelAliasProviderName,
   modelFieldPolicy,
@@ -625,6 +628,24 @@ export function ModelProfileDialog({
                         ariaLabel="启用模型推理"
                       />
                     </div>
+                    {isCustomReasoningDraft(draft) && (
+                      <fieldset>
+                        <legend className="mb-1.5 text-[11px] font-medium text-fg-2">可选思考深度</legend>
+                        <div className="flex flex-wrap gap-x-3 gap-y-2">
+                          {MODEL_REASONING_EFFORTS.map((effort) => (
+                            <label key={effort} className="flex items-center gap-1.5 text-[11px] text-fg">
+                              <input
+                                type="checkbox"
+                                checked={reasoning.supported_efforts?.includes(effort) || false}
+                                onChange={(event) => setDraft((current) => updateModelReasoningEfforts(current, effort, event.target.checked))}
+                                className="accent-accent"
+                              />
+                              {effort}
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                    )}
                     {reasoning.supported_efforts?.length > 0 && (
                       <div>
                         {fieldLabel('model-reasoning-effort', '推理强度', true)}

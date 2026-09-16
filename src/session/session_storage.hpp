@@ -4,6 +4,7 @@
 #include "todo_state.hpp"
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,7 @@ struct SessionMeta {
     std::string provider;
     std::string model;
     std::string model_preset;  // optional saved_models name for this session
+    std::optional<std::string> reasoning_effort;  // absent = inherit model profile
     std::string title;  // optional window title; empty = unset
     // "user" = explicit rename, "user-cleared" = explicit empty title,
     // "generated" = hidden title generator, "legacy" = pre-provenance

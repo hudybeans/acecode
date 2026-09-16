@@ -711,8 +711,9 @@ struct AgentBrowserHost::Impl
     webview::detail::mswebview2::loader loader;
     HWND browser_widget = nullptr;
     std::unordered_map<std::string, std::shared_ptr<Page>> pages;
-    std::vector<std::string> page_order;
-    std::string active_page;
+    // 页序、显示页与每个会话的 Agent 默认目标都在这里;它是跨平台纯逻辑,
+    // 见 agent_browser_page_directory.hpp。所有读写都在 state_mutex 下。
+    AgentBrowserPageDirectory directory;
     std::uint64_t next_page_sequence = 0;
     std::string proxy_pipe_name;
     std::string proxy_auth_token;
@@ -749,8 +750,7 @@ struct AgentBrowserHost::Impl
             std::lock_guard<std::mutex> lock(state_mutex);
             for (const auto& [id, page] : pages) remaining.push_back(page);
             pages.clear();
-            page_order.clear();
-            active_page.clear();
+            directory.clear();
         }
         for (const auto& page : remaining) teardown_page(page);
         environment.Reset();
@@ -769,7 +769,8 @@ struct AgentBrowserHost::Impl
     AgentBrowserState state(const std::string& requested_page = {}) const {
         std::lock_guard<std::mutex> lock(state_mutex);
 #ifdef _WIN32
-        const std::string id = requested_page.empty() ? active_page : requested_page;
+        const std::string id = requested_page.empty()
+            ? directory.displayed_page_id() : requested_page;
         const auto found = pages.find(id);
         if (found != pages.end()) return found->second->state;
 #else
@@ -778,15 +779,23 @@ struct AgentBrowserHost::Impl
         return host_state;
     }
 
-    std::vector<AgentBrowserState> states() const {
+    std::vector<AgentBrowserState> states(
+        const std::string& owner_session_id = {}) const {
         std::vector<AgentBrowserState> result;
         std::lock_guard<std::mutex> lock(state_mutex);
 #ifdef _WIN32
-        result.reserve(page_order.size());
-        for (const std::string& id : page_order) {
+        result.reserve(directory.size());
+        for (const std::string& id : directory.ordered_page_ids()) {
             const auto found = pages.find(id);
-            if (found != pages.end()) result.push_back(found->second->state);
+            if (found == pages.end()) continue;
+            if (!owner_session_id.empty() &&
+                found->second->state.owner.session_id != owner_session_id) {
+                continue;
+            }
+            result.push_back(found->second->state);
         }
+#else
+        (void)owner_session_id;
 #endif
         return result;
     }
@@ -794,7 +803,7 @@ struct AgentBrowserHost::Impl
     std::string active_page_id() const {
         std::lock_guard<std::mutex> lock(state_mutex);
 #ifdef _WIN32
-        return active_page;
+        return directory.displayed_page_id();
 #else
         return {};
 #endif
@@ -814,9 +823,52 @@ struct AgentBrowserHost::Impl
 #ifdef _WIN32
     std::shared_ptr<Page> find_page(const std::string& requested_page) const {
         std::lock_guard<std::mutex> lock(state_mutex);
-        const std::string id = requested_page.empty() ? active_page : requested_page;
+        const std::string id = requested_page.empty()
+            ? directory.displayed_page_id() : requested_page;
         const auto found = pages.find(id);
         return found == pages.end() ? nullptr : found->second;
+    }
+
+    // 目录里的 agent target 变化后,把每页状态上的 agent_target 位对齐并返回需要
+    // 广播的快照。调用方必须持有 state_mutex。
+    std::vector<AgentBrowserState> sync_agent_target_flags_locked() {
+        std::vector<AgentBrowserState> changed;
+        for (const auto& [id, page] : pages) {
+            const bool target = directory.is_agent_target(id);
+            if (page->state.agent_target != target) {
+                page->state.agent_target = target;
+                changed.push_back(page->state);
+            }
+        }
+        return changed;
+    }
+
+    // 代理请求落到哪一页(见 AgentBrowserPageDirectory::resolve_agent_page)。
+    // allow_create=false 时没有现成页面就返回空,调用方按「未找到」处理。
+    std::string resolve_agent_page_id(const std::string& requested_page,
+                                      const AgentBrowserPageOwner& owner,
+                                      bool allow_create) {
+        AgentBrowserPageResolution resolution;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            resolution = directory.resolve_agent_page(requested_page, owner);
+        }
+        if (!resolution.create) return resolution.page_id;
+        if (!allow_create) return {};
+        return create_page_on_ui(true, owner, true);
+    }
+
+    // 显式 select 或隐式 claim 之后把该会话的默认目标钉在这一页上。
+    void set_agent_target_on_ui(const AgentBrowserPageOwner& owner,
+                                const std::string& page_id) {
+        if (owner.empty()) return;
+        std::vector<AgentBrowserState> changed;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if (!directory.set_agent_target(owner, page_id)) return;
+            changed = sync_agent_target_flags_locked();
+        }
+        for (const auto& snapshot : changed) emit_state(snapshot);
     }
 
     bool page_shared_with_agent(const std::shared_ptr<Page>& page) const {
@@ -985,21 +1037,36 @@ struct AgentBrowserHost::Impl
         LOG_INFO("[agent-browser] WebView2 environment ready; Desktop proxy published");
     }
 
-    std::string create_page_on_ui(bool shared_with_agent) {
+    std::string create_page_on_ui(bool shared_with_agent,
+                                  const AgentBrowserPageOwner& owner = {},
+                                  bool agent_created = false) {
         auto page = std::make_shared<Page>();
         page->id = "browser-" + std::to_string(desktop_pid) + "-" +
                    std::to_string(++next_page_sequence);
         page->state.page_id = page->id;
         page->state.supported = true;
         page->state.shared_with_agent = shared_with_agent;
+        page->state.owner = owner;
+        std::vector<AgentBrowserState> changed;
+        AgentBrowserState created;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
             pages.emplace(page->id, page);
-            page_order.push_back(page->id);
+            directory.add_page(page->id, owner, agent_created);
+            changed = sync_agent_target_flags_locked();
+            created = page->state;
         }
-        emit_state(page->state);
-        std::string ignored;
-        select_page_on_ui(page->id, &ignored);
+        emit_state(created);
+        for (const auto& snapshot : changed) {
+            if (snapshot.page_id != page->id) emit_state(snapshot);
+        }
+        // 有归属的 Agent 建页不抢显示:显示页由 Web UI 按当前会话决定,否则
+        // 后台会话的 browser_open 会把用户正在看的页面挤掉。旧协议(无 owner)
+        // 与 UI 自建页沿用「新页即显示」。
+        if (!agent_created || owner.empty()) {
+            std::string ignored;
+            select_page_on_ui(page->id, &ignored);
+        }
         if (environment) begin_create_controller(page);
         return page->id;
     }
@@ -1108,7 +1175,8 @@ struct AgentBrowserHost::Impl
         std::vector<QueuedCdpCall> queued;
         queued.swap(page->queued_cdp);
         for (auto& call : queued) {
-            call_cdp_on_ui(page->id, call.method, call.params, call.pending);
+            // 排队的调用在入队时已经解析到这一页,显式 page_id 下 owner 不参与。
+            call_cdp_on_ui(page->id, {}, call.method, call.params, call.pending);
         }
         LOG_INFO("[agent-browser] page ready: " + page->id);
     }
@@ -1835,7 +1903,7 @@ struct AgentBrowserHost::Impl
         std::vector<std::shared_ptr<Page>> all_pages;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
-            active_page = page_id;
+            directory.set_displayed_page(page_id);
             for (const auto& [id, page] : pages) {
                 const bool active = id == page_id;
                 if (page->state.active != active) {
@@ -1868,24 +1936,23 @@ struct AgentBrowserHost::Impl
         queued.swap(page->queued_cdp);
         std::string next_active;
         bool closed_active = false;
+        std::vector<AgentBrowserState> changed;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
+            closed_active = directory.displayed_page_id() == page_id;
+            next_active = directory.next_displayed_after_close(page_id);
             pages.erase(page_id);
-            page_order.erase(
-                std::remove(page_order.begin(), page_order.end(), page_id),
-                page_order.end());
-            if (active_page == page_id) {
-                closed_active = true;
-                active_page.clear();
-                if (!page_order.empty()) next_active = page_order.back();
-            }
+            directory.remove_page(page_id);
+            changed = sync_agent_target_flags_locked();
             page->state.ready = false;
             page->state.loading = false;
             page->state.visible = false;
             page->state.active = false;
+            page->state.agent_target = false;
             page->state.closed = true;
         }
         emit_state(page->state);
+        for (const auto& snapshot : changed) emit_state(snapshot);
         for (auto& call : queued) {
             finish_proxy_call(call.pending,
                               {{"ok", false},
@@ -2143,12 +2210,12 @@ struct AgentBrowserHost::Impl
 
     void call_cdp_on_ui(
         const std::string& requested_page,
+        const AgentBrowserPageOwner& owner,
         const std::string& method,
         const nlohmann::json& params,
         const std::shared_ptr<PendingProxyCall>& pending) {
-        std::string page_id = requested_page;
-        if (page_id.empty()) page_id = active_page_id();
-        if (page_id.empty()) page_id = create_page_on_ui(true);
+        const std::string page_id =
+            resolve_agent_page_id(requested_page, owner, true);
         auto page = find_page(page_id);
         if (!page || page->closing) {
             finish_proxy_call(pending,
@@ -2225,8 +2292,10 @@ struct AgentBrowserHost::Impl
         const std::shared_ptr<PendingProxyCall>& pending) {
         const std::string operation = request.value("operation", "cdp");
         const std::string requested_page = request.value("page_id", "");
+        const AgentBrowserPageOwner owner = parse_agent_browser_page_owner(
+            request.contains("owner") ? request["owner"] : nlohmann::json());
         if (operation == "create_page") {
-            const std::string page_id = create_page_on_ui(true);
+            const std::string page_id = create_page_on_ui(true, owner, true);
             finish_proxy_call(pending,
                               {{"ok", true},
                                {"page_id", page_id},
@@ -2234,9 +2303,8 @@ struct AgentBrowserHost::Impl
             return;
         }
         if (operation == "claim_page") {
-            std::string page_id = requested_page.empty()
-                ? active_page_id() : requested_page;
-            if (page_id.empty()) page_id = create_page_on_ui(true);
+            const std::string page_id =
+                resolve_agent_page_id(requested_page, owner, true);
             const auto page = find_page(page_id);
             if (!page) {
                 finish_proxy_call(pending,
@@ -2244,6 +2312,7 @@ struct AgentBrowserHost::Impl
                                    {"page_id", page_id},
                                    {"error", "Agent Browser page was not found"}});
             } else if (require_agent_shared_page(page, page_id, pending)) {
+                set_agent_target_on_ui(owner, page_id);
                 finish_proxy_call(pending,
                                   {{"ok", true},
                                    {"page_id", page_id},
@@ -2252,9 +2321,9 @@ struct AgentBrowserHost::Impl
             return;
         }
         if (operation == "close_page") {
-            const std::string page_id = requested_page.empty()
-                ? active_page_id() : requested_page;
-            const auto page = find_page(page_id);
+            const std::string page_id =
+                resolve_agent_page_id(requested_page, owner, false);
+            const auto page = page_id.empty() ? nullptr : find_page(page_id);
             if (!page) {
                 finish_proxy_call(pending,
                                   {{"ok", false},
@@ -2265,10 +2334,10 @@ struct AgentBrowserHost::Impl
             if (!require_agent_shared_page(page, page_id, pending)) return;
             std::string closed_page;
             std::string error;
-            if (!close_page_on_ui(requested_page, &closed_page, &error)) {
+            if (!close_page_on_ui(page_id, &closed_page, &error)) {
                 finish_proxy_call(pending,
                                   {{"ok", false},
-                                   {"page_id", requested_page},
+                                   {"page_id", page_id},
                                    {"error", error}});
             } else {
                 finish_proxy_call(pending,
@@ -2290,7 +2359,12 @@ struct AgentBrowserHost::Impl
             }
             if (!require_agent_shared_page(page, requested_page, pending)) return;
             std::string error;
-            if (!select_page_on_ui(requested_page, &error)) {
+            // 有归属的显式选页只钉该会话的默认目标,不改变显示页;旧协议沿用
+            // 「选页即显示」。
+            const bool selected = owner.empty()
+                ? select_page_on_ui(requested_page, &error)
+                : (set_agent_target_on_ui(owner, requested_page), true);
+            if (!selected) {
                 finish_proxy_call(pending,
                                   {{"ok", false},
                                    {"page_id", requested_page},
@@ -2305,6 +2379,7 @@ struct AgentBrowserHost::Impl
         }
         call_cdp_on_ui(
             requested_page,
+            owner,
             request.value("method", ""),
             request.contains("params") && request["params"].is_object()
                 ? request["params"] : nlohmann::json::object(),
@@ -2495,17 +2570,24 @@ AgentBrowserState AgentBrowserHost::state(const std::string& page_id) const {
     return impl_ ? impl_->state(page_id) : AgentBrowserState{};
 }
 
-std::vector<AgentBrowserState> AgentBrowserHost::states() const {
-    return impl_ ? impl_->states() : std::vector<AgentBrowserState>{};
+std::vector<AgentBrowserState> AgentBrowserHost::states(
+    const std::string& owner_session_id) const {
+    return impl_ ? impl_->states(owner_session_id)
+                 : std::vector<AgentBrowserState>{};
 }
 
 std::string AgentBrowserHost::active_page_id() const {
     return impl_ ? impl_->active_page_id() : std::string{};
 }
 
-std::string AgentBrowserHost::create_page(std::string* error) {
+std::string AgentBrowserHost::create_page(std::string* error,
+                                          const AgentBrowserPageOwner& owner) {
 #ifdef _WIN32
-    if (impl_ && impl_->state().supported) return impl_->create_page_on_ui(false);
+    if (impl_ && impl_->state().supported) {
+        return impl_->create_page_on_ui(false, owner, false);
+    }
+#else
+    (void)owner;
 #endif
     assign_error(error, "Agent Browser is unavailable on this platform");
     return {};

@@ -5,12 +5,12 @@ Provide a movable, resizable side conversation above the ACECode application so 
 ## ADDED Requirements
 
 ### Requirement: Application-wide floating conversation
-The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing side-chat menu, or a speech-bubble SVG button in the top-right session toolbar in a floating window above the application surfaces. The floating header SHALL contain the conversation title and top-right clear and close actions, in that order. The window SHALL support dragging, resizing on all edges and corners, independent transcript scrolling, and a fixed bottom input region totaling 60px including borders. Long drafts SHALL scroll inside the textarea without expanding that region. It SHALL remain usable within the current viewport and use the application's theme.
+The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing side-chat menu, or a speech-bubble SVG button in the top-right session toolbar in a floating window above the application surfaces. The floating header SHALL contain the conversation title and top-right clear and minimize actions, in that order. The minimize action SHALL use a horizontal-line icon and an accessible label describing minimization. The window SHALL support dragging, resizing on all edges and corners, independent transcript scrolling, and a fixed bottom input region totaling 60px including borders. Long drafts SHALL scroll inside the textarea without expanding that region. It SHALL remain usable within the current viewport and use the application's theme.
 
 #### Scenario: Open and resize above the workbench
 - **WHEN** the user opens side chat with the sidebar and preview visible
 - **THEN** the window overlays those areas without changing the main layout and can be moved and resized within the viewport
-- **AND** the close control remains reachable after viewport resizing or zoom changes
+- **AND** the minimize control remains reachable after viewport resizing or zoom changes
 
 #### Scenario: Open without a question
 - **WHEN** the user submits `/side` without arguments in an existing session
@@ -19,6 +19,18 @@ The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing s
 #### Scenario: Open from the session toolbar
 - **WHEN** the user clicks the speech-bubble button before the trajectory button in the session toolbar
 - **THEN** the same side-chat window opens, preserving existing side history and the main composer draft
+
+### Requirement: Initial size and toolbar placement
+The window SHALL initialize at 880 by 800 CSS pixels, limited by the visible viewport, and use a compact 36px header. Each activation of the toolbar bubble SHALL align the window's top-left with the button's top-left, clamping inside the viewport when necessary. Toolbar reopening SHALL preserve user-resized dimensions. Other entry points SHALL preserve the previous position.
+
+#### Scenario: Open at the toolbar button
+- **WHEN** the user activates the toolbar bubble with enough space to its right and below
+- **THEN** the window's left and top match the button's left and top
+- **AND** its initial size is 880 by 800 CSS pixels
+
+#### Scenario: Open near a viewport edge
+- **WHEN** the anchored window would extend beyond the visible viewport
+- **THEN** the window moves inside the viewport with the existing margin and contracts only if its size exceeds the available viewport
 
 ### Requirement: Isolated multi-turn conversation
 The system SHALL answer each side question using a safe main-session context snapshot plus the preceding successful or nonempty stopped side turns. It SHALL keep the side transcript temporary and independent from main-session history, tools, hooks, goals, event stream, and busy state. Failed or empty stopped turns SHALL remain visible without being added to future model context.
@@ -49,10 +61,10 @@ The UI SHALL show loading from submission, render actual streamed answer text, a
 - **THEN** the UI reports the failure, preserves readable partial output, and releases the input for another attempt
 
 ### Requirement: Conversation lifecycle and compatibility
-Closing SHALL cancel any active side request and preserve the temporary transcript and draft while the same main session remains selected. Switching sessions or leaving the view SHALL cancel the old side request and discard its temporary state. Late callbacks SHALL NOT affect another request or session. Existing synchronous side-question HTTP and TUI callers SHALL retain their single-turn behavior.
+Minimizing SHALL hide the window, cancel any active side request and preserve the temporary transcript and draft while the same main session remains selected. Switching sessions or leaving the view SHALL cancel the old side request and discard its temporary state. Late callbacks SHALL NOT affect another request or session. Existing synchronous side-question HTTP and TUI callers SHALL retain their single-turn behavior.
 
-#### Scenario: Close and reopen
-- **WHEN** the user closes and reopens side chat in the same session
+#### Scenario: Minimize and reopen
+- **WHEN** the user minimizes and reopens side chat in the same session
 - **THEN** its previous temporary transcript and unsent draft remain available
 
 #### Scenario: Clear the current side conversation

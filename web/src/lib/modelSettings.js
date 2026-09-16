@@ -11,6 +11,7 @@ import {
   buildModelDraftsFromSelection,
   formatRequestHeadersJson,
   normalizeModelCapabilities,
+  normalizeModelProbeResult,
   parseRequestHeadersJson,
   splitModelIds,
 } from './modelManager.js';
@@ -19,7 +20,8 @@ import { providerDisplayName } from './providerCatalogGroups.js';
 
 export const MODEL_CATALOG_QUERY_LIMIT = 50;
 export const MODEL_ENDPOINT_MODES = ['base_url', 'full_url'];
-export const MODEL_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+import { MODEL_REASONING_EFFORTS } from './modelReasoning.js';
+export { MODEL_REASONING_EFFORTS } from './modelReasoning.js';
 
 const RUNTIME_PROVIDERS = new Set(['openai', 'anthropic', 'copilot', 'grok']);
 const AUTH_MODES = new Set(['required', 'optional', 'none', 'managed']);
@@ -494,8 +496,13 @@ function modelMetadataDraftFromNormalized(model) {
   };
 }
 
-function catalogModelMetadataDraft(raw) {
-  return modelMetadataDraftFromNormalized(normalizeCatalogModel(raw));
+function catalogModelMetadataDraft(raw, draft) {
+  const metadata = modelMetadataDraftFromNormalized(normalizeCatalogModel(raw));
+  if (isCustomReasoningDraft(draft)) {
+    metadata.capabilities = metadata.capabilities.filter((item) => item !== 'reasoning');
+    metadata.reasoning = normalizeReasoning(null);
+  }
+  return metadata;
 }
 
 function draftMetadataOverrides(draft) {
@@ -508,6 +515,16 @@ function catalogMetadataMap(draft) {
   return isObject(draft?._catalog_model_metadata)
     ? draft._catalog_model_metadata
     : {};
+}
+
+function isAceModelDraft(draft) {
+  return draft?.models_dev_provider_id === 'acemodel' || draft?.catalog_provider_id === 'acemodel';
+}
+
+function activeDraftModelId(draft) {
+  const selected = splitModelIds(draft?.model);
+  const active = String(draft?._active_catalog_model_id || '');
+  return selected.includes(active) ? active : (selected.length === 1 ? selected[0] : '');
 }
 
 function applyVisibleModelMetadata(draft, metadata, overrides) {
@@ -530,7 +547,68 @@ export function markModelMetadataOverrides(draft, patch) {
     _model_metadata_overrides: overrides,
   };
   if (overrides.capabilities) next.capabilities_source = 'manual';
+  // ACEModel capabilities are per model. Editing the visible selection must
+  // never spread its vision/tool/reasoning settings to other selected IDs.
+  const activeId = activeDraftModelId(draft);
+  if (isAceModelDraft(draft) && activeId
+      && (Object.hasOwn(patch, 'capabilities') || Object.hasOwn(patch, 'reasoning'))) {
+    const metadata = {
+      ...emptyModelMetadataDraft(),
+      ...Object.fromEntries(MODEL_METADATA_FIELDS.map((field) => [field, draft[field]])),
+      capabilities_source: draft.capabilities_source,
+      ...catalogMetadataMap(draft)[activeId],
+    };
+    for (const field of ['capabilities', 'reasoning']) {
+      if (!Object.hasOwn(patch, field)) continue;
+      metadata[field] = patch[field];
+      delete overrides[field];
+    }
+    if (Object.hasOwn(patch, 'capabilities')) metadata.capabilities_source = 'manual';
+    next._catalog_model_metadata = { ...catalogMetadataMap(draft), [activeId]: metadata };
+    next._active_catalog_model_id = activeId;
+  }
   return next;
+}
+
+export function isCustomReasoningDraft(draft) {
+  return draft?.catalog_provider_id === 'custom-openai'
+    || (draft?.provider === 'anthropic' && draft?.capabilities_source === 'manual')
+    || (!draft?.catalog_provider_id && !draft?.models_dev_provider_id
+      && ['openai', 'anthropic'].includes(draft?.provider));
+}
+
+export function modelRowsFromProbe(response, provider) {
+  const normalized = normalizeModelProbeResult(response);
+  const aceModel = provider?.id === 'acemodel' || provider?.models_dev_provider_id === 'acemodel';
+  const custom = provider?.id === 'custom-openai';
+  return normalized.models.map((id) => {
+    const reasoning = custom ? null : normalized.reasoningByModel[id];
+    const capabilities = normalized.capabilitiesByModel[id] || [];
+    return {
+      id, name: id,
+      context_window: normalized.contextWindows[id] || null,
+      max_output_tokens: null,
+      capabilities: aceModel || custom
+        ? [...capabilities.filter((item) => item !== 'reasoning'), ...(reasoning?.supported_efforts.length ? ['reasoning'] : [])]
+        : capabilities,
+      reasoning: aceModel && !reasoning?.supported_efforts.length ? null : reasoning,
+    };
+  });
+}
+
+export function updateModelReasoningEfforts(draft, effort, enabled) {
+  if (!MODEL_REASONING_EFFORTS.includes(effort) || !draft?.reasoning?.supported) return draft;
+  const chosen = new Set(draft.reasoning.supported_efforts || []);
+  if (enabled) chosen.add(effort);
+  else chosen.delete(effort);
+  return markModelMetadataOverrides(draft, {
+    reasoning: {
+      ...draft.reasoning,
+      supported_efforts: MODEL_REASONING_EFFORTS.filter((item) => chosen.has(item)),
+      default_effort: chosen.has(draft.reasoning.default_effort) ? draft.reasoning.default_effort : '',
+      effort: chosen.has(draft.reasoning.effort) ? draft.reasoning.effort : '',
+    },
+  });
 }
 
 export function toggleModelCapability(draft, capability) {
@@ -545,6 +623,11 @@ export function toggleModelCapability(draft, capability) {
     patch.reasoning = {
       ...normalizeReasoning(null),
       supported: enabling,
+      ...(enabling && isCustomReasoningDraft(draft) ? {
+        default_enabled: true,
+        enabled: true,
+        supported_efforts: ['low', 'medium', 'high'],
+      } : {}),
     };
   }
   return markModelMetadataOverrides(draft, patch);
@@ -575,7 +658,7 @@ export function toggleCatalogModelInDraft(
     }
     selected.push(id);
     if (rawModel) {
-      metadataById[id] = catalogModelMetadataDraft(rawModel);
+      metadataById[id] = catalogModelMetadataDraft(rawModel, draft);
       activeId = id;
     }
   }
@@ -644,14 +727,35 @@ export function replaceDraftModelsFromProbe(
   }
   if (selectedModels.length === 0) return draft;
 
+  const aceModel = isAceModelDraft(draft);
+  const previousIds = new Set(splitModelIds(draft.model));
+  const previousActiveId = activeDraftModelId(draft);
+  const previousMetadata = catalogMetadataMap(draft);
   const metadataById = {};
   for (const model of selectedModels) {
-    metadataById[model.id] = catalogModelMetadataDraft(model.raw);
+    const metadata = catalogModelMetadataDraft(model.raw, draft);
+    const previous = model.id === previousActiveId && draft.capabilities_source === 'manual'
+      ? draft : previousMetadata[model.id];
+    if (aceModel && previousIds.has(model.id) && previous?.capabilities_source === 'manual') {
+      metadata.capabilities = [
+        ...normalizeModelCapabilities(previous.capabilities).filter((item) => item !== 'reasoning'),
+        ...(metadata.reasoning.supported && metadata.reasoning.supported_efforts.length ? ['reasoning'] : []),
+      ];
+      metadata.capabilities_source = 'manual';
+    }
+    metadataById[model.id] = metadata;
   }
   const activeId = selectedModels[0].id;
-  const overrides = draftMetadataOverrides(draft);
+  const overrides = { ...draftMetadataOverrides(draft) };
+  // Fresh reasoning declarations win; manual non-reasoning tags stay attached
+  // to their existing model IDs in metadataById, never to a new/batch selection.
+  if (aceModel) {
+    delete overrides.reasoning;
+    delete overrides.capabilities;
+  }
   return applyVisibleModelMetadata({
     ...draft,
+    _model_metadata_overrides: overrides,
     model: selectedModels.map((model) => model.id).join(', '),
     _catalog_model_metadata: metadataById,
     _active_catalog_model_id: activeId,
@@ -772,7 +876,7 @@ export function applyCatalogProviderToDraft(draft, provider) {
 
 export function applyCatalogModelToDraft(draft, model) {
   const normalized = normalizeCatalogModel(model);
-  const metadata = modelMetadataDraftFromNormalized(normalized);
+  const metadata = catalogModelMetadataDraft(model, draft);
   return {
     ...draft,
     model: normalized.id,

@@ -13,6 +13,11 @@ std::vector<std::string> agent_browser_tool_names();
 void register_agent_browser_tools(ToolExecutor& tools);
 std::size_t unregister_agent_browser_tools(ToolExecutor& tools);
 
+// 从工具上下文推导 Agent Browser 页面归属:{session_id, workspace_hash,
+// root_session_id}(子代理归父);会话身份未接线时返回 null,代理请求就不带
+// owner,Desktop 按旧式未绑定请求处理。
+nlohmann::json agent_browser_owner_from_context(const ToolContext& context);
+
 // Exposed for focused tests of the semantic reference contract.
 std::string agent_browser_snapshot_script();
 

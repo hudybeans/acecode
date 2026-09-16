@@ -39,3 +39,8 @@ Local browser results, screenshots, fixture script and Web logs are under `C:/Us
 - Measured the bottom region at **60px** in empty, multiline, light/dark and 1440px/390px viewport cases: a 44px border-box input plus 8px top and bottom spacing. Shift+Enter retains multiline drafts and scrolls inside the textarea without increasing the region's height. Screenshots for all four theme/viewport combinations were visually reviewed. No browser page errors occurred.
 - Artifacts: `C:/Users/shao/AppData/Local/Temp/acecode-side-chat-refinement-20260915/` contains the browser script, fixture sources, results JSON, screenshots and Web logs. Temporary repository fixture files were removed after verification.
 - This refinement changes only frontend behavior; daemon/provider/C++ code is unchanged. No installed desktop rebuild or live-model verification was performed for this refinement.
+
+## Minimize label refinement (2026-09-16)
+
+- Replaced the close icon and label with a horizontal minimize action while retaining the clear button and existing hide/reopen lifecycle.
+- The v0.9.19 reasoning-depth browser check verified minimize/reopen preserves the side draft. Full frontend tests, i18n catalog generation, production build and strict OpenSpec validation passed.

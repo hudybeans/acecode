@@ -2079,7 +2079,9 @@ void WebServer::Impl::register_ui_preferences() {
             if (cached) {
                 out["models"] = cached->models;
                 const auto capabilities =
-                    model_probe_capabilities(*parsed, cached->models);
+                    model_probe_capabilities(*parsed, cached->models, cached->reasoning);
+                out["model_reasoning"] = model_probe_reasoning_to_json(
+                    cached->models, cached->reasoning);
                 if (!capabilities.empty()) {
                     out["model_capabilities"] = capabilities;
                 }
@@ -2120,16 +2122,20 @@ void WebServer::Impl::register_ui_preferences() {
 
             auto probe_success = [&](ParsedOpenAiModels parsed_models) {
                 const auto capabilities =
-                    model_probe_capabilities(*parsed, parsed_models.ids);
+                    model_probe_capabilities(*parsed, parsed_models.ids,
+                                             parsed_models.reasoning);
                 ModelProbeCacheEntry entry;
                 entry.models = parsed_models.ids;
                 entry.context_windows = parsed_models.context_windows;
+                entry.reasoning = parsed_models.reasoning;
                 entry.probed_at_ms = now_unix_ms();
                 const bool cache_persisted = write_model_probe_cache(
                     model_probe_connection_fingerprint(*parsed),
                     entry);
 
                 json out;
+                out["model_reasoning"] = model_probe_reasoning_to_json(
+                    parsed_models.ids, parsed_models.reasoning);
                 out["models"] = std::move(parsed_models.ids);
                 if (!capabilities.empty()) {
                     out["model_capabilities"] = capabilities;

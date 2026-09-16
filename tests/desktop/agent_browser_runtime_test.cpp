@@ -120,7 +120,8 @@ TEST(AgentBrowserRuntime, ManifestRoundTripsAndValidatesOwner) {
     std::ifstream manifest_file(agent_browser_runtime_manifest_path(root));
     nlohmann::json manifest_json;
     manifest_file >> manifest_json;
-    EXPECT_EQ(manifest_json.value("protocol_version", 0), 4);
+    // v5 = 代理请求与页面状态带 owner / agent_target(页面归属会话)。
+    EXPECT_EQ(manifest_json.value("protocol_version", 0), 5);
     EXPECT_FALSE(manifest_json.contains("page_id"));
 
     const auto actual = read_agent_browser_runtime_manifest(root);

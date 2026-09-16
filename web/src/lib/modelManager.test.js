@@ -257,6 +257,7 @@ run('模型探测结果保留 Daemon 返回的目录能力元数据', () => {
   }), {
     models: ['aurora', 'moonlight'],
     contextWindows: { aurora: 250000, moonlight: 250000 },
+    reasoningByModel: { aurora: null, moonlight: null },
     capabilitiesByModel: {
       aurora: ['vision', 'tool_use'],
       moonlight: ['vision', 'tool_use'],

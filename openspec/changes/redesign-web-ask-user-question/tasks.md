@@ -11,7 +11,7 @@
 
 - [x] 2.1 视觉重做：低饱和中性配色、序号徽章黑底白勾、行 hover 浅底到位、内联自定义输入（幽灵文字/计数/聚焦与灰化草稿）、折叠态、底部 `取消/跳过/提交`。
 - [x] 2.2 交互：选项行 hover 浮现「复制 / 回车」按钮；复制写入剪贴板并显示 1.5s 对勾反馈；回车按钮与双击=选中并进下一题/提交。
-- [x] 2.3 键盘：`1–9`、`↑↓`、`Space`、`Enter`（单选非末题一步到位/末题仅选中、多选切换）、`Ctrl+Enter` 末题提交、`Tab/Shift+Tab` 切题、`Esc` 取消（编辑态先退编辑）。
+- [x] 2.3 键盘：数字键与 Enter 确认选项后推进（末题只选中），方向键/Tab 导航，Space 切换选中；自定义输入 Enter 走主操作，IME 确认不触发快捷键；Esc 首次清空选中，1.2s 内再次按才取消。
 - [x] 2.4 提交/取消后通过 `onResolve` 释放，供上层恢复 composer 并展示汇总/取消反馈。
 - [x] 2.5 收卷时机：非末题「提交/跳过」仅本地推进，绝不逐题发送；末题统一 `sendQuestionAnswer` 一次、取消一次 `cancelled`；末题 `canSubmit` 恒为真（整批一并记 Not answered）。
 
@@ -27,7 +27,7 @@
 
 - [x] 4.1 `pnpm test`（自 `web/`）全绿。
 - [x] 4.2 `pnpm build` 通过，嵌入前端资源刷新。
-- [x] 4.3 反馈卡持久化回归测试：`web/src/lib/questionFeedback.test.js`（提交/取消/未作答/id 变更/临时预览）+ `tests/tool/ask_user_question_tool_test.cpp` 的 cancelled 与 multi_select 断言。
+- [x] 4.3 反馈卡持久化回归测试：`web/src/lib/questionFeedback.test.js`（提交/取消/未作答/id 变更/连续提问与会话隔离）+ `tests/tool/ask_user_question_tool_test.cpp` 的 cancelled 与 multi_select 断言。
 - [x] 4.4 仅当与既有行为相关时同步更新 `docs`；不引入超时收卷、汇总页、`Ctrl+C` 劫持。
 - [x] 4.5 完整链路回归：使用真实 `assistant.tool_calls` + `role:tool` 持久化协议形状，覆盖实时提交/取消、历史重载、回合 self-heal、继续对话、调用后紧邻卡片且每次调用只出现一张。
 
@@ -39,3 +39,18 @@
 - [x] 5.4 `web/src/lib/composerEditabilityArchitecture.test.js` 改为守方案 A 的契约（composer 让位、无插话入口），并把排队卡片插话单独成条。
 - [x] 5.5 重新生成 i18n 源目录；Web 侧 `pnpm test`、`pnpm build`（含 lookbehind 兼容检查）全绿。安装须用 CI 同版本 pnpm 10.32.1（`npx pnpm@10.32.1 install --frozen-lockfile`）—— 本机 pnpm 12 解析该 patch 文件会失败，属工具链版本问题，与本次改动无关。
 - [x] 5.6 C++ 侧 `*AskUserQuestion*`、`AskUserQuestionPrompter.*`、`AgentLoopQuestionInterjection.*` 共 54 个用例全绿。注意：旧 `build/windows-x64-dev` 里还留着 09-13 的过期目标文件（含 `agent_loop.hpp`、`ask_user_question_prompter.hpp` 等已变动的头文件），直接跑会出现与本改动无关的堆损坏崩溃；清掉过期 obj 重编后全部通过。
+
+## 6. PR #50 审核修复
+
+- [x] 6.1 确认选项与切换选项分开处理，修复多选双击和已选项快捷确认丢失答案；接通 hover / 键盘焦点 / 推荐项的 Enter 目标，阻止 IME 确认键触发问答快捷键。
+- [x] 6.2 反馈卡只从所属工具的持久化结果派生，在公共 ToolBlock 中渲染，移除跨请求、跨会话复用的临时反馈；验证连续问答、self-heal 和重载。
+- [x] 6.3 同步 2026-09-14 已修订的键盘契约，补齐合法 OpenSpec delta 与设计记录。
+- [x] 6.4 运行真实组件回归、Web 全量测试与构建、i18n 目录生成、OpenSpec strict 和差异检查，记录验证结果。
+
+### 审核验证记录
+
+- `pnpm test`：2417 条通过，包含 12 项真实 QuestionPicker JSX 事件回归与共享 ToolBlock 持久化渲染回归。
+- `pnpm build`：通过，4433 个正则字面量兼容检查通过。
+- `pnpm i18n:catalog` 与 `openspec validate redesign-web-ask-user-question --strict`：通过。
+- Chromium 真实组件检查：13 项通过，覆盖 IME、双击/键盘确认、复制、推荐与悬停、Esc 请求隔离、折叠、按钮、390px 宽度；使用模拟连接，未发送真实会话答案。
+- C++ 改动与原 PR `c998f336` 相同，该提交的远端 `unit-tests (linux-x64)` 已通过；本轮修复不改 C++。

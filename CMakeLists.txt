@@ -7,7 +7,7 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.18 LANGUAGES C CXX)
+project(acecode VERSION 0.9.19 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
 
@@ -186,6 +186,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/custom_toast.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/custom_toast_win.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_navigation_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_page_directory.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/context_items.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/context_picker.cpp

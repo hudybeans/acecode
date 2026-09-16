@@ -9,10 +9,15 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseSync } from '@babel/core';
 import { transformWithEsbuild } from 'vite';
-import { createTranscriptState, loadTranscriptHistory } from './sessionTranscript.js';
+import { createTranscriptState, loadTranscriptHistory, reduceTranscriptEvent } from './sessionTranscript.js';
+import * as format from './format.js';
+import { compactOneLinePreview } from './compactMessagePreview.js';
+import { createdFileSource } from './createdFileSource.js';
+import { normalizeAttachmentList } from './messageAttachments.js';
+import { fallbackToolSummary } from './toolSummaryFallback.js';
 import {
-  lastAskUserQuestionItem,
   questionFeedbackForItem,
+  questionFeedbackForTool,
 } from './questionFeedback.js';
 
 // 编译真实 QuestionFeedbackCard 用于渲染断言。该组件只依赖 VsIcon(图标),其余
@@ -39,13 +44,41 @@ const { QuestionFeedbackCard } = vm.runInNewContext(
   { React, ...React, VsIcon: () => null },
 );
 
-// 按落盘工具条目派生反馈并渲染卡片(与 ChatView 的 renderFeedbackAfterQuestion
-// 同一条数据路径),供持久化测试断言「卡片紧跟 AskUserQuestion 调用」。
-export function renderQuestionFeedbackCardForTest(item) {
-  const feedback = questionFeedbackForItem(item);
-  return feedback
-    ? renderToStaticMarkup(React.createElement(QuestionFeedbackCard, { feedback }))
-    : '';
+// 编译共享 ToolBlock,保证测试经过生产调用路径,不单独拼接反馈卡。
+const toolSource = readFileSync(new URL('../components/ToolBlock.jsx', import.meta.url), 'utf8');
+const toolAst = parseSync(toolSource, {
+  configFile: false,
+  babelrc: false,
+  parserOpts: { plugins: ['jsx'] },
+});
+const toolBody = toolAst.program.body
+  .filter((node) => node.type !== 'ImportDeclaration')
+  .map((node) => node.declaration || node);
+const toolTransformed = await transformWithEsbuild(
+  toolBody.map((node) => toolSource.slice(node.start, node.end)).join('\n'),
+  'ToolBlock.jsx',
+  { loader: 'jsx', jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment' },
+);
+const { ToolBlock } = vm.runInNewContext(`${toolTransformed.code}; ({ ToolBlock });`, {
+  React, ...React, ...format,
+  compactOneLinePreview, createdFileSource, normalizeAttachmentList,
+  fallbackToolSummary, questionFeedbackForTool, QuestionFeedbackCard,
+  useTranslation: () => ({ t: (text) => text }),
+  renderMarkdown: () => '',
+  VsIcon: () => null,
+  ToolSummaryIcon: () => null,
+  ActivityLine: ({ label }) => React.createElement('span', { 'data-tool-activity': true }, label),
+});
+
+export function renderQuestionToolForTest(item) {
+  return renderToStaticMarkup(React.createElement(ToolBlock, {
+    entry: item.tool,
+    sessionRunning: false,
+  }));
+}
+
+function lastAskUserQuestionItem(items) {
+  return items.findLast((item) => item.kind === 'tool' && item.tool?.tool === 'AskUserQuestion');
 }
 
 async function run(name, fn) {
@@ -149,36 +182,56 @@ run('未作答题在反馈卡上标记 notAnswered', () => {
   assert.equal(card.summary[0].answer, '');
 });
 
-run('tool_end 尚未回流时用临时反馈做即时预览', () => {
-  const pending = {
-    kind: 'tool',
-    id: 7,
-    tool: { tool: 'AskUserQuestion', isDone: true, askUserQuestionResult: null },
-  };
-  assert.equal(
-    questionFeedbackForItem(pending, { transient: { kind: 'cancel' }, allowTransient: true }).kind,
-    'cancel',
-  );
-  assert.equal(
-    questionFeedbackForItem(pending, { transient: { kind: 'cancel' }, allowTransient: false }),
-    null,
-  );
-  const preview = questionFeedbackForItem(pending, {
-    transient: { kind: 'submit', summary: [{ question: 'Q', answer: 'A', multiSelect: true }] },
-    allowTransient: true,
-  });
-  assert.equal(preview.kind, 'submit');
-  assert.equal(preview.summary[0].answer, 'A');
+run('连续提问时待答工具不复用上一题的提交或取消反馈', () => {
+  for (const metadata of [SUBMIT_METADATA, CANCEL_METADATA]) {
+    let state = load([userMessage(), askToolMessage(metadata)]);
+    state = reduceTranscriptEvent(state, {
+      type: 'tool_start',
+      payload: { tool: 'AskUserQuestion', tool_call_id: 'call-next' },
+      seq: state.lastSeq + 1,
+    }).state;
+    const pending = lastAskUserQuestionItem(state.items);
+    assert.equal(pending.tool.isDone, false);
+    assert.equal(questionFeedbackForItem(pending), null);
+    assert.doesNotMatch(renderQuestionToolForTest(pending), /data-question-feedback/);
+    const previous = state.items.find((item) => item.kind === 'tool');
+    assert.equal((renderQuestionToolForTest(previous).match(/data-question-feedback=/g) || []).length, 1);
+
+    state = reduceTranscriptEvent(state, {
+      type: 'tool_end',
+      payload: {
+        tool: 'AskUserQuestion',
+        tool_call_id: 'call-next',
+        success: true,
+        metadata: { ask_user_question_result: { items: [{ question: 'Next question?', answer: 'Next answer' }] } },
+      },
+      seq: state.lastSeq + 1,
+    }).state;
+    const html = renderQuestionToolForTest(lastAskUserQuestionItem(state.items));
+    assert.equal((html.match(/data-question-feedback="submit"/g) || []).length, 1);
+    assert.match(html, /Next question\?/);
+    assert.match(html, /Next answer/);
+    assert.doesNotMatch(html, /Rust|已取消全部回答/);
+  }
 });
 
-run('持久化结果到位后覆盖临时预览(不重复展示)', () => {
-  const state = load([userMessage(), askToolMessage(SUBMIT_METADATA)]);
-  const item = lastAskUserQuestionItem(state.items);
-  const card = questionFeedbackForItem(item, {
-    transient: { kind: 'cancel' },
-    allowTransient: true,
+run('共享工具行直接承载折叠结果,无需 ChatView 回调或独立反馈卡', () => {
+  const item = lastAskUserQuestionItem(load([userMessage(), askToolMessage(SUBMIT_METADATA)]).items);
+  const html = renderQuestionToolForTest(item);
+  assert.equal((html.match(/data-question-feedback="submit"/g) || []).length, 1);
+  assert.match(html, /data-ask-user-question-result="true"/);
+  assert.match(html, /data-tool-activity/);
+  assert.doesNotMatch(html, /全部提交完成|（多选）/);
+});
+
+run('切换会话后只渲染新会话自己的问答结果', () => {
+  renderQuestionToolForTest(lastAskUserQuestionItem(load([userMessage(), askToolMessage(SUBMIT_METADATA)]).items));
+  const pending = reduceTranscriptEvent(createTranscriptState({ title: 'other session' }), {
+    type: 'tool_start',
+    payload: { tool: 'AskUserQuestion', tool_call_id: 'other-call' },
+    seq: 1,
   });
-  assert.equal(card.kind, 'submit', '已落盘的提交结果优先于临时取消态');
+  assert.doesNotMatch(renderQuestionToolForTest(lastAskUserQuestionItem(pending.state.items)), /data-question-feedback|Rust/);
 });
 
 run('会话级取最近一次提问对应的那条工具消息', () => {
@@ -214,7 +267,7 @@ run('运行中、普通失败和无结构化结果都不出反馈卡', () => {
     { ...answered.tool, askUserQuestionResult: { items: [] } },
   ]) {
     assert.equal(questionFeedbackForItem({ ...answered, tool }), null);
-    assert.equal(renderQuestionFeedbackCardForTest({ ...answered, tool }), '');
+    assert.doesNotMatch(renderQuestionToolForTest({ ...answered, tool }), /data-question-feedback/);
   }
   // 非工具条目一律不派生反馈。
   assert.equal(questionFeedbackForItem({ kind: 'msg', tool: answered.tool }), null);
@@ -232,15 +285,15 @@ run('工具改名或历史页缺少调用名时结构化结果仍渲染反馈卡
       },
     };
     assert.equal(questionFeedbackForItem(item)?.kind, 'cancel');
-    assert.match(renderQuestionFeedbackCardForTest(item), /data-question-feedback="cancel"/);
+    assert.match(renderQuestionToolForTest(item), /data-question-feedback="cancel"/);
   }
 });
 
 // 触发场景:TUI/IM 通道里 AskUserQuestion 挂起时用户直接输入插话,daemon 落盘
 // ask_user_question_result={interjected:true, items:[]} 且 success=true。
-// 期望:渲染「已改为直接输入,取消作答」卡,而不是取消卡,也不是 Q/A 确认卡;
+// 期望:与显式取消使用同一行内展示文案,但保留 interject 数据标记;
 // 历史页重载后(工具改名、无调用名)同样可恢复。
-run('插话取消作答渲染专属反馈卡,且改名后仍可恢复', () => {
+run('插话取消作答复用取消展示,且改名后仍可恢复', () => {
   const item = {
     kind: 'tool',
     tool: {
@@ -251,10 +304,10 @@ run('插话取消作答渲染专属反馈卡,且改名后仍可恢复', () => {
     },
   };
   assert.equal(questionFeedbackForItem(item)?.kind, 'interject');
-  const html = renderQuestionFeedbackCardForTest(item);
+  const html = renderQuestionToolForTest(item);
   assert.equal((html.match(/data-question-feedback="interject"/g) || []).length, 1);
-  assert.ok(html.includes('已改为直接输入'));
-  assert.doesNotMatch(html, /data-question-feedback="cancel"|data-question-feedback="submit"|已取消全部回答/);
+  assert.ok(html.includes('用户已取消回答'));
+  assert.doesNotMatch(html, /data-question-feedback="cancel"|data-question-feedback="submit"|全部提交完成/);
   for (const tool of ['', 'request_input']) {
     const renamed = { ...item, tool: { ...item.tool, tool } };
     assert.equal(questionFeedbackForItem(renamed)?.kind, 'interject');

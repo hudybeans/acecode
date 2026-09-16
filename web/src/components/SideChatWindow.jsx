@@ -7,6 +7,7 @@ import {
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import {
+  anchorSideChatGeometry,
   clampSideChatGeometry,
   createSideChatGeometry,
   moveSideChatGeometry,
@@ -51,6 +52,7 @@ const SideChatTurn = memo(function SideChatTurn({ turn, onMarkdownInteraction })
 
 export function SideChatWindow({
   open,
+  anchor = null,
   turns = [],
   draft = '',
   busy = false,
@@ -79,10 +81,12 @@ export function SideChatWindow({
 
   useLayoutEffect(() => {
     if (!open) return undefined;
+    setGeometry((current) => anchor
+      ? anchorSideChatGeometry(current, anchor, nativeSurfaceViewportRect())
+      : clampSideChatGeometry(current, nativeSurfaceViewportRect()));
     const updateViewport = () => setGeometry((current) => (
       clampSideChatGeometry(current, nativeSurfaceViewportRect())
     ));
-    updateViewport();
     window.addEventListener('resize', updateViewport);
     window.visualViewport?.addEventListener('resize', updateViewport);
     window.visualViewport?.addEventListener('scroll', updateViewport);
@@ -93,7 +97,7 @@ export function SideChatWindow({
       pointerRef.current = null;
       setInteracting(false);
     };
-  }, [open]);
+  }, [open, anchor]);
 
   useLayoutEffect(() => {
     if (!open) return undefined;
@@ -242,11 +246,13 @@ export function SideChatWindow({
             ref={closeRef}
             type="button"
             className="ace-side-chat-close"
-            aria-label="关闭侧边聊天"
-            title="关闭侧边聊天"
+            aria-label="最小化侧边聊天"
+            title="最小化侧边聊天"
             onClick={onClose}
           >
-            <VsIcon name="close" size={16} />
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 8h10" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
           </button>
         </div>
       </header>

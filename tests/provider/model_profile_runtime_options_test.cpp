@@ -116,11 +116,13 @@ TEST(ModelProfileRuntimeOptions, LegacyOpenAiRequestBehaviorIsUnchanged) {
               "https://example.test/v1/chat/completions");
     EXPECT_FALSE(body.contains("max_tokens"));
     EXPECT_FALSE(body.contains("reasoning"));
+    EXPECT_FALSE(body.contains("reasoning_effort"));
     ASSERT_TRUE(body.contains("tools"));
     EXPECT_EQ(body["tools"].size(), 1u);
     EXPECT_TRUE(stream_body["stream"].get<bool>());
     EXPECT_FALSE(stream_body.contains("max_tokens"));
     EXPECT_FALSE(stream_body.contains("reasoning"));
+    EXPECT_FALSE(stream_body.contains("reasoning_effort"));
     EXPECT_TRUE(stream_body.contains("tools"));
 }
 
@@ -489,4 +491,93 @@ TEST(ModelProfileRuntimeOptions, GrokRemainsManagedAndRejectsCustomRuntime) {
     auto output = valid;
     output.max_output_tokens = 4096;
     EXPECT_EQ(acecode::create_provider_from_entry(output), nullptr);
+}
+
+TEST(ModelProfileRuntimeOptions, OpenAiEffortRequiresEnabledDeclaredChoice) {
+    ProviderRequestOptions options;
+    options.reasoning_protocol = ReasoningWireProtocol::OpenAi;
+    options.reasoning = reasoning_with_effort("high");
+    auto request = [&](bool stream) {
+        TestableOpenAiProvider provider(
+            "https://gateway.test/v1", "key", "model", 1000, {}, options);
+        return provider.build_request_body({user_message()}, {}, stream);
+    };
+    for (bool stream : {false, true}) {
+        const auto body = request(stream);
+        EXPECT_EQ(body["reasoning_effort"], "high");
+        EXPECT_FALSE(body.contains("reasoning"));
+        EXPECT_FALSE(body.contains("thinking"));
+    }
+    options.reasoning->effort.reset();
+    EXPECT_EQ(request(false)["reasoning_effort"], "medium");
+    options.reasoning->default_effort.reset();
+    EXPECT_FALSE(request(false).contains("reasoning_effort"));
+    options.reasoning->effort = "unknown";
+    EXPECT_FALSE(request(false).contains("reasoning_effort"));
+    options.reasoning->effort = "high";
+    options.reasoning->enabled = false;
+    EXPECT_FALSE(request(false).contains("reasoning_effort"));
+    options.reasoning->enabled = true;
+    options.reasoning->supported = false;
+    EXPECT_FALSE(request(true).contains("reasoning_effort"));
+    options.reasoning.reset();
+    EXPECT_FALSE(request(true).contains("reasoning_effort"));
+}
+
+TEST(ModelProfileRuntimeOptions, FactoryForwardsOpenAiEffortThroughActualRequests) {
+    std::mutex mutex;
+    std::vector<nlohmann::json> requests;
+    LocalHttpServer server([&](httplib::Server& http) {
+        http.Post("/chat/completions", [&](const httplib::Request& req,
+                                            httplib::Response& res) {
+            auto body = nlohmann::json::parse(req.body);
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                requests.push_back(body);
+            }
+            if (body.value("stream", false)) {
+                res.set_content(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+                    "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                    "text/event-stream");
+            } else {
+                res.set_content(
+                    R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})",
+                    "application/json");
+            }
+        });
+    });
+    ModelProfile profile;
+    profile.name = "explicit-reasoning";
+    profile.provider = "openai";
+    profile.base_url = server.base_url();
+    profile.api_key = "test-key";
+    profile.model = "opaque-model";
+    for (const std::string& catalog : {"acemodel", "custom-openai"}) {
+        profile.models_dev_provider_id = catalog;
+        profile.reasoning = reasoning_with_effort("high");
+        auto provider = acecode::create_provider_from_entry(profile);
+        ASSERT_TRUE(provider);
+        EXPECT_EQ(provider->chat({user_message()}, {}).content, "ok");
+        std::string streamed;
+        provider->chat_stream({user_message()}, {}, [&](const StreamEvent& event) {
+            if (event.type == StreamEventType::Delta) streamed += event.content;
+        });
+        EXPECT_EQ(streamed, "ok");
+    }
+    profile.reasoning->enabled = false;
+    auto disabled = acecode::create_provider_from_entry(profile);
+    ASSERT_TRUE(disabled);
+    EXPECT_EQ(disabled->chat({user_message()}, {}).content, "ok");
+    profile.reasoning.reset();
+    auto legacy = acecode::create_provider_from_entry(profile);
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(legacy->chat({user_message()}, {}).content, "ok");
+    std::lock_guard<std::mutex> lock(mutex);
+    ASSERT_EQ(requests.size(), 6u);
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        if (i < 4) EXPECT_EQ(requests[i]["reasoning_effort"], "high");
+        else EXPECT_FALSE(requests[i].contains("reasoning_effort"));
+        EXPECT_FALSE(requests[i].contains("reasoning"));
+    }
 }

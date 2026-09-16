@@ -300,6 +300,7 @@ update their transcript presentation.
 | PUT | `/api/sessions/:id/permissions` | set session permission mode |
 | GET | `/api/sessions/:id/model` | read session model state |
 | POST | `/api/sessions/:id/model` | switch session model |
+| POST | `/api/sessions/:id/reasoning` | set or reset the idle session's reasoning effort |
 | POST | `/api/sessions/:id/model/reload` | force reload the selected saved-model profile for one active session |
 | POST | `/api/sessions/:id/fork` | fork a transcript prefix |
 | POST | `/api/sessions/:id/file-checkpoints/:message_id/restore` | restore files to checkpoint |
@@ -648,6 +649,7 @@ Creates a session in the workspace. Body fields are optional:
   "name": "saved-model-name",
   "permission_mode": "default",
   "permissionMode": "default",
+  "reasoning_effort": "high",
   "initial_user_message": "hello",
   "auto_start": true,
   "no_workspace": false,
@@ -670,6 +672,11 @@ aliases. `auto_start` defaults to `false`; it only starts a turn when an
 
 Errors include `404` unknown workspace, `409` workspace path unavailable,
 `400` invalid permission mode, and `503` session client unavailable.
+
+`reasoning_effort` is optional (`null` inherits the saved model default). A
+string must be one of the enabled model's declared efforts; invalid or
+unsupported values fail before a session or initial turn is created. The
+override belongs to the new session and does not modify the saved model.
 
 ### `POST /api/workspaces/:hash/sessions/:id/resume`
 
@@ -2483,9 +2490,44 @@ Success:
 {
   "models": ["gpt-4.1"],
   "model_context_windows": {"gpt-4.1": 1047576},
-  "model_capabilities": {"gpt-4.1": ["vision", "tool_use"]}
+  "model_capabilities": {"gpt-4.1": ["vision", "tool_use"]},
+  "model_reasoning": {"gpt-4.1": null}
 }
 ```
+
+#### Explicit reasoning discovery contract
+
+An OpenAI-compatible upstream, including ACEModel, can declare controllable
+reasoning in each `GET /models` entry:
+
+```json
+{
+  "id": "gpt-6-astra",
+  "reasoning": {
+    "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_effort": "high"
+  }
+}
+```
+
+`supported_efforts` must be a nonempty array of distinct values from `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`. `default_effort` is optional and, when
+present, must belong to that list. ACECode does not infer reasoning from model
+names or fill in undeclared levels. Missing, empty, or invalid declarations
+produce `null`, including after a previously valid declaration is removed.
+
+Both fresh and cached probe responses contain a `model_reasoning` entry for
+every returned model. Valid declarations are normalized to the saved-model
+reasoning shape, with `supported:true`, `default_enabled:true`, the declared
+efforts and default, and `supports_max_tokens:false`. Model settings use this
+metadata to select “推理”; an ACEModel without a valid declaration is unchecked
+and has no composer control. Custom models begin with reasoning disabled;
+explicitly checking “推理” initializes an editable `low`, `medium`, `high` list.
+
+Enabled generic OpenAI-compatible Chat Completions requests send
+`reasoning_effort` only when an explicit or declared default effort exists.
+Disabling reasoning or omitting its configuration omits that request field.
+Existing Anthropic and OpenRouter request encodings remain provider-specific.
 
 Errors include `COPILOT_AUTH_REQUIRED`, `GROK_AUTH_REQUIRED`,
 `GROK_AUTH_EXPIRED`, `GROK_MODELS_UNREACHABLE`, `GROK_MODELS_HTTP_ERROR`,
@@ -2615,6 +2657,12 @@ Returns current session model state:
 }
 ```
 
+The state also includes `models_dev_provider_id`, `reasoning` (the effective
+saved-model reasoning options, or `null`), and `reasoning_effort` (the session
+override string, or `null` when inheriting the saved model default). Clients
+show a depth control only for enabled reasoning with a nonempty effort list.
+Budget-only reasoning and managed Copilot/Grok providers have no effort control.
+
 This GET is side-effect free. It reports the current public model state (and
 may mark a saved-model name as deleted), but it never reconstructs or replaces
 the session Provider.
@@ -2670,6 +2718,34 @@ Body:
 
 Switches the active session to that saved model profile and returns model
 state. Returns `404` when the session is not active in the registry.
+
+Changing to a different saved model clears the previous reasoning override.
+Reloading the same model retains a still-supported override; disabling the
+capability or removing that effort clears it.
+
+### `POST /api/sessions/:id/reasoning`
+
+Body:
+
+```json
+{"effort":"high"}
+```
+
+Use `{"effort":null}` to restore the saved model's defaults. Success returns
+the standard session model state. The selected string must occur in the
+current model's enabled `reasoning.supported_efforts`. This operation changes
+only the named session: other sessions, saved profiles and workspace defaults
+are unaffected. The override is persisted, restored on resume and inherited
+by a fork. An explicit effort takes precedence over the saved reasoning token
+budget; resetting the override restores that budget as well as the default.
+
+Mutation runs under the worker's idle gate. An active turn or queued input
+returns `409 SESSION_BUSY` without changing the selection. Malformed bodies,
+non-null selections for unsupported models and undeclared efforts return
+`400 INVALID_REASONING_EFFORT`;
+unknown sessions return `404 SESSION_NOT_FOUND`, unavailable model profiles
+return `409 MODEL_UNAVAILABLE`, and update failures return
+`500 REASONING_UPDATE_FAILED`.
 
 ### Copilot auth routes
 

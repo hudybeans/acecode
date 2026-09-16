@@ -280,3 +280,25 @@ run('session model reload warning stays non-error feedback', () => {
     },
   );
 });
+
+run('session and saved model normalization preserves reasoning without mutating either input', () => {
+  const reasoning = { supported: true, default_enabled: true, supported_efforts: ['low', 'high'], default_effort: 'high' };
+  const saved = { name: 'fake', provider: 'openai', reasoning };
+  const state = normalizeModelState({ ...saved, reasoning_effort: 'low' });
+  assert.equal(state.reasoningEffort, 'low');
+  assert.deepEqual(state.reasoning.supported_efforts, ['low', 'high']);
+  assert.equal(normalizeModelState(state).reasoningEffort, 'low');
+  assert.equal(normalizeModelOptions([saved])[0].reasoningEffort, null);
+  assert.equal(Object.hasOwn(saved, 'reasoning_effort'), false);
+  state.reasoning.supported_efforts.push('max');
+  assert.deepEqual(saved.reasoning.supported_efforts, ['low', 'high']);
+});
+
+run('new task effort is passed only to session creation with explicit default reset', () => {
+  const source = { cwd: '/tmp/fake' };
+  const selected = withCreateSessionPreferences(source, { modelName: 'fake', reasoningEffort: 'high' });
+  assert.equal(selected.reasoning_effort, 'high');
+  assert.equal(source.reasoning_effort, undefined);
+  assert.equal(withCreateSessionPreferences(selected, { reasoningEffort: null }).reasoning_effort, null);
+  assert.equal(Object.hasOwn(withCreateSessionPreferences(source), 'reasoning_effort'), false);
+});

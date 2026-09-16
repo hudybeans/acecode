@@ -1,3 +1,4 @@
+import { normalizeModelReasoning } from './modelReasoning.js';
 // web/src/lib/modelManager.js
 // 提交前的快速校验,避免没必要的 4xx 往返。规则与后端 saved_models_editor
 // 保持一致;后端是真值源,前端不重复实现复杂分支。
@@ -353,6 +354,7 @@ export function normalizeModelProbeResult(result) {
   const seen = new Set();
   const contextWindows = {};
   const capabilitiesByModel = {};
+  const reasoningByModel = {};
   const addContext = (id, tokens) => {
     const key = String(id || '').trim();
     if (!key) return;
@@ -399,7 +401,10 @@ export function normalizeModelProbeResult(result) {
     });
   }
 
-  return { models, contextWindows, capabilitiesByModel };
+  for (const id of models) {
+    reasoningByModel[id] = normalizeModelReasoning(result?.model_reasoning?.[id]);
+  }
+  return { models, contextWindows, capabilitiesByModel, reasoningByModel };
 }
 
 // 把多选草稿拆成每个模型一份的单模型草稿。名字按 modelAlias.js 的规则展开:

@@ -20,6 +20,7 @@ import { highlightSourceForFile } from '../lib/sourceCodeHighlight.js';
 import { fallbackToolSummary } from '../lib/toolSummaryFallback.js';
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { normalizeTaskCompleteMarkdown } from '../lib/taskCompleteSummary.js';
+import { questionFeedbackForTool } from '../lib/questionFeedback.js';
 import {
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
@@ -27,6 +28,7 @@ import {
 import { AttachmentStrip } from './AttachmentStrip.jsx';
 import { ActivityLine } from './ActivityLine.jsx';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
+import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
 import { ToolSummaryIcon, VsIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import * as Diff2Html from 'diff2html';
@@ -189,8 +191,6 @@ function taskCompleteDisplayText(summary, output) {
   const outputText = String(output ?? '').trim();
   return outputText || '完成';
 }
-
-
 
 export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessionRunning = true }) {
   const { t: translate } = useTranslation();
@@ -388,6 +388,9 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
           {...toolContextAttrs}
           className="ace-tool-activity min-w-0"
           data-ask-user-question-result="true"
+          data-question-feedback={askCancelled
+            ? (askUserQuestionResult.interjected === true ? 'interject' : 'cancel')
+            : 'submit'}
         >
           <ActivityLine
             icon={<ToolSummaryIcon icon={completedSummary.icon} ok={!askCancelled} className={askCancelled ? 'text-fg-mute' : 'text-ok'} />}
@@ -408,6 +411,14 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
       );
     }
     const ok = !!success;
+    const questionFeedback = questionFeedbackForTool(entry);
+    if (questionFeedback) {
+      return (
+        <div {...toolContextAttrs} className="ace-tool-activity min-w-0">
+          <QuestionFeedbackCard feedback={questionFeedback} />
+        </div>
+      );
+    }
     return (
       <div
         {...toolContextAttrs}
@@ -450,6 +461,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
             <AttachmentStrip attachments={attachmentItems} align="left" compact />
           </div>
         )}
+
       </div>
     );
   }
