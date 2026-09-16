@@ -1978,8 +1978,7 @@ export function App() {
     && !configRecoveryBlocking
     && !guidedTourPreparing
     && !guidedTourRun
-    && !sessionNavigationPending
-    && !visibleQuestionReq;
+    && !sessionNavigationPending;
   const resolveVisibleQuestion = () => {
     if (!visibleQuestionReq?.request_id) return;
     setQuestionReqs((prev) => closePendingQuestionRequest(prev, visibleQuestionReq, {

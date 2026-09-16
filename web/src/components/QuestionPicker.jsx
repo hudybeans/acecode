@@ -313,6 +313,8 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
     : '跳过';
   const primaryKeyHint = nav.isLast ? 'Ctrl + Enter' : 'Enter';
   const customActive = !!answer.customSelected && answer.custom.trim().length > 0;
+  // 草稿态:输入了自定义内容但未选中自定义项(例如单选时改选预设选项),文字变灰。
+  const customDraft = !answer.customSelected && (answer.custom || '').trim().length > 0;
 
   return (
     <section
@@ -506,7 +508,10 @@ export function QuestionPicker({ request, onResolve, onFeedback, originLabel = '
                 onBlur={() => setEditingCustom(false)}
                 placeholder="输入你的答案"
                 maxLength={MAX_CUSTOM_LENGTH}
-                className="min-w-0 flex-1 h-9 bg-transparent text-[14px] text-fg outline-none placeholder:text-fg-mute placeholder:text-[13px]"
+                className={clsx(
+                  'min-w-0 flex-1 h-9 bg-transparent text-[14px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
+                  customDraft ? 'text-fg-mute font-normal' : 'text-fg',
+                )}
               />
               <span className="shrink-0 text-[12px] text-fg-mute tabular-nums">
                 {(answer.custom || '').length}/{MAX_CUSTOM_LENGTH}

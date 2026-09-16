@@ -468,6 +468,9 @@ run('application state explicitly gates the native Agent Browser surface', () =>
   assert.match(app, /&& !searchOpen/);
   assert.match(app, /&& !updateDialogOpen/);
   assert.match(app, /&& !desktopCloseDialogOpen/);
+  // 提问待答时不关闭原生表面:QuestionPicker 内联在左侧聊天列,不覆盖右侧预览区,
+  // 若一并关闭会把浏览器预览(原生 WebView 子窗口)整体隐藏。
+  assert.doesNotMatch(app, /&& !visibleQuestionReq/);
   assert.match(app, /nativeSurfacesVisible=\{nativeSurfacesVisible\}/);
   assert.match(chatView, /nativeSurfacesVisible = true/);
   assert.match(chatView, /<PreviewDetailsPanel[\s\S]*nativeSurfacesVisible=\{nativeSurfacesVisible\}/);
