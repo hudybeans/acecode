@@ -7,7 +7,7 @@ const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const picker = fs.readFileSync(path.join(srcRoot, 'components/QuestionPicker.jsx'), 'utf8');
 const chatView = fs.readFileSync(path.join(srcRoot, 'components/ChatView.jsx'), 'utf8');
 const toolBlock = fs.readFileSync(path.join(srcRoot, 'components/ToolBlock.jsx'), 'utf8');
-const rootClasses = picker.match(/className="([^"]*border-border[^\"]*overflow-hidden[^\"]*)"/)?.[1] || '';
+const rootClasses = picker.match(/clsx\('([^']*rounded-\[14px\][^']*)'/)?.[1] || '';
 
 assert.ok(rootClasses, 'QuestionPicker root classes must be discoverable');
 assert.match(rootClasses, /rounded-\[14px\]/);
@@ -32,8 +32,9 @@ const dockEnd = chatView.indexOf('<SessionContentLoading', dockStart);
 const dock = chatView.slice(dockStart, dockEnd);
 assert.match(dock, /questionForView\s*\?\s*\(\s*<QuestionPicker/);
 assert.match(dock, /:\s*\(\s*<>\s*<InputBar/);
+assert.match(dock, /<QuestionPicker[\s\S]*?className="mx-2\.5"/);
 
-assert.match(picker, /selected\s*\?\s*'bg-accent-bg[^']*border-accent[^']*text-accent'/);
+assert.match(picker, /selected\s*\?\s*'bg-accent-bg border border-transparent text-accent'/);
 assert.match(picker, /bg-accent text-white hover:opacity-90/);
 assert.doesNotMatch(picker, /selected\s*\?\s*'bg-fg text-bg border-fg'/);
 assert.doesNotMatch(picker, /font-medium bg-fg text-bg/);
@@ -42,6 +43,10 @@ assert.match(picker, /min-h-11 shrink-0 px-4 py-2/);
 assert.match(picker, /group flex items-center gap-3 rounded-lg px-3 py-2\.5/);
 assert.match(picker, /border border-transparent hover:bg-accent-bg/);
 assert.doesNotMatch(picker, /hover:border-accent/);
+assert.doesNotMatch(picker, /bg-accent-bg border border-accent/);
+assert.match(picker, /const focused = focusIndex === index/);
+assert.match(picker, /const hovered = hoverIndex === index/);
+assert.match(picker, /hovered\s*\?\s*'border border-transparent bg-accent-bg'/);
 
 assert.match(toolBlock, /const isAskUserQuestionResult = askUserQuestionResult/);
 assert.match(toolBlock, /translate\('用户已取消回答'\)/);

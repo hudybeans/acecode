@@ -5412,6 +5412,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               request={questionForView}
               onResolve={resolveQuestion}
               originLabel={questionOriginLabel}
+              className="mx-2.5"
             />
           ) : (
             <>

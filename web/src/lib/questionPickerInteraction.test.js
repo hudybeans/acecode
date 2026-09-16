@@ -189,10 +189,22 @@ run('Esc arming is isolated between requests and its timer is cleared on unmount
   assert.equal(picker.timers.size, 0);
 });
 
+run('multi-select custom answer can be unchecked while retaining a muted draft', () => {
+  const picker = harness([q1]);
+  input(picker.render()).props.onChange({ target: { value: 'retained draft' } });
+  button(picker.render(), '取消自定义答案').props.onClick();
+  const draftInput = input(picker.render());
+  assert.match(draftInput.props.className, /text-fg-mute/);
+  assert.equal(draftInput.props.value, 'retained draft');
+  key(picker, 'Enter', { ctrlKey: true });
+  assert.equal(picker.sent[0].answers[0].custom_text, undefined);
+  picker.unmount();
+});
+
 run('refocusing a retained multi-select custom draft reactivates it', () => {
   const picker = harness([q1]);
   input(picker.render()).props.onChange({ target: { value: 'retained draft' } });
-  key(picker, 'Escape');
+  button(picker.render(), '取消自定义答案').props.onClick();
   input(picker.render()).props.onFocus();
   key(picker, 'Enter', { ctrlKey: true });
   assert.equal(picker.sent[0].answers[0].custom_text, 'retained draft');

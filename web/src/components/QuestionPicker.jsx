@@ -16,6 +16,7 @@ import {
   selectAnswerCustom,
   setAnswerCustom,
   toggleAnswerSelection,
+  unselectAnswerCustom,
 } from '../lib/questionPicker.js';
 
 const READABLE_TEXT_STYLE = { overflowWrap: 'anywhere', wordBreak: 'break-word' };
@@ -53,7 +54,7 @@ async function copyText(text) {
   }
 }
 
-export function QuestionPicker({ request, onResolve, originLabel = '' }) {
+export function QuestionPicker({ request, onResolve, originLabel = '', className = '' }) {
 
   const normalized = useMemo(() => normalizeQuestionRequest(request), [request]);
   const { questions } = normalized;
@@ -193,6 +194,15 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
     const next = value.slice(0, MAX_CUSTOM_LENGTH);
     updateAnswer(currentIndex, (item) => setAnswerCustom(item, next, isMulti));
   }, [currentIndex, isMulti, updateAnswer]);
+
+  const toggleCustom = useCallback(() => {
+    updateAnswer(currentIndex, (item) => item.customSelected
+      ? unselectAnswerCustom(item)
+      : selectAnswerCustom(item, isMulti));
+    setFocusIndex(customIndex);
+    setEditingCustom(false);
+    focusSoon(rootRef);
+  }, [currentIndex, customIndex, isMulti, updateAnswer]);
 
   const moveFocus = useCallback((delta) => {
     const count = optionCount + 1;
@@ -340,7 +350,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
       tabIndex={-1}
       onKeyDown={onKeyDown}
       aria-label="AskUserQuestion"
-      className="mb-2 shrink min-h-0 rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col"
+      className={clsx('mb-2 shrink min-h-0 rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col', className)}
     >
       <div className="min-h-11 shrink-0 px-4 py-2 border-b border-border bg-surface flex items-center gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
@@ -406,7 +416,8 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
           <div className="px-2 py-2.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
             {question.options.map((opt, index) => {
               const selected = answer.selected?.includes(opt.value);
-              const focused = activeOptionIndex === index;
+              const focused = focusIndex === index;
+              const hovered = hoverIndex === index;
               const copied = copiedIndex === index;
               return (
                 <div
@@ -429,10 +440,12 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                   className={clsx(
                     'group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition',
                     selected
-                      ? 'bg-accent-bg border border-accent text-accent'
+                      ? 'bg-accent-bg border border-transparent text-accent'
                       : focused
-                        ? 'bg-accent-bg border border-accent'
-                        : 'border border-transparent hover:bg-accent-bg',
+                        ? 'bg-accent-bg border border-transparent'
+                        : hovered
+                          ? 'border border-transparent bg-accent-bg'
+                          : 'border border-transparent hover:bg-accent-bg',
 
                   )}
                 >
@@ -498,27 +511,30 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
               className={clsx(
                 'flex items-center gap-3 rounded-lg px-3 py-2.5 transition',
                 customActive
-                  ? 'bg-accent-bg border border-accent'
+                  ? 'bg-accent-bg border border-transparent'
                   : focusIndex === customIndex
-                    ? 'bg-accent-bg border border-accent'
+                    ? 'bg-accent-bg border border-transparent'
                     : 'border border-transparent hover:bg-accent-bg',
 
               )}
             >
-              <span
+              <button
+                type="button"
+                onClick={toggleCustom}
                 className={clsx(
                   'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
                   customActive
                     ? 'bg-accent text-white border-accent'
                     : 'border-fg-mute text-fg-mute',
                 )}
+                aria-label={customActive ? '取消自定义答案' : '选择自定义答案'}
               >
                 {customActive ? (
                   <VsIcon name="check" size={13} mono={false} />
                 ) : (
                   <span className="text-[11px] font-semibold tabular-nums">{customIndex + 1}</span>
                 )}
-              </span>
+              </button>
               <input
                 ref={customRef}
                 type="text"
