@@ -10710,6 +10710,7 @@ TEST(WebServerHttp, ComposerContentForkRetainsEarlierUploadsAfterSourceAttachmen
 // 非法条目(相对路径)400 且带 field,配置不变。
 TEST(SecurityCenterSmoke, SandboxConfigRoundTripsThroughConfigJson) {
     WebServerFixture fx;
+    const std::string writable_path = (fx.tmp_dir / "sandbox-output").generic_string();
     auto get = cpr::Get(cpr::Url{fx.url("/api/config/sandbox")});
     ASSERT_EQ(get.status_code, 200) << get.text;
     auto snapshot = json::parse(get.text);
@@ -10723,18 +10724,18 @@ TEST(SecurityCenterSmoke, SandboxConfigRoundTripsThroughConfigJson) {
         cpr::Header{{"Content-Type", "application/json"}},
         cpr::Body{json{{"network_access", true},
                        {"filesystem", json{{"deny", json::array({"~/.ssh", "**/.env"})},
-                                           {"write", json::array({"D:/shared/out"})}}}}.dump()});
+                                           {"write", json::array({writable_path})}}}}.dump()});
     ASSERT_EQ(put.status_code, 200) << put.text;
     const auto applied = json::parse(put.text);
     EXPECT_EQ(applied["network_access"], true);
     EXPECT_EQ(applied["filesystem"]["deny"], json::array({"~/.ssh", "**/.env"}));
-    EXPECT_EQ(applied["filesystem"]["write"], json::array({"D:/shared/out"}));
+    EXPECT_EQ(applied["filesystem"]["write"], json::array({writable_path}));
     EXPECT_TRUE(applied.contains("refreshed_sessions"));
 
     const auto persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string());
     EXPECT_TRUE(persisted.sandbox.network_access);
     EXPECT_EQ(persisted.sandbox.filesystem_deny, (std::vector<std::string>{"~/.ssh", "**/.env"}));
-    EXPECT_EQ(persisted.sandbox.filesystem_write, std::vector<std::string>{"D:/shared/out"});
+    EXPECT_EQ(persisted.sandbox.filesystem_write, std::vector<std::string>{writable_path});
 
     auto bad = cpr::Put(cpr::Url{fx.url("/api/config/sandbox")},
         cpr::Header{{"Content-Type", "application/json"}},

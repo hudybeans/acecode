@@ -43,3 +43,8 @@ Local results and outstanding account-based checks are recorded in verification.
 - [x] 8.1 Separate saved configuration from owner-written history, preserve legacy settings and pin runtime configuration at startup; cover stale writes, concurrent edits and standby snapshots.
 - [x] 8.2 Reuse saved logins without a bridge or owner checks, isolate new pairing credentials and reduce completion copy to configuration saved; cover existing-owner and cancellation behavior.
 - [x] 8.3 Update documentation, rebuild isolated CLI/Desktop binaries and verify configuration with an existing host left untouched.
+
+## 9. Release Integration
+
+- [x] 9.1 Preserve and validate bridge assets in all six npm packages and add fixture coverage to CI.
+- [ ] 9.2 Run integrated channel and package checks on the release mainline.

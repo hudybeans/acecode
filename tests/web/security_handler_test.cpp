@@ -47,7 +47,11 @@ TEST(SecurityHandler, ValidatesSandboxEntries) {
     EXPECT_TRUE(validate_sandbox_entry(":tmpdir", false).empty());
     EXPECT_TRUE(validate_sandbox_entry(":acecode_home/config.json", true).empty());
     EXPECT_TRUE(validate_sandbox_entry("/var/tmp", false).empty());
+#ifdef _WIN32
     EXPECT_TRUE(validate_sandbox_entry("C:\\data\\out", false).empty());
+#else
+    EXPECT_FALSE(validate_sandbox_entry("C:\\data\\out", false).empty());
+#endif
     EXPECT_TRUE(validate_sandbox_entry("**/.env", true).empty());
     EXPECT_TRUE(validate_sandbox_entry("~/*.pem", true).empty());
     EXPECT_FALSE(validate_sandbox_entry("src", false).empty());

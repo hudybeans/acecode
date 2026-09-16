@@ -1,0 +1,79 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const platforms = ['linux-x64', 'linux-arm64', 'windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64'];
+const assets = ['bridge.mjs', 'protocol.mjs', 'package.json', 'package-lock.json'];
+
+function write(root, relative, value = 'fixture') {
+  const file = path.join(root, relative);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, value);
+}
+
+function resources(root) {
+  for (const file of ['LICENSE', 'MANIFEST.json', 'api.json']) {
+    write(root, `share/acecode/models_dev/${file}`);
+  }
+  for (const file of assets) write(root, `channels/whatsapp/${file}`, `channel:${file}`);
+}
+
+function fixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-npm-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = path.join(root, 'input');
+  const output = path.join(root, 'output');
+  for (const platform of platforms) {
+    const dir = path.join(input, `acecode-${platform}`);
+    resources(dir);
+    write(dir, platform.startsWith('windows') ? 'acecode.exe' : 'acecode');
+    if (platform.startsWith('macos')) {
+      write(dir, 'ACECode.app/Contents/MacOS/ACECode');
+      resources(path.join(dir, 'ACECode.app/Contents/Resources'));
+    } else {
+      write(dir, platform.startsWith('windows') ? 'acecode-desktop.exe' : 'acecode-desktop');
+      if (platform.startsWith('linux')) write(dir, 'acecode-logo.png');
+    }
+  }
+  return { input, output, run: () => spawnSync(process.execPath, [
+    path.join(repo, 'scripts/npm/prepare-npm-packages.mjs'),
+    '--version', '0.9.20', '--input', input, '--output', output,
+  ], { encoding: 'utf8' }) };
+}
+
+test('all six npm platforms preserve bridge assets and exclude runtime state', (t) => {
+  const { input, output, run } = fixture(t);
+  write(input, 'acecode-windows-x64/channels/whatsapp/node_modules/private/index.js');
+  write(input, 'acecode-windows-x64/channels/whatsapp/auth/creds.json');
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  for (const platform of platforms) {
+    const npmPlatform = platform.replace('windows-', 'win32-').replace('macos-', 'darwin-');
+    const channel = path.join(output, 'platform', npmPlatform, 'channels/whatsapp');
+    assert.deepEqual(fs.readdirSync(channel).sort(), [...assets].sort());
+    for (const file of assets) assert.equal(fs.readFileSync(path.join(channel, file), 'utf8'), `channel:${file}`);
+  }
+  const cli = JSON.parse(fs.readFileSync(path.join(output, 'cli/package.json'), 'utf8'));
+  assert.equal(Object.keys(cli.optionalDependencies).length, 6);
+});
+
+test('missing lockfile rejects a platform package before publication', (t) => {
+  const { input, run } = fixture(t);
+  fs.unlinkSync(path.join(input, 'acecode-linux-arm64/channels/whatsapp/package-lock.json'));
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /linux-arm64.*missing WhatsApp bridge asset: package-lock.json/);
+});
+
+test('macOS app bundle must also contain its bridge', (t) => {
+  const { input, run } = fixture(t);
+  fs.unlinkSync(path.join(input, 'acecode-macos-arm64/ACECode.app/Contents/Resources/channels/whatsapp/bridge.mjs'));
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /macos-arm64 app bundle.*missing WhatsApp bridge asset: bridge.mjs/);
+});

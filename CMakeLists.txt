@@ -470,9 +470,12 @@ add_custom_command(TARGET acecode POST_BUILD
         "$<TARGET_FILE_DIR:acecode>/channels/whatsapp"
     VERBATIM)
 
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/"
-    DESTINATION channels/whatsapp COMPONENT whatsapp_channel
-    PATTERN "node_modules" EXCLUDE PATTERN "*.test.mjs" EXCLUDE)
+install(FILES
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/bridge.mjs"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/protocol.mjs"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package.json"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package-lock.json"
+    DESTINATION channels/whatsapp COMPONENT whatsapp_channel)
 if(WIN32)
     # main.cpp and tui/ime_windows.cpp use the Windows IME API. MSVC also
     # accepts #pragma comment(lib), while MinGW requires the explicit target.

@@ -33,3 +33,7 @@
 
 - [x] 6.1 `docs/daemon-api.md` 端点索引 + Security center 章节;`docs/sandbox.md` 安全中心一节;`CLAUDE.md`
 - [x] 6.2 构建 + 定向单测(AuditLog / SecurityHandler / ExecRules / AgentLoopAutoMode / SecurityCenterSmoke)+ 提交
+
+## 7. Cross-platform Release Validation
+
+- [ ] 7.1 Use host-native absolute paths in sandbox persistence tests and verify Windows-path rejection on Unix.
