@@ -19,6 +19,11 @@ ACECode SHALL ship bundled agent-reporting hooks disabled and SHALL upgrade unch
 - **WHEN** a user has modified an installed hook seed or maintains separate user/project hook files
 - **THEN** startup SHALL preserve those files and SHALL NOT disable separate user/project hooks
 
+#### Scenario: Missing managed definition with a retained empty directory
+- **WHEN** the installed hook directory is empty and saved seed state records ACECode ownership
+- **THEN** startup SHALL restore the current disabled definition for an old or equal seed revision
+- **AND** startup SHALL preserve unknown directories and directories containing user files
+
 ### Requirement: Hook sources can explicitly disable their handlers
 ACECode SHALL honor a boolean top-level `enabled: false` in Codex-shaped hook sources, retain source diagnostics and contribute no handlers from that source. Missing or true SHALL preserve existing loading and trust behavior.
 

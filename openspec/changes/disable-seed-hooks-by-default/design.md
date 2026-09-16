@@ -28,3 +28,5 @@ Use seed revision 2026-09-17.1. Startup upgrades unchanged official definitions,
 ## Validation
 
 An isolated MSVC Release harness rebuilt the changed hook registry, manager and seeder sources with the repository hook/seeder tests. All 85 tests across 8 suites passed (0 failures), including disabled malformed-UTF-8 dispatch, fresh seed installation, prior official upgrades and user configuration preservation. No dependency stubs were used. Canonical seed hashes and active example parity also passed. Full daemon/desktop packaging was not run.
+
+A missing hooks.json in an empty directory remains repairable when the saved seed state proves ACECode ownership. Unknown empty directories and directories containing any additional user file remain preserved. The equal-version gate uses this same ownership rule.

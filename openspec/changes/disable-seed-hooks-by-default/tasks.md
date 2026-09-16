@@ -7,3 +7,5 @@
 
 - [x] 2.1 Document disabled seed defaults and manual reviewed opt-in; verify example configuration remains active and matches the seed handlers.
 - [x] 2.2 Run focused hook/seeder tests, strict OpenSpec validation and scoped diff checks; record outcomes and any validation limits.
+
+- [x] 2.3 Repair a missing managed hooks.json in a recorded-owned empty directory for old and equal markers; preserve unknown or nonempty directories and verify real prior-package state.

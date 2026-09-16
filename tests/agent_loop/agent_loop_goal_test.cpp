@@ -303,12 +303,15 @@ TEST(AgentLoopGoal, ResumeAfterAbortClearsStaleAbortAndContinues) {
     h.create_goal();
     h.provider().set_latency_ms(200);
 
-    std::thread aborter([&h] {
-        std::this_thread::sleep_for(50ms);
+    bool provider_started = false;
+    std::thread aborter([&] {
+        provider_started = h.wait_until([&] { return h.provider().turn_count() > 0; });
         h.loop().abort();
     });
-    ASSERT_TRUE(h.submit_and_wait("start", 10s));
+    const bool finished = h.submit_and_wait("start", 10s);
     aborter.join();
+    ASSERT_TRUE(provider_started);
+    ASSERT_TRUE(finished);
 
     auto paused = h.goal();
     ASSERT_TRUE(paused.has_value());

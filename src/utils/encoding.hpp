@@ -134,7 +134,7 @@ std::string ensure_utf8(const std::string& src);
 // TUI, and the model context.
 class IncrementalTextDecoder {
 public:
-    // Default: on Windows uses GetConsoleOutputCP() for the codepage fallback.
+    // Windows auto-detection: console codepage, or ACP for a UTF-8/no console.
     IncrementalTextDecoder();
     // Force a specific codepage fallback (Windows only; ignored elsewhere).
     explicit IncrementalTextDecoder(unsigned int codepage);

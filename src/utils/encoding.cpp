@@ -285,7 +285,10 @@ std::string decoder_decode_safe(const std::string& safe, unsigned int codepage,
 IncrementalTextDecoder::IncrementalTextDecoder() {
 #ifdef _WIN32
     codepage_ = GetConsoleOutputCP();
-    if (codepage_ == 0) codepage_ = GetACP();
+    // A UTF-8 console does not make redirected legacy child output UTF-8.
+    // cmd.exe can still emit ACP diagnostics (for example access denied).
+    // Keep the explicit CP_UTF8 constructor strict; auto-detection needs ACP.
+    if (codepage_ == 0 || codepage_ == CP_UTF8) codepage_ = GetACP();
 #else
     codepage_ = 0;
 #endif

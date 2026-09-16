@@ -6,7 +6,7 @@ The dump identifies strict JSON serialization inside HookManager::dispatch_codex
 
 Use one scalar-value-aware UTF-8 sequence scanner for validation, partial boundaries, and lossy replacement. Reject C0/C1, overlong E0/F0 sequences, ED surrogate sequences, F4 values above U+10FFFF, and F5-FF. Validate available continuation bytes before treating a suffix as incomplete.
 
-Incremental Windows decoding retains DBCS lead bytes using the configured codepage. Once invalid UTF-8 selects a legacy codepage, retain that interpretation until reset so later GBK pairs that happen to resemble UTF-8 do not change encoding midstream. UTF-8 codepage and POSIX streams replace malformed bytes without reinterpreting valid adjacent Unicode.
+Incremental Windows decoding retains DBCS lead bytes using the configured codepage. Once invalid UTF-8 selects a legacy codepage, retain that interpretation until reset so later GBK pairs that happen to resemble UTF-8 do not change encoding midstream. Explicit UTF-8 codepage and POSIX streams replace malformed bytes without reinterpreting valid adjacent Unicode. Windows auto-detection uses the active system codepage when the console is UTF-8 or absent, because redirected legacy child diagnostics can still use that codepage.
 
 Hook payload serialization uses the JSON library's replacement policy, including nested strings and keys. Serialization stays lazy after matching, trust, and enabled checks. Convert runner exceptions into existing failed-hook diagnostics and continue other hooks, preserving explicit allow/deny decisions. Legacy synchronous/asynchronous hooks log failures and keep their worker alive.
 

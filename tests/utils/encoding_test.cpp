@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
 
 void expect_json_safe(const std::string& text) {
@@ -98,5 +102,22 @@ TEST(Encoding, SingleByteCodepageDoesNotBufferAnIndependentHighByte) {
     acecode::IncrementalTextDecoder decoder(1252);
     EXPECT_EQ(decoder.push("\x80", 1), u8"\u20ac");
     EXPECT_EQ(decoder.flush(), "");
+}
+#endif
+
+#ifdef _WIN32
+TEST(Encoding, AutoDecoderRetainsLegacyDiagnosticsUnderUtf8Console) {
+    if (GetConsoleOutputCP() != CP_UTF8 || GetACP() != 936) {
+        GTEST_SKIP() << "Requires a UTF-8 console with Chinese legacy diagnostics";
+    }
+    const std::string raw = "\xBE\xDC\xBE\xF8\xB7\xC3\xCE\xCA\xA1\xA3";
+    for (size_t split = 0; split <= raw.size(); ++split) {
+        acecode::IncrementalTextDecoder decoder;
+        auto decoded = decoder.push(raw.data(), split);
+        decoded += decoder.push(raw.data() + split, raw.size() - split);
+        decoded += decoder.flush();
+        EXPECT_EQ(decoded, u8"拒绝访问。");
+        expect_json_safe(decoded);
+    }
 }
 #endif

@@ -534,14 +534,40 @@ bool target_matches_known_official_definition(
     }
 }
 
+template <typename Seed>
+bool target_is_empty_owned_hook(
+    const Seed&, const fs::path&, const PreviousSeedState*) {
+    return false;
+}
+
+bool target_is_empty_owned_hook(
+    const DefaultHookSeed&, const fs::path& target_dir,
+    const PreviousSeedState* previous) {
+    if (!previous || !previous->acecode_owned) return false;
+    std::error_code ec;
+    const auto status = fs::symlink_status(target_dir, ec);
+    if (ec || !fs::is_directory(status)) return false;
+    const bool empty = fs::is_empty(target_dir, ec);
+    return !ec && empty;
+}
+
 bool same_version_managed_hooks_need_reconciliation(
     const fs::path& acecode_home) {
+    const auto previous = read_previous_seed_state(
+        default_skill_seed_state_path(acecode_home));
     for (const auto& seed : default_hook_seeds()) {
         const fs::path target_dir =
             acecode_home / "hooks" / seed.relative_path;
         std::error_code ec;
         const bool target_exists = fs::exists(target_dir, ec);
         if (ec || !target_exists) {
+            return true;
+        }
+
+        const auto found = previous.hooks.find(path_to_utf8_generic(seed.relative_path));
+        const auto* previous_entry =
+            found == previous.hooks.end() ? nullptr : &found->second;
+        if (target_is_empty_owned_hook(seed, target_dir, previous_entry)) {
             return true;
         }
 
@@ -1155,7 +1181,8 @@ void reconcile_seed_group(
             previous_it == previous.end() ? nullptr : &previous_it->second;
         if (!previous_state_proves_pristine(
                 previous_entry, target_dir, *target_hash) &&
-            !target_matches_known_official_definition(seed, target_dir)) {
+            !target_matches_known_official_definition(seed, target_dir) &&
+            !target_is_empty_owned_hook(seed, target_dir, previous_entry)) {
             outcome.result = "preserved_user_modified";
             outcome.message =
                 previous_entry

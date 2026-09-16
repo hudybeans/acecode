@@ -47,4 +47,4 @@ Local results and outstanding account-based checks are recorded in verification.
 ## 9. Release Integration
 
 - [x] 9.1 Preserve and validate bridge assets in all six npm packages and add fixture coverage to CI.
-- [ ] 9.2 Run integrated channel and package checks on the release mainline.
+- [x] 9.2 Run integrated channel and package checks on the release mainline.

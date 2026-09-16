@@ -612,6 +612,45 @@ TEST_F(DefaultSkillSeederTest,
     EXPECT_FALSE(skill_outcome->acecode_owned);
 }
 
+TEST_F(DefaultSkillSeederTest, RepairsMissingOwnedHookFileWithOldAndEqualMarkers) {
+    ASSERT_TRUE(acecode::reconcile_default_global_skills(home, seed_root).version_written);
+    const auto& seed = acecode::default_hook_seeds().front();
+    const fs::path target = home / "hooks" / seed.relative_path;
+    const fs::path source = seed_root.parent_path() / "hooks" / seed.relative_path;
+    write_seed_version(seed_root, kSeedVersion2);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        ASSERT_TRUE(fs::remove(target / "hooks.json"));
+        ASSERT_TRUE(fs::is_empty(target));
+        const auto repaired = acecode::reconcile_default_global_skills(home, seed_root);
+        EXPECT_TRUE(repaired.attempted);
+        EXPECT_TRUE(repaired.version_written) << repaired.error;
+        EXPECT_EQ(count_hook_outcome(repaired, "updated"), 1u);
+        EXPECT_EQ(read_file(target / "hooks.json"), read_file(source / "hooks.json"));
+    }
+}
+
+TEST_F(DefaultSkillSeederTest, PreservesMissingHookInUnknownOrNonemptyDirectory) {
+    const auto& seed = acecode::default_hook_seeds().front();
+    const fs::path unknown_home = root / "unknown-home";
+    const fs::path unknown_target = unknown_home / "hooks" / seed.relative_path;
+    fs::create_directories(unknown_target);
+    const auto unknown = acecode::reconcile_default_global_skills(unknown_home, seed_root);
+    ASSERT_TRUE(unknown.version_written) << unknown.error;
+    EXPECT_EQ(count_hook_outcome(unknown, "preserved_user_modified"), 1u);
+    EXPECT_TRUE(fs::is_empty(unknown_target));
+
+    ASSERT_TRUE(acecode::reconcile_default_global_skills(home, seed_root).version_written);
+    const fs::path target = home / "hooks" / seed.relative_path;
+    ASSERT_TRUE(fs::remove(target / "hooks.json"));
+    write_file(target / "user-note.txt", "keep this file");
+    write_seed_version(seed_root, kSeedVersion2);
+    const auto preserved = acecode::reconcile_default_global_skills(home, seed_root);
+    EXPECT_TRUE(preserved.version_written) << preserved.error;
+    EXPECT_EQ(count_hook_outcome(preserved, "preserved_user_modified"), 1u);
+    EXPECT_EQ(read_file(target / "user-note.txt"), "keep this file");
+    EXPECT_FALSE(fs::exists(target / "hooks.json"));
+}
+
 TEST_F(DefaultSkillSeederTest, PreservesUnknownExistingTarget) {
     const auto& seed = acecode::default_skill_seeds().front();
     const fs::path existing = home / "skills" / seed.relative_path;
