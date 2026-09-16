@@ -21,6 +21,7 @@
 #include "provider/auth/github_auth.hpp"
 #include "provider/auth/xai_auth.hpp"
 #include "config/config.hpp"
+#include "security/audit_log.hpp"
 #include "environment/data_dir_migration.hpp"
 #include "environment/terminal_runtime.hpp"
 #include "environment/toolchains.hpp"
@@ -10531,4 +10532,151 @@ TEST(WebServerHttp, WorkspaceReasoningCreationAndBusyMutation) {
     EXPECT_EQ(json::parse(busy.text)["error"], "SESSION_BUSY");
     EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
     EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+}
+
+// 场景(openspec add-security-center):安全中心的沙盒配置路由。GET 默认快照 →
+// PUT 网络开关 + deny 清单 → 落到 fixture 的临时 config.json → GET 回读一致;
+// 非法条目(相对路径)400 且带 field,配置不变。
+TEST(SecurityCenterSmoke, SandboxConfigRoundTripsThroughConfigJson) {
+    WebServerFixture fx;
+    auto get = cpr::Get(cpr::Url{fx.url("/api/config/sandbox")});
+    ASSERT_EQ(get.status_code, 200) << get.text;
+    auto snapshot = json::parse(get.text);
+    EXPECT_EQ(snapshot["enabled"], true);
+    EXPECT_EQ(snapshot["network_access"], false);
+    EXPECT_TRUE(snapshot["filesystem"]["deny"].empty());
+    EXPECT_TRUE(snapshot.contains("platform"));
+    EXPECT_EQ(snapshot["defaults"]["deny"][0], "~/.ssh");
+
+    auto put = cpr::Put(cpr::Url{fx.url("/api/config/sandbox")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"network_access", true},
+                       {"filesystem", json{{"deny", json::array({"~/.ssh", "**/.env"})},
+                                           {"write", json::array({"D:/shared/out"})}}}}.dump()});
+    ASSERT_EQ(put.status_code, 200) << put.text;
+    const auto applied = json::parse(put.text);
+    EXPECT_EQ(applied["network_access"], true);
+    EXPECT_EQ(applied["filesystem"]["deny"], json::array({"~/.ssh", "**/.env"}));
+    EXPECT_EQ(applied["filesystem"]["write"], json::array({"D:/shared/out"}));
+    EXPECT_TRUE(applied.contains("refreshed_sessions"));
+
+    const auto persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string());
+    EXPECT_TRUE(persisted.sandbox.network_access);
+    EXPECT_EQ(persisted.sandbox.filesystem_deny, (std::vector<std::string>{"~/.ssh", "**/.env"}));
+    EXPECT_EQ(persisted.sandbox.filesystem_write, std::vector<std::string>{"D:/shared/out"});
+
+    auto bad = cpr::Put(cpr::Url{fx.url("/api/config/sandbox")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"filesystem", json{{"read", json::array({"src"})}}}}.dump()});
+    ASSERT_EQ(bad.status_code, 400) << bad.text;
+    EXPECT_EQ(json::parse(bad.text)["field"], "filesystem.read");
+    auto again = json::parse(cpr::Get(cpr::Url{fx.url("/api/config/sandbox")}).text);
+    EXPECT_TRUE(again["filesystem"]["read"].empty());
+    EXPECT_EQ(again["filesystem"]["deny"], json::array({"~/.ssh", "**/.env"}));
+}
+
+// 场景:命令安全的托管规则文件路由。GET 在空目录下也列出两个托管文件(exists=false);
+// PUT 写入放行 / 询问 / 禁止规则 → 文件落在 <data_dir>/rules 下 → GET 回读一致;
+// 非托管文件名与 `rm` 放行都 400 且文件不变。
+TEST(SecurityCenterSmoke, ManagedExecRulesRoundTripThroughRulesDirectory) {
+    WebServerFixture fx;
+    auto get = cpr::Get(cpr::Url{fx.url("/api/security/exec-rules")});
+    ASSERT_EQ(get.status_code, 200) << get.text;
+    auto snapshot = json::parse(get.text);
+    ASSERT_EQ(snapshot["files"].size(), 2u);
+    EXPECT_EQ(snapshot["files"][0]["name"], "default.rules");
+    EXPECT_EQ(snapshot["files"][0]["exists"], false);
+    EXPECT_EQ(snapshot["files"][1]["name"], "default.sandboxed.rules");
+
+    const json body{{"files", json{
+        {"default.rules", json::array({
+            json{{"pattern", json::array({"pnpm", "test"})}, {"decision", "allow"}, {"justification", "ci"}},
+            json{{"pattern", json::array({"git", "push"})}, {"decision", "prompt"}}})},
+        {"default.sandboxed.rules", json::array({
+            json{{"pattern", json::array({"git", "push", "--force"})}, {"decision", "allow"}}})}}}};
+    auto put = cpr::Put(cpr::Url{fx.url("/api/security/exec-rules")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    ASSERT_EQ(put.status_code, 200) << put.text;
+    const auto written = json::parse(put.text);
+    EXPECT_EQ(written["files"][0]["rules"].size(), 2u);
+    EXPECT_EQ(written["files"][0]["rules"][0]["display"], "pnpm test");
+    EXPECT_EQ(written["files"][0]["rules"][0]["justification"], "ci");
+    EXPECT_EQ(written["files"][1]["rules"][0]["display"], "git push --force");
+    const auto on_disk = read_text(fx.tmp_dir / "rules" / "default.rules");
+    EXPECT_NE(on_disk.find("prefix_rule(pattern=[\"pnpm\", \"test\"], decision=\"allow\", justification=\"ci\")"),
+              std::string::npos) << on_disk;
+
+    auto custom = cpr::Put(cpr::Url{fx.url("/api/security/exec-rules")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"files", json{{"custom.rules", json::array()}}}}.dump()});
+    EXPECT_EQ(custom.status_code, 400) << custom.text;
+    auto banned = cpr::Put(cpr::Url{fx.url("/api/security/exec-rules")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"files", json{{"default.rules", json::array({
+            json{{"pattern", json::array({"rm"})}, {"decision", "allow"}}})}}}}.dump()});
+    EXPECT_EQ(banned.status_code, 400) << banned.text;
+    EXPECT_EQ(read_text(fx.tmp_dir / "rules" / "default.rules"), on_disk) << "被拒的 PUT 不改文件";
+}
+
+// 场景:审计路由。进程级审计存储指到临时文件并写两条 → 列表(筛选 / 分页)、汇总
+// (被拦路径)、导出(CSV 附件头)、清空;未配置时 503。
+TEST(SecurityCenterSmoke, AuditRoutesListSummarizeExportAndClear) {
+    WebServerFixture fx;
+    auto& log = acecode::security::audit_log();
+    log.close();
+    auto unavailable = cpr::Get(cpr::Url{fx.url("/api/security/audit")});
+    EXPECT_EQ(unavailable.status_code, 503) << unavailable.text;
+    std::string error;
+    ASSERT_TRUE(log.open_file((fx.tmp_dir / "audit.sqlite3").string(), &error)) << error;
+    struct Closer { ~Closer() { acecode::security::audit_log().close(); } } closer;
+    acecode::security::AuditEntry allowed;
+    allowed.category = "command";
+    allowed.decision = "allow";
+    allowed.source = "auto";
+    allowed.reason = "known_safe";
+    allowed.tool = "bash";
+    allowed.target = "git status";
+    allowed.ts_ms = 1000;
+    ASSERT_TRUE(log.record(allowed));
+    acecode::security::AuditEntry blocked;
+    blocked.category = "sandbox";
+    blocked.decision = "blocked";
+    blocked.source = "sandbox";
+    blocked.reason = "permission_denied";
+    blocked.tool = "bash";
+    blocked.target = "D:/secret/key";
+    blocked.ts_ms = 2000;
+    ASSERT_TRUE(log.record(blocked));
+
+    auto list = cpr::Get(cpr::Url{fx.url("/api/security/audit?limit=1")});
+    ASSERT_EQ(list.status_code, 200) << list.text;
+    auto page = json::parse(list.text);
+    ASSERT_EQ(page["entries"].size(), 1u);
+    EXPECT_EQ(page["entries"][0]["target"], "D:/secret/key");
+    EXPECT_EQ(page["has_more"], true);
+    EXPECT_EQ(page["total"], 2);
+    auto filtered = json::parse(cpr::Get(cpr::Url{fx.url("/api/security/audit?category=command")}).text);
+    ASSERT_EQ(filtered["entries"].size(), 1u);
+    EXPECT_EQ(filtered["entries"][0]["target"], "git status");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/security/audit?category=nope")}).status_code, 400);
+
+    auto summary = json::parse(cpr::Get(cpr::Url{fx.url("/api/security/audit/summary")}).text);
+    EXPECT_EQ(summary["total"], 2);
+    EXPECT_EQ(summary["by_decision"]["blocked"], 1);
+    ASSERT_EQ(summary["blocked_paths"].size(), 1u);
+    EXPECT_EQ(summary["blocked_paths"][0]["path"], "D:/secret/key");
+
+    auto csv = cpr::Get(cpr::Url{fx.url("/api/security/audit/export?format=csv")});
+    ASSERT_EQ(csv.status_code, 200) << csv.text;
+    EXPECT_NE(csv.header["Content-Type"].find("text/csv"), std::string::npos);
+    EXPECT_NE(csv.header["Content-Disposition"].find("attachment; filename=\"acecode-audit-"), std::string::npos);
+    EXPECT_EQ(csv.text.rfind("id,ts_ms,category,", 0), 0u);
+    EXPECT_NE(csv.text.find("git status"), std::string::npos);
+    auto jsonl = cpr::Get(cpr::Url{fx.url("/api/security/audit/export")});
+    ASSERT_EQ(jsonl.status_code, 200);
+    EXPECT_EQ(std::count(jsonl.text.begin(), jsonl.text.end(), '\n'), 2);
+
+    auto cleared = cpr::Delete(cpr::Url{fx.url("/api/security/audit")});
+    ASSERT_EQ(cleared.status_code, 200) << cleared.text;
+    EXPECT_EQ(json::parse(cpr::Get(cpr::Url{fx.url("/api/security/audit/summary")}).text)["total"], 0);
 }

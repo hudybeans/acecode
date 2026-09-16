@@ -29,6 +29,7 @@ public:
     std::vector<SandboxMode> executions;
     std::vector<std::optional<SandboxPolicy>> policies;   // 每次执行时注入的策略(不沙盒 = nullopt)
     std::optional<ToolResult> next_result;                 // 下一次 bash 执行返回的结果(模拟沙盒拒绝)
+    std::vector<security::AuditEntry> audits;              // 审批门写出的审计记录(openspec add-security-center)
     PermissionResult answer = PermissionResult::Allow;
     std::mutex mutex;
     std::condition_variable cv;
@@ -61,6 +62,7 @@ public:
             tools, callbacks, path_to_utf8(tree.root), permissions);
         loop->set_exec_rules({});
         loop->set_sandbox_availability_for_tests(available);
+        loop->set_audit_sink([this](const security::AuditEntry& entry) { audits.push_back(entry); });
     }
     ~AutoHarness() { loop.reset(); }
     bool run(nlohmann::json args) {
@@ -352,4 +354,95 @@ TEST(AgentLoopAutoMode, ConfiguredDenyRulePromptsWhileBuiltinProtectionHardDenie
     ASSERT_TRUE(run_write(path_to_utf8(h.tree.root / "protected" / "x"), "call-protected"));
     EXPECT_EQ(h.prompts.size(), 1u) << "保护级 Deny 不弹确认";
     EXPECT_EQ(writes, 1) << "保护级 Deny 硬拒绝";
+}
+
+// 场景(openspec add-security-center):auto 模式下模型先执行已知安全的 `git status`
+// (自动放行),再执行 `rm -rf build`(危险命令弹确认,用户拒绝),再执行一条命中
+// forbidden 规则的 `curl x`。期望:三条各记一条审计 —— command/allow/auto(带模式
+// 沙盒)、command/deny/user(reason=dangerous_command)、command/forbidden/rule;
+// 每条都带 cwd 与命令原文,detail.mode=auto。
+TEST(AgentLoopAutoMode, AuditsAutoAllowUserDenyAndRuleForbidden) {
+    AutoHarness h;
+    ASSERT_TRUE(h.run({{"command", "git status"}}));
+    ASSERT_EQ(h.audits.size(), 1u);
+    EXPECT_EQ(h.audits[0].category, "command");
+    EXPECT_EQ(h.audits[0].decision, "allow");
+    EXPECT_EQ(h.audits[0].source, "auto");
+    EXPECT_EQ(h.audits[0].reason, "known_safe");
+    EXPECT_EQ(h.audits[0].tool, "bash");
+    EXPECT_EQ(h.audits[0].target, "git status");
+    EXPECT_EQ(h.audits[0].sandbox, "workspace-write");
+    EXPECT_EQ(h.audits[0].cwd, path_to_utf8(h.tree.root));
+    EXPECT_EQ(h.audits[0].detail["mode"], "auto");
+
+    h.answer = PermissionResult::Deny;
+    ASSERT_TRUE(h.run({{"command", "rm -rf build"}}));
+    ASSERT_EQ(h.audits.size(), 2u);
+    EXPECT_EQ(h.audits[1].decision, "deny");
+    EXPECT_EQ(h.audits[1].source, "user");
+    EXPECT_EQ(h.audits[1].reason, "dangerous_command");
+    EXPECT_EQ(h.audits[1].target, "rm -rf build");
+
+    ExecRules rules;
+    auto parsed = parse_rules_text("prefix_rule(pattern=[\"curl\"], decision=\"forbidden\")",
+                                   RuleScope::Global, "global.rules");
+    ASSERT_TRUE(parsed.error.empty());
+    rules.add_rule(parsed.rules.front());
+    h.loop->set_exec_rules(std::move(rules));
+    ASSERT_TRUE(h.run({{"command", "curl http://x"}}));
+    ASSERT_EQ(h.audits.size(), 3u);
+    EXPECT_EQ(h.audits[2].decision, "forbidden");
+    EXPECT_EQ(h.audits[2].source, "rule");
+    EXPECT_EQ(h.audits[2].reason, "rule_forbidden");
+    EXPECT_EQ(h.executions.size(), 1u) << "被拒 / 禁止的命令不执行";
+}
+
+// 场景:命令在沙盒里被拒(工具结果带 sandbox_violation 与路径)。期望:除了那条
+// command/allow 之外,额外记一条 sandbox/blocked/sandbox,target 是被拒路径、
+// detail.command 是命令原文 —— 文件安全页「最近被拦路径」就是按它聚合的。
+TEST(AgentLoopAutoMode, AuditsSandboxViolationWithDeniedPath) {
+    AutoHarness h;
+    ToolResult denied{"sh: D:/data/out/x.txt: Permission denied", false};
+    denied.metadata["sandbox_denied"] = true;
+    denied.metadata["sandbox_violation"] = {{"reason", "permission_denied"},
+        {"path", "D:/data/out/x.txt"}, {"snippet", "Permission denied"}};
+    h.next_result = denied;
+    ASSERT_TRUE(h.run({{"command", "pnpm install"}}));
+    ASSERT_EQ(h.audits.size(), 2u);
+    EXPECT_EQ(h.audits[0].category, "command");
+    EXPECT_EQ(h.audits[0].decision, "allow");
+    EXPECT_EQ(h.audits[1].category, "sandbox");
+    EXPECT_EQ(h.audits[1].decision, "blocked");
+    EXPECT_EQ(h.audits[1].source, "sandbox");
+    EXPECT_EQ(h.audits[1].reason, "permission_denied");
+    EXPECT_EQ(h.audits[1].target, "D:/data/out/x.txt");
+    EXPECT_EQ(h.audits[1].detail["command"], "pnpm install");
+    EXPECT_EQ(h.audits[1].detail["snippet"], "Permission denied");
+}
+
+// 场景:用户对越权申请选「以后都允许」(写规则文件)。期望:除 command/allow_remember/user
+// 之外,再记一条 rule/allow_remember(target 是前缀展示 `pnpm install`,reason=remember_rule);
+// 同一命令随后免确认时记 command/allow —— 本会话里会话前缀记忆先于规则命中,所以来源是
+// session(reason=session_allow),规则只对以后的新会话生效;沙盒外(full-access)执行。
+TEST(AgentLoopAutoMode, AuditsRememberedRuleAndRuleAllow) {
+    AutoHarness h;
+    h.loop->set_exec_rules_dir_for_tests(path_to_utf8(h.tree.root / "rules"));
+    h.answer = PermissionResult::AllowRemember;
+    ASSERT_TRUE(h.run({{"command", "pnpm install"}, {"sandbox_permissions", "require_escalated"},
+                      {"justification", "Install into the shared store."}}));
+    ASSERT_EQ(h.audits.size(), 2u);
+    EXPECT_EQ(h.audits[0].category, "command");
+    EXPECT_EQ(h.audits[0].decision, "allow_remember");
+    EXPECT_EQ(h.audits[0].source, "user");
+    EXPECT_EQ(h.audits[0].detail["escalation_requested"], true);
+    EXPECT_EQ(h.audits[1].category, "rule");
+    EXPECT_EQ(h.audits[1].decision, "allow_remember");
+    EXPECT_EQ(h.audits[1].reason, "remember_rule");
+    EXPECT_EQ(h.audits[1].target, "pnpm install");
+    ASSERT_TRUE(h.run({{"command", "pnpm install lodash"}}));
+    ASSERT_EQ(h.audits.size(), 3u);
+    EXPECT_EQ(h.audits[2].decision, "allow");
+    EXPECT_EQ(h.audits[2].source, "session");
+    EXPECT_EQ(h.audits[2].reason, "session_allow");
+    EXPECT_EQ(h.audits[2].sandbox, "full-access");
 }

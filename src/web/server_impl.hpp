@@ -292,6 +292,8 @@ struct WebServer::Impl {
     std::mutex image_generation_test_mu;
     // 串行化 tool-rewrites.json 的读改写(它不在 config.json 里,不受 app_config_mu 管)。
     std::mutex tool_rewrites_mu;
+    // 串行化 <data_dir>/rules/*.rules 托管文件的读改写(安全中心 > 命令安全)。
+    std::mutex exec_rules_mu;
 
     mutable std::mutex attention_mu;
     mutable std::unordered_set<std::string> loaded_attention_workspaces;
@@ -565,6 +567,7 @@ struct WebServer::Impl {
     void register_image_generation();
     void register_summary_generation();
     void register_tool_rewrites();
+    void register_security();
 
     void register_health();
     void register_usage();

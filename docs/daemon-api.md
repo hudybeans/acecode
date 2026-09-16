@@ -373,6 +373,14 @@ update their transcript presentation.
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
 | PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
+| GET | `/api/config/sandbox` | read sandbox switches, filesystem lists, defaults and platform probe |
+| PUT | `/api/config/sandbox` | save sandbox switches / lists to `config.json`, push to active sessions |
+| GET | `/api/security/exec-rules` | list `<data_dir>/rules/*.rules` (managed files editable) |
+| PUT | `/api/security/exec-rules` | rewrite the managed rules files, reload rules in active sessions |
+| GET | `/api/security/audit` | audit log page with filters and cursor pagination |
+| GET | `/api/security/audit/summary` | audit counts and recently blocked paths |
+| GET | `/api/security/audit/export` | audit log as a JSONL or CSV attachment |
+| DELETE | `/api/security/audit` | clear the audit log |
 | PUT | `/api/config/connectors` | write connector settings |
 | GET | `/api/config/default-permission-mode` | read default permission mode |
 | PUT | `/api/config/default-permission-mode` | write default permission mode |
@@ -3352,6 +3360,82 @@ file or the live mapping; write failures return 500 `PERSIST_FAILED`. Success
 writes the file atomically, publishes the mapping to the process so the next
 model request uses it, and returns the same shape as GET. Hook matchers accept
 the rewritten names as aliases of the native tool while a rewrite is active.
+
+### Security center (`openspec add-security-center`)
+
+Settings > Coding > Security Center is a UI over the sandbox model from
+`align-codex-sandboxing` plus a process-wide audit store. Nothing here changes
+how permissions are decided; it only exposes the switches, the lists, the
+managed rules files and the decision log.
+
+`GET /api/config/sandbox` returns:
+
+```json
+{
+  "enabled": true, "network_access": false, "deny_defaults": true,
+  "filesystem": { "read": [], "write": ["D:/shared/out"], "deny": ["~/.ssh", "**/.env"] },
+  "windows_backend": "restricted-token", "writable_roots": [], "exclude_tmpdir": false,
+  "defaults": { "deny": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.docker/config.json", "~/.kube", ":acecode_home/config.json"] },
+  "platform": { "os": "windows", "backend": "restricted-token", "available": true, "reason": "",
+                "network_enforced": false, "network_best_effort": true, "read_isolation": false }
+}
+```
+
+`platform` is the live backend probe. `read_isolation` is `false` on the
+Windows restricted-token backend: `filesystem.read` and `filesystem.deny`
+only stop writes there. `PUT /api/config/sandbox` accepts any subset of
+`enabled`, `network_access`, `deny_defaults` and `filesystem.{read,write,deny}`
+(each list replaces the stored list). Entries are trimmed and de-duplicated;
+`~`, `~/path`, `:workspace_roots[/sub]`, `:tmpdir[/sub]` and
+`:acecode_home[/sub]` are accepted verbatim, everything else must be an
+absolute path, and wildcards are only allowed in `deny`. Violations return 400
+`{error:"BAD_REQUEST", field, message}` without touching the config. Success
+writes `config.json`, queues `set_sandbox_config` on every active session
+(serialized with turns, so an in-flight turn keeps its policy until it ends)
+and returns the GET shape plus `refreshed_sessions`.
+
+`GET /api/security/exec-rules` scans `<data_dir>/rules/*.rules` and returns
+`{dir, managed:["default.rules","default.sandboxed.rules"], files:[{name, path,
+managed, scope:"global"|"sandboxed", exists, error, rules:[{pattern, display,
+decision, justification}]}]}`. The two managed files are listed even when they
+do not exist. `pattern` items are strings or string arrays (alternatives);
+`display` is `git status|diff`. `error` is the parse error that makes the
+loader skip the whole file. `PUT /api/security/exec-rules` takes
+`{files:{"default.rules":[{pattern, decision, justification?}], "default.sandboxed.rules":[...]}}`
+and rewrites those files completely (comments and `match` / `not_match` are
+dropped). Only the two managed files are writable; the sandboxed file only
+holds `allow` rules; an `allow` rule whose whole pattern is on the banned
+prefix list (the same list `allow_remember` uses) or whose first token is an
+interpreter, shell, `rm`, `sudo` or similar is rejected. Each file is re-parsed
+before it is written; success reloads the rules in every active session and
+returns the GET shape plus `refreshed_sessions`.
+
+`GET /api/security/audit?category=&decision=&since_ms=&before_id=&q=&limit=`
+returns `{entries, has_more, total, next_before_id?}` newest first. `category`
+is one of `command` (bash), `file` (file_write / file_edit / apply_patch),
+`tool` (other tools that needed confirmation), `sandbox` (a sandboxed run was
+denied; `target` is the denied path) or `rule` (remembered rules and session
+grants). `decision` is `allow`, `allow_session`, `allow_scoped`,
+`allow_remember`, `deny`, `forbidden` or `blocked`; `source` on each entry is
+`auto`, `rule`, `session`, `user`, `hook`, `headless`, `goal`, `sandbox` or
+`none`. `q` is a substring match on target / reason / tool, `limit` is 1..500
+(default 100), `before_id` continues from a previous page. Entries look like:
+
+```json
+{ "id": 42, "ts_ms": 1758070000000, "category": "command", "decision": "allow", "source": "auto",
+  "reason": "known_safe", "tool": "bash", "target": "git status", "session_id": "20260917-...",
+  "cwd": "N:/proj", "sandbox": "workspace-write", "detail": { "mode": "auto", "command_kind": "known_safe" } }
+```
+
+Read-only tools that are auto-allowed are not recorded. The store keeps the
+newest 20000 entries in `<data_dir>/security/audit.sqlite3` (shared by the
+daemon, TUI and headless mode). `GET /api/security/audit/summary` returns
+`{total, by_decision, by_category, last_ts_ms, blocked_paths:[{path, count,
+last_ts_ms}], path, max_entries}`. `GET /api/security/audit/export?format=jsonl|csv`
+accepts the same filters as the list and answers with an attachment
+(`Content-Disposition: attachment; filename="acecode-audit-<stamp>.<ext>"`).
+`DELETE /api/security/audit` clears the log. All audit routes return 503
+`AUDIT_UNAVAILABLE` when the process could not open the store.
 
 ### `GET /api/config/connectors`
 

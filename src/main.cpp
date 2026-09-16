@@ -63,6 +63,7 @@
 #include "tool/bash_tool.hpp"
 #include "tool/builtin_tool_registry.hpp"
 #include "tool/tool_rewrites.hpp"
+#include "security/audit_log.hpp"
 #include "tool/file_read_tool.hpp"
 #include "tool/file_write_tool.hpp"
 #include "tool/file_edit_tool.hpp"
@@ -5278,6 +5279,9 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     // 「工具重写」与 daemon 共用同一份 <data_dir>/tool-rewrites.json,
     // 必须先于 register_tool 发布(见 src/tool/tool_rewrites.hpp)。
     tool_rewrites::load_and_apply(get_acecode_dir());
+    // 安全审计存储(openspec add-security-center):TUI 的审批决策同样入账,
+    // 在 Desktop 的安全中心里查看。
+    security::audit_log().configure(get_acecode_dir());
 
     ToolExecutor tools;
     SkillRegistry skill_registry;

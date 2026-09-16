@@ -42,6 +42,7 @@
 #include "../tool/bash_tool.hpp"
 #include "../tool/builtin_tool_registry.hpp"
 #include "../tool/tool_rewrites.hpp"
+#include "../security/audit_log.hpp"
 #include "../tool/file_read_tool.hpp"
 #include "../tool/file_write_tool.hpp"
 #include "../tool/file_edit_tool.hpp"
@@ -510,6 +511,8 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     // 「工具重写」(<data_dir>/tool-rewrites.json)必须先于任何 register_tool
     // 发布到进程,注册期的模型侧名冲突检查才拿得到真实映射。
     acecode::tool_rewrites::load_and_apply(acecode::get_acecode_dir());
+    // 安全审计存储(openspec add-security-center):失败只记日志,record 退化为 no-op。
+    acecode::security::audit_log().configure(acecode::get_acecode_dir());
 
     acecode::ToolExecutor tools;
     acecode::register_session_builtin_tools(tools, cfg_mut);

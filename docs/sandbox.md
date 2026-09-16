@@ -212,6 +212,28 @@ forbidden > prompt > allow 合并；多段命令须每段都获 allow。
 决策表：Auto 下危险命令留在 workspace-write 沙盒内；显式的沙盒外 / 额外权限申请直接拒绝
 （没有人能批），forbidden 规则照常拒绝。
 
+## 安全中心（Desktop / Web 设置页）
+
+设置 > 编码 > 安全中心 是这套沙盒模型的界面（openspec add-security-center），分四页：
+
+- **概览**：沙箱总开关（`sandbox.enabled`）、网络访问、内置默认禁止名单开关、平台探测状态
+  （后端、是否可用、能否断网、能否拦读）以及审计摘要。开关即改即存。
+- **文件安全**：可读白名单 / 可写白名单 / 黑名单三张清单，对应 `filesystem.read / write / deny`，
+  一行一条，保存后写 `config.json` 并实时下发到 daemon 内所有活跃会话（与回合串行，进行中的
+  回合结束后才换策略）。下方列出审计里最近被沙箱拦截的路径，可一键加入可写或黑名单。
+  Windows 受限令牌管不了读，界面会标明可读白名单与黑名单在 Windows 上只拦写。
+- **命令安全**：托管规则文件 `default.rules` / `default.sandboxed.rules` 的表格编辑（放行·沙箱外 /
+  放行·沙箱内 / 询问 / 禁止 + 说明）。这两个文件本来就是「以后都允许」写的，界面整体重写它们
+  （注释与 `match` / `not_match` 会丢），其它手写的 `*.rules` 只读展示。禁用前缀名单同样约束
+  界面上的放行规则。保存后活跃会话重载规则；TUI 进程下次启动生效。
+- **审计中心**：审批门每一次「决定已作出」的记录 —— bash 的自动放行 / 规则禁止 / 用户或 hook /
+  无人值守 / headless 决策、写文件工具与其它需确认工具的决策、沙盒拒绝（含被拒路径）、
+  规则写回与会话授权。只读工具的自动放行不记。按类型 / 结果 / 时间 / 关键字筛选，导出 JSONL
+  或 CSV，可清空。存储在 `<data_dir>/security/audit.sqlite3`，daemon / TUI / headless 共用，
+  最多保留 20000 条。
+
+REST 契约见 [docs/daemon-api.md](daemon-api.md) 的 Security center 一节。
+
 实现参考：[OpenAI Codex](https://github.com/openai/codex) 的 execpolicy 与 sandboxing、
 [微软 MXC](https://github.com/microsoft/mxc)、
 [CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)、

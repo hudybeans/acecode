@@ -37,7 +37,7 @@ test('settings navigation uses the confirmed Codex-style groups', () => {
       {
         key: 'coding',
         label: '编码',
-        items: ['模型', '工具', '钩子'],
+        items: ['模型', '工具', '钩子', '安全中心'],
       },
       {
         key: 'archived',
@@ -67,6 +67,7 @@ test('flattened settings routes remain unique and complete', () => {
     'models',
     'tools',
     'hooks',
+    'security',
     'archived',
     'feedback',
     'about',

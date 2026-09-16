@@ -268,6 +268,7 @@ import './connectors.test.js';
 import './settingsNavigation.test.js';
 import './environmentSettings.test.js';
 import './settingsSearch.test.js';
+import './securityCenter.test.js';
 import './settingsWindowArchitecture.test.js';
 import './remoteWeb.test.js';
 import './remoteWebArchitecture.test.js';

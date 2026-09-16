@@ -1,5 +1,6 @@
 #include "exec_rules.hpp"
 
+#include "utils/atomic_file.hpp"
 #include "utils/logger.hpp"
 #include "utils/utf8_path.hpp"
 
@@ -502,6 +503,105 @@ std::string format_prefix_rule(const std::vector<std::string>& pattern) {
     }
     out += "], decision=\"allow\")";
     return out;
+}
+
+bool is_managed_rules_file(const std::string& file_name) {
+    return file_name == kRememberedRulesFile || file_name == kRememberedSandboxedRulesFile;
+}
+
+RuleScope rules_file_scope(const std::string& file_name) {
+    const std::string suffix = ".sandboxed.rules";
+    if (file_name.size() > suffix.size() &&
+        file_name.compare(file_name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        return RuleScope::Sandboxed;
+    }
+    return RuleScope::Global;
+}
+
+namespace {
+
+std::string starlark_string(const std::string& value) {
+    std::string out = "\"";
+    for (char c : value) {
+        if (c == '\\' || c == '"') out += '\\';
+        if (c == '\n') { out += "\\n"; continue; }
+        if (c == '\r') { out += "\\r"; continue; }
+        if (c == '\t') { out += "\\t"; continue; }
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
+} // namespace
+
+std::string format_prefix_rule_full(const PrefixRule& rule) {
+    std::string out = "prefix_rule(pattern=[";
+    for (std::size_t i = 0; i < rule.pattern.size(); ++i) {
+        if (i) out += ", ";
+        const auto& alternatives = rule.pattern[i];
+        if (alternatives.size() == 1) {
+            out += starlark_string(alternatives[0]);
+            continue;
+        }
+        out += '[';
+        for (std::size_t j = 0; j < alternatives.size(); ++j) {
+            if (j) out += ", ";
+            out += starlark_string(alternatives[j]);
+        }
+        out += ']';
+    }
+    out += "], decision=";
+    out += starlark_string(rule_decision_name(rule.decision == RuleDecision::AllowSandboxed
+                                                  ? RuleDecision::Allow : rule.decision));
+    if (!rule.justification.empty()) {
+        out += ", justification=";
+        out += starlark_string(rule.justification);
+    }
+    out += ')';
+    return out;
+}
+
+std::string render_rules_file(const std::vector<PrefixRule>& rules) {
+    std::string out =
+        "# Managed by ACECode (Settings > Security Center). Edits here are overwritten\n"
+        "# the next time the rules are saved from the UI or a command is remembered.\n";
+    for (const auto& rule : rules) {
+        out += format_prefix_rule_full(rule);
+        out += '\n';
+    }
+    return out;
+}
+
+std::string write_rules_file(const std::string& file, const std::vector<PrefixRule>& rules) {
+    if (file.empty()) return "rules file path is empty";
+    for (const auto& rule : rules) {
+        if (rule.pattern.empty()) return "a rule has an empty pattern";
+        for (const auto& alternatives : rule.pattern) {
+            if (alternatives.empty()) return "a rule has an empty token position";
+            for (const auto& token : alternatives) {
+                if (token.empty()) return "a rule has an empty token";
+            }
+        }
+        if (rule.decision != RuleDecision::Allow && rule.decision != RuleDecision::AllowSandboxed &&
+            rule.decision != RuleDecision::Prompt && rule.decision != RuleDecision::Forbidden) {
+            return "a rule has an invalid decision";
+        }
+    }
+    const std::string text = render_rules_file(rules);
+    // 往返校验:渲染出来的文本必须能被自己的解析器读回同样多的规则,否则一次
+    // 界面保存就能让整个文件被跳过(解析失败 = 整文件不生效)。
+    const auto name = path_to_utf8(path_from_utf8(file).filename());
+    const ParsedRulesFile parsed = parse_rules_text(text, rules_file_scope(name), name);
+    if (!parsed.error.empty()) return "rendered rules do not parse: " + parsed.error;
+    if (parsed.rules.size() != rules.size()) return "rendered rules do not round-trip";
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path path = path_from_utf8(file);
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return "cannot create rules directory: " + ec.message();
+    if (!atomic_write_file(file, text)) return "cannot write rules file: " + file;
+    return {};
 }
 
 std::string append_prefix_rules(const std::string& file,

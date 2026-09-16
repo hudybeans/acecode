@@ -292,6 +292,12 @@ public:
     // expert still needs after the global default is disabled.
     bool expert_requires_mcp_server(const std::string& name) const;
 
+    // 安全中心(openspec add-security-center):设置页改了 config.sandbox / 托管
+    // 规则文件之后,把新状态下发到每个活跃会话。经 enqueue_control 与回合串行,
+    // 不在模型请求中途翻转策略;空闲会话立即生效。返回入队的会话数。
+    std::size_t refresh_sandbox_config(const SandboxConfig& sandbox);
+    std::size_t refresh_exec_rules();
+
     // Fire-and-forget hidden title generation for the first visible user input.
     // It never writes to transcript or blocks send_input.
     void maybe_start_auto_title(const std::string& id, const UserInput& input);

@@ -140,3 +140,65 @@ TEST(ExecRules, DoesNotAllowOpaqueScriptsByPrefix) {
     EXPECT_EQ(rules.evaluate(classify_command("echo x > outside")).decision, RuleDecision::NoMatch);
     EXPECT_EQ(rules.evaluate(classify_command("echo $(custom-script)", CommandPlatform::Posix)).decision, RuleDecision::NoMatch);
 }
+
+// 场景:安全中心把规则表整体写回托管文件(openspec add-security-center D3):候选
+// 并集、prompt / forbidden 决策、justification 里带引号与反斜杠。期望:渲染 → 解析
+// 往返得到相同 pattern / decision / justification;文件头是注释;sandboxed 文件按
+// 文件名判定作用域。
+TEST(ExecRules, ManagedFileRoundTripsThroughRenderAndParse) {
+    test::TempTree tree;
+    PrefixRule a;
+    a.pattern = {{"git"}, {"status", "diff"}};
+    a.decision = RuleDecision::Allow;
+    a.justification = "read-only \"safe\" \ ok";
+    PrefixRule b;
+    b.pattern = {{"git"}, {"push"}};
+    b.decision = RuleDecision::Prompt;
+    PrefixRule c;
+    c.pattern = {{"curl"}};
+    c.decision = RuleDecision::Forbidden;
+    const auto file = tree.root / "rules" / kRememberedRulesFile;
+    ASSERT_TRUE(write_rules_file(acecode::path_to_utf8(file), {a, b, c}).empty());
+    std::ifstream in(file, std::ios::binary);
+    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(content.rfind("# Managed by ACECode", 0), 0u) << content;
+    const auto parsed = parse_rules_text(content, RuleScope::Global, kRememberedRulesFile);
+    ASSERT_TRUE(parsed.error.empty()) << parsed.error;
+    ASSERT_EQ(parsed.rules.size(), 3u);
+    EXPECT_EQ(parsed.rules[0].pattern, a.pattern);
+    EXPECT_EQ(parsed.rules[0].justification, a.justification);
+    EXPECT_EQ(parsed.rules[1].decision, RuleDecision::Prompt);
+    EXPECT_EQ(parsed.rules[2].decision, RuleDecision::Forbidden);
+    EXPECT_TRUE(is_managed_rules_file(kRememberedRulesFile));
+    EXPECT_TRUE(is_managed_rules_file(kRememberedSandboxedRulesFile));
+    EXPECT_FALSE(is_managed_rules_file("custom.rules"));
+    EXPECT_EQ(rules_file_scope(kRememberedSandboxedRulesFile), RuleScope::Sandboxed);
+    EXPECT_EQ(rules_file_scope(kRememberedRulesFile), RuleScope::Global);
+    // 加载器读回:沙盒外 allow 保持 Allow。
+    const auto loaded = ExecRules::load(acecode::path_to_utf8(tree.root / "rules"), "");
+    EXPECT_EQ(loaded.evaluate(classify_command("git status", CommandPlatform::Posix)).decision, RuleDecision::Allow);
+    EXPECT_EQ(loaded.evaluate(classify_command("curl x", CommandPlatform::Posix)).decision, RuleDecision::Forbidden);
+}
+
+// 场景:空表写回、非法规则(空 token)写回。期望:空表只剩注释头,加载后无规则无错误;
+// 非法规则不落盘(文件保持原内容)。
+TEST(ExecRules, EmptyManagedFileLoadsCleanAndInvalidRulesAreNotWritten) {
+    test::TempTree tree;
+    const auto file = tree.root / "rules" / kRememberedSandboxedRulesFile;
+    ASSERT_TRUE(write_rules_file(acecode::path_to_utf8(file), {}).empty());
+    const auto loaded = ExecRules::load(acecode::path_to_utf8(tree.root / "rules"), "");
+    EXPECT_TRUE(loaded.empty());
+    EXPECT_TRUE(loaded.skipped_files().empty());
+    std::ifstream in(file, std::ios::binary);
+    const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    PrefixRule bad;
+    bad.pattern = {{"git"}, {""}};
+    EXPECT_FALSE(write_rules_file(acecode::path_to_utf8(file), {bad}).empty());
+    PrefixRule no_pattern;
+    EXPECT_FALSE(write_rules_file(acecode::path_to_utf8(file), {no_pattern}).empty());
+    std::ifstream again(file, std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(again)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(after, before);
+    EXPECT_EQ(format_prefix_rule_full(PrefixRule{{{"a", "b"}, {"c"}}, RuleDecision::AllowSandboxed, "", RuleScope::Sandboxed, ""}),
+              "prefix_rule(pattern=[[\"a\", \"b\"], \"c\"], decision=\"allow\")");
+}

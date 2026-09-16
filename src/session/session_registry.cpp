@@ -1655,6 +1655,53 @@ void SessionRegistry::handle_auto_title_turn_finished(
     }
 }
 
+std::size_t SessionRegistry::refresh_sandbox_config(const SandboxConfig& sandbox) {
+    auto snapshot = std::make_shared<SandboxConfig>(sandbox);
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    std::size_t queued = 0;
+    for (const auto& entry : targets) {
+        auto* loop = entry->loop.get();
+        const auto receipt = loop->enqueue_control([entry, loop, snapshot]() {
+            loop->set_sandbox_config(*snapshot);
+            return true;
+        });
+        (void)receipt;
+        ++queued;
+    }
+    return queued;
+}
+
+std::size_t SessionRegistry::refresh_exec_rules() {
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    std::size_t queued = 0;
+    for (const auto& entry : targets) {
+        auto* loop = entry->loop.get();
+        const auto receipt = loop->enqueue_control([entry, loop]() {
+            loop->refresh_exec_rules();
+            return true;
+        });
+        (void)receipt;
+        ++queued;
+    }
+    return queued;
+}
+
 void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {
     auto config_snapshot = std::make_shared<AppConfig>(config);
     std::vector<std::shared_ptr<SessionEntry>> targets;

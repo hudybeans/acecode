@@ -124,4 +124,20 @@ std::string format_prefix_rule(const std::vector<std::string>& pattern);
 std::string append_prefix_rules(const std::string& file,
                                 const std::vector<std::vector<std::string>>& patterns);
 
+// ---- 托管规则文件的整体重写(openspec add-security-center D3)----
+
+// 只有「批准并记住」写的两个文件由设置页托管:界面上增删改的就是它们,
+// 用户手写的其它 *.rules 只读展示。
+bool is_managed_rules_file(const std::string& file_name);
+// 文件名 → 作用域:`*.sandboxed.rules` 为 Sandboxed,其余 Global。
+RuleScope rules_file_scope(const std::string& file_name);
+
+// 完整格式化一条规则:pattern 保留候选并集(`["git", ["status", "diff"]]`),
+// decision 与非空 justification 一并输出,字符串按 Starlark 转义。
+std::string format_prefix_rule_full(const PrefixRule& rule);
+// 整个文件的文本:注释头 + 每条规则一行;空表只剩注释头(加载后无规则、无错误)。
+std::string render_rules_file(const std::vector<PrefixRule>& rules);
+// 先对渲染结果做 parse_rules_text 往返校验,过了才原子落盘;返回错误信息,空 = 成功。
+std::string write_rules_file(const std::string& file, const std::vector<PrefixRule>& rules);
+
 } // namespace acecode::sandbox
