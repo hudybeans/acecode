@@ -340,15 +340,9 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
       tabIndex={-1}
       onKeyDown={onKeyDown}
       aria-label="AskUserQuestion"
-      className="mx-2.5 mb-2 shrink min-h-0 rounded-lg border border-border bg-surface outline-none overflow-hidden flex flex-col"
-
+      className="mb-2 shrink min-h-0 rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col"
     >
-      <div className="min-h-10 shrink-0 px-3 py-1.5 border-b border-border bg-surface flex items-center gap-2">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-fg-mute" aria-hidden="true">
-          <path d="M20 15a3 3 0 0 1-3 3H9l-5 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z" />
-          <path d="M9.5 8a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.5-2.5 3" />
-          <path d="M12 14h.01" />
-        </svg>
+      <div className="min-h-11 shrink-0 px-4 py-2 border-b border-border bg-surface flex items-center gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
           {originLabel && (
             <div className="text-[10px] text-fg-mute mb-0.5 truncate" title={originLabel}>
@@ -357,7 +351,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
           )}
           {!collapsed && (
             <div
-              className="text-[14px] leading-5 font-semibold text-fg whitespace-pre-wrap break-words"
+              className="text-[15px] font-semibold text-fg whitespace-pre-wrap break-words"
               style={READABLE_TEXT_STYLE}
             >
               {question.text}
@@ -409,7 +403,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
 
       {collapsed ? null : (
         <>
-          <div className="px-2 py-1.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
+          <div className="px-2 py-2.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
             {question.options.map((opt, index) => {
               const selected = answer.selected?.includes(opt.value);
               const focused = activeOptionIndex === index;
@@ -433,7 +427,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                   }}
                   style={SELECTABLE_OPTION_STYLE}
                   className={clsx(
-                    'group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer transition',
+                    'group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition',
                     selected
                       ? 'bg-accent-bg border border-accent text-accent'
                       : focused
@@ -444,7 +438,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                 >
                   <span
                     className={clsx(
-                      'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
+                      'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
                       selected
                         ? 'bg-accent text-white border-accent'
                         : 'border-fg-mute text-fg-mute',
@@ -457,7 +451,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                     )}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] leading-5 font-medium text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
+                    <span className="block text-[15px] font-semibold text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
                       {opt.label}
                       {opt.recommended && (
                         <span className="ml-1.5 align-middle text-[11px] font-medium text-fg-mute border border-border rounded px-1 py-0.5">
@@ -502,7 +496,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
 
             <div
               className={clsx(
-                'flex items-center gap-2 rounded-md px-2 py-1.5 transition',
+                'flex items-center gap-3 rounded-lg px-3 py-2.5 transition',
                 customActive
                   ? 'bg-accent-bg border border-accent'
                   : focusIndex === customIndex
@@ -513,7 +507,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
             >
               <span
                 className={clsx(
-                  'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
+                  'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
                   customActive
                     ? 'bg-accent text-white border-accent'
                     : 'border-fg-mute text-fg-mute',
@@ -535,7 +529,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                 placeholder="输入你的答案"
                 maxLength={MAX_CUSTOM_LENGTH}
                 className={clsx(
-                  'min-w-0 flex-1 h-7 bg-transparent text-[13px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
+                  'min-w-0 flex-1 h-9 bg-transparent text-[14px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
                   customDraft ? 'text-fg-mute font-normal' : 'text-fg',
                 )}
 
