@@ -1,0 +1,41 @@
+{
+  "data": [
+    {
+      "id": "page-ask-user-question",
+      "type": "page",
+      "title": "AskUserQuestion 提问框原型",
+      "name": "AskUserQuestion 提问框原型",
+      "version": 1,
+      "createdAt": 1789314759000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1255,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-0f16f5e0",
+          "measuredAt": 1789544454345
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/ask-user-question.html",
+        "viewport": "desktop"
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "designLibrary": {
+      "name": "Apple",
+      "id": "dl_builtin_apple",
+      "version": 0,
+      "scope": "built-in-global",
+      "path": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple",
+      "versionSource": "metadata.json"
+    },
+    "visualEditorEnabled": false
+  }
+}

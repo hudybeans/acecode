@@ -1,0 +1,2534 @@
+<!doctype html>
+<html lang="zh-CN" class="light"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AskUserQuestion 提问框原型 - Apple Design</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script><style>/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+    --default-font-family: var(--font-sans);
+    --default-mono-font-family: var(--font-mono);
+  }
+}
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  html, :host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: var(--default-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji');
+    font-feature-settings: var(--default-font-feature-settings, normal);
+    font-variation-settings: var(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+  }
+  hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+  abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+  }
+  b, strong {
+    font-weight: bolder;
+  }
+  code, kbd, samp, pre {
+    font-family: var(--default-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace);
+    font-feature-settings: var(--default-mono-font-feature-settings, normal);
+    font-variation-settings: var(--default-mono-font-variation-settings, normal);
+    font-size: 1em;
+  }
+  small {
+    font-size: 80%;
+  }
+  sub, sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+  sub {
+    bottom: -0.25em;
+  }
+  sup {
+    top: -0.5em;
+  }
+  table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+  :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+  }
+  progress {
+    vertical-align: baseline;
+  }
+  summary {
+    display: list-item;
+  }
+  ol, ul, menu {
+    list-style: none;
+  }
+  img, svg, video, canvas, audio, iframe, embed, object {
+    display: block;
+    vertical-align: middle;
+  }
+  img, video {
+    max-width: 100%;
+    height: auto;
+  }
+  button, input, select, optgroup, textarea, ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+  }
+  :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+  }
+  ::file-selector-button {
+    margin-inline-end: 4px;
+  }
+  ::placeholder {
+    opacity: 1;
+  }
+  @supports (not (-webkit-appearance: -apple-pay-button))  or (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }
+  textarea {
+    resize: vertical;
+  }
+  ::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+  ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+  }
+  ::-webkit-datetime-edit {
+    display: inline-flex;
+  }
+  ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+  ::-webkit-datetime-edit, ::-webkit-datetime-edit-year-field, ::-webkit-datetime-edit-month-field, ::-webkit-datetime-edit-day-field, ::-webkit-datetime-edit-hour-field, ::-webkit-datetime-edit-minute-field, ::-webkit-datetime-edit-second-field, ::-webkit-datetime-edit-millisecond-field, ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+  }
+  ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+  }
+  :-moz-ui-invalid {
+    box-shadow: none;
+  }
+  button, input:where([type='button'], [type='reset'], [type='submit']), ::file-selector-button {
+    appearance: button;
+  }
+  ::-webkit-inner-spin-button, ::-webkit-outer-spin-button {
+    height: auto;
+  }
+  [hidden]:where(:not([hidden='until-found'])) {
+    display: none !important;
+  }
+}
+@layer utilities;
+</style><style>/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+    --default-font-family: var(--font-sans);
+    --default-mono-font-family: var(--font-mono);
+  }
+}
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  html, :host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: var(--default-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji');
+    font-feature-settings: var(--default-font-feature-settings, normal);
+    font-variation-settings: var(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+  }
+  hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+  abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+  }
+  b, strong {
+    font-weight: bolder;
+  }
+  code, kbd, samp, pre {
+    font-family: var(--default-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace);
+    font-feature-settings: var(--default-mono-font-feature-settings, normal);
+    font-variation-settings: var(--default-mono-font-variation-settings, normal);
+    font-size: 1em;
+  }
+  small {
+    font-size: 80%;
+  }
+  sub, sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+  sub {
+    bottom: -0.25em;
+  }
+  sup {
+    top: -0.5em;
+  }
+  table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+  :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+  }
+  progress {
+    vertical-align: baseline;
+  }
+  summary {
+    display: list-item;
+  }
+  ol, ul, menu {
+    list-style: none;
+  }
+  img, svg, video, canvas, audio, iframe, embed, object {
+    display: block;
+    vertical-align: middle;
+  }
+  img, video {
+    max-width: 100%;
+    height: auto;
+  }
+  button, input, select, optgroup, textarea, ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+  }
+  :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+  }
+  ::file-selector-button {
+    margin-inline-end: 4px;
+  }
+  ::placeholder {
+    opacity: 1;
+  }
+  @supports (not (-webkit-appearance: -apple-pay-button))  or (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }
+  textarea {
+    resize: vertical;
+  }
+  ::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+  ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+  }
+  ::-webkit-datetime-edit {
+    display: inline-flex;
+  }
+  ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+  ::-webkit-datetime-edit, ::-webkit-datetime-edit-year-field, ::-webkit-datetime-edit-month-field, ::-webkit-datetime-edit-day-field, ::-webkit-datetime-edit-hour-field, ::-webkit-datetime-edit-minute-field, ::-webkit-datetime-edit-second-field, ::-webkit-datetime-edit-millisecond-field, ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+  }
+  ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+  }
+  :-moz-ui-invalid {
+    box-shadow: none;
+  }
+  button, input:where([type='button'], [type='reset'], [type='submit']), ::file-selector-button {
+    appearance: button;
+  }
+  ::-webkit-inner-spin-button, ::-webkit-outer-spin-button {
+    height: auto;
+  }
+  [hidden]:where(:not([hidden='until-found'])) {
+    display: none !important;
+  }
+}
+@layer utilities;
+</style><style>/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+    --default-font-family: var(--font-sans);
+    --default-mono-font-family: var(--font-mono);
+  }
+}
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  html, :host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: var(--default-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji');
+    font-feature-settings: var(--default-font-feature-settings, normal);
+    font-variation-settings: var(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+  }
+  hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+  abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+  }
+  b, strong {
+    font-weight: bolder;
+  }
+  code, kbd, samp, pre {
+    font-family: var(--default-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace);
+    font-feature-settings: var(--default-mono-font-feature-settings, normal);
+    font-variation-settings: var(--default-mono-font-variation-settings, normal);
+    font-size: 1em;
+  }
+  small {
+    font-size: 80%;
+  }
+  sub, sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+  sub {
+    bottom: -0.25em;
+  }
+  sup {
+    top: -0.5em;
+  }
+  table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+  :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+  }
+  progress {
+    vertical-align: baseline;
+  }
+  summary {
+    display: list-item;
+  }
+  ol, ul, menu {
+    list-style: none;
+  }
+  img, svg, video, canvas, audio, iframe, embed, object {
+    display: block;
+    vertical-align: middle;
+  }
+  img, video {
+    max-width: 100%;
+    height: auto;
+  }
+  button, input, select, optgroup, textarea, ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+  }
+  :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+  }
+  ::file-selector-button {
+    margin-inline-end: 4px;
+  }
+  ::placeholder {
+    opacity: 1;
+  }
+  @supports (not (-webkit-appearance: -apple-pay-button))  or (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }
+  textarea {
+    resize: vertical;
+  }
+  ::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+  ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+  }
+  ::-webkit-datetime-edit {
+    display: inline-flex;
+  }
+  ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+  ::-webkit-datetime-edit, ::-webkit-datetime-edit-year-field, ::-webkit-datetime-edit-month-field, ::-webkit-datetime-edit-day-field, ::-webkit-datetime-edit-hour-field, ::-webkit-datetime-edit-minute-field, ::-webkit-datetime-edit-second-field, ::-webkit-datetime-edit-millisecond-field, ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+  }
+  ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+  }
+  :-moz-ui-invalid {
+    box-shadow: none;
+  }
+  button, input:where([type='button'], [type='reset'], [type='submit']), ::file-selector-button {
+    appearance: button;
+  }
+  ::-webkit-inner-spin-button, ::-webkit-outer-spin-button {
+    height: auto;
+  }
+  [hidden]:where(:not([hidden='until-found'])) {
+    display: none !important;
+  }
+}
+@layer utilities;
+</style><style>/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
+@layer theme, base, components, utilities;
+@layer theme {
+  :root, :host {
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+    --default-font-family: var(--font-sans);
+    --default-mono-font-family: var(--font-mono);
+  }
+}
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  html, :host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: var(--default-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji');
+    font-feature-settings: var(--default-font-feature-settings, normal);
+    font-variation-settings: var(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+  }
+  hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+  abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+  }
+  b, strong {
+    font-weight: bolder;
+  }
+  code, kbd, samp, pre {
+    font-family: var(--default-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace);
+    font-feature-settings: var(--default-mono-font-feature-settings, normal);
+    font-variation-settings: var(--default-mono-font-variation-settings, normal);
+    font-size: 1em;
+  }
+  small {
+    font-size: 80%;
+  }
+  sub, sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+  sub {
+    bottom: -0.25em;
+  }
+  sup {
+    top: -0.5em;
+  }
+  table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+  :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+  }
+  progress {
+    vertical-align: baseline;
+  }
+  summary {
+    display: list-item;
+  }
+  ol, ul, menu {
+    list-style: none;
+  }
+  img, svg, video, canvas, audio, iframe, embed, object {
+    display: block;
+    vertical-align: middle;
+  }
+  img, video {
+    max-width: 100%;
+    height: auto;
+  }
+  button, input, select, optgroup, textarea, ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+  :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+  }
+  :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+  }
+  ::file-selector-button {
+    margin-inline-end: 4px;
+  }
+  ::placeholder {
+    opacity: 1;
+  }
+  @supports (not (-webkit-appearance: -apple-pay-button))  or (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }
+  textarea {
+    resize: vertical;
+  }
+  ::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+  ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+  }
+  ::-webkit-datetime-edit {
+    display: inline-flex;
+  }
+  ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+  ::-webkit-datetime-edit, ::-webkit-datetime-edit-year-field, ::-webkit-datetime-edit-month-field, ::-webkit-datetime-edit-day-field, ::-webkit-datetime-edit-hour-field, ::-webkit-datetime-edit-minute-field, ::-webkit-datetime-edit-second-field, ::-webkit-datetime-edit-millisecond-field, ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+  }
+  ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+  }
+  :-moz-ui-invalid {
+    box-shadow: none;
+  }
+  button, input:where([type='button'], [type='reset'], [type='submit']), ::file-selector-button {
+    appearance: button;
+  }
+  ::-webkit-inner-spin-button, ::-webkit-outer-spin-button {
+    height: auto;
+  }
+  [hidden]:where(:not([hidden='until-found'])) {
+    display: none !important;
+  }
+}
+@layer utilities;
+</style>
+<style id="theme-vars">
+:root {
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #007aff;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f7;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f2f2f7;
+  --muted-foreground: #8e8e93;
+  --accent: #f7f7fa;
+  --accent-foreground: #1d1d1f;
+  --destructive: #ff3b30;
+  --destructive-foreground: #ffffff;
+  --success: #34c759;
+  --success-foreground: #ffffff;
+  --border: #e5e5ea;
+  --input: #d1d1d6;
+  --ring: #007aff;
+  --radius: 1.2rem;
+  --radius-sm: 0.8rem;
+  --radius-md: 1.0rem;
+  --radius-lg: 1.2rem;
+  --spacing: 0.24rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-serif: Georgia, "Times New Roman", serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  --shadow-2xs: 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
+  --shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 8px 24px -8px rgba(0, 0, 0, 0.08), 0 4px 8px -4px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 16px 40px -10px rgba(0, 0, 0, 0.10), 0 8px 16px -8px rgba(0, 0, 0, 0.06);
+  --shadow-2xl: 0 24px 64px -12px rgba(0, 0, 0, 0.12);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius: var(--radius);
+  --spacing: var(--spacing);
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 16px; }
+  body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-weight: 400; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+}
+</style>
+</head>
+<body>
+
+<!-- 页面标题区 -->
+<div class="page-header">
+  <h1 class="page-title">AskUserQuestion 提问框交互原型</h1>
+  <p class="page-subtitle">基于 Apple 设计系统 · 8 种状态对比</p>
+</div>
+
+<!-- 状态卡片网格 -->
+<div class="state-grid">
+
+  <!-- ① 单选 · 默认未选中 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">SINGLE SELECT · DEFAULT</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box" tabindex="0" style="outline: none;">
+        <div class="ask-header">
+          <div class="ask-title-group">
+            <span class="ask-title">期望的改进方向</span>
+          <span class="ask-type-badge">（可多选）</span></div>
+          <div class="ask-nav">
+            <button class="nav-btn" aria-label="上一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+            </button>
+            <span class="nav-counter">3 / 5</span>
+            <button class="nav-btn" aria-label="下一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+            </button>
+            <button class="nav-btn collapse-btn" aria-label="折叠">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            </button>
+          </div>
+        </div>
+        <div class="ask-options"><div class="ask-option"><div class="option-badge">1</div><div class="option-content"><div class="option-title-row"><span class="option-title">代码重构</span></div><div class="option-desc">优化现有代码结构，提升可维护性</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option"><div class="option-badge">2</div><div class="option-content"><div class="option-title-row"><span class="option-title">Bug 修复</span></div><div class="option-desc">优先解决已知问题和缺陷</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option"><div class="option-badge">3</div><div class="option-content"><div class="option-title-row"><span class="option-title">文档编写与 API 设计</span><span class="option-recommend">[推荐]</span></div><div class="option-desc">完善开发文档和接口规范</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option custom-option"><div class="option-badge dashed">4</div><div class="option-content"><div class="custom-input-wrap"><input class="custom-input" type="text" placeholder="输入你的答案"><span class="char-count">0/500</span></div></div></div></div>
+        <div class="ask-footer">
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-secondary">跳过</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 单选 · 已选中 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">SINGLE SELECT · SELECTED</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box" tabindex="0" style="outline: none;">
+        <div class="ask-header">
+          <div class="ask-title-group">
+            <span class="ask-title">你希望优先处理哪个功能？</span>
+          </div>
+          <div class="ask-nav">
+            <button class="nav-btn" aria-label="上一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+            </button>
+            <span class="nav-counter">2 / 5</span>
+            <button class="nav-btn" aria-label="下一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+            </button>
+            <button class="nav-btn collapse-btn" aria-label="折叠">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            </button>
+          </div>
+        </div>
+        <div class="ask-options">
+          <div class="ask-option">
+            <div class="option-badge">1</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">代码重构</span>
+                <span class="option-recommend">[推荐]</span>
+              </div>
+              <div class="option-desc">优化现有代码结构，提升可维护性</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option selected">
+            <div class="option-badge">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+            </div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">新增功能</span>
+              </div>
+              <div class="option-desc">按需求文档实现新的功能模块</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option">
+            <div class="option-badge">3</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">Bug 修复</span>
+              </div>
+              <div class="option-desc">优先解决已知问题和缺陷</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option custom-option">
+            <div class="option-badge dashed">4</div>
+            <div class="option-content">
+              <div class="custom-input-wrap">
+                <input class="custom-input" type="text" placeholder="输入你的答案">
+                <span class="char-count">0/500</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ask-footer">
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-primary" style="position: relative;">提交<span class="btn-kbd-hint">Enter</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ 单选 · 悬停态 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">SINGLE SELECT · HOVER</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box" tabindex="0" style="outline: none;">
+        <div class="ask-header">
+          <div class="ask-title-group">
+            <span class="ask-title">你偏好的技术栈是？</span>
+          </div>
+          <div class="ask-nav">
+            <button class="nav-btn" aria-label="上一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+            </button>
+            <span class="nav-counter">4 / 5</span>
+            <button class="nav-btn" aria-label="下一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+            </button>
+            <button class="nav-btn collapse-btn" aria-label="折叠">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            </button>
+          </div>
+        </div>
+        <div class="ask-options"><div class="ask-option"><div class="option-badge">1</div><div class="option-content"><div class="option-title-row"><span class="option-title">React + TypeScript</span><span class="option-recommend">[推荐]</span></div><div class="option-desc">现代化前端开发栈</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option"><div class="option-badge">2</div><div class="option-content"><div class="option-title-row"><span class="option-title">Vue 3 + Vite</span></div><div class="option-desc">轻量高效的构建方案</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option"><div class="option-badge">3</div><div class="option-content"><div class="option-title-row"><span class="option-title">原生 JS + Web Components</span></div><div class="option-desc">无框架依赖的原生方案</div></div><div class="option-actions"><button class="action-btn">复制</button><button class="action-btn icon-only"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span></button></div></div><div class="ask-option custom-option"><div class="option-badge dashed">4</div><div class="option-content"><div class="custom-input-wrap"><input class="custom-input" type="text" placeholder="输入你的答案"><span class="char-count">0/500</span></div></div></div></div>
+        <div class="ask-footer">
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-secondary">跳过</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ④ 多选 · 已选多项 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">MULTI SELECT · SELECTED</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box" tabindex="0" style="outline: none;">
+        <div class="ask-header">
+          <div class="ask-title-group">
+            <span class="ask-title">你希望优先处理哪些功能？</span>
+            <span class="ask-type-badge">（可多选）</span>
+          </div>
+          <div class="ask-nav">
+            <button class="nav-btn" aria-label="上一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+            </button>
+            <span class="nav-counter">3 / 5</span>
+            <button class="nav-btn" aria-label="下一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+            </button>
+            <button class="nav-btn collapse-btn" aria-label="折叠">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            </button>
+          </div>
+        </div>
+        <div class="ask-options">
+          <div class="ask-option selected">
+            <div class="option-badge">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+            </div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">代码重构</span>
+                <span class="option-recommend">[推荐]</span>
+              </div>
+              <div class="option-desc">优化现有代码结构，提升可维护性</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option">
+            <div class="option-badge">2</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">新增功能</span>
+              </div>
+              <div class="option-desc">按需求文档实现新的功能模块</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option">
+            <div class="option-badge">3</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">Bug 修复</span>
+              </div>
+              <div class="option-desc">优先解决已知问题和缺陷</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option custom-option selected">
+            <div class="option-badge">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+            </div>
+            <div class="option-content">
+              <div class="custom-input-wrap">
+                <input class="custom-input" type="text" value="文档编写与 API 设计">
+                <span class="char-count">12/500</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ask-footer">
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-primary">提交<span class="btn-kbd-hint">Enter</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑤ 单选 · 自定义草稿 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">SINGLE · CUSTOM DRAFT</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box" tabindex="0" style="outline: none;">
+        <div class="ask-header">
+          <div class="ask-title-group">
+            <span class="ask-title">你希望优先处理哪个功能？</span>
+          </div>
+          <div class="ask-nav">
+            <button class="nav-btn" aria-label="上一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg></span>
+            </button>
+            <span class="nav-counter">2 / 5</span>
+            <button class="nav-btn" aria-label="下一题">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg></span>
+            </button>
+            <button class="nav-btn collapse-btn" aria-label="折叠">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            </button>
+          </div>
+        </div>
+        <div class="ask-options">
+          <div class="ask-option">
+            <div class="option-badge">1</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">代码重构</span>
+                <span class="option-recommend">[推荐]</span>
+              </div>
+              <div class="option-desc">优化现有代码结构，提升可维护性</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option selected">
+            <div class="option-badge">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+            </div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">新增功能</span>
+              </div>
+              <div class="option-desc">按需求文档实现新的功能模块</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option">
+            <div class="option-badge">3</div>
+            <div class="option-content">
+              <div class="option-title-row">
+                <span class="option-title">Bug 修复</span>
+              </div>
+              <div class="option-desc">优先解决已知问题和缺陷</div>
+            </div>
+            <div class="option-actions">
+              <button class="action-btn">复制</button>
+              <button class="action-btn icon-only">
+                <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>
+              </button>
+            </div>
+          </div>
+          <div class="ask-option custom-option draft">
+            <div class="option-badge dashed">4</div>
+            <div class="option-content">
+              <div class="custom-input-wrap">
+                <input class="custom-input" type="text" value="文档编写与 API 设计">
+                <span class="char-count">12/500</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ask-footer">
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-primary">提交<span class="btn-kbd-hint">Enter</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑥ 折叠态 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">COLLAPSED</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box collapsed-compact">
+        <div class="collapsed-header">
+          <span class="collapsed-text">5 个问题待回答</span>
+          <button class="expand-btn" aria-label="展开">
+            <span class="expand-label">展开</span>
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"></path></svg></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑦ 提交结果汇总 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">SUBMITTED · SUMMARY</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box">
+        <div class="ask-summary">
+          <div class="summary-header">
+            <div class="summary-icon">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+            </div>
+            <div class="summary-title">全部提交完成</div>
+          </div>
+          <div class="summary-list">
+            <div class="summary-item">
+              <span class="summary-q">1. 项目规模</span>
+              <span class="summary-a">小型项目（1-3 人）</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-q">2. 优先处理功能</span>
+              <span class="summary-a">新增功能</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-q">3. 期望改进方向（多选）</span>
+              <span class="summary-a">代码重构、Bug 修复、文档编写与 API 设计</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-q">4. 技术栈偏好</span>
+              <span class="summary-a unanswered">未作答</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-q">5. 其他建议</span>
+              <span class="summary-a">希望能增加快捷键支持</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑧ 取消反馈 -->
+  <div class="state-card">
+    <div class="state-card-header">
+      <span class="state-card-label">CANCELED</span>
+    </div>
+    <div class="state-card-body">
+      <div class="ask-box">
+        <div class="ask-canceled">
+          <div class="cancel-header">
+            <div class="cancel-icon">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></span>
+            </div>
+            <div class="cancel-title">已取消全部回答</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<style>
+/* ============================================================
+   页面布局
+   ============================================================ */
+.page-header {
+  text-align: center;
+  padding: 56px 24px 40px;
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--foreground);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  font-size: 14px;
+  color: var(--muted-foreground);
+  margin-top: 8px;
+  font-weight: 400;
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 32px;
+  max-width: 1840px;
+  margin: 0 auto;
+  padding: 0 32px 64px;
+}
+
+@media (max-width: 1400px) {
+  .state-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+    padding: 0 24px 48px;
+  }
+}
+
+@media (max-width: 720px) {
+  .state-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 0 16px 40px;
+  }
+}
+
+/* ============================================================
+   状态卡片
+   ============================================================ */
+.state-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.state-card-header {
+  padding: 12px 16px;
+  background: var(--secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.state-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.state-card-body {
+  flex: 1;
+  padding: 24px 20px;
+  background: #ffffff;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 420px;
+}
+
+/* ============================================================
+   Ask Box 容器
+   ============================================================ */
+.ask-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  max-width: 420px;
+  width: 100%;
+}
+
+/* 对话流内的结果态卡片：无阴影，融入对话气泡感 */
+.ask-box:has(.ask-summary),
+.ask-box:has(.ask-canceled) {
+  box-shadow: none;
+}
+
+/* ============================================================
+   Header
+   ============================================================ */
+.ask-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ask-title-group {
+  display: flex;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+}
+
+.ask-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+  line-height: 1.4;
+  transition: opacity 200ms ease, transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ask-type-badge {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.ask-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.nav-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.nav-btn:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.nav-btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.nav-counter {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  min-width: 40px;
+  text-align: center;
+  font-weight: 500;
+}
+
+/* ============================================================
+   选项行
+   ============================================================ */
+.ask-options {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  will-change: opacity, transform;
+}
+
+/* 切换动画状态 - 淡入淡出 + 微纵向位移 */
+.ask-options.switching-out {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 220ms ease, transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ask-options.switching-in {
+  animation: fadeSlideIn 280ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 标题和序号的淡入淡出 */
+.ask-title.fade-out,
+.nav-counter.fade-out {
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ask-title,
+.nav-counter {
+  transition: opacity 200ms ease, transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ask-option {
+  position: relative;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ask-option:last-child {
+  border-bottom: none;
+}
+
+.ask-option:hover,
+.ask-option.forced-hover {
+  background: var(--secondary);
+}
+
+.ask-option.selected {
+  background: var(--secondary);
+}
+
+/* 序号徽章 */
+.option-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: all 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.option-badge.dashed {
+  border-style: dashed;
+}
+
+.ask-option.selected .option-badge {
+  background: var(--foreground);
+  border-color: var(--foreground);
+  color: #ffffff;
+}
+
+.ask-option.selected .option-badge.dashed {
+  border-style: solid;
+}
+
+.option-badge .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 选项内容区 */
+.option-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-title-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.option-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+  line-height: 1.4;
+}
+
+.option-recommend {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.option-desc {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* 操作按钮（hover 时显示） */
+.option-actions {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  gap: 4px;
+  align-items: center;
+}
+
+.ask-option:hover .option-actions,
+.ask-option.forced-hover .option-actions {
+  display: flex;
+}
+
+.action-btn {
+  height: 24px;
+  padding: 0 8px;
+  min-width: 40px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--foreground);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1),
+              color 150ms ease;
+  white-space: nowrap;
+}
+
+.action-btn:hover {
+  background: var(--secondary);
+}
+
+.action-btn .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.action-btn.icon-only {
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+  color: var(--muted-foreground);
+}
+.action-btn.icon-only:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.action-btn.copy-success {
+  color: var(--success);
+  transition: color 150ms ease;
+}
+
+.action-btn.icon-only .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ============================================================
+   自定义答案行
+   ============================================================ */
+.custom-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.custom-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+  font-family: inherit;
+  padding: 0;
+  line-height: 1.4;
+}
+
+.custom-input::placeholder {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.char-count {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  align-self: flex-start;
+}
+
+/* 草稿态：自定义输入框灰化 */
+.ask-option.custom-option.draft .custom-input {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+/* ============================================================
+   底部操作区
+   ============================================================ */
+.ask-footer {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 180ms cubic-bezier(0.32, 0.72, 0, 1),
+              filter 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  font-family: inherit;
+}
+
+.btn-secondary {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.btn-secondary:hover {
+  background: #e5e5ea;
+}
+
+.btn-primary {
+  background: var(--foreground);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.15);
+}
+
+/* 按钮内的快捷键提示 */
+.btn-kbd-hint {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.6;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.15);
+  line-height: 1.2;
+}
+
+.btn-secondary .btn-kbd-hint {
+  background: rgba(0,0,0,0.06);
+}
+
+/* ============================================================
+   折叠态（collapsed-compact）
+   ============================================================ */
+.ask-box.collapsed-compact {
+  padding: 0;
+}
+
+.collapsed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+.collapsed-text {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: background-color 180ms ease;
+  font-family: inherit;
+}
+
+.expand-btn:hover {
+  background: #e5e5ea;
+}
+
+.expand-btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ============================================================
+   提交结果汇总
+   ============================================================ */
+.ask-summary {
+  padding: 12px 14px;
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  margin-bottom: 2px;
+}
+
+.summary-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.summary-icon .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.summary-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--foreground);
+  letter-spacing: -0.01em;
+}
+
+.summary-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-item {
+  padding: 8px 2px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.summary-item:last-child {
+  border-bottom: none;
+}
+
+.summary-q {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.summary-a {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--foreground);
+  line-height: 1.35;
+}
+
+.summary-a.unanswered {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+/* ============================================================
+   取消反馈
+   ============================================================ */
+.ask-canceled {
+  padding: 12px 14px;
+}
+
+.cancel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cancel-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.06);
+  color: var(--muted-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cancel-icon .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.cancel-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--foreground);
+  letter-spacing: -0.01em;
+}
+
+/* ============================================================
+   图标系统
+   ============================================================ */
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+}
+
+.icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+</style>
+
+<script>
+// 基础交互：选项切换、自定义输入联动、折叠展开
+
+document.querySelectorAll('.ask-box').forEach(function(box) {
+  // 跳过汇总/取消状态
+  if (box.querySelector('.ask-summary') || box.querySelector('.ask-canceled')) return;
+  if (box.classList.contains('collapsed-compact')) return;
+
+  var options = box.querySelectorAll('.ask-option');
+  var isMulti = !!box.querySelector('.ask-type-badge');
+
+  options.forEach(function(option, idx) {
+    option.addEventListener('click', function(e) {
+      // 点击操作按钮时不切换选中态
+      if (e.target.closest('.action-btn')) return;
+
+      // 自定义输入行单独处理
+      if (option.classList.contains('custom-option')) {
+        return;
+      }
+
+      if (isMulti) {
+        // 多选：切换选中态
+        option.classList.toggle('selected');
+        var badge = option.querySelector('.option-badge');
+        if (option.classList.contains('selected')) {
+          badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+        } else {
+          badge.textContent = (idx + 1).toString();
+        }
+      } else {
+        // 单选：判断是否已选中
+        var isAlreadySelected = option.classList.contains('selected');
+        // 先清除所有选中
+        options.forEach(function(o, i) {
+          if (o.classList.contains('custom-option')) return;
+          o.classList.remove('selected');
+          var b = o.querySelector('.option-badge');
+          b.textContent = (i + 1).toString();
+        });
+        if (!isAlreadySelected) {
+          // 未选中 -> 选中
+          option.classList.add('selected');
+          var badge = option.querySelector('.option-badge');
+          badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+
+          // 单选模式下，选中预设选项时自定义答案变为草稿态
+          var custom = box.querySelector('.custom-option');
+          if (custom) {
+            var customInput = custom.querySelector('.custom-input');
+            if (customInput && customInput.value.length > 0) {
+              custom.classList.remove('selected');
+              custom.classList.add('draft');
+              var cb = custom.querySelector('.option-badge');
+              cb.classList.add('dashed');
+              cb.textContent = options.length.toString();
+            }
+          }
+        } else {
+          // 已选中 -> 取消选中，恢复自定义答案选中态（如果有内容）
+          var custom = box.querySelector('.custom-option');
+          if (custom) {
+            var customInput = custom.querySelector('.custom-input');
+            if (customInput && customInput.value.length > 0) {
+              custom.classList.remove('draft');
+              custom.classList.add('selected');
+              var cb = custom.querySelector('.option-badge');
+              cb.classList.remove('dashed');
+              cb.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+            }
+          }
+        }
+      }
+
+      updateFooter(box);
+    });
+  });
+
+  // 自定义输入交互
+  var customOption = box.querySelector('.custom-option');
+  if (customOption) {
+    var input = customOption.querySelector('.custom-input');
+    var badge = customOption.querySelector('.option-badge');
+    var charCount = customOption.querySelector('.char-count');
+    var optIdx = options.length;
+
+    customOption.addEventListener('click', function(e) {
+      if (e.target.closest('.action-btn')) return;
+      input.focus();
+    });
+
+    input.addEventListener('input', function() {
+      var val = input.value;
+      charCount.textContent = val.length + '/500';
+
+      if (val.length > 0) {
+        customOption.classList.add('selected');
+        customOption.classList.remove('draft');
+        badge.classList.remove('dashed');
+        badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+
+        if (!isMulti) {
+          // 单选：清除其他选中
+          options.forEach(function(o, i) {
+            if (o.classList.contains('custom-option')) return;
+            o.classList.remove('selected');
+            var b = o.querySelector('.option-badge');
+            b.textContent = (i + 1).toString();
+          });
+        }
+      } else {
+        customOption.classList.remove('selected');
+        customOption.classList.remove('draft');
+        badge.classList.add('dashed');
+        badge.textContent = optIdx.toString();
+      }
+
+      updateFooter(box);
+    });
+  }
+
+  // ============================================================
+  // 题目切换动画
+  // ============================================================
+  var navPrevBtn = box.querySelector('.nav-btn[aria-label="上一题"]');
+  var navNextBtn = box.querySelector('.nav-btn[aria-label="下一题"]');
+  var navCounter = box.querySelector('.nav-counter');
+  var askTitle = box.querySelector('.ask-title');
+  var askOptionsEl = box.querySelector('.ask-options');
+  
+  if (navPrevBtn && navNextBtn && askOptionsEl) {
+    // 模拟题目数据
+    var questions = [
+      {
+        title: '你的项目规模是？',
+        type: 'single',
+        options: [
+          { title: '小型项目（1-3 人）', desc: '适合个人或小团队快速开发', recommend: false },
+          { title: '中型项目（4-10 人）', desc: '适合团队协作开发与维护', recommend: true },
+          { title: '大型项目（10 人以上）', desc: '适合企业级复杂系统', recommend: false }
+        ]
+      },
+      {
+        title: '你希望优先处理哪个功能？',
+        type: 'single',
+        options: [
+          { title: '代码重构', desc: '优化现有代码结构，提升可维护性', recommend: true },
+          { title: '新增功能', desc: '按需求文档实现新的功能模块', recommend: false },
+          { title: 'Bug 修复', desc: '优先解决已知问题和缺陷', recommend: false }
+        ]
+      },
+      {
+        title: '期望的改进方向',
+        type: 'multi',
+        options: [
+          { title: '代码重构', desc: '优化现有代码结构，提升可维护性', recommend: false },
+          { title: 'Bug 修复', desc: '优先解决已知问题和缺陷', recommend: false },
+          { title: '文档编写与 API 设计', desc: '完善开发文档和接口规范', recommend: true }
+        ]
+      },
+      {
+        title: '你偏好的技术栈是？',
+        type: 'single',
+        options: [
+          { title: 'React + TypeScript', desc: '现代化前端开发栈', recommend: true },
+          { title: 'Vue 3 + Vite', desc: '轻量高效的构建方案', recommend: false },
+          { title: '原生 JS + Web Components', desc: '无框架依赖的原生方案', recommend: false }
+        ]
+      },
+      {
+        title: '还有其他建议吗？',
+        type: 'single',
+        options: [
+          { title: '增加快捷键支持', desc: '提升操作效率', recommend: false },
+          { title: '优化性能与加载速度', desc: '更流畅的使用体验', recommend: true },
+          { title: '支持深色模式', desc: '适配不同使用场景', recommend: false }
+        ]
+      }
+    ];
+    
+    var currentQ = 0;
+    var isAnimating = false;
+    
+    function getCurrentQuestionIndex() {
+      if (!navCounter) return 0;
+      var text = navCounter.textContent.trim();
+      var match = text.match(/(\d+)\s*\/\s*(\d+)/);
+      if (match) return parseInt(match[1], 10) - 1;
+      return 0;
+    }
+    
+    currentQ = getCurrentQuestionIndex();
+    
+    function renderQuestion(idx, direction) {
+      if (idx < 0 || idx >= questions.length) return;
+      if (isAnimating) return;
+      isAnimating = true;
+      
+      var q = questions[idx];
+      
+      // 标题、序号、选项 同时淡出 + 微下移
+      askTitle.classList.add('fade-out');
+      if (navCounter) navCounter.classList.add('fade-out');
+      askOptionsEl.classList.add('switching-out');
+      
+      setTimeout(function() {
+        // 更新标题（多选带标签）
+        var titleGroup = box.querySelector('.ask-title-group');
+        if (q.type === 'multi') {
+          if (!box.querySelector('.ask-type-badge')) {
+            var badge = document.createElement('span');
+            badge.className = 'ask-type-badge';
+            badge.textContent = '（可多选）';
+            titleGroup.appendChild(badge);
+          }
+        } else {
+          var existingBadge = box.querySelector('.ask-type-badge');
+          if (existingBadge) existingBadge.remove();
+        }
+        askTitle.textContent = q.title;
+        
+        // 更新序号
+        if (navCounter) {
+          navCounter.textContent = (idx + 1) + ' / ' + questions.length;
+        }
+        
+        // 重建选项
+        var badgeIdx = 1;
+        var html = '';
+        
+        q.options.forEach(function(opt, i) {
+          html += '<div class="ask-option">';
+          html += '<div class="option-badge">' + badgeIdx + '</div>';
+          html += '<div class="option-content">';
+          html += '<div class="option-title-row">';
+          html += '<span class="option-title">' + opt.title + '</span>';
+          if (opt.recommend) html += '<span class="option-recommend">[推荐]</span>';
+          html += '</div>';
+          html += '<div class="option-desc">' + opt.desc + '</div>';
+          html += '</div>';
+          html += '<div class="option-actions">';
+          html += '<button class="action-btn">复制</button>';
+          html += '<button class="action-btn icon-only">';
+          html += '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10 4 15l5 5"></path><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></span>';
+          html += '</button></div></div>';
+          badgeIdx++;
+        });
+        
+        // 自定义答案行
+        html += '<div class="ask-option custom-option">';
+        html += '<div class="option-badge dashed">' + badgeIdx + '</div>';
+        html += '<div class="option-content"><div class="custom-input-wrap">';
+        html += '<input class="custom-input" type="text" placeholder="输入你的答案">';
+        html += '<span class="char-count">0/500</span>';
+        html += '</div></div></div>';
+        
+        askOptionsEl.innerHTML = html;
+        
+        // 强制回流
+        void askOptionsEl.offsetWidth;
+        
+        // 标题、序号淡入
+        askTitle.classList.remove('fade-out');
+        if (navCounter) navCounter.classList.remove('fade-out');
+        
+        // 选项淡入 + 从上方微位移进入
+        askOptionsEl.classList.remove('switching-out');
+        askOptionsEl.classList.add('switching-in');
+        
+        // 动画结束后清理
+        setTimeout(function() {
+          askOptionsEl.classList.remove('switching-in');
+          isAnimating = false;
+        }, 300);
+        
+        // 更新底部按钮
+        var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+        if (primaryBtn) {
+          if (idx === questions.length - 1) {
+            // 末题：提交 + Ctrl+Enter 提示
+            primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Ctrl + Enter</span>';
+            primaryBtn.classList.add('btn-primary');
+            primaryBtn.classList.remove('btn-secondary');
+          } else {
+            // 非末题：跳过（无快捷键提示，Enter 提示在选项行上）
+            primaryBtn.textContent = '跳过';
+            primaryBtn.classList.add('btn-secondary');
+            primaryBtn.classList.remove('btn-primary');
+          }
+        }
+      }, 180);
+    }
+    
+    // 选项点击：选中切换 + 自定义草稿态灰化
+    askOptionsEl.addEventListener('click', function(e) {
+      // 点击操作按钮时不切换选中态
+      if (e.target.closest('.action-btn')) return;
+      
+      var option = e.target.closest('.ask-option');
+      if (!option) return;
+      
+      // 点击自定义输入行：聚焦输入框
+      if (option.classList.contains('custom-option')) {
+        var inp = option.querySelector('.custom-input');
+        if (inp) inp.focus();
+        return;
+      }
+      
+      var isMulti = questions[currentQ] && questions[currentQ].type === 'multi';
+      var allOpts = askOptionsEl.querySelectorAll('.ask-option');
+      var optIdx = Array.prototype.indexOf.call(
+        askOptionsEl.querySelectorAll('.ask-option:not(.custom-option)'),
+        option
+      );
+      
+      if (isMulti) {
+        // 多选：切换选中态
+        option.classList.toggle('selected');
+        var badge = option.querySelector('.option-badge');
+        if (option.classList.contains('selected')) {
+          badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+        } else {
+          badge.textContent = (optIdx + 1).toString();
+        }
+      } else {
+        // 单选
+        var isAlreadySelected = option.classList.contains('selected');
+        
+        // 先清除所有预设选项选中
+        allOpts.forEach(function(o, i) {
+          if (o.classList.contains('custom-option')) return;
+          o.classList.remove('selected');
+          var b = o.querySelector('.option-badge');
+          var idx = Array.prototype.indexOf.call(
+            askOptionsEl.querySelectorAll('.ask-option:not(.custom-option)'),
+            o
+          );
+          b.textContent = (idx + 1).toString();
+        });
+        
+        // 自定义选项：变为草稿态（如果有内容）
+        var custom = askOptionsEl.querySelector('.custom-option');
+        if (custom) {
+          var customInput = custom.querySelector('.custom-input');
+          var cb = custom.querySelector('.option-badge');
+          var total = allOpts.length;
+          if (customInput && customInput.value.length > 0 && !isAlreadySelected) {
+            custom.classList.remove('selected');
+            custom.classList.add('draft');
+            if (cb) cb.classList.add('dashed');
+            if (cb) cb.textContent = total.toString();
+          }
+        }
+        
+        if (!isAlreadySelected) {
+          // 选中当前选项
+          option.classList.add('selected');
+          var sbadge = option.querySelector('.option-badge');
+          sbadge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+        } else {
+          // 取消选中：如果自定义有内容，恢复自定义选中态
+          if (custom && customInput && customInput.value.length > 0) {
+            custom.classList.remove('draft');
+            custom.classList.add('selected');
+            if (cb) cb.classList.remove('dashed');
+            if (cb) cb.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+          }
+        }
+      }
+      
+      // 更新底部按钮
+      var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+      if (primaryBtn) {
+        var hasSelection = askOptionsEl.querySelector('.ask-option.selected');
+        var isLast = currentQ === questions.length - 1;
+        if (hasSelection) {
+          if (isLast) {
+            primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Ctrl + Enter</span>';
+          } else {
+            primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Enter</span>';
+          }
+          primaryBtn.classList.add('btn-primary');
+          primaryBtn.classList.remove('btn-secondary');
+        } else {
+          primaryBtn.textContent = '跳过';
+          primaryBtn.classList.add('btn-secondary');
+          primaryBtn.classList.remove('btn-primary');
+        }
+      }
+    });
+    
+    // 自定义输入交互（导航模式）
+    askOptionsEl.addEventListener('input', function(e) {
+      if (!e.target.classList.contains('custom-input')) return;
+      var input = e.target;
+      var customOpt = input.closest('.custom-option');
+      if (!customOpt) return;
+      
+      var charCount = customOpt.querySelector('.char-count');
+      var badge = customOpt.querySelector('.option-badge');
+      var val = input.value;
+      
+      if (charCount) charCount.textContent = val.length + '/500';
+      
+      if (val.length > 0) {
+        // 有内容：选中自定义，同时取消所有预设选中
+        customOpt.classList.add('selected');
+        customOpt.classList.remove('draft');
+        if (badge) {
+          badge.classList.remove('dashed');
+          badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+        }
+        // 清除预设选项的选中
+        askOptionsEl.querySelectorAll('.ask-option:not(.custom-option)').forEach(function(o, i) {
+          o.classList.remove('selected');
+          var b = o.querySelector('.option-badge');
+          if (b) b.textContent = (i + 1).toString();
+        });
+      } else {
+        // 无内容：取消自定义选中
+        customOpt.classList.remove('selected');
+        customOpt.classList.remove('draft');
+        if (badge) {
+          badge.classList.add('dashed');
+          var total = askOptionsEl.querySelectorAll('.ask-option').length;
+          badge.textContent = total.toString();
+        }
+      }
+      
+      // 更新底部按钮
+      var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+      if (primaryBtn) {
+        var hasSelection = askOptionsEl.querySelector('.ask-option.selected');
+        var isLast = currentQ === questions.length - 1;
+        if (hasSelection) {
+          if (isLast) {
+            primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Ctrl + Enter</span>';
+          } else {
+            primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Enter</span>';
+          }
+          primaryBtn.classList.add('btn-primary');
+          primaryBtn.classList.remove('btn-secondary');
+        } else {
+          primaryBtn.textContent = '跳过';
+          primaryBtn.classList.add('btn-secondary');
+          primaryBtn.classList.remove('btn-primary');
+        }
+      }
+    });
+    
+    // 上一题
+    navPrevBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (currentQ > 0) {
+        currentQ--;
+        renderQuestion(currentQ, -1);
+      }
+    });
+    
+    // 下一题
+    navNextBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (currentQ < questions.length - 1) {
+        currentQ++;
+        renderQuestion(currentQ, 1);
+      }
+    });
+    
+    // ============================================================
+    // Enter 快捷键：选中当前 hover 选项 + 提交 + 下一题
+    // ============================================================
+    var hoveredOption = null;
+    
+    // 追踪 hover 的选项
+    box.addEventListener('mouseover', function(e) {
+      var opt = e.target.closest('.ask-option');
+      if (opt && opt.closest('.ask-options')) {
+        hoveredOption = opt;
+      }
+    });
+    
+    // 点击回车图标：选中该行 + 下一题（一步到位）
+    box.addEventListener('click', function(e) {
+      var enterBtn = e.target.closest('.action-btn.icon-only');
+      if (!enterBtn) return;
+      e.stopPropagation();
+      
+      var opt = enterBtn.closest('.ask-option');
+      if (!opt || opt.classList.contains('custom-option')) return;
+      
+      handleEnterSelect(opt);
+    });
+    
+    // 键盘 Enter
+    box.setAttribute('tabindex', '0');
+    box.style.outline = 'none';
+    
+    // hover 时聚焦，让键盘事件生效
+    box.addEventListener('mouseenter', function() {
+      box.focus({ preventScroll: true });
+    });
+    
+    box.addEventListener('keydown', function(e) {
+      if (e.key !== 'Enter') return;
+      
+      // Ctrl+Enter：末题提交全部
+      if (e.ctrlKey || e.metaKey) {
+        if (currentQ === questions.length - 1) {
+          e.preventDefault();
+          submitAll();
+          return;
+        }
+      }
+      
+      // 普通 Enter
+      // 如果在自定义输入框里，不触发（让用户正常输入）
+      if (e.target.classList.contains('custom-input')) return;
+      
+      // 找要选中的选项：优先 hover 的，其次第一个未选中的推荐项
+      var targetOption = hoveredOption && hoveredOption.closest('.ask-options') === askOptionsEl 
+        ? hoveredOption 
+        : null;
+      
+      if (!targetOption) {
+        // 没有 hover 的，选第一个预设选项（带 [推荐] 的优先）
+        var recOpt = box.querySelector('.ask-option:not(.custom-option) .option-recommend');
+        if (recOpt) targetOption = recOpt.closest('.ask-option');
+      }
+      if (!targetOption) {
+        targetOption = box.querySelector('.ask-option:not(.custom-option)');
+      }
+      
+      if (targetOption) {
+        e.preventDefault();
+        handleEnterSelect(targetOption);
+      }
+    });
+    
+    function handleEnterSelect(opt) {
+      if (isAnimating) return;
+      
+      var isLast = currentQ === questions.length - 1;
+      var isMulti = questions[currentQ] && questions[currentQ].type === 'multi';
+      
+      // 选中该选项
+      if (isMulti) {
+        // 多选：切换
+        opt.classList.toggle('selected');
+        var badge = opt.querySelector('.option-badge');
+        var optIdx = Array.prototype.indexOf.call(askOptionsEl.querySelectorAll('.ask-option:not(.custom-option)'), opt);
+        if (opt.classList.contains('selected')) {
+          badge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+        } else {
+          badge.textContent = (optIdx + 1).toString();
+        }
+        // 多选不自动跳下一题
+        return;
+      }
+      
+      // 单选：选中
+      var allOpts = askOptionsEl.querySelectorAll('.ask-option');
+      allOpts.forEach(function(o, i) {
+        if (o.classList.contains('custom-option')) return;
+        o.classList.remove('selected');
+        var b = o.querySelector('.option-badge');
+        b.textContent = (i + 1).toString();
+      });
+      opt.classList.add('selected');
+      var sbadge = opt.querySelector('.option-badge');
+      sbadge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+      
+      // 末题：只选中，不自动提交（需 Ctrl+Enter）
+      if (isLast) {
+        var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+        if (primaryBtn) primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Ctrl + Enter</span>';
+        return;
+      }
+      
+      // 非末题：一步到位 —— 选中 + 下一题
+      setTimeout(function() {
+        currentQ++;
+        renderQuestion(currentQ, 1);
+      }, 120);
+    }
+    
+    function submitAll() {
+      // 模拟提交全部
+      var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+      if (primaryBtn) {
+        var origText = primaryBtn.textContent;
+        primaryBtn.textContent = '提交中...';
+        primaryBtn.style.opacity = '0.7';
+        setTimeout(function() {
+          primaryBtn.textContent = origText;
+          primaryBtn.style.opacity = '';
+          // 这里可以跳转到汇总态
+        }, 800);
+      }
+    }
+  }
+  
+  // 折叠/展开（紧凑折叠态）
+  var askHeader = box.querySelector('.ask-header');
+  var askOptions = box.querySelector('.ask-options');
+  var askFooter = box.querySelector('.ask-footer');
+  
+  if (askHeader && askOptions) {
+    var originalHeaderHTML = askHeader.innerHTML;
+    var compactHTML =
+      '<div class="collapsed-header" style="display:flex;align-items:center;justify-content:space-between;width:100%;">' +
+        '<span class="collapsed-text" style="font-size:13px;color:var(--muted-foreground);font-weight:400;">5 个问题待回答</span>' +
+        '<button class="expand-btn-inline" aria-label="展开" style="display:inline-flex;align-items:center;gap:4px;height:32px;padding:0 12px;border-radius:999px;background:var(--secondary);color:var(--foreground);font-size:12px;font-weight:600;border:none;cursor:pointer;transition:background-color 180ms ease;">' +
+          '展开' +
+          '<span class="icon" style="width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>' +
+          '</span>' +
+        '</button>' +
+      '</div>';
+    
+    function doCollapse() {
+      askHeader.innerHTML = compactHTML;
+      askOptions.style.display = 'none';
+      if (askFooter) askFooter.style.display = 'none';
+      box.classList.add('collapsed-compact');
+    }
+    
+    function doExpand() {
+      askHeader.innerHTML = originalHeaderHTML;
+      askOptions.style.display = '';
+      if (askFooter) askFooter.style.display = '';
+      box.classList.remove('collapsed-compact');
+    }
+    
+    // 事件委托：在 box 上监听折叠/展开点击
+    box.addEventListener('click', function(e) {
+      if (e.target.closest('.collapse-btn')) {
+        e.stopPropagation();
+        doCollapse();
+      } else if (e.target.closest('.expand-btn-inline')) {
+        e.stopPropagation();
+        doExpand();
+      }
+    });
+  }
+
+  // 复制按钮点击效果
+  var copyBtns = box.querySelectorAll('.action-btn');
+  copyBtns.forEach(function(btn) {
+    if (btn.textContent.trim() !== '复制') return;
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var originalText = btn.innerHTML;
+      btn.innerHTML = '<span class="icon" style="width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
+      btn.classList.add('copy-success');
+      setTimeout(function() {
+        btn.innerHTML = originalText;
+        btn.classList.remove('copy-success');
+      }, 1500);
+    });
+  });
+
+  // 取消按钮
+  var cancelBtn = box.querySelector('.ask-footer .btn-secondary');
+  if (cancelBtn && cancelBtn.textContent.trim() === '取消') {
+    cancelBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      options.forEach(function(o, i) {
+        o.classList.remove('selected');
+        o.classList.remove('draft');
+        var b = o.querySelector('.option-badge');
+        if (o.classList.contains('custom-option')) {
+          b.classList.add('dashed');
+          b.textContent = options.length.toString();
+          var inp = o.querySelector('.custom-input');
+          if (inp) inp.value = '';
+          var cc = o.querySelector('.char-count');
+          if (cc) cc.textContent = '0/500';
+        } else {
+          b.textContent = (i + 1).toString();
+        }
+      });
+      updateFooter(box);
+    });
+  }
+});
+
+function updateFooter(box) {
+  var hasSelection = false;
+  var options = box.querySelectorAll('.ask-option');
+  options.forEach(function(o) {
+    if (o.classList.contains('selected')) hasSelection = true;
+  });
+
+  var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
+  if (!primaryBtn) return;
+
+  if (hasSelection) {
+    primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Enter</span>';
+    primaryBtn.classList.remove('btn-secondary');
+    primaryBtn.classList.add('btn-primary');
+  } else {
+    primaryBtn.textContent = '跳过';
+    primaryBtn.classList.remove('btn-primary');
+    primaryBtn.classList.add('btn-secondary');
+  }
+}
+</script>
+
+
+
+
+
+
+</body></html>
