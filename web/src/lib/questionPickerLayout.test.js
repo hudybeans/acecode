@@ -40,6 +40,8 @@ assert.doesNotMatch(picker, /font-medium bg-fg text-bg/);
 assert.doesNotMatch(picker, /<svg[^>]*aria-hidden="true">[\s\S]*?M20 15a3/);
 assert.match(picker, /min-h-11 shrink-0 px-4 py-2/);
 assert.match(picker, /group flex items-center gap-3 rounded-lg px-3 py-2\.5/);
+assert.match(picker, /border border-transparent hover:bg-accent-bg/);
+assert.doesNotMatch(picker, /hover:border-accent/);
 
 assert.match(toolBlock, /const isAskUserQuestionResult = askUserQuestionResult/);
 assert.match(toolBlock, /translate\('用户已取消回答'\)/);

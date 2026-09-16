@@ -432,7 +432,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                       ? 'bg-accent-bg border border-accent text-accent'
                       : focused
                         ? 'bg-accent-bg border border-accent'
-                        : 'border border-transparent hover:bg-accent-bg hover:border-accent',
+                        : 'border border-transparent hover:bg-accent-bg',
 
                   )}
                 >
@@ -501,7 +501,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '' }) {
                   ? 'bg-accent-bg border border-accent'
                   : focusIndex === customIndex
                     ? 'bg-accent-bg border border-accent'
-                    : 'border border-transparent hover:bg-accent-bg hover:border-accent',
+                    : 'border border-transparent hover:bg-accent-bg',
 
               )}
             >
