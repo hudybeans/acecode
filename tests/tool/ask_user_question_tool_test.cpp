@@ -75,6 +75,22 @@ std::string questions_json(std::size_t count) {
     return nlohmann::json{{"questions", std::move(questions)}}.dump();
 }
 
+// 单题、可指定选项数量;label/description 用必填字段填充。
+std::string single_question_with_options(std::size_t option_count) {
+    nlohmann::json options = nlohmann::json::array();
+    for (std::size_t i = 0; i < option_count; ++i) {
+        options.push_back({
+            {"label", "Option " + std::to_string(i)},
+            {"description", "description " + std::to_string(i)},
+        });
+    }
+    return nlohmann::json{{"questions", nlohmann::json::array({
+        {{"question", "Which option?"},
+         {"header", "Pick"},
+         {"options", std::move(options)}}
+    })}}.dump();
+}
+
 } // namespace
 
 // 场景:合法最小输入(1 题 2 选项,均含必填字段)应通过校验,并把
@@ -140,6 +156,77 @@ TEST(AskUserQuestionValidateTest, CustomLimitIsDefensivelyClamped) {
     EXPECT_TRUE(two.has_value()) << err;
 }
 
+// 场景:默认选项上限为 6 —— 6 个选项通过,7 个被拒,错误文案带当前上限。
+TEST(AskUserQuestionValidateTest, DefaultOptionLimitIsSix) {
+    std::string err;
+    auto six = validate_ask_user_question_args(single_question_with_options(6), err);
+    ASSERT_TRUE(six.has_value()) << err;
+    ASSERT_EQ((*six)[0].options.size(), 6u);
+
+    err.clear();
+    auto seven = validate_ask_user_question_args(single_question_with_options(7), err);
+    EXPECT_FALSE(seven.has_value());
+    EXPECT_NE(err.find("between 2 and 6"), std::string::npos) << err;
+    EXPECT_NE(err.find("got 7"), std::string::npos) << err;
+}
+
+// 场景:自定义选项上限 8 时,8 个通过、9 个被拒,错误文案带当前上限。
+TEST(AskUserQuestionValidateTest, CustomOptionLimitIsApplied) {
+    std::string err;
+    auto eight = validate_ask_user_question_args(
+        single_question_with_options(8), err,
+        acecode::kDefaultAskMaxQuestions, 8);
+    ASSERT_TRUE(eight.has_value()) << err;
+    ASSERT_EQ((*eight)[0].options.size(), 8u);
+
+    err.clear();
+    auto nine = validate_ask_user_question_args(
+        single_question_with_options(9), err,
+        acecode::kDefaultAskMaxQuestions, 8);
+    EXPECT_FALSE(nine.has_value());
+    EXPECT_NE(err.find("between 2 and 8"), std::string::npos) << err;
+    EXPECT_NE(err.find("got 9"), std::string::npos) << err;
+}
+
+// 场景:选项上限被防御性钳制到 [4,8] —— 9 当 8 用,3 当 4 用。
+TEST(AskUserQuestionValidateTest, OptionLimitIsDefensivelyClamped) {
+    std::string err;
+    auto eight = validate_ask_user_question_args(
+        single_question_with_options(8), err,
+        acecode::kDefaultAskMaxQuestions, 9);
+    EXPECT_TRUE(eight.has_value()) << err;
+
+    err.clear();
+    auto nine = validate_ask_user_question_args(
+        single_question_with_options(9), err,
+        acecode::kDefaultAskMaxQuestions, 9);
+    EXPECT_FALSE(nine.has_value());
+
+    err.clear();
+    auto four = validate_ask_user_question_args(
+        single_question_with_options(4), err,
+        acecode::kDefaultAskMaxQuestions, 3);
+    EXPECT_TRUE(four.has_value()) << err;
+
+    err.clear();
+    auto five = validate_ask_user_question_args(
+        single_question_with_options(5), err,
+        acecode::kDefaultAskMaxQuestions, 3);
+    EXPECT_FALSE(five.has_value());
+}
+
+// 场景:下限固定为 2,不受配置影响。
+TEST(AskUserQuestionValidateTest, OptionFloorStaysAtTwo) {
+    std::string err;
+    auto two = validate_ask_user_question_args(single_question_with_options(2), err);
+    ASSERT_TRUE(two.has_value()) << err;
+
+    err.clear();
+    auto one = validate_ask_user_question_args(single_question_with_options(1), err);
+    EXPECT_FALSE(one.has_value());
+    EXPECT_NE(err.find("between 2 and"), std::string::npos) << err;
+}
+
 TEST(AskUserQuestionSchemaTest, SchemaUsesConfiguredQuestionLimit) {
     const auto default_tool = acecode::create_ask_user_question_tool_async();
     EXPECT_EQ(default_tool.definition.parameters["properties"]["questions"]["maxItems"], 10);
@@ -149,6 +236,28 @@ TEST(AskUserQuestionSchemaTest, SchemaUsesConfiguredQuestionLimit) {
     EXPECT_NE(custom_tool.definition.parameters["properties"]["questions"]["description"]
                   .get<std::string>().find("1-3 questions"),
               std::string::npos);
+}
+
+TEST(AskUserQuestionSchemaTest, SchemaFollowsConfiguredOptionLimit) {
+    const auto default_tool = acecode::create_ask_user_question_tool_async();
+    const auto& default_options =
+        default_tool.definition.parameters["properties"]["questions"]["items"]["properties"]["options"];
+    EXPECT_EQ(default_options["minItems"], 2);
+    EXPECT_EQ(default_options["maxItems"], 6);
+    EXPECT_NE(default_options["description"].get<std::string>().find("2-6 mutually"),
+              std::string::npos);
+
+    const auto custom_tool = acecode::create_ask_user_question_tool_async(10, 8);
+    const auto& custom_options =
+        custom_tool.definition.parameters["properties"]["questions"]["items"]["properties"]["options"];
+    EXPECT_EQ(custom_options["maxItems"], 8);
+    EXPECT_NE(custom_options["description"].get<std::string>().find("2-8 mutually"),
+              std::string::npos);
+
+    const auto clamped_tool = acecode::create_ask_user_question_tool_async(10, 9);
+    const auto& clamped_options =
+        clamped_tool.definition.parameters["properties"]["questions"]["items"]["properties"]["options"];
+    EXPECT_EQ(clamped_options["maxItems"], 8);
 }
 
 TEST(AskUserQuestionExecutionTest, ConfiguredLimitRejectsBeforeOpeningChannel) {
@@ -168,7 +277,23 @@ TEST(AskUserQuestionExecutionTest, ConfiguredLimitRejectsBeforeOpeningChannel) {
     EXPECT_NE(result.output.find("Split the questions"), std::string::npos);
 }
 
-// 场景:某题 options 长度越界(1 或 5)应被拒,错误信息里包含 "options"。
+TEST(AskUserQuestionExecutionTest, ConfiguredOptionLimitRejectsBeforeOpeningChannel) {
+    const auto tool = acecode::create_ask_user_question_tool_async(10, 6);
+    acecode::ToolContext ctx;
+    bool channel_called = false;
+    ctx.ask_user_questions = [&](const nlohmann::json&) {
+        channel_called = true;
+        return nlohmann::json{{"cancelled", false}};
+    };
+
+    const auto result = tool.execute(single_question_with_options(7), ctx);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(channel_called);
+    EXPECT_NE(result.output.find("between 2 and 6"), std::string::npos);
+    EXPECT_NE(result.output.find("got 7"), std::string::npos);
+}
+
+// 场景:某题 options 长度越界(1 或 7)应被拒,错误信息里包含 "options"。
 TEST(AskUserQuestionValidateTest, OptionsLengthOutOfRangeRejected) {
     std::string err;
     auto too_few = validate_ask_user_question_args(
@@ -188,7 +313,9 @@ TEST(AskUserQuestionValidateTest, OptionsLengthOutOfRangeRejected) {
                 {"label":"2","description":""},
                 {"label":"3","description":""},
                 {"label":"4","description":""},
-                {"label":"5","description":""}
+                {"label":"5","description":""},
+                {"label":"6","description":""},
+                {"label":"7","description":""}
             ]
         }]})", err);
     EXPECT_FALSE(too_many.has_value());
