@@ -21,12 +21,12 @@ The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing s
 - **THEN** the same side-chat window opens, preserving existing side history and the main composer draft
 
 ### Requirement: Initial size and toolbar placement
-The window SHALL initialize at 880 by 800 CSS pixels, limited by the visible viewport, and use a compact 36px header. Each activation of the toolbar bubble SHALL align the window's top-left with the button's top-left, clamping inside the viewport when necessary. Toolbar reopening SHALL preserve user-resized dimensions. Other entry points SHALL preserve the previous position.
+The window SHALL initialize at 600 by 620 CSS pixels, limited by the visible viewport, and use a compact 36px header. Each activation of the toolbar bubble SHALL align the window's top-left with the button's top-left, clamping inside the viewport when necessary. Toolbar reopening SHALL preserve user-resized dimensions. Other entry points SHALL preserve the previous position.
 
 #### Scenario: Open at the toolbar button
 - **WHEN** the user activates the toolbar bubble with enough space to its right and below
 - **THEN** the window's left and top match the button's left and top
-- **AND** its initial size is 880 by 800 CSS pixels
+- **AND** its initial size is 600 by 620 CSS pixels
 
 #### Scenario: Open near a viewport edge
 - **WHEN** the anchored window would extend beyond the visible viewport

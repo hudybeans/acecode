@@ -23,8 +23,10 @@
 
 ## 5. Initial size and toolbar placement refinement
 
-- [x] 5.1 Set initial geometry to 880 by 800 and compact the header to 36px.
+- [x] 5.1 Set initial geometry to 600 by 620 (revised 2026-09-17) and compact the header to 36px.
 - [x] 5.2 Anchor toolbar activation to the bubble button's top-left, retaining viewport constraints and resized dimensions.
 - [x] 5.3 Verify geometry/placement, run Web tests/build and strict OpenSpec/diff checks, and record validation limits.
 
 Validation (2026-09-16): geometry tests, full `pnpm test`, `pnpm build`, strict OpenSpec validation and `git diff --check` passed. Browser fixture measured 880x800 initial size and a 36px header; verified toolbar anchoring/clamping, resized dimensions and draft retention on reopen, and 1440px/390px light/dark layouts without page errors. No desktop binary rebuild or live-provider test was performed. Test/build required running outside the sandbox because its MSYS shell could not initialize.
+
+Size revision (2026-09-17): changed initial dimensions to 600x620. Geometry tests, production build, strict OpenSpec validation and scoped diff checks passed. Full Web tests failed in `settingsNavigation.test.js` because the current settings list includes the separately added security center while the expectation does not. No desktop rebuild was performed.
