@@ -36,4 +36,4 @@
 
 ## 7. Cross-platform Release Validation
 
-- [ ] 7.1 Use host-native absolute paths in sandbox persistence tests and verify Windows-path rejection on Unix.
+- [x] 7.1 Use host-native absolute paths in sandbox persistence tests and verify Windows-path rejection on Unix.

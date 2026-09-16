@@ -65,8 +65,16 @@ Results below are chronological; later follow-ups supersede earlier lifecycle be
 - Actual Windows ConPTY smoke used an isolated USERPROFILE, synthetic saved login and PATH without Node.js. A real test daemon stayed running while the wizard selected an extra contact and saved successfully. Auth/history hashes and live access remained unchanged; the terminal completion contained no host-management instruction. A subsequently started daemon read the new settings, waited for the first test host to exit, then acquired ownership with the added contact. Both test daemons and the temporary profile were cleaned up. Reproduction: build/verify_channel_config_only.ps1. No real WhatsApp connection or user account data was involved.
 - Strict OpenSpec validation and whitespace checks passed. No commit, merge, push, release or modification of the main checkout was performed.
 
+## Mainline Release Integration (2026-09-17)
+
+- Reviewed the preserved worktree changes, committed them as `cc5956e4`, pushed `codex/whatsapp-channels`, and merged them into master. Both session reasoning settings and isolated channel permission behavior were retained during conflict resolution.
+- Added the bridge's four-file allowlist to every platform's npm package assembly, validated both macOS app and CLI resource copies, and added three passing package fixture tests. Re-ran all six Node protocol tests and the real pinned Baileys bridge in configuration-only mode without pairing an account; message/file sends and downloads were rejected as expected.
+- Built the mainline CLI, desktop, and test targets on Windows. Full release workflow [35140320614](https://github.com/tmoonlight/acecode/actions/runs/35140320614) succeeded for all ten Windows, macOS, and Linux build targets.
+- Published [v0.9.20](https://github.com/tmoonlight/acecode/releases/tag/v0.9.20) from `3256b8241b492a9c6740a5deaecb1f10e5bc1009` and mirrored all six updater packages. Every versioned package and stable alias passed public download size/SHA-256 verification. Separate archive inspection confirmed the intended bridge files and disabled seed hook in all six packages, including both macOS resource layouts.
+- The final Windows x64 package reports the correct version and `WhatsApp: disabled` under a clean isolated profile. npm package fixture validation does not imply npm publication; that workflow job remains disabled.
+
 ## Not Validated
 
 - No real WhatsApp account was paired. QR scanning, real personal/self-chat/group delivery, native quoting, media transfer and approvals require the operator's account-based acceptance checks in docs/channels.md.
-- Linux and macOS native builds, packaging and live desktop behavior were not run on this Windows host.
-- No release, installation over the user's existing application, commit, merge or push was performed. Main-workspace edits were left untouched.
+- Interactive desktop behavior on Linux and macOS was not exercised; native CI builds and released archive contents were verified in the mainline release follow-up.
+- The release was not installed over the user's running application during verification.

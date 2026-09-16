@@ -9,4 +9,4 @@
 ## 3. Validation
 - [x] 3.1 Document the repair and run focused tests plus strict OpenSpec validation.
 - [x] 3.1a Correct Windows test-fixture database teardown so the full regression suite can finish.
-- [ ] 3.2 Review and integrate remaining project work, run release checks, and verify final package behavior.
+- [x] 3.2 Review and integrate remaining project work, run release checks, and verify final package behavior.
