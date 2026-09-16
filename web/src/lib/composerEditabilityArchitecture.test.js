@@ -52,15 +52,10 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
     'homeSubmitting 进 disabled 会让主页输入框在建会话期间变成只读',
   );
 
-  // 主页 composer 的 disabled 只剩「有待回答的问题」这一个来源(主页没有会话
-  // 可以承接插话);会话 composer 在提问挂起时**根本不渲染** —— dock 整体换成
-  // 提问框,所以它既不需要 disabled,也不该留「请先回答上方问题」这类旧提示。
-  assert.equal(
-    (chatView.match(/disabled=\{!!questionForView\}/g) || []).length,
-    1,
-    '只有主页 composer 由 questionForView 决定只读',
-  );
-  assert.match(chatView, /<div className="ace-composer-dock">\s*\{!questionForView \? \(/);
+  // 主页与会话 composer 都在提问挂起时**根本不渲染** —— dock 整体换成
+  // 提问框,所以它们不需要 disabled,也不该留「请先回答上方问题」这类旧提示。
+  assert.doesNotMatch(chatView, /disabled=\{!!questionForView\}/);
+  assert.match(chatView, /<div className="ace-composer-dock">\s*\{questionForView \? \(/);
   assert.doesNotMatch(chatView, /请先回答上方问题/);
   assert.match(chatView, /submitting=\{composerSubmitting\}/);
   assert.match(chatView, /submitting=\{homeSubmitting\}/);
@@ -71,16 +66,16 @@ run('提问挂起时 composer 整体让位给提问框,不留插话入口', () =
 
   // 提问框承担提问期间唯一的交互面:提交/取消经 resolveQuestion 回流,结果由
   // onFeedback 落成反馈卡。
-  assert.match(chatView, /\{questionForView && \(\s*<QuestionPicker/);
+  assert.match(chatView, /\{questionForView \? \(\s*<QuestionPicker/);
   assert.match(chatView, /onFeedback=\{handleQuestionFeedback\}/);
 
   // 输入区只挂在「没有待答问题」的分支里,提问期间 dock 中不存在 InputBar。
   const dockStart = chatView.indexOf('<div className="ace-composer-dock">');
   assert.ok(dockStart > 0, '未找到会话 composer dock');
-  const dock = chatView.slice(dockStart, chatView.indexOf('</div>', dockStart));
-  assert.match(dock, /\{!questionForView \? \(/);
-  assert.ok(dock.includes('<InputBar'), '输入区应挂在 !questionForView 分支里');
-  assert.match(dock, /\) : null\}/);
+  const dock = chatView.slice(dockStart, chatView.indexOf('<SessionContentLoading', dockStart));
+  assert.match(dock, /\{questionForView \? \(/);
+  assert.ok(dock.includes('<QuestionPicker'), '待答问题应挂在 questionForView 分支里');
+  assert.ok(dock.includes('<InputBar'), '输入区应挂在 questionForView 的 else 分支里');
 
   // 「直接输入 = 取消作答交给 AI 继续」(方案 B)已被方案 A 取代:composer 不再
   // 调用提问插话端点,也不再有插话文案。daemon 端点仍留给 TUI/IM 与排队卡片的

@@ -26,6 +26,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '操作未完成：': 'Action did not complete: ',
   '建议状态更新失败。': 'Could not refresh suggestion status.',
   '已取消全部回答': 'All answers cancelled',
+  '用户已取消回答': 'User cancelled the questions',
   '仅显示 file_edit / file_write / apply_patch 工具的改动': 'Show only changes made by the file_edit / file_write / apply_patch tools',
   '国庆节': 'National Day',
   '下载国庆节主题': 'Download National Day theme',

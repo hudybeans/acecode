@@ -48,7 +48,6 @@ import '../styles/side-chat.css';
 import { GitSessionPill } from './GitSessionPill.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
-import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
@@ -94,7 +93,6 @@ import {
   updateQueuedInputContent,
 } from '../lib/chatInputQueue.js';
 import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from '../lib/stickyUserContext.js';
-import { lastAskUserQuestionItem, questionFeedbackForItem } from '../lib/questionFeedback.js';
 import { loadTranscriptHistory, useSessionTranscript } from '../lib/sessionTranscript.js';
 import { createSingleWriterStore } from '../lib/singleWriterStore.js';
 import { projectCollapsedTranscriptItems } from '../lib/transcriptProjection.js';
@@ -591,9 +589,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subagentTasks = useSubagentTasks(sid, {
     onSpawnStart: openSubagentPanelForSpawn,
   });
-  // 提交/取消 AskUserQuestion 后,在消息流中跟随 AskUserQuestion 消息展示的
-  // 反馈卡(全部提交完成 / 已取消全部回答)。
-  const [questionFeedback, setQuestionFeedback] = useState(null);
   // 当前视图可见的待答问题。提问挂起期间 composer dock 由提问框整体替换
   // (方案 A),所以它只驱动渲染,不再参与 submit 的分支判定。
   const questionForView = useMemo(() => {
@@ -4283,32 +4278,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     subagentTasks.tasks,
   ]);
 
-  const resolveQuestion = useCallback((feedback) => {
-    if (feedback) setQuestionFeedback(feedback);
+  const resolveQuestion = useCallback(() => {
     onQuestionResolve?.();
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [onQuestionResolve]);
 
-  const handleQuestionFeedback = useCallback((feedback) => {
-    if (feedback) setQuestionFeedback(feedback);
-  }, []);
-
-  // 反馈卡按 item 就地派生:每条 AskUserQuestion 工具消息用自己落盘的元数据
-  // 生成卡片。不缓存锚点 id —— 回合结束时 transcript self-heal 会用新 id 覆写
-  // 最近一轮,任何缓存的锚点都会失效并让卡片消失。
-  const latestAskUserQuestionItemId = useMemo(() => {
-    const host = lastAskUserQuestionItem(rawItems);
-    return host ? String(host.id ?? '') : '';
-  }, [rawItems]);
-
-  const renderFeedbackAfterQuestion = useCallback((it) => {
-    if (!questionFeedback && !it?.tool?.askUserQuestionResult) return null;
-    const feedback = questionFeedbackForItem(it, {
-      transient: questionFeedback,
-      allowTransient: String(it?.id ?? '') === latestAskUserQuestionItemId,
-    });
-    return feedback ? <QuestionFeedbackCard feedback={feedback} /> : null;
-  }, [latestAskUserQuestionItemId, questionFeedback]);
+  // Results are rendered from persisted ToolBlock metadata; retain the callback
+  // prop for picker compatibility without creating a transient feedback card.
+  const handleQuestionFeedback = useCallback(() => {}, []);
 
   const sidePanelMounted = showSidePanel;
   const sidePanelNavigationCollapsed = sidePanelCollapsed || sidePanelListCollapsed;
@@ -4804,47 +4781,55 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             <InteractiveHomeLogo enabled={homeLogoEffectEnabled} />
             <h1 className="ace-home-title">{homeProjectTitle}</h1>
             <div data-tour-target="home-composer" className="ace-home-composer">
-              <InputBar
-                ref={inputRef}
-                variant="hero"
-                attentionRequest={homeComposerAttentionRequest}
-                pathReferenceApi={api}
-                currentSessionId=""
-                cwd={selectedHomeWorkspace?.cwd || ''}
-                expertOptions={recentExperts}
-                selectedExpertId={composerExpertId}
-                selectedExpertName={composerExpert?.display_name || ''}
-                selectedExpertType={composerExpert?.type || 'agent'}
-                expertRemoving={expertDetaching}
-                onSelectExpert={selectComposerExpert}
-                onRemoveExpert={detachComposerExpert}
-                onOpenExpertComponents={() => setExpertPickerOpen(true)}
-                history={composerHistory}
-                value={composerValue}
-                onChange={handleComposerChange}
-                onSubmit={submit}
-                disabled={!!questionForView}
-                submitting={homeSubmitting}
-                placeholder="向 ACECode 描述任务，或输入 / 命令..."
-                {...composerInputProps}
-                fileDropManagedExternally
-                onFileDragActiveChange={setChatFileDropActive}
-                sessionControls={{
-                  model: homeModelLabel,
-                  modelOptions,
-                  selectedModelName: homeModelName,
-                  modelLoad: homeModelLoad,
-                  modelSwitching,
-                  modelRefreshing,
-                  onModelChange: changeComposerModel,
-                  onRefreshModels: refreshSessionModels,
-                  onOpenModelSettings,
-                  tokenBudget: homeTokenBudget,
-                  permissionMode,
-                  permissionSwitching,
-                  onPermissionModeChange: changeComposerPermissionMode,
-                }}
-              />
+              {questionForView ? (
+                <QuestionPicker
+                  request={questionForView}
+                  onResolve={resolveQuestion}
+                  originLabel={questionOriginLabel}
+                  onFeedback={handleQuestionFeedback}
+                />
+              ) : (
+                <InputBar
+                  ref={inputRef}
+                  variant="hero"
+                  attentionRequest={homeComposerAttentionRequest}
+                  pathReferenceApi={api}
+                  currentSessionId=""
+                  cwd={selectedHomeWorkspace?.cwd || ''}
+                  expertOptions={recentExperts}
+                  selectedExpertId={composerExpertId}
+                  selectedExpertName={composerExpert?.display_name || ''}
+                  selectedExpertType={composerExpert?.type || 'agent'}
+                  expertRemoving={expertDetaching}
+                  onSelectExpert={selectComposerExpert}
+                  onRemoveExpert={detachComposerExpert}
+                  onOpenExpertComponents={() => setExpertPickerOpen(true)}
+                  history={composerHistory}
+                  value={composerValue}
+                  onChange={handleComposerChange}
+                  onSubmit={submit}
+                  submitting={homeSubmitting}
+                  placeholder="向 ACECode 描述任务，或输入 / 命令..."
+                  {...composerInputProps}
+                  fileDropManagedExternally
+                  onFileDragActiveChange={setChatFileDropActive}
+                  sessionControls={{
+                    model: homeModelLabel,
+                    modelOptions,
+                    selectedModelName: homeModelName,
+                    modelLoad: homeModelLoad,
+                    modelSwitching,
+                    modelRefreshing,
+                    onModelChange: changeComposerModel,
+                    onRefreshModels: refreshSessionModels,
+                    onOpenModelSettings,
+                    tokenBudget: homeTokenBudget,
+                    permissionMode,
+                    permissionSwitching,
+                    onPermissionModeChange: changeComposerPermissionMode,
+                  }}
+                />
+              )}
             </div>
             <div className="flex items-center gap-2 mr-auto ml-0">
             <div className="relative">
@@ -4947,9 +4932,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             </div>
           </div>
         </div>
-        {questionForView && (
-          <QuestionPicker request={questionForView} onResolve={resolveQuestion} onFeedback={handleQuestionFeedback} />
-        )}
         {createProjectOpen && (
           <CreateProjectModal
             api={api}
@@ -5203,7 +5185,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onLocateInFileTree={locateInFileTree}
             showAceCodeAvatar={showAceCodeAvatar}
             annotationPresentations={selectionAnnotationPresentations}
-            renderAfterItem={renderFeedbackAfterQuestion}
             renderBeforeItem={(it) => (
               (turnFileListPlacement.before.get(it.id) || []).map((set) => (
                 <div
@@ -5342,15 +5323,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </Suspense>
       )}
 
-      {questionForView && (
-        <QuestionPicker
-          request={questionForView}
-          onResolve={resolveQuestion}
-          onFeedback={handleQuestionFeedback}
-          originLabel={questionOriginLabel}
-        />
-      )}
-
       <SideChatWindow
         {...sideChatState}
         onDraftChange={sideChat.setDraft}
@@ -5377,7 +5349,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </div>
       ) : (
         <div className="ace-composer-dock">
-          {!questionForView ? (
+          {questionForView ? (
+            <QuestionPicker
+              request={questionForView}
+              onResolve={resolveQuestion}
+              originLabel={questionOriginLabel}
+              onFeedback={handleQuestionFeedback}
+            />
+          ) : (
             <>
           <InputBar
             ref={inputRef}
@@ -5438,7 +5417,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onIntentChange={handleGitPillIntentChange}
           />
           </>
-          ) : null}
+          )}
         </div>
       )}
       <SessionContentLoading

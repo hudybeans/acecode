@@ -117,6 +117,41 @@ function askUserQuestionText(result) {
     .join('\n\n');
 }
 
+function askUserQuestionItems(result) {
+  if (!Array.isArray(result?.items)) return [];
+  return result.items
+    .filter((item) => item && (item.question || item.answer || item.not_answered || item.notAnswered))
+    .map((item) => {
+      const answer = String(item.answer ?? '');
+      const unanswered = item.not_answered === true
+        || item.notAnswered === true
+        || !answer.trim()
+        || answer.trim() === 'Not answered';
+      return {
+        question: String(item.question ?? ''),
+        answer: unanswered ? '' : answer,
+        unanswered,
+      };
+    });
+}
+
+function AskUserQuestionDetails({ items }) {
+  return (
+    <div className="ace-qa-inline-list w-full min-w-0 max-w-[88%] pb-2 pl-5 pt-0.5">
+      {items.map((item, index) => (
+        <div key={index} className="ace-qa-inline-item py-1">
+          <div className="ace-qa-question text-[12px] leading-snug text-fg-mute break-words">
+            {index + 1}. {item.question}
+          </div>
+          <div className="ace-qa-answer mt-0.5 text-[13px] leading-snug break-words">
+            {item.unanswered ? <span className="text-fg-mute">未作答</span> : item.answer}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function joinTooltipParts(...parts) {
   const text = parts
     .map((part) => String(part || '').trim())
@@ -158,7 +193,7 @@ function taskCompleteDisplayText(summary, output) {
 
 
 export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessionRunning = true }) {
-  useTranslation();
+  const { t: translate } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const contextIdRef = useRef('');
   if (!contextIdRef.current) {
@@ -339,6 +374,39 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
 
   // 完成态与运行态共用 ActivityLine；详情仍由 ToolBlock 自己负责。
   if (isDone) {
+    const isAskUserQuestionResult = askUserQuestionResult
+      && typeof askUserQuestionResult === 'object'
+      && !Array.isArray(askUserQuestionResult);
+    const askItems = isAskUserQuestionResult ? askUserQuestionItems(askUserQuestionResult) : [];
+    const askCancelled = isAskUserQuestionResult
+      && (askUserQuestionResult.cancelled === true || askUserQuestionResult.interjected === true);
+    const askSubmitted = isAskUserQuestionResult && success !== false && askItems.length > 0;
+    if (askCancelled || askSubmitted) {
+      const askExpanded = expanded;
+      return (
+        <div
+          {...toolContextAttrs}
+          className="ace-tool-activity min-w-0"
+          data-ask-user-question-result="true"
+        >
+          <ActivityLine
+            icon={<ToolSummaryIcon icon={completedSummary.icon} ok={!askCancelled} className={askCancelled ? 'text-fg-mute' : 'text-ok'} />}
+            label={completedSummary.verb || title || tool || 'AskUserQuestion'}
+            detail={completedSummary.object || ''}
+            trailing={liveElapsed > 0 ? <span className="tabular-nums">{formatElapsed(liveElapsed)}</span> : null}
+            preserveLabel
+            expandable={!askCancelled && askItems.length > 0}
+            expanded={askExpanded}
+            onToggle={!askCancelled && askItems.length > 0 ? toggleExpanded : undefined}
+            title={askCancelled ? undefined : (askExpanded ? '收起详情' : '展开详情')}
+            ariaLabel={askCancelled ? undefined : (askExpanded ? '收起详情' : '展开详情')}
+          />
+          {askCancelled ? (
+            <div className="max-w-[88%] pb-1 pl-5 text-[12px] text-fg-mute">{translate('用户已取消回答')}</div>
+          ) : askExpanded ? <AskUserQuestionDetails items={askItems} /> : null}
+        </div>
+      );
+    }
     const ok = !!success;
     return (
       <div

@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const picker = fs.readFileSync(path.join(srcRoot, 'components/QuestionPicker.jsx'), 'utf8');
+const chatView = fs.readFileSync(path.join(srcRoot, 'components/ChatView.jsx'), 'utf8');
+const toolBlock = fs.readFileSync(path.join(srcRoot, 'components/ToolBlock.jsx'), 'utf8');
+const rootClasses = picker.match(/clsx\('([^']*rounded-\[14px\][^']*)'/)?.[1] || '';
+
+assert.ok(rootClasses, 'QuestionPicker root classes must be discoverable');
+assert.doesNotMatch(
+  rootClasses,
+  /(?:^|\s)w-full(?:\s|$)/,
+  'QuestionPicker margins must fit inside the chat column instead of overflowing its width',
+);
+
+const homeComposer = chatView.slice(
+  chatView.indexOf('<div data-tour-target="home-composer"'),
+  chatView.indexOf('<div className="flex items-center gap-2 mr-auto ml-0">'),
+);
+assert.match(homeComposer, /questionForView\s*\?\s*\(/);
+assert.match(homeComposer, /<QuestionPicker/);
+assert.match(homeComposer, /:\s*\(\s*<InputBar/);
+assert.doesNotMatch(homeComposer, /disabled=\{!!questionForView\}/);
+
+const dockStart = chatView.indexOf('<div className="ace-composer-dock">');
+const dockEnd = chatView.indexOf('<SessionContentLoading', dockStart);
+const dock = chatView.slice(dockStart, dockEnd);
+assert.match(dock, /questionForView\s*\?\s*\(\s*<QuestionPicker/);
+assert.match(dock, /:\s*\(\s*<>\s*<InputBar/);
+
+assert.match(picker, /selected\s*\?\s*'bg-accent-bg[^']*border-accent[^']*text-accent'/);
+assert.match(picker, /bg-accent text-white hover:opacity-90/);
+assert.doesNotMatch(picker, /selected\s*\?\s*'bg-fg text-bg border-fg'/);
+assert.doesNotMatch(picker, /font-medium bg-fg text-bg/);
+
+assert.match(toolBlock, /const isAskUserQuestionResult = askUserQuestionResult/);
+assert.match(toolBlock, /translate\('用户已取消回答'\)/);
+assert.doesNotMatch(toolBlock, /String\.fromCharCode/);
+
+console.log('questionPickerLayout tests passed');
