@@ -20,6 +20,18 @@ The Web and Desktop UI SHALL open side chat from `/side`, `/btw`, the existing s
 - **WHEN** the user clicks the speech-bubble button before the trajectory button in the session toolbar
 - **THEN** the same side-chat window opens, preserving existing side history and the main composer draft
 
+### Requirement: Initial size and toolbar placement
+The window SHALL initialize at 880 by 800 CSS pixels, limited by the visible viewport, and use a compact 36px header. Each activation of the toolbar bubble SHALL align the window's top-left with the button's top-left, clamping inside the viewport when necessary. Toolbar reopening SHALL preserve user-resized dimensions. Other entry points SHALL preserve the previous position.
+
+#### Scenario: Open at the toolbar button
+- **WHEN** the user activates the toolbar bubble with enough space to its right and below
+- **THEN** the window's left and top match the button's left and top
+- **AND** its initial size is 880 by 800 CSS pixels
+
+#### Scenario: Open near a viewport edge
+- **WHEN** the anchored window would extend beyond the visible viewport
+- **THEN** the window moves inside the viewport with the existing margin and contracts only if its size exceeds the available viewport
+
 ### Requirement: Isolated multi-turn conversation
 The system SHALL answer each side question using a safe main-session context snapshot plus the preceding successful or nonempty stopped side turns. It SHALL keep the side transcript temporary and independent from main-session history, tools, hooks, goals, event stream, and busy state. Failed or empty stopped turns SHALL remain visible without being added to future model context.
 

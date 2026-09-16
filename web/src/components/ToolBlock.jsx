@@ -341,6 +341,13 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   if (isDone) {
     const ok = !!success;
     const questionFeedback = questionFeedbackForTool(entry);
+    if (questionFeedback) {
+      return (
+        <div {...toolContextAttrs} className="ace-tool-activity min-w-0">
+          <QuestionFeedbackCard feedback={questionFeedback} />
+        </div>
+      );
+    }
     return (
       <div
         {...toolContextAttrs}
@@ -383,7 +390,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
             <AttachmentStrip attachments={attachmentItems} align="left" compact />
           </div>
         )}
-        {questionFeedback && <QuestionFeedbackCard feedback={questionFeedback} />}
+
       </div>
     );
   }

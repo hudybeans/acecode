@@ -863,6 +863,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const subscribeQueueStore = useCallback((listener) => queueStore.subscribe(listener), [queueStore]);
   const getQueueSnapshot = useCallback(() => queueStore.getState(), [queueStore]);
   const queueState = useSyncExternalStore(subscribeQueueStore, getQueueSnapshot, getQueueSnapshot);
+  const [sideChatAnchor, setSideChatAnchor] = useState(null);
   const sideChat = useMemo(() => createSideChatController({
     startStream: (options) => api.streamSideChat(sid, options),
   }), [api, sid]);
@@ -2660,6 +2661,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
       return null;
     }
+    setSideChatAnchor(null);
     sideChat.open();
     if (!question) return true;
     if (sideChat.getSnapshot().busy) {
@@ -2676,6 +2678,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       toast({ kind: 'err', text: '请先在已有会话中使用 /btw 或 /side' });
       return;
     }
+    setSideChatAnchor(null);
     sideChat.open();
   }, [sideChat]);
 
@@ -5070,7 +5073,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           {sid && !readOnlyExternalSession && (
             <button
               type="button"
-              onClick={openSideQuestionComposer}
+              onClick={(event) => {
+                const { left, top } = event.currentTarget.getBoundingClientRect();
+                openSideQuestionComposer();
+                setSideChatAnchor({ left, top });
+              }}
               className={clsx(
                 'w-6 h-6 rounded-md flex items-center justify-center shrink-0 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25',
                 sideChatState.open
@@ -5375,6 +5382,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
       <SideChatWindow
         {...sideChatState}
+        anchor={sideChatAnchor}
         onDraftChange={sideChat.setDraft}
         onSubmit={() => sideChat.submit()}
         onStop={sideChat.stop}

@@ -98,6 +98,7 @@
   outline: none;
 }
 
+.ace-usage-cell[data-level="0"] { fill-opacity: 0.4; }
 .ace-usage-cell[data-level="1"] { fill: rgba(var(--ace-accent-rgb), 0.2); }
 .ace-usage-cell[data-level="2"] { fill: rgba(var(--ace-accent-rgb), 0.4); }
 .ace-usage-cell[data-level="3"] { fill: rgba(var(--ace-accent-rgb), 0.65); }

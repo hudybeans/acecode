@@ -20,8 +20,9 @@
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  min-height: 50px;
-  padding: 6px 10px 6px 18px;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 4px 8px 4px 14px;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -69,6 +70,11 @@
   background: transparent;
   cursor: pointer;
   transition: background-color 120ms, color 120ms;
+}
+
+.ace-side-chat-header-actions button {
+  width: 28px;
+  height: 28px;
 }
 
 .ace-side-chat-clear:hover,

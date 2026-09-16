@@ -19,6 +19,10 @@
 7. Main and side requests share their configured provider. Copilot token refresh and token snapshots therefore use a short credential lock; network model calls remain concurrent. This prevents concurrent refresh from racing a request's authorization header construction.
 8. Add a speech-bubble SVG action before the trajectory action in the session header, using the existing `openSideQuestionComposer` entry and shared icon rendering. Add `clear()` to the existing controller: invalidate/cancel the active request, discard turns and draft, release the input, and preserve visibility. Late callbacks cannot repopulate cleared history or alter a fresh request. The trash button calls this action and focuses the textarea; the next request sends empty side history while retaining the usual main-session snapshot.
 
+### Window size and toolbar placement refinement
+
+Initialize the window at 880 by 800 CSS pixels, contracting only when the viewport cannot contain it. Use a 36px border-box header with 28px clear/minimize buttons. Each toolbar bubble activation places the window's top-left at the button's top-left, then clamps the window inside the visible viewport with the existing 12px margin. Preserve the user's resized dimensions. Menu and slash-command reopening retain the previous position; subsequent drag and viewport resizing continue to use the existing geometry constraints.
+
 ## Risks / Trade-offs
 
 - [Large temporary history] → Bound request history and return clear errors without silent truncation or modifying the main context.
