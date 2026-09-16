@@ -420,6 +420,14 @@ bool LspProcess::wait_exit(int timeout_ms) {
 #endif
 }
 
+void LspProcess::kill_child() {
+#ifdef _WIN32
+    if (process_handle_) TerminateProcess(static_cast<HANDLE>(process_handle_), 0);
+#else
+    if (process_id_ > 0) kill(process_id_, SIGKILL);
+#endif
+}
+
 void LspProcess::terminate() {
 #ifdef _WIN32
     if (process_handle_) {

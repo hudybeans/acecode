@@ -45,6 +45,9 @@ public:
     bool started() const { return started_; }
     // 等待子进程退出,超时返回 false。
     bool wait_exit(int timeout_ms);
+    // Kill the child without closing pipe handles. Owners with concurrent I/O
+    // join their pipe threads before terminate() closes the handles.
+    void kill_child();
     // 强杀 + 关闭全部句柄。可重复调用。
     void terminate();
 

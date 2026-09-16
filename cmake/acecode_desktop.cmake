@@ -145,6 +145,14 @@ endif()
 
 if(APPLE)
     set(ACECODE_MACOS_ICON "${CMAKE_SOURCE_DIR}/assets/macos/acecode.icns")
+    set(ACECODE_MACOS_CHANNEL_RESOURCES
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/bridge.mjs"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/protocol.mjs"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package.json"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package-lock.json"
+    )
+    set_source_files_properties(${ACECODE_MACOS_CHANNEL_RESOURCES} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources/channels/whatsapp")
     set(ACECODE_MACOS_MODELS_DEV_RESOURCES
         "${CMAKE_SOURCE_DIR}/assets/models_dev/api.json"
         "${CMAKE_SOURCE_DIR}/assets/models_dev/MANIFEST.json"
@@ -167,6 +175,7 @@ if(APPLE)
     target_sources(acecode-desktop PRIVATE
         "${ACECODE_MACOS_ICON}"
         ${ACECODE_MACOS_MODELS_DEV_RESOURCES}
+        ${ACECODE_MACOS_CHANNEL_RESOURCES}
         ${ACECODE_MACOS_SEED_RESOURCES}
     )
     set_source_files_properties("${ACECODE_MACOS_ICON}" PROPERTIES

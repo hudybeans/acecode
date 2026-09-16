@@ -4653,3 +4653,34 @@ discarded. The original history remains available.
 | 25-33 | `service_win.cpp` | other SCM API failures |
 | 64 | `main.cpp` | `--service-main` on non-Windows |
 | 65 | `main.cpp` | `service` subcommand on non-Windows |
+
+---
+
+## 18. WhatsApp Channels
+
+The daemon also hosts the optional WhatsApp channel runtime. Its control plane
+is a separate private loopback listener, not a route on this Web API. See
+[WhatsApp channels](channels.md) for standalone CLI configuration and management. The descriptor
+`channels/whatsapp/owner.json` in the ACECode data directory contains protocol
+version 1, PID, port and an owner token. `POST /channels` requires the
+`X-ACECode-Channels-Token` header even on loopback and rejects browser Origin
+headers. JSON operations are `status`, `qr`, `on`, `off`, `reconnect`, `pending`,
+`approve` (pairing code), `allow`/`revoke` (JID), `sessions`, `show`, `send`, `file`
+and `stop` (session ID). Do not publish this descriptor or its QR output.
+
+`ping` reports protocol version 1. Configuration is not a daemon API operation:
+legacy `setup_*` requests are rejected. `acecode channels` saves configuration
+without checking or contacting running instances. Saved logins require no bridge;
+first-time pairing uses an isolated, temporary pairing-only bridge and closes it
+before completion. It never starts a host, creates an agent session, acquires the
+runtime account lock or asks the user to stop an existing owner.
+The main TUI has no channel command or surface.
+
+On daemon/Desktop startup, configuration is read once. Disabled instances do not
+claim ownership. The first enabled runtime claims the account lock and connects.
+Later enabled runtimes remain standby without launching bridges until ownership
+is released; takeover refreshes history but retains startup settings. Settings
+in `config.json` are independent of owner-written `state.json`, including writes
+from older binaries. Explicit CLI runtime commands never start
+a missing host. `acecode channels status` can read saved settings without one;
+its `host_running` field distinguishes offline configuration from a live owner.

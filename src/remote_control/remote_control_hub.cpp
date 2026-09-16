@@ -48,6 +48,7 @@ nlohmann::json outbound_message_to_json(const OutboundMessage& msg) {
     if (!msg.tool_name.empty()) j["tool_name"] = msg.tool_name;
     if (!msg.args_preview.empty()) j["args_preview"] = msg.args_preview;
     if (!msg.in_reply_to.empty()) j["in_reply_to"] = msg.in_reply_to;
+    if (!msg.attachment.is_null()) j["attachment"] = msg.attachment;
     return j;
 }
 
@@ -351,6 +352,24 @@ void RemoteControlHub::notify_assistant_text(const std::string& text) {
     if (!enabled_ || !sender_) return;
     if (text.empty() || is_blank(text)) return;
     enqueue_assistant_text_locked(text, session_id_);
+}
+
+void RemoteControlHub::notify_outbound(OutboundMessage msg) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!enabled_ || !sender_) return;
+    msg.session_id = session_id_;
+    msg.timestamp_ms = now_ms();
+    msg.seq = next_seq_++;
+    if (queue_.size() >= kMaxQueue) {
+        if (drain_through_seq_ != 0 && queue_.front().seq <= drain_through_seq_) {
+            ++stats_.outbound_dropped;
+            return;
+        }
+        queue_.pop_front();
+        ++stats_.outbound_dropped;
+    }
+    queue_.push_back(std::move(msg));
+    cv_.notify_all();
 }
 
 void RemoteControlHub::enqueue_assistant_text_locked(

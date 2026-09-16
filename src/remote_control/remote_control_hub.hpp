@@ -44,6 +44,7 @@ struct OutboundMessage {
     std::string in_reply_to;  // 预留:回复某条 inbound 消息时填其标识
     std::int64_t timestamp_ms = 0;
     std::uint64_t seq = 0;   // hub 内单调递增;channel bridge 可据此去重/排序
+    nlohmann::json attachment; // Optional structured channel file delivery.
 };
 
 nlohmann::json outbound_message_to_json(const OutboundMessage& msg);
@@ -144,6 +145,10 @@ public:
 
     // 回合结束时 TUI 调用;文本进出站队列,立即返回。
     void notify_assistant_text(const std::string& text);
+
+    // Reuse the bounded FIFO for channel messages carrying native quotes/files.
+    // Session identity, timestamp and sequence are assigned by this hub.
+    void notify_outbound(OutboundMessage message);
 
     // agent 回合内发生工具调用时调用;tool_name + arguments 的摘要进出站
     // 队列,立即返回。复用 notify_assistant_text 同一条有界队列/worker 线程
