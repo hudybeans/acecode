@@ -1,4 +1,6 @@
+import { createElement } from 'react';
 import { fileTypeIconForPath } from '../lib/fileTypeIcons.js';
+import { ICON_VIEW_BOX, INTERFACE_ICONS, iconStrokeWidth } from '../lib/interfaceIcons.js';
 
 const ICONS = {
   add: 'Add',
@@ -25,10 +27,12 @@ const ICONS = {
   edit: 'Edit',
   editWindow: 'EditWindow',
   ellipsis: 'Ellipsis',
+  ellipsisVertical: 'EllipsisVertical',
   embedding: 'Embedding',
   expandDown: 'ExpandDown',
   expandRight: 'ExpandRight',
   expandUp: 'ExpandUp',
+  expert: 'Expert',
   extension: 'Extension',
   eye: 'Eye',
   file: 'Document',
@@ -45,6 +49,7 @@ const ICONS = {
   leftBar: 'LeftBar',
   lightbulb: 'IntellisenseLightBulbSparkle',
   list: 'List',
+  listPanel: 'ListPanel',
   lock: 'Lock',
   mcp: 'MCP',
   newSession: 'NewSession',
@@ -100,51 +105,52 @@ const TOOL_ICON_MAP = new Map([
   ['\u26A0\uFE0F', 'warning'],
 ]);
 
-const CSS_MASK_SUPPORTED = (() => {
-  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return false;
-  try {
-    return CSS.supports('-webkit-mask-image', 'url("/vs-icons/Add.svg")')
-      || CSS.supports('mask-image', 'url("/vs-icons/Add.svg")');
-  } catch {
-    return false;
-  }
-})();
-
+// Keep the legacy mono argument for callers; functional artwork always inherits color.
 export function VsIcon({
   name,
   size = 16,
   mono = true,
+  strong = false,
   className = '',
   alt = '',
   style,
   ...props
 }) {
   const file = ICONS[name] || name;
-  const src = `/vs-icons/${file}.svg`;
+  const definition = Object.prototype.hasOwnProperty.call(INTERFACE_ICONS, file)
+    ? INTERFACE_ICONS[file]
+    : null;
   const accessibilityProps = alt
     ? { role: 'img', 'aria-label': alt }
     : { 'aria-hidden': 'true' };
   return (
     <span
-      className={['ace-icon', !CSS_MASK_SUPPORTED && 'ace-icon-fallback', className].filter(Boolean).join(' ')}
+      className={['ace-icon', definition && 'ace-icon-inline', className].filter(Boolean).join(' ')}
       data-icon-name={file}
       data-monochrome={mono ? 'true' : 'false'}
       style={{
         width: size,
         height: size,
-        '--ace-icon-url': `url("${src}")`,
+        ...(!definition && { '--ace-icon-url': `url("/vs-icons/${file}.svg")` }),
         ...style,
       }}
       {...accessibilityProps}
       {...props}
     >
-      {!CSS_MASK_SUPPORTED && (
-        <img
-          className="ace-icon-fallback-img"
-          src={src}
-          alt=""
-          draggable="false"
-        />
+      {definition && (
+        <svg
+          className="ace-icon-svg"
+          viewBox={`0 0 ${ICON_VIEW_BOX} ${ICON_VIEW_BOX}`}
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          focusable="false"
+          style={{ width: '100%', height: '100%', strokeWidth: iconStrokeWidth(size, strong) }}
+        >
+          {definition.map(([tag, attributes], index) => createElement(tag, { ...attributes, key: index }))}
+        </svg>
       )}
     </span>
   );

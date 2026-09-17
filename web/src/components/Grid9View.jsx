@@ -9,6 +9,7 @@
 // 1..7 pin → 已 pin 占前几格,剩余位置显示既有「空闲」占位卡;
 // >=8 pin → 取前 8 个(按 pin 顺序,新 pin 在前)。
 
+import { VsIcon } from './Icon.jsx';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { withNewSessionDisplayTitles } from '../lib/sessionTitle.js';
@@ -55,7 +56,7 @@ export function Grid9View({ activeRef, onExpand, onOpenHome }) {
       onClick={() => onOpenHome?.(activeRef)}
       className="rounded-lg border-[1.5px] border-dashed border-border bg-surface-alt flex flex-col items-center justify-center gap-1 text-fg-mute hover:border-accent hover:bg-accent-bg hover:text-accent transition"
     >
-      <span className="text-2xl">+</span>
+      <VsIcon name="add" size={24} />
       <span className="text-[11px]">新对话</span>
     </button>
   );

@@ -93,7 +93,7 @@ function TagEditor({ value, suggestions, onChange }) {
               onClick={() => onChange([...tags, tag])}
               className="h-5 rounded px-1.5 text-[10px] text-fg-mute hover:bg-surface-hi hover:text-fg"
             >
-              + {tag}
+              <VsIcon name="add" size={10} /> {tag}
             </button>
           ))}
         </div>

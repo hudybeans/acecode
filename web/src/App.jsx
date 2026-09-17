@@ -1,6 +1,6 @@
 // 顶层 App:鉴权 gate(401 → TokenPrompt)+ 主壳。
 //
-// 视觉对齐设计稿方向 C:顶部 44px TopBar + 270px Sidebar + 主区(单会话/4宫格/9宫格)
+// 视觉对齐设计稿方向 C:顶部 41px TopBar + 270px Sidebar + 主区(单会话/4宫格/9宫格)
 // 会话控制内嵌在聊天输入框。所有面板/弹框作为 overlay 渲染在主区之上。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -231,6 +231,8 @@ export function App() {
   );
 
   const [activeRef,    setActiveRef]    = useState(null);
+  const [sessionTitleTarget, setSessionTitleTarget] = useState(null);
+  const [sessionActionsTarget, setSessionActionsTarget] = useState(null);
   const [sidebarSessionLoadState, setSidebarSessionLoadState] = useState(null);
   const [sidebarSessionLoadResetSequence, setSidebarSessionLoadResetSequence] = useState(0);
   const [homeLogoEffectEnabled, setHomeLogoEffectEnabled] = useState(true);
@@ -2027,6 +2029,8 @@ export function App() {
       style={{ '--ace-home-sidebar-width': sidebarCollapsed ? '0px' : `${singleLayout.sidebar || 0}px` }}
     >
       <TopBar
+        sessionTitleRef={setSessionTitleTarget}
+        sessionActionsRef={setSessionActionsTarget}
         onOpenSearch={() => setSearchOpen(true)}
         onToggleConsole={toggleConsoleDock}
         consoleAvailable={consoleAvailable}
@@ -2102,6 +2106,8 @@ export function App() {
           <div className="relative flex-1 flex overflow-hidden min-h-0">
             {view === 'single' && (
               <ChatView
+                titleTarget={sessionTitleTarget}
+                actionsTarget={sessionActionsTarget}
                 sessionRef={activeRef}
                 homeLogoEffectEnabled={homeLogoEffectEnabled}
                 homeComposerDrafts={homeComposerDrafts}

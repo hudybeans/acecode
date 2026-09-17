@@ -825,22 +825,27 @@ function RichComposerShell({
   useImperativeHandle(ref, () => ({
     focus() {
       const focusEditor = () => {
+        if (!editableRef.current?.isConnected) return true;
         if (!editor.selection) {
           const end = latestTextRef.current.length;
           Transforms.select(editor, composerSelectionFromPlainTextRange(editor.children, end, end));
         }
+        // Slate schedules its own timer when operations are pending. That
+        // timer's later DOM lookup would escape our catch or outlive this input.
+        if (editor.operations.length > 0) return false;
         ReactEditor.focus(editor);
+        return true;
       };
       try {
-        focusEditor();
+        if (focusEditor()) return;
       } catch {
         // 外部草稿刚替换 Slate 文档时，React 树和 Slate DOM 映射可能相差一帧。
         // 延迟重试避免开场白回填成功却留下 Cannot resolve a DOM node 错误。
         ensureLegalEditorDocument(editor);
-        window.requestAnimationFrame(() => {
-          try { focusEditor(); } catch {}
-        });
       }
+      window.requestAnimationFrame(() => {
+        try { focusEditor(); } catch {}
+      });
     },
     setSelectionRange(start, end, direction) {
       const selection = composerSelectionFromPlainTextRange(

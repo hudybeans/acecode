@@ -23,6 +23,10 @@ export function useSavedModelReorder({ models, filtered, query, disabled, onReor
     event.preventDefault();
     event.stopPropagation();
     const owner = event.currentTarget;
+    // The handle captures the pointer, but the preview must measure the full row.
+    const row = owner.closest('[data-saved-model-name]');
+    if (!row) return;
+    const cardRect = row.getBoundingClientRect();
     const pointerId = event.pointerId;
     const start = { x: event.clientX, y: event.clientY };
     const point = { ...start };
@@ -54,9 +58,15 @@ export function useSavedModelReorder({ models, filtered, query, disabled, onReor
       if (target && reorderSavedModels(models, model.name, target.name, target.placement) === models) {
         target = null;
       }
+      const left = cardRect.left + point.x - start.x;
+      const top = cardRect.top + point.y - start.y;
       setDrag((current) => current?.source === model.name
         && current?.target === target?.name && current?.placement === target?.placement
-        ? current : { source: model.name, target: target?.name, placement: target?.placement });
+        && current.left === left && current.top === top
+        ? current : {
+          source: model.name, target: target?.name, placement: target?.placement,
+          left, top, width: cardRect.width, height: cardRect.height,
+        });
     };
 
     const scroll = (time) => {

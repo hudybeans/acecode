@@ -6,6 +6,7 @@ import { createEditor, Editor, Range, Transforms } from 'slate';
 import { HistoryEditor, withHistory } from 'slate-history';
 import * as contentModel from './composerContent.js';
 import { composerDraftEditFingerprint } from './composerDraft.js';
+import { withComposerImageAttachments } from './composerImagePresentation.js';
 import { isUserComposerEdit } from './inputHistoryNavigation.js';
 import * as composerModel from './richComposerModel.js';
 import { formatSessionReferenceToken } from './sessionReference.js';
@@ -371,6 +372,7 @@ run('resuming edits cancels an earlier picker caret restore before upload comple
   const context = vm.createContext({
     ...contentModel, composerDraftEditFingerprint, isUserComposerEdit,
     valueRef: { current: oldText }, contentRef: { current: test.content },
+    mergeEditorContent: (content) => withComposerImageAttachments(content, test.content),
     caretRestoreUntilRef: { current: 999999 }, caretRestoreSelectionRef: { current: { start: 1, end: 1 } },
     clearCaretRestoreSchedule: () => { state.cleared = true; },
     updateValue: (text, content) => { state.updated = { text, content }; },
@@ -392,6 +394,7 @@ run('legacy path tokenization and upload metadata echoes preserve input history 
   const context = vm.createContext({
     ...contentModel, composerDraftEditFingerprint, isUserComposerEdit,
     valueRef: { current: '@src/main.cpp' }, contentRef: { current: source },
+    mergeEditorContent: (content) => withComposerImageAttachments(content, source),
     caretRestoreUntilRef: { current: 100 }, caretRestoreSelectionRef: { current: { start: 1, end: 1 } },
     clearCaretRestoreSchedule: () => { throw new Error('semantic echo must not clear caret state'); },
     updateValue: () => { state.updates += 1; },

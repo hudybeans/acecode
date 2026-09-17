@@ -592,7 +592,7 @@ export function ProviderCatalogPicker({
                           className="flex h-4 w-4 items-center justify-center rounded hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent"
                           aria-label={`移除模型 ${modelId}`}
                         >
-                          ×
+                          <VsIcon name="close" size={12} />
                         </button>
                       </span>
                     ))}

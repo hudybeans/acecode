@@ -5,6 +5,7 @@ import {
   type PointerEvent,
 } from 'react'
 import { Tooltip } from './Tooltip.tsx'
+import { VsIcon } from '../../Icon.jsx'
 import type { TrajectoryTurnModel } from './layout.ts'
 import type { AssistantMetricDetail, TrajectoryCellKind, TrajectoryCellProps } from './trajectory-record.ts'
 import {
@@ -225,7 +226,7 @@ function EarlierHistoryBoundary({
         onPointerMove={(event) => { event.stopPropagation() }}
         onPointerDown={(event) => { event.stopPropagation() }}
       >
-        …
+        <VsIcon name="ellipsis" size={13} />
       </button>
     </Tooltip>
   )

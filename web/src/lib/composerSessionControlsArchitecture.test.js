@@ -118,10 +118,8 @@ run('swarm and expert selections survive submission until explicitly changed', (
   assert.match(inputBar, /aria-checked=\{swarmMode\}/);
   assert.match(inputBar, /<SwarmModeIcon size=\{15\}/);
   assert.match(inputBar, />蜂群模式</);
-  assert.match(icon, /HEX_CELLS/);
-  assert.match(icon, /<polygon/);
-  assert.equal((icon.match(/\[[\d.]+,\s*[\d.]+\]/g) || []).length, 7);
-  assert.match(icon, /stroke="currentColor"/);
+  assert.match(icon, /<VsIcon name="Swarm" size=\{size\} className=\{className\}/);
+  assert.doesNotMatch(icon, /<svg|<polygon|strokeWidth/);
 
   assert.match(chatView, /const \[composerSwarmMode, setComposerSwarmMode\] = useState\(false\)/);
   assert.match(chatView, /if \(swarmMode\) payload\.swarm_mode = true/);

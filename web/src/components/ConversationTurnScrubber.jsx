@@ -1,3 +1,4 @@
+import { VsIcon } from './Icon.jsx';
 import {
   useCallback,
   useEffect,
@@ -427,9 +428,7 @@ export function ConversationTurnScrubber({
           onLostPointerCapture={() => stopArrowHold(false)}
           onClick={() => activatePageControl(-1)}
         >
-          <svg viewBox="0 0 20 20" aria-hidden="true">
-            <path d="m5 12 5-5 5 5" />
-          </svg>
+          <VsIcon name="expandUp" size={14} />
         </button>
       )}
 
@@ -512,9 +511,7 @@ export function ConversationTurnScrubber({
           onLostPointerCapture={() => stopArrowHold(false)}
           onClick={() => activatePageControl(1)}
         >
-          <svg viewBox="0 0 20 20" aria-hidden="true">
-            <path d="m5 8 5 5 5-5" />
-          </svg>
+          <VsIcon name="expandDown" size={14} />
         </button>
       )}
 

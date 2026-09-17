@@ -1,3 +1,4 @@
+import { VsIcon } from './Icon.jsx';
 import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { toast } from './Toast.jsx';
@@ -111,9 +112,7 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
             <span className="ace-theme-card-state">{entry?.update_available ? '可更新' : selected === builtin.id && entry?.installed ? '使用中' : entry?.installed ? '已下载' : entry?.available === false ? '暂时无法下载' : '未下载'}</span>
             {canDownload && (
               <span className="ace-theme-card-download-cover" aria-hidden="true">
-                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" />
-                </svg>
+                <VsIcon name="Download" size={52} />
               </span>
             )}
           </button>
@@ -134,12 +133,10 @@ export function ThemeCards({ options, selected, onSelect, downloads, onCreateAiT
         })}
         <div className="ace-theme-card ace-ai-theme-action">
           <button type="button" className="ace-theme-card-choice" onClick={onCreateAiTheme}>
-            <svg className="ace-ai-theme-wand" width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="m14 5 5 5L8 21H3v-5L14 5Zm-3 3 5 5M5 2v5M2.5 4.5h5M20 15v5M17.5 17.5h5M19 2v4M17 4h4" />
-            </svg>
+            <VsIcon name="MagicWand" className="ace-ai-theme-wand" size={29} />
             <span className="ace-theme-card-name">AI主题</span>
             <span className="ace-ai-theme-description">描述灵感，生成专属主题</span>
-            <svg className="ace-ai-theme-arrow" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg>
+            <VsIcon name="arrowRight" className="ace-ai-theme-arrow" size={21} />
           </button>
         </div>
         {(downloads?.localEntries || []).map((local) => <LocalThemeCard key={local.id} entry={local} selected={selected === local.id} onSelect={onSelect}

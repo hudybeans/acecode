@@ -65,6 +65,8 @@ export function TopBar({
   updateReady = false,
   updateProgress = 0,
   onStartUpdate,
+  sessionTitleRef,
+  sessionActionsRef,
 }) {
   const { framelessDesktop, isMaximized, isFullscreen } = useFramelessWindowState();
   const topBarRef = useRef(null);
@@ -154,23 +156,26 @@ export function TopBar({
       )}
       style={{ '--ace-topbar-sidebar-width': sidebarCollapsed ? '0px' : `${sidebarWidth || 0}px` }}
     >
-      <QuickBtn
-        title={sidebarCollapsed ? '展开项目栏' : '收起项目栏'}
-        onClick={onToggleSidebar}
-        pressed={!sidebarCollapsed}
-        panelToggle
-      >
-        <PanelToggleIcon side="left" size={16} expanded={!sidebarCollapsed} />
-      </QuickBtn>
-      <QuickBtn title="后退" onClick={onGoBack} disabled={!canGoBack}>
-        <NavigationArrowIcon direction="back" size={16} />
-      </QuickBtn>
-      <QuickBtn title="前进" onClick={onGoForward} disabled={!canGoForward}>
-        <NavigationArrowIcon direction="forward" size={16} />
-      </QuickBtn>
-      <QuickBtn title="搜索任务" onClick={onOpenSearch}>
-        <VsIcon name="search" size={16} />
-      </QuickBtn>
+      <div className="ace-topbar-navigation flex items-center gap-1">
+        <QuickBtn
+          title={sidebarCollapsed ? '展开项目栏' : '收起项目栏'}
+          onClick={onToggleSidebar}
+          pressed={!sidebarCollapsed}
+          panelToggle
+        >
+          <PanelToggleIcon side="left" size={16} expanded={!sidebarCollapsed} />
+        </QuickBtn>
+        <QuickBtn title="后退" onClick={onGoBack} disabled={!canGoBack}>
+          <NavigationArrowIcon direction="back" size={16} />
+        </QuickBtn>
+        <QuickBtn title="前进" onClick={onGoForward} disabled={!canGoForward}>
+          <NavigationArrowIcon direction="forward" size={16} />
+        </QuickBtn>
+        <QuickBtn title="搜索任务" onClick={onOpenSearch}>
+          <VsIcon name="search" size={16} />
+        </QuickBtn>
+      </div>
+      <div ref={sessionTitleRef} className="ace-topbar-session-title min-w-0 flex-1" />
       {updateAvailable && (
         <button
           type="button"
@@ -210,27 +215,30 @@ export function TopBar({
           )}
         </button>
       )}
-      <div className="ace-topbar-controls ml-auto flex items-center gap-1">
-        {consoleAvailable && (
+      <div className="ace-topbar-controls ml-auto flex items-center shrink-0">
+        <div className="ace-topbar-functions flex items-center gap-1">
+          <div ref={sessionActionsRef} className="ace-topbar-session-actions flex items-center empty:hidden" />
+          {consoleAvailable && (
+            <QuickBtn
+              title={consoleOpen ? '关闭控制台 (Ctrl+`)' : '打开控制台 (Ctrl+`)'}
+              onClick={onToggleConsole}
+              pressed={consoleOpen}
+              panelToggle
+              className="ace-topbar-console-toggle"
+            >
+              <PanelToggleIcon side="bottom" size={16} expanded={consoleOpen} />
+            </QuickBtn>
+          )}
           <QuickBtn
-            title={consoleOpen ? '关闭控制台 (Ctrl+`)' : '打开控制台 (Ctrl+`)'}
-            onClick={onToggleConsole}
-            pressed={consoleOpen}
+            title={rightPanelCollapsed ? '展开整个右侧面板' : '收起整个右侧面板'}
+            onClick={onToggleRightPanel}
+            pressed={!rightPanelCollapsed}
             panelToggle
-            className="ace-topbar-console-toggle"
+            aria-expanded={!rightPanelCollapsed}
           >
-            <PanelToggleIcon side="bottom" size={16} expanded={consoleOpen} />
+            <PanelToggleIcon side="right" size={16} expanded={!rightPanelCollapsed} />
           </QuickBtn>
-        )}
-        <QuickBtn
-          title={rightPanelCollapsed ? '展开整个右侧面板' : '收起整个右侧面板'}
-          onClick={onToggleRightPanel}
-          pressed={!rightPanelCollapsed}
-          panelToggle
-          aria-expanded={!rightPanelCollapsed}
-        >
-          <PanelToggleIcon side="right" size={16} expanded={!rightPanelCollapsed} />
-        </QuickBtn>
+        </div>
         {framelessDesktop && <WindowControls isMaximized={isMaximized} />}
       </div>
     </div>

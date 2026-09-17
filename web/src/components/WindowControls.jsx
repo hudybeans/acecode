@@ -8,6 +8,7 @@
 //     <WindowControls isMaximized={isMaximized} />
 //   )}
 
+import { VsIcon } from './Icon.jsx';
 import { useEffect, useState } from 'react';
 import { clsx } from '../lib/format.js';
 import { isMacDesktopShell } from '../lib/desktopShellMode.js';
@@ -80,35 +81,15 @@ export function useFramelessWindowState() {
   return { framelessDesktop, isMaximized, isFullscreen };
 }
 
+const WINDOW_GLYPHS = Object.freeze({
+  minimize: 'Minimize',
+  maximize: 'Maximize',
+  restore: 'Restore',
+  close: 'close',
+});
+
 function WindowGlyph({ type }) {
-  if (type === 'minimize') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <path d="M3.5 10.5h9" />
-      </svg>
-    );
-  }
-  if (type === 'maximize') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1" />
-      </svg>
-    );
-  }
-  if (type === 'restore') {
-    // Win11 style: back box as an L shape, front box complete.
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <path d="M5.75 6.25V3.25h6.5v6.5H10.25" />
-        <rect x="3.75" y="6.25" width="6.5" height="6.5" rx="1" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5" />
-    </svg>
-  );
+  return <VsIcon name={WINDOW_GLYPHS[type] || 'close'} size={14} />;
 }
 
 export function WindowControl({ type, title, onClick }) {

@@ -65,7 +65,7 @@
 }
 
 :root {
-  --ace-topbar-height: 30px;
+  --ace-topbar-height: 41px;
   --ace-bg:           #f5f5f2;
   --ace-bg-rgb:       245, 245, 242;
   --ace-surface:      #ffffff;
@@ -441,16 +441,6 @@ body {
     background-color 160ms ease,
     box-shadow 160ms ease,
     transform 240ms cubic-bezier(.34, 1.56, .64, 1);
-}
-
-.ace-conversation-turn-page-button > svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .ace-conversation-turn-page-button:hover:not(:disabled) {
@@ -1719,14 +1709,50 @@ body {
 
 /* Desktop frameless window chrome */
 .ace-topbar {
-  /* 30 CSS px matches a 45px title bar at 150% Windows display scaling. */
-  --ace-topbar-control-size: calc(var(--ace-topbar-height) - 6px);
-  height: var(--ace-topbar-height);
+  /* Add 5px above and 6px below the original 30px row without enlarging controls. */
+  --ace-topbar-control-size: 24px;
+  box-sizing: border-box;
+  min-height: var(--ace-topbar-height);
+  height: auto;
+  padding-top: 5px;
+  padding-bottom: 6px;
 }
 .ace-topbar-action {
   width: var(--ace-topbar-control-size);
   height: var(--ace-topbar-control-size);
   flex-shrink: 0;
+}
+.ace-topbar-navigation,
+.ace-topbar-controls,
+.ace-topbar-update-button {
+  /* Keep controls aligned with native macOS lights when a long directory wraps. */
+  align-self: flex-start;
+  margin-top: 3px;
+}
+.ace-topbar-navigation {
+  width: max(108px, calc(var(--ace-topbar-sidebar-width) - var(--ace-topbar-leading-inset, 8px) - 4px));
+  max-width: 35vw;
+  min-width: 108px;
+  flex-shrink: 1;
+}
+.ace-session-workspace {
+  max-width: calc(100% - 8px);
+  overflow-wrap: anywhere;
+}
+.ace-topbar-session-title { padding-left: 12px; }
+.ace-topbar-controls { gap: 40px; }
+.ace-topbar-controls > .ace-window-controls { margin-left: 0; }
+.ace-topbar .ace-topbar-action,
+.ace-topbar .ace-session-title-actions > button {
+  border-radius: 7px;
+}
+.ace-topbar .ace-session-title-actions > button {
+  width: var(--ace-topbar-control-size);
+  height: var(--ace-topbar-control-size);
+}
+@media (max-width: 640px) {
+  .ace-topbar-navigation { width: 108px; }
+  .ace-topbar-session-title { padding-left: 0; }
 }
 .ace-topbar-update-button {
   height: var(--ace-topbar-control-size);
@@ -1786,6 +1812,7 @@ body {
 .ace-desktop-macos-topbar {
   /* Leave AppKit's native traffic lights clear of the first web action. */
   padding-left: 80px;
+  --ace-topbar-leading-inset: 80px;
 }
 .ace-topbar-panel-toggle:focus-visible {
   outline: 1px solid var(--ace-fg-2);
@@ -1827,6 +1854,8 @@ body {
   cursor: default;
   transition: background-color .12s ease, color .12s ease;
 }
+.ace-topbar .ace-topbar-action:not(:disabled):is(:hover, :focus-visible),
+.ace-topbar .ace-session-title-actions > button:not(:disabled):is(:hover, :focus-visible),
 .ace-window-control:hover,
 .ace-window-control:focus-visible {
   outline: none;
@@ -1837,15 +1866,6 @@ body {
 .ace-window-control-close:focus-visible {
   background: #e81123;
   color: #fff;
-}
-.ace-window-control svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 /* Settings keeps the current workspace visible while remaining a blocking surface. */
@@ -2023,6 +2043,9 @@ body {
 
 /* Desktop shell 自定义右键菜单:屏蔽 WebView 默认菜单后只暴露受控操作。 */
 .ace-desktop-context-menu {
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+  overflow-y: auto;
   position: fixed;
   z-index: 10000;
   width: 176px;
@@ -2034,7 +2057,9 @@ body {
   color: var(--ace-fg);
 }
 .ace-desktop-context-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   height: 30px;
   padding: 0 10px;
@@ -2060,8 +2085,11 @@ body {
   background: transparent;
 }
 .ace-desktop-context-menu-separator {
-  margin-top: 4px;
-  border-top: 1px solid var(--ace-border);
+  height: 1px;
+  margin: 4px 6px;
+  border: 0;
+  border-radius: 0;
+  background: var(--ace-border);
 }
 .ace-desktop-context-menu-danger {
   color: var(--ace-danger);
@@ -2071,7 +2099,7 @@ body {
   background: var(--ace-danger-bg);
 }
 
-/* IconPark line icons */
+/* Shared rounded icons; static markup can still use the public SVG masks. */
 .ace-icon {
   display: inline-block;
   flex-shrink: 0;
@@ -2086,38 +2114,17 @@ body {
   -webkit-mask-size: contain;
   mask-size: contain;
 }
-.ace-icon.ace-icon-fallback {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.ace-icon.ace-icon-inline {
   background-color: transparent;
   -webkit-mask-image: none;
   mask-image: none;
 }
-.ace-icon-fallback-img {
+.ace-icon-svg {
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
   pointer-events: none;
 }
-.ace-icon.ace-icon-fallback[data-monochrome="true"] .ace-icon-fallback-img {
-  opacity: 0.78;
-}
-[data-theme="dark"] .ace-icon.ace-icon-fallback[data-monochrome="true"] .ace-icon-fallback-img {
-  filter: invert(1) brightness(1.15);
-  opacity: 0.9;
-}
-.model-capability-icon .ace-icon.ace-icon-fallback {
-  overflow: hidden;
-}
-.model-capability-icon .ace-icon.ace-icon-fallback[data-monochrome="true"] .ace-icon-fallback-img {
-  filter: drop-shadow(13px 0 0 currentColor);
-  opacity: 1;
-  transform: translateX(-13px);
-}
 .ace-icon-on-accent {
-  color: #fff !important;
+  color: inherit !important;
   opacity: 1 !important;
 }
 .ace-provider-logo-mask {
@@ -2524,10 +2531,6 @@ body {
   transform: scale(1.333);
   transform-origin: center;
 }
-[data-theme="dark"] .ace-sidebar-custom-icon[data-monochrome="true"] {
-  filter: invert(1) brightness(1.25);
-  opacity: 0.9;
-}
 
 /* 流式光标已移除 — ChatView header 的"运行中" chip 已经表达 streaming 状态。 */
 
@@ -2540,23 +2543,23 @@ body {
 @keyframes ace-session-loading-turn { to { transform: rotate(360deg); } }
 @keyframes ace-session-loading-dot-top {
   0%, 100% { transform: translateY(-5px); }
-  36%, 72% { transform: translateY(-2.35px); }
+  50% { transform: translateY(-3.5px); }
 }
 @keyframes ace-session-loading-dot-right {
   0%, 100% { transform: translateX(5px); }
-  36%, 72% { transform: translateX(2.35px); }
+  50% { transform: translateX(3.5px); }
 }
 @keyframes ace-session-loading-dot-bottom {
   0%, 100% { transform: translateY(5px); }
-  36%, 72% { transform: translateY(2.35px); }
+  50% { transform: translateY(3.5px); }
 }
 @keyframes ace-session-loading-dot-left {
   0%, 100% { transform: translateX(-5px); }
-  36%, 72% { transform: translateX(-2.35px); }
+  50% { transform: translateX(-3.5px); }
 }
 .ace-spinner {
   display: inline-block; width: 1em; height: 1em;
-  border: 2px solid rgba(var(--ace-fg-mute-rgb), 0.40);
+  border: calc(.05em + .2px) solid rgba(var(--ace-fg-mute-rgb), 0.40);
   border-top-color: var(--ace-accent);
   border-radius: 50%;
   animation: ace-spin .8s linear infinite;
@@ -2582,9 +2585,9 @@ body {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 5.5px;
-  height: 5.5px;
-  margin: -2.75px 0 0 -2.75px;
+  width: 4.3px;
+  height: 4.3px;
+  margin: -2.15px 0 0 -2.15px;
   border-radius: 9999px;
   background: currentColor;
   transform-origin: center;
@@ -2677,7 +2680,7 @@ body {
   width: 12px;
   height: 12px;
   flex: 0 0 12px;
-  border-width: 1.5px;
+  border-width: .8px;
 }
 .ace-modal-dialog {
   max-width: 100%;
@@ -2843,9 +2846,6 @@ body {
 }
 [data-theme-titlebar-controls="white"] .ace-app-shell[data-home-wallpaper="true"] .ace-topbar-controls .ace-topbar-panel-toggle:focus-visible {
   outline-color: currentColor;
-}
-[data-theme-titlebar-controls="white"] .ace-app-shell[data-home-wallpaper="true"] .ace-topbar-controls .ace-icon-fallback-img {
-  filter: brightness(0) invert(1);
 }
 [data-installed-theme] .ace-home-hint-card,
 [data-installed-theme] .ace-inputbar-hero-card,
@@ -5185,6 +5185,11 @@ a.ace-thread-link:focus-visible {
   color: var(--ace-fg);
   background: var(--ace-surface-alt);
 }
+.ace-list-panel-toggle[aria-pressed="true"],
+.ace-list-panel-toggle[aria-pressed="true"]:hover {
+  color: var(--ace-accent);
+  background: var(--ace-accent-bg);
+}
 .ace-sidebar-heading-collapse-btn:focus-visible,
 .ace-side-panel-collapse-btn:focus-visible,
 .ace-side-panel-collapse-tree-btn:focus-visible,
@@ -6197,20 +6202,6 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
   align-items: center;
   justify-content: center;
 }
-.ace-office-preview-zoom-modifier {
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  min-width: 9px;
-  height: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  background: rgba(var(--ace-bg-rgb), 0.94);
-  color: currentColor;
-  font: 700 9px/9px "Segoe UI", sans-serif;
-}
 .ace-side-docx-preview,
 .ace-side-spreadsheet-preview {
   flex: 1 1 auto;
@@ -6500,7 +6491,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
   transition: color 120ms ease, opacity 120ms ease;
 }
 
-.ace-activity-line-chevron svg {
+.ace-activity-line-chevron > .ace-icon {
   transform-origin: 50% 50%;
   transition: transform 150ms cubic-bezier(.2, 0, 0, 1);
 }
@@ -6570,7 +6561,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
     animation: none;
   }
 
-  .ace-activity-line-chevron svg {
+  .ace-activity-line-chevron > .ace-icon {
     transition: none;
   }
 }

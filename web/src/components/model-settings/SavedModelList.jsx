@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useSavedModelReorder } from './useSavedModelReorder.js';
 import { clsx } from '../../lib/format.js';
 import { filterSavedModels } from '../../lib/modelManager.js';
@@ -19,6 +20,7 @@ function SavedModelRow({
   deleteBlocked,
   reorder,
   reorderEnabled,
+  dragPreview = false,
   onSetDefault,
   onEdit,
   onDelete,
@@ -26,17 +28,18 @@ function SavedModelRow({
   const disabled = !!busy;
   return (
     <article
-      role="listitem"
-      data-saved-model-name={model.name}
-      onPointerDown={(event) => reorder.onPointerDown(event, model)}
+      role={dragPreview ? undefined : 'listitem'}
+      data-saved-model-name={dragPreview ? undefined : model.name}
+      onPointerDown={dragPreview ? undefined : (event) => reorder.onPointerDown(event, model)}
       onDragStart={(event) => event.preventDefault()}
       className={clsx(
         'relative flex min-w-0 flex-wrap items-center gap-3 rounded-md border border-border bg-surface px-3.5 py-2.5',
         reorderEnabled && !disabled && 'cursor-grab',
-        reorder.drag?.source === model.name && 'opacity-50',
+        !dragPreview && reorder.drag?.source === model.name && 'opacity-25',
+        dragPreview && 'h-full w-full ace-shadow-lg',
       )}
     >
-      {reorder.drag?.target === model.name && (
+      {!dragPreview && reorder.drag?.target === model.name && (
         <span aria-hidden="true" className={clsx(
           'pointer-events-none absolute -inset-x-px h-0.5 rounded bg-accent',
           reorder.drag.placement === 'before' ? '-top-1.5' : '-bottom-1.5',
@@ -54,11 +57,7 @@ function SavedModelRow({
           reorderEnabled && !disabled ? 'cursor-grab hover:text-fg active:cursor-grabbing' : 'cursor-default opacity-40',
         )}
       >
-        <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor" aria-hidden="true">
-          <circle cx="4" cy="4" r="1" /><circle cx="8" cy="4" r="1" />
-          <circle cx="4" cy="8" r="1" /><circle cx="8" cy="8" r="1" />
-          <circle cx="4" cy="12" r="1" /><circle cx="8" cy="12" r="1" />
-        </svg>
+        <VsIcon name="GripVertical" size={16} style={{ width: 12 }} />
       </button>
       <ProviderIcon provider={model} />
       <div className="min-w-[180px] flex-1">
@@ -140,6 +139,9 @@ export function SavedModelList({
   const reorder = useSavedModelReorder({
     models, filtered, query, disabled: loading || !!busy, onReorder,
   });
+  const draggedModel = reorder.drag
+    ? models.find((model) => model.name === reorder.drag.source)
+    : null;
   return (
     <section aria-labelledby="saved-models-title">
       <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
@@ -221,6 +223,33 @@ export function SavedModelList({
             {query ? '调整搜索词，或清空搜索查看全部预设。' : '新增一个 Provider 配置后即可在这里管理。'}
           </div>
         </div>
+      )}
+      {draggedModel && createPortal(
+        <div
+          data-saved-model-drag-preview="true"
+          aria-hidden="true"
+          inert=""
+          className="pointer-events-none fixed left-0 top-0 z-[400] select-none"
+          style={{
+            width: reorder.drag.width,
+            height: reorder.drag.height,
+            transform: `translate3d(${reorder.drag.left}px, ${reorder.drag.top}px, 0)`,
+          }}
+        >
+          <SavedModelRow
+            model={draggedModel}
+            isDefault={draggedModel.name === defaultName}
+            busy={!!busy}
+            deleteBlocked={!!(
+              draggedModel.in_use || draggedModel.deletion_blocked
+              || blockedDeletes.has(draggedModel.name)
+            )}
+            reorder={reorder}
+            reorderEnabled
+            dragPreview
+          />
+        </div>,
+        document.body,
       )}
     </section>
   );

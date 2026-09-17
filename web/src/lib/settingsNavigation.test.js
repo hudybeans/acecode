@@ -32,7 +32,7 @@ test('settings navigation uses the confirmed Codex-style groups', () => {
       {
         key: 'integrations',
         label: '集成',
-        items: ['技能', 'MCP 服务器', '连接器'],
+        items: ['技能', 'MCP 服务器', '插件'],
       },
       {
         key: 'coding',

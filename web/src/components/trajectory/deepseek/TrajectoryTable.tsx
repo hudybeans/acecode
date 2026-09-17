@@ -1,5 +1,6 @@
 /** Turn-aware trajectory event ledger with a local record inspector. */
 
+import { VsIcon } from '../../Icon.jsx'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -51,62 +52,19 @@ const KIND_LABEL: Record<TrajectoryCellKind, string> = {
 
 function ToolWrenchIcon(): ReactNode {
   return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      data-role-icon="wrench"
-      aria-hidden="true"
-    >
-      <path d="M14 3.3a3.8 3.8 0 0 1-4.8 4.8l-5.1 5.1a1.6 1.6 0 1 1-2.3-2.3l5.1-5.1A3.8 3.8 0 0 1 11.7 1l-2.3 2.3 2.3 2.3L14 3.3Z" />
-    </svg>
+    <VsIcon name="tool" size={13} data-role-icon="wrench" />
   )
 }
 
 function InformationIcon(): ReactNode {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      data-role-icon="information"
-      aria-hidden="true"
-    >
-      <circle cx="8" cy="8" r="6.7" />
-      <circle cx="8" cy="5.5" r=".85" fill="currentColor" stroke="none" />
-      <path d="M8 7.75v3.4" strokeWidth="1.8" />
-    </svg>
+    <VsIcon name="info" size={14} data-role-icon="information" />
   )
 }
 
 function CompactedIcon(): ReactNode {
   return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      data-role-icon="compacted"
-      aria-hidden="true"
-    >
-      <path d="m2.5 2.5 3.75 3.75M3 6.25h3.25V3" />
-      <path d="m13.5 2.5-3.75 3.75M13 6.25H9.75V3" />
-      <path d="m2.5 13.5 3.75-3.75M3 9.75h3.25V13" />
-      <path d="m13.5 13.5-3.75-3.75M13 9.75H9.75V13" />
-    </svg>
+    <VsIcon name="Compact" size={13} data-role-icon="compacted" />
   )
 }
 
@@ -1167,22 +1125,7 @@ function AssistantToolCalls({
               if (call.callId !== undefined) onOpenCall(call.callId)
             }}
           >
-            <svg
-              className={css.assistantToolCallIcon}
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <VsIcon name="tool" className={css.assistantToolCallIcon} size={12} />
             <span className={css.assistantToolCallText}>
               <span className={css.assistantToolCallName}>
                 {call.toolName ?? 'tool-call'}
@@ -1200,22 +1143,7 @@ function AssistantToolCalls({
 
 function ToolGlyph() {
   return (
-    <svg
-      className={css.toolCatalogIcon}
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <VsIcon name="tool" className={css.toolCatalogIcon} size={12} />
   )
 }
 
@@ -2501,7 +2429,7 @@ export function TrajectoryTable({
                                 </span>
                                 {resultText !== undefined && (
                                   <span className={record.cell.isError ? `${css.inlineResult} ${css.error}` : css.inlineResult}>
-                                    <span className={css.arrow}>→</span>
+                                    <VsIcon name="arrowRight" size={12} className={css.arrow} />
                                     <span className={resultText === 'No output'
                                       ? `${css.inlineResultText} ${css.noOutputText}`
                                       : css.inlineResultText}
@@ -2670,7 +2598,7 @@ export function TrajectoryTable({
               aria-label="Close details"
               onClick={clearInspectorSelection}
             >
-              <span aria-hidden="true">×</span>
+              <VsIcon name="close" size={16} />
             </button>
           </div>
           <div className={css.detailTabs} role="tablist" aria-label="Event details">

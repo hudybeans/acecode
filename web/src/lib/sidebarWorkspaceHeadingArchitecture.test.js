@@ -134,17 +134,16 @@ test('workspace rows expose a shared menu button followed by the new-task shortc
   assert.ok(menuIndex >= 0 && newTaskIndex > menuIndex);
   assert.equal((actions.match(/<button\b/g) || []).length, 2);
   assert.match(actions, /onClick=\{openWorkspaceContextMenu\}/);
-  assert.match(actions, /<VsIcon name="workspaceMenu" size=\{16\}/);
-  assert.match(actions, /<VsIcon name="newSession" size=\{16\}/);
+  assert.match(actions, /<VsIcon name="workspaceMenu" size=\{18\}/);
+  assert.match(actions, /<VsIcon name="newSession" size=\{18\}/);
   assert.doesNotMatch(actions, /<VsIcon name="(?:edit|close)"/);
 
   assert.match(icons, /workspaceMenu: 'WorkspaceMenu'/);
-  assert.match(workspaceMenuSvg, /viewBox="0 0 16 16"/);
-  assert.match(workspaceMenuSvg, /transform="matrix\(1 0 0 1 2 7\)"/);
-  assert.match(workspaceMenuSvg, /d="M0 1[^"]*M5 1[^"]*M10 1/);
+  assert.match(workspaceMenuSvg, /viewBox="0 0 20 20"/);
+  assert.equal((workspaceMenuSvg.match(/<circle\b/g) || []).length, 3);
+  assert.match(workspaceMenuSvg, /stroke="currentColor"/);
   assert.doesNotMatch(workspaceMenuSvg, /<(?:rect|polygon)\b|rotate\(/);
-  assert.match(iconGenerator, /WorkspaceMenu: 'MoreThree'/);
-  assert.match(iconGenerator, /WorkspaceMenu: `<svg[^`]*M0 1[^`]*M5 1[^`]*M10 1/);
+  assert.match(iconGenerator, /interfaceIcons\.js/);
 
   assert.match(
     workspaceGroup,

@@ -144,7 +144,7 @@ export function GitChangesPanel({
           <span className="text-fg-mute font-normal min-w-0 basis-[72px] truncate max-w-[72px]" title={list?.branch || gitInfo.branch}>
             {list?.branch || gitInfo.branch}
           </span>
-          <span className="text-fg-mute opacity-60 shrink-0" aria-hidden="true">→</span>
+          <VsIcon name="arrowRight" size={12} className="text-fg-mute opacity-60 shrink-0" />
           <div className="flex min-w-12">
             <button
               ref={baseAnchorRef}

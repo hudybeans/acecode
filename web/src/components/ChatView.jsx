@@ -20,6 +20,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { flushSync } from 'react-dom';
+import { appendComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { createApi } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -45,6 +46,7 @@ import { SideChatWindow } from './SideChatWindow.jsx';
 import { createSideChatController } from '../lib/sideChatController.js';
 import '../styles/side-chat.css';
 import { GitSessionPill } from './GitSessionPill.jsx';
+import { SessionTitleBar } from './SessionTitleBar.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
@@ -112,7 +114,7 @@ import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
 import { homeComposerDraft, homeComposerDraftText } from '../lib/homeComposerDrafts.js';
 import {
-  composerContentAttachments, composerContentSignature,
+  composerContentAttachments, composerContentFromText, composerContentSignature,
   normalizeComposerContent, reconcileComposerContentAttachments,
 } from '../lib/composerContent.js';
 import {
@@ -169,7 +171,7 @@ import {
 import { composerReasoningOptions } from '../lib/modelReasoning.js';
 import { normalizePermissionMode, permissionModeOption } from '../lib/permissionMode.js';
 import { ATTACHMENT_HARD_LIMIT_BYTES, normalizeImageFile } from '../lib/imageNormalize.js';
-import { PanelToggleIcon, VsIcon } from './Icon.jsx';
+import { VsIcon } from './Icon.jsx';
 import { commandWorkspaceHashForInput } from '../lib/slashCommandWorkspace.js';
 import { consoleCwdForContext } from '../lib/consoleDock.js';
 import {
@@ -261,6 +263,8 @@ import {
   scrollTopForPreservedActivityAnchor,
 } from '../lib/activityExpansionAnchor.js';
 import {
+  closeDesktopContextMenu,
+  openDesktopContextMenu,
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
 } from '../lib/desktopContextMenu.js';
@@ -546,7 +550,7 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
+export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
   const sessionRuntimeUnavailable = ref?.resumePending === true || ref?.resumeFailed === true;
@@ -865,6 +869,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const [selectionAction, setSelectionAction] = useState(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
   const [draftReadyKey, setDraftReadyKey] = useState('');
+  const [acceptedHomeSubmission, setAcceptedHomeSubmission] = useState(null);
   const draftEditVersionRef = useRef(0);
   const draftSessionKeyRef = useRef('');
   const draftLastSavedRef = useRef({ key: '', text: '' });
@@ -1431,9 +1436,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
     if (stagedItems.length > 0) {
       setComposerAttachments((items) => [...items, ...stagedItems]);
+      composerAttachmentsRef.current = [...composerAttachmentsRef.current, ...stagedItems];
+      const current = composerContentRef.current || composerContentFromText(composerValueRef.current);
+      const next = appendComposerImageAttachments(current, stagedItems);
+      if (composerContentSignature(next) !== composerContentSignature(current)) {
+        handleComposerChange(composerValueRef.current, next);
+      }
     }
     return stagedItems;
-  }, []);
+  }, [handleComposerChange]);
 
   const persistMediaFilesToSession = useCallback(async (targetSid, reservedFiles) => {
     const persistOne = async (reserved) => {
@@ -1871,6 +1882,19 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   // Home edits update App's draft store without triggering restoration again.
   // Only session/workspace changes should reset or load the scoped draft.
   }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, restoreComposerDraft, sid]);
+
+  useEffect(() => {
+    if (!acceptedHomeSubmission || acceptedHomeSubmission.sessionId !== sid
+      || draftReadyKey !== draftSessionKey) return;
+    // A fast first-send receipt can precede React's session promotion. Wait for
+    // the destination draft, then clear only the text/references we submitted.
+    const cleared = clearCurrentSessionDraft({
+      expectedText: acceptedHomeSubmission.text,
+      expectedContent: acceptedHomeSubmission.content,
+    });
+    if (cleared && acceptedHomeSubmission.clearExtras) clearComposerExtras();
+    setAcceptedHomeSubmission((current) => current === acceptedHomeSubmission ? null : current);
+  }, [acceptedHomeSubmission, clearComposerExtras, clearCurrentSessionDraft, draftReadyKey, draftSessionKey, sid]);
 
   useEffect(() => {
     const targetSid = sid;
@@ -3107,14 +3131,13 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             }
           }
           if (payload.text.trim()) recordInputHistory(payload.text);
-          const stillSubmittedDraft = sidRef.current === id
-            && composerDraftEditFingerprint(composerValueRef.current, composerContentRef.current)
-              === composerDraftEditFingerprint(submittedComposerText, submittedComposerContent);
-          if (!isBuiltin && stillSubmittedDraft && (hasExtras || hasSwarmMode)) clearComposerExtras();
-          if (!isBuiltin && explicitHomeSend && stillSubmittedDraft) {
-            draftEditVersionRef.current += 1;
-            composerDirtyRef.current = false;
-            setComposerValue('');
+          if (!isBuiltin && explicitHomeSend) {
+            setAcceptedHomeSubmission({
+              sessionId: id,
+              text: submittedComposerText,
+              content: submittedComposerContent,
+              clearExtras: hasExtras || hasSwarmMode,
+            });
           }
           onHomeComposerDraftAccepted?.(
             submittedHomeDraftWorkspaceHash,
@@ -3790,6 +3813,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
     return pathBaseName(ref?.cwd || health?.cwd || '') || '当前项目';
   }, [health?.cwd, homeWorkspaces, ref?.cwd, ref?.workspaceName, ref?.workspace_name, sessionWorkspaceHash]);
+  useEffect(() => () => closeDesktopContextMenu(), [sid]);
   const sessionPath = ref?.sessionPath || ref?.session_path || '';
   const sessionPinned = !!(ref?.pinned || ref?.isPinned || ref?.is_pinned);
   const openSessionContextMenu = useCallback((event) => {
@@ -3798,15 +3822,28 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     event.stopPropagation();
     const button = event.currentTarget;
     const rect = button.getBoundingClientRect();
-    const target = sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
-    target.dispatchEvent(new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: Math.min(window.innerWidth - 8, rect.right - 4),
-      clientY: Math.min(window.innerHeight - 8, rect.bottom + 4),
-    }));
-  }, [sessionWorkspaceHash, sid]);
+    const target = readOnlyExternalSession ? button : sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
+    openDesktopContextMenu({
+      target,
+      trigger: button,
+      x: rect.right,
+      y: rect.bottom + 4,
+      leadingItems: [
+        ...(!readOnlyExternalSession ? [{
+          id: 'side_chat', label: '侧边聊天', icon: 'chat', group: 'session-view',
+          onSelect: () => {
+            openSideQuestionComposer();
+            setSideChatAnchor({ left: rect.left, top: rect.top });
+          },
+        }] : []),
+        ...(onFindInConversation ? [{
+          id: 'find_conversation', label: '查找', icon: 'search', group: 'session-view',
+          onSelect: onFindInConversation,
+        }] : []),
+      ],
+      includeContextActions: !readOnlyExternalSession,
+    });
+  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation]);
 
   const modelListEmptyLoaded = modelListLoaded && modelOptions.length === 0;
   const noModelLabel = '未配置模型';
@@ -5133,11 +5170,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const sidePanelShellStyle = {
     width: sidePanelNavigationCollapsed ? 0 : Math.max(0, effectiveSidePanelWidth),
   };
-  const sidePanelRestoreAction = sidePanelCollapsed && onToggleSidePanel
-    ? { onClick: onToggleSidePanel, label: '展开整个右侧面板' }
-    : sidePanelListCollapsed && !previewPanelVisible && onToggleSidePanelList
-      ? { onClick: onToggleSidePanelList, label: '展开列表面板' }
-      : null;
 
   return (
     <div ref={layoutRef} className="flex-1 flex min-w-0 ace-chat-layout">
@@ -5171,51 +5203,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           onOpenSession={onSessionPromoted}
         />
       )}
-      <div className="h-9 px-3 flex items-center justify-between bg-surface shrink-0 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="flex min-w-0 items-center gap-1.5">
-            {remoteControlBound && (
-              <VsIcon
-                name="computer"
-                size={14}
-                className="text-accent"
-                alt={tr('remoteControl.connectedSession')}
-                data-remote-control-session-icon="true"
-              />
-            )}
-            <span className="text-[13px] font-semibold text-fg truncate">{title}</span>
-          </span>
-          <span
-            className="px-2.5 py-0.5 rounded-full text-[10px] font-medium border whitespace-nowrap bg-surface-hi text-fg-mute border-transparent max-w-[180px] truncate"
-            title={workspaceLabel}
-            data-session-workspace-label="true"
-          >
-            {workspaceLabel}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {sid && !readOnlyExternalSession && (
-            <button
-              type="button"
-              onClick={(event) => {
-                const { left, top } = event.currentTarget.getBoundingClientRect();
-                openSideQuestionComposer();
-                setSideChatAnchor({ left, top });
-              }}
-              className={clsx(
-                'w-6 h-6 rounded-md flex items-center justify-center shrink-0 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25',
-                sideChatState.open
-                  ? 'bg-accent-bg text-accent hover:bg-accent-bg'
-                  : 'text-fg-mute hover:bg-surface-hi hover:text-fg',
-              )}
-              title="侧边聊天"
-              aria-label="侧边聊天"
-              aria-expanded={sideChatState.open}
-              aria-haspopup="dialog"
-            >
-              <VsIcon name="chat" size={14} />
-            </button>
-          )}
+      <SessionTitleBar titleTarget={titleTarget} actionsTarget={actionsTarget}
+        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}>
           {sid && (
             <button
               type="button"
@@ -5230,18 +5219,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               aria-label={trajectoryOpen ? 'Conversation' : 'Trajectory'}
               aria-pressed={trajectoryOpen}
             >
-              <VsIcon name="trajectory" size={14} />
-            </button>
-          )}
-          {sid && onFindInConversation && (
-            <button
-              type="button"
-              onClick={onFindInConversation}
-              className="w-6 h-6 rounded-md text-fg-mute flex items-center justify-center shrink-0 transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
-              title="搜索当前对话内容 (Ctrl+F)"
-              aria-label="搜索当前对话内容"
-            >
-              <VsIcon name="search" size={14} />
+              <VsIcon name="trajectory" size={16} />
             </button>
           )}
           {sid && (
@@ -5250,34 +5228,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               cwd={sidePanelCwd}
               refreshKey={`${turns}:${busy ? 1 : 0}`}
             />
-          )}
-          {sid && !readOnlyExternalSession && (
-            <button
-              type="button"
-              data-desktop-session-id={sid || undefined}
-              data-desktop-session-workspace={sessionWorkspaceHash || undefined}
-              data-desktop-session-path={sessionPath || undefined}
-              data-desktop-session-pinned={sessionPinned ? 'true' : 'false'}
-              data-desktop-session-title={title || undefined}
-              data-desktop-session-archive="true"
-              onClick={openSessionContextMenu}
-              className="w-7 h-7 rounded-md bg-surface-hi/0 text-fg-mute flex items-center justify-center transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
-              title="会话菜单"
-              aria-label="会话菜单"
-            >
-              <VsIcon name="ellipsis" size={15} />
-            </button>
-          )}
-          {sidePanelMounted && sidePanelRestoreAction && (
-            <button
-              type="button"
-              onClick={sidePanelRestoreAction.onClick}
-              className="ace-side-panel-expand-fab"
-              title={sidePanelRestoreAction.label}
-              aria-label={sidePanelRestoreAction.label}
-            >
-              <PanelToggleIcon side="right" size={15} />
-            </button>
           )}
           {sid && (subagentTasks.tasks.length > 0 || subagentPanelOpen) && (
             <button
@@ -5300,8 +5250,25 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               )}
             </button>
           )}
-        </div>
-      </div>
+          {sid && (
+            <button
+              type="button"
+              data-desktop-session-id={readOnlyExternalSession ? undefined : sid || undefined}
+              data-desktop-session-workspace={sessionWorkspaceHash || undefined}
+              data-desktop-session-path={sessionPath || undefined}
+              data-desktop-session-pinned={sessionPinned ? 'true' : 'false'}
+              data-desktop-session-title={title || undefined}
+              data-desktop-session-archive="true"
+              onClick={openSessionContextMenu}
+              className="w-7 h-7 rounded-md bg-surface-hi/0 text-fg-mute flex items-center justify-center transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+              title="会话菜单"
+              aria-label="会话菜单"
+              aria-haspopup="menu"
+            >
+              <VsIcon name="ellipsisVertical" size={16} />
+            </button>
+          )}
+      </SessionTitleBar>
 
       <div
         ref={subagentSplitRef}

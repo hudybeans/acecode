@@ -1,13 +1,14 @@
-// Keep the pre-compaction drag height, independent of the 30px visible chrome.
+// Retain the legacy minimum while allowing the full visible title bar to drag.
 export const TOPBAR_WINDOW_DRAG_HEIGHT = 44;
 
 export function topBarWindowDragAction(event, bounds, excluded = false) {
-  if (!bounds || bounds.width <= 0 || bounds.height <= 0 || excluded
+  if (!bounds || bounds.width <= 0 || !Number.isFinite(bounds.height) || bounds.height <= 0 || excluded
     || event.defaultPrevented || event.button !== 0) return null;
   const { clientX: x, clientY: y } = event;
+  const dragHeight = Math.max(TOPBAR_WINDOW_DRAG_HEIGHT, bounds.height);
   if (!Number.isFinite(x) || !Number.isFinite(y)
     || x < bounds.left || x >= bounds.right
-    || y < bounds.top || y >= bounds.top + TOPBAR_WINDOW_DRAG_HEIGHT) return null;
+    || y < bounds.top || y >= bounds.top + dragHeight) return null;
   return event.detail >= 2 ? 'maximize' : 'drag';
 }
 

@@ -17,7 +17,7 @@ import { FilePreviewContent } from './FilePreviewContent.jsx';
 import { AgentBrowserPanel } from './AgentBrowserPanel.jsx';
 import { SessionChangeDetails } from './ChangeReview.jsx';
 import { GitChangeDetails } from './GitChangeReview.jsx';
-import { FileTypeIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
+import { FileTypeIcon, VsIcon } from './Icon.jsx';
 
 const FILE_PREVIEW_WRAP_STORAGE_KEY = 'acecode.filePreviewWrap.v1';
 
@@ -934,13 +934,14 @@ export function PreviewDetailsPanel({
           {sidePanelListCollapsed && onToggleSidePanelList && (
             <button
               type="button"
-              className="ace-preview-details-action"
+              className="ace-preview-details-action ace-list-panel-toggle"
               onClick={onToggleSidePanelList}
               title="展开列表面板"
               aria-label="展开列表面板"
               aria-expanded="false"
+              aria-pressed="false"
             >
-              <PanelToggleIcon side="right" size={15} />
+              <VsIcon name="listPanel" size={16} />
             </button>
           )}
           <button

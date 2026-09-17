@@ -1,4 +1,6 @@
 import './questionPicker.test.js';
+import './interfaceIcons.test.js';
+import './composerImagePresentation.test.js';
 import './questionPickerLayout.test.js';
 import './questionPickerInteraction.test.js';
 
@@ -69,6 +71,7 @@ import './composerMessageRendering.test.js';
 import './composerLifecycle.test.js';
 import './composerDraftCallbacks.test.js';
 import './richComposerKeyboard.test.js';
+import './richComposerFocus.test.js';
 import './slateComposerArchitecture.test.js';
 import './chatFileDropFeedbackArchitecture.test.js';
 import './consoleDropPaths.test.js';

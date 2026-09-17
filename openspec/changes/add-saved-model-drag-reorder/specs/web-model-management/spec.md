@@ -8,6 +8,12 @@ The settings saved-model list SHALL allow users to drag a model card before or a
 - **THEN** the list displays insertion feedback and automatically saves the resulting order
 - **AND** reopening settings and refreshing model pickers retains that order
 
+#### Scenario: Whole card follows the pointer
+- **WHEN** the user drags a card body or its handle past the drag threshold
+- **THEN** the complete card follows the pointer at its original size and grab offset, including its provider icon, labels, capability badges, and action controls
+- **AND** the source retains a stationary placeholder and the floating card does not intercept input or become a drop target
+- **AND** dropping, cancelling, or closing the list removes the floating card
+
 #### Scenario: Reorder filtered results
 - **WHEN** the user reorders two models while a search filter is active
 - **THEN** the dragged model moves before or after the target in the complete saved list

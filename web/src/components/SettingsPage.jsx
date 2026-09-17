@@ -307,7 +307,7 @@ export function SettingsPage({
                           : 'text-fg-2',
                       )}
                     >
-                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
+                      <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
                       <span className="truncate">{item.label}</span>
                     </button>
                   );
@@ -2132,7 +2132,7 @@ function SectionConnectors() {
     } catch (e) {
       const message = e?.message || String(e);
       setError(message);
-      toast({ kind: 'err', text: '加载连接器失败:' + message });
+      toast({ kind: 'err', text: '加载插件失败:' + message });
     } finally {
       setLoading(false);
     }
@@ -2150,7 +2150,7 @@ function SectionConnectors() {
         if (!cancelled) {
           const message = e?.message || String(e);
           setError(message);
-          toast({ kind: 'err', text: '加载连接器失败:' + message });
+          toast({ kind: 'err', text: '加载插件失败:' + message });
         }
       })
       .finally(() => {
@@ -2169,12 +2169,12 @@ function SectionConnectors() {
     try {
       const result = await api.setConnectors({ connectors: next });
       setConnectors(normalizeConnectorList(result));
-      toast({ kind: 'ok', text: enabled ? '连接器已启用' : '连接器已关闭' });
+      toast({ kind: 'ok', text: enabled ? '插件已启用' : '插件已关闭' });
     } catch (e) {
       const message = e?.message || String(e);
       setConnectors(before);
       setError(message);
-      toast({ kind: 'err', text: '连接器保存失败:' + message });
+      toast({ kind: 'err', text: '插件保存失败:' + message });
     } finally {
       setSavingId('');
     }
@@ -2184,14 +2184,14 @@ function SectionConnectors() {
     <>
       <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h2 className="text-xl font-bold mb-2">连接器</h2>
-          <p className="text-[12px] text-fg-mute">config.json 中配置的连接器</p>
+          <h2 className="text-xl font-bold mb-2">插件</h2>
+          <p className="text-[12px] text-fg-mute">config.json 中配置的插件</p>
         </div>
         <button
           type="button"
           onClick={load}
           disabled={loading || !!savingId}
-          title="刷新连接器"
+          title="刷新插件"
           className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-surface text-fg-2 hover:bg-surface-hi transition disabled:opacity-50"
         >
           <RefreshIcon size={15} className={clsx(loading && 'animate-spin')} />
@@ -2210,8 +2210,8 @@ function SectionConnectors() {
         </div>
       ) : connectors.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">暂无已配置连接器</div>
-          <div className="text-[12px] text-fg-mute">没有可显示的连接器。</div>
+          <div className="text-[14px] font-semibold text-fg mb-1">暂无已配置插件</div>
+          <div className="text-[12px] text-fg-mute">没有可显示的插件。</div>
         </div>
       ) : (
         <div className="space-y-3 max-w-5xl">
@@ -2227,7 +2227,7 @@ function SectionConnectors() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="text-[13px] font-semibold text-fg truncate">
-                      {connector.name || '未命名连接器'}
+                      {connector.name || '未命名插件'}
                     </div>
                     <span
                       className={clsx(

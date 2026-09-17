@@ -27,8 +27,8 @@ import { toast } from './Toast.jsx';
 import { useSlashCommands } from './SlashCommandsContext.jsx';
 import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHistory } from '../lib/inputHistoryNavigation.js';
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
-import { isComposerImageAttachment } from '../lib/richComposerModel.js';
-import { composerDraftEditFingerprint } from '../lib/composerDraft.js';
+import { composerContentWithoutImages, isComposerThumbnailAttachment, withComposerImageAttachments } from '../lib/composerImagePresentation.js';
+import { composerDraftEditFingerprint, removeComposerAttachmentReference } from '../lib/composerDraft.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
 import {
@@ -226,10 +226,6 @@ export const InputBar = forwardRef(function InputBar({
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const ta = useRef(null);
   const rootRef = useRef(null);
-  const removeAttachment = useCallback((key) => {
-    if (ta.current?.removeAttachment) ta.current.removeAttachment(key);
-    else onRemoveAttachment?.(key);
-  }, [onRemoveAttachment]);
   const attentionRingRef = useRef(null);
   const lastAttentionRequestRef = useRef(attentionRequest);
   const fileInputRef = useRef(null);
@@ -278,12 +274,19 @@ export const InputBar = forwardRef(function InputBar({
   const textareaBaseHeight = LINE_HEIGHT * 2 + textareaVerticalPadding;
   const textareaMaxHeight = LINE_HEIGHT * MAX_ROWS + textareaVerticalPadding;
   const attachmentItems = Array.isArray(attachments) ? attachments : EMPTY_COMPOSER_ATTACHMENTS;
+  const attachmentItemsRef = useRef(attachmentItems);
+  attachmentItemsRef.current = attachmentItems;
+  const editorAttachmentItems = useMemo(() => attachmentItems.filter((item) => !isComposerThumbnailAttachment(item)), [attachmentItems]);
+  const editorContent = useMemo(() => composerContentWithoutImages(composerContent), [composerContent]);
+  const mergeEditorContent = useCallback((content) => withComposerImageAttachments(
+    content, contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current),
+  ), []);
   const activeAttachmentItems = useMemo(() => (
     normalizeComposerContent(composerContent)
       ? composerContentAttachments(composerContent, attachmentItems)
       : attachmentItems
   ), [composerContent, attachmentItems]);
-  const imageAttachments = useMemo(() => activeAttachmentItems.filter(isComposerImageAttachment), [activeAttachmentItems]);
+  const imageAttachments = useMemo(() => activeAttachmentItems.filter(isComposerThumbnailAttachment), [activeAttachmentItems]);
   const contextItems = Array.isArray(contexts) ? contexts : [];
   const recentExpertItems = Array.isArray(expertOptions) ? expertOptions.slice(0, 5) : [];
   const selectionContextItems = contextItems.filter((item) => item?.type === SELECTION_CONTEXT_TYPE);
@@ -312,6 +315,35 @@ export const InputBar = forwardRef(function InputBar({
     ].join(':')),
   ].join('\n'), [attachmentItems, contextItems]);
 
+  const previewComposerAttachment = useCallback((item) => {
+    const src = String(item?.url || item?.preview_url || item?.blob_url || '');
+    if (!src) return;
+    setAttachmentPreview({ src, alt: String(item?.name || 'attachment') });
+  }, []);
+
+  const updateValue = useCallback((next, content, replacementRange) => {
+    const text = String(next || '');
+    const nextContent = content === undefined
+      ? mergeEditorContent(ta.current?.replaceTextPreservingReferences?.(text, replacementRange) || composerContentFromText(text))
+      : normalizeComposerContent(content);
+    if (valueRef.current === text && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
+    valueRef.current = text;
+    contentRef.current = nextContent;
+    if (!isControlled) setInternalValue(text);
+    if (controlledComposerContent === undefined) setInternalContent(nextContent);
+    onChange?.(text, nextContent);
+    onComposerContentChange?.(nextContent);
+  }, [isControlled, controlledComposerContent, onChange, onComposerContentChange, mergeEditorContent]);
+
+  const removeAttachment = useCallback((key) => {
+    const current = contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current);
+    const image = current.parts?.find((part) => part.type === 'attachment'
+      && (part.key === key || part.id === key) && isComposerThumbnailAttachment(part));
+    if (image) updateValue(valueRef.current, removeComposerAttachmentReference(current, key));
+    else if (ta.current?.removeAttachment) ta.current.removeAttachment(key);
+    else onRemoveAttachment?.(key);
+  }, [onRemoveAttachment, updateValue]);
+
   useEffect(() => {
     const handler = (event) => {
       const detail = event.detail || {};
@@ -333,26 +365,6 @@ export const InputBar = forwardRef(function InputBar({
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
   }, [attachmentItems, removeAttachment]);
-
-  const previewComposerAttachment = useCallback((item) => {
-    const src = String(item?.url || item?.preview_url || item?.blob_url || '');
-    if (!src) return;
-    setAttachmentPreview({ src, alt: String(item?.name || 'attachment') });
-  }, []);
-
-  const updateValue = useCallback((next, content, replacementRange) => {
-    const text = String(next || '');
-    const nextContent = content === undefined
-      ? (ta.current?.replaceTextPreservingReferences?.(text, replacementRange) || composerContentFromText(text))
-      : normalizeComposerContent(content);
-    if (valueRef.current === text && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
-    valueRef.current = text;
-    contentRef.current = nextContent;
-    if (!isControlled) setInternalValue(text);
-    if (controlledComposerContent === undefined) setInternalContent(nextContent);
-    onChange?.(text, nextContent);
-    onComposerContentChange?.(nextContent);
-  }, [isControlled, controlledComposerContent, onChange, onComposerContentChange]);
 
   const slashCtx = useSlashCommands();
   const commands = slashCtx?.commands || [];
@@ -479,7 +491,7 @@ export const InputBar = forwardRef(function InputBar({
     let cursor;
     if (item.kind === 'skill') {
       const content = ta.current?.insertSkill?.(item, commandQuery.begin, commandQuery.end);
-      if (content) updateValue(composerContentText(content), content);
+      if (content) updateValue(composerContentText(content), mergeEditorContent(content));
       cursor = commandQuery.begin + String(item.mention || `$${item.name}`).length + 1;
     } else {
       if (!commandQuery.leading) return;
@@ -890,21 +902,21 @@ export const InputBar = forwardRef(function InputBar({
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
-    getComposerContent: () => ta.current?.getComposerContent?.() || contentRef.current,
+    getComposerContent: () => mergeEditorContent(ta.current?.getComposerContent?.() || contentRef.current),
     setComposerContent: (content, options) => {
       const normalized = normalizeComposerContent(content) || composerContentFromText('');
-      ta.current?.setComposerContent?.(normalized, options);
       updateValue(composerContentText(normalized), normalized);
+      ta.current?.setComposerContent?.(composerContentWithoutImages(normalized), options);
     },
     replaceText: (text) => {
       const content = composerContentFromText(text);
-      ta.current?.setComposerContent?.(content);
       updateValue(text, content);
+      ta.current?.setComposerContent?.(content);
     },
     clear: () => {
       const content = composerContentFromText('');
-      ta.current?.setComposerContent?.(content);
       updateValue('', content);
+      ta.current?.setComposerContent?.(content);
       setHistPtr(-1);
       setEditedSinceHistory(false);
     },
@@ -932,6 +944,7 @@ export const InputBar = forwardRef(function InputBar({
     handleFileDrop: handleDrop,
   }), [
     composerSelection.end,
+    mergeEditorContent,
     handleDragEnter,
     handleDragLeave,
     handleDragOver,
@@ -1119,7 +1132,8 @@ export const InputBar = forwardRef(function InputBar({
     };
   }, [capabilityOpen, closeExpertSubmenu, expertSubmenuOpen, restoreCapabilityMenuFocus]);
 
-  const handleComposerChange = (next, content) => {
+  const handleComposerChange = (next, editorContent) => {
+    const content = mergeEditorContent(editorContent);
     const textChanged = isUserComposerEdit({ nextValue: next, currentValue: valueRef.current });
     const contentChanged = composerContentSignature(content) !== composerContentSignature(contentRef.current);
     if (!textChanged && !contentChanged) return;
@@ -1239,7 +1253,7 @@ export const InputBar = forwardRef(function InputBar({
                 else openExpertSubmenu(event.detail === 0);
               }}
             >
-              <VsIcon name="brain" size={14} />
+              <VsIcon name="expert" size={14} />
               <span className="min-w-0 flex-1 truncate">专家组件</span>
               <VsIcon name="expandRight" size={13} className="shrink-0 text-fg-mute" />
             </button>
@@ -1566,8 +1580,8 @@ export const InputBar = forwardRef(function InputBar({
             value={value}
             syncKey={currentSessionId}
             commands={commands}
-            composerContent={composerContent}
-            attachments={attachmentItems}
+            composerContent={editorContent}
+            attachments={editorAttachmentItems}
             onChange={handleComposerChange}
             onKeyDown={onKey}
             onCompositionStart={handleCompositionStart}

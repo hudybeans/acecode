@@ -56,10 +56,7 @@ export function useOfficePreviewZoom(identity = '', surfaceRef = null) {
 function MagnifierZoomIcon({ operation }) {
   return (
     <span className="ace-office-preview-zoom-glyph" aria-hidden="true">
-      <VsIcon name="search" size={16} />
-      <span className="ace-office-preview-zoom-modifier">
-        {operation === 'in' ? '+' : '−'}
-      </span>
+      <VsIcon name={operation === 'in' ? 'ZoomIn' : 'ZoomOut'} size={16} />
     </span>
   );
 }

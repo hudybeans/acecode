@@ -11,7 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { buildTurnFileItems, splitTurnFileItems } from '../lib/turnFileList.js';
 import { summarizeChangeGroups } from '../lib/sessionChanges.js';
 import { formatCount } from '../lib/format.js';
-import { FileTypeIcon } from './Icon.jsx';
+import { FileTypeIcon, VsIcon } from './Icon.jsx';
 
 function ChangeCounts({ additions, deletions, className = '' }) {
   if (!(additions > 0) && !(deletions > 0)) return null;
@@ -72,9 +72,7 @@ export const TurnFileList = memo(function TurnFileList({
               onClick={() => onOpenChanges?.(item.file, turnUserMessageId)}
             >
               <span>查看变更</span>
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M4 12 12 4M4 4h8v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <VsIcon name="ArrowUpRight" size={12} />
             </button>
           </span>
           <span className="ace-turn-file-open" aria-hidden="true">打开</span>

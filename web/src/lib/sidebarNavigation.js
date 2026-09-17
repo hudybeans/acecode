@@ -8,7 +8,7 @@ export const SIDEBAR_CUSTOM_ITEMS = Object.freeze([
   Object.freeze({ id: 'models', label: '模型', icon: 'brain', settingsSection: 'models' }),
   Object.freeze({ id: 'mcp', label: 'MCP 服务器', icon: 'mcp', settingsSection: 'mcp' }),
   Object.freeze({ id: 'skills', label: '技能', icon: 'lightbulb', settingsSection: 'skills' }),
-  Object.freeze({ id: 'experts', label: '专家组件', icon: 'brain', action: 'experts' }),
+  Object.freeze({ id: 'experts', label: '专家组件', icon: 'expert', action: 'experts' }),
 ]);
 
 export const DEFAULT_SIDEBAR_CUSTOM_EXPANDED = false;
@@ -32,14 +32,8 @@ export const DEFAULT_SIDEBAR_SECTION_EXPANSION = Object.freeze({
 });
 
 export const SIDEBAR_DISCLOSURE_ICON = Object.freeze({
-  width: 16,
-  height: 16,
-  viewBox: '0 0 16 16',
-  path: 'M4 6L8 10L12 6',
-  stroke: 'currentColor',
-  strokeWidth: 1.2,
-  strokeLinecap: 'round',
-  strokeLinejoin: 'round',
+  name: 'expandDown',
+  size: 18,
 });
 
 export function validateSidebarSectionExpansion(value) {

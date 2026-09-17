@@ -85,7 +85,7 @@ run('atomic deletion is routed through the plain-text tag range helper', () => {
 run('imperative focus retries after an external Slate document replacement', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /const focusEditor = \(\) =>/);
-  assert.match(composer, /try \{\s*focusEditor\(\);\s*\} catch \{/s);
+  assert.match(composer, /try \{\s*if \(focusEditor\(\)\) return;\s*\} catch \{/s);
   assert.match(composer, /window\.requestAnimationFrame\(\(\) => \{\s*try \{ focusEditor\(\); \} catch \{\}/s);
 });
 
@@ -184,7 +184,7 @@ run('composer document replacement never removes the last root before inserting 
   assert.match(replacement, /return replaced/);
 });
 
-run('attachment registry feeds Slate while active references determine image previews and send gating', () => {
+run('file resources feed Slate while active references determine image previews and send gating', () => {
   const inputBar = source('components/InputBar.jsx');
   const composer = source('components/RichComposer.jsx');
   const imagePreviewIndex = inputBar.indexOf('data-composer-image-preview="true"');
@@ -193,10 +193,10 @@ run('attachment registry feeds Slate while active references determine image pre
   assert.ok(imagePreviewIndex >= 0 && imagePreviewIndex < editorIndex);
   assert.ok(footerIndex > editorIndex);
   assert.match(inputBar, /composerContentAttachments\(composerContent, attachmentItems\)/);
-  assert.match(inputBar, /activeAttachmentItems\.filter\(isComposerImageAttachment\)/);
+  assert.match(inputBar, /activeAttachmentItems\.filter\(isComposerThumbnailAttachment\)/);
   assert.match(inputBar, /const hasExtras = activeAttachmentItems\.length > 0/);
-  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{attachmentItems\}/);
-  assert.match(inputBar.slice(editorIndex, footerIndex), /composerContent=\{composerContent\}/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{editorAttachmentItems\}/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /composerContent=\{editorContent\}/);
   assert.match(composer, /data-composer-inline-tag="attachment"/);
   assert.match(composer, /seenAttachmentKeysRef/);
   assert.match(composer, /Transforms\.setNodes\(editor, metadata, \{ at: path \}\)/);

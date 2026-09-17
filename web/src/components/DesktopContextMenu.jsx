@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   buildDesktopContextMenuItems,
   canRunContextMenuAction,
@@ -9,6 +10,9 @@ import {
   DESKTOP_CONTEXT_ACTIONS,
   editableTargetFromElement,
   SESSION_PIN_TOGGLE_EVENT,
+  OPEN_DESKTOP_CONTEXT_MENU_EVENT,
+  CLOSE_DESKTOP_CONTEXT_MENU_EVENT,
+  withMenuSeparators,
 } from '../lib/desktopContextMenu.js';
 import { exportMermaidAsset } from '../lib/mermaidExport.js';
 import { selectionContextFromWindowSelection } from '../lib/selectionChatContext.js';
@@ -21,10 +25,12 @@ import {
   richComposerRootFromTarget,
 } from '../lib/richComposerContextPaste.js';
 import { api } from '../lib/api.js';
+import { VsIcon } from './Icon.jsx';
 import { Modal } from './Modal.jsx';
 import { toast } from './Toast.jsx';
 
-const MENU_WIDTH = 216;
+const MENU_WIDTH = 176;
+const ICON_MENU_WIDTH = 216;
 const MENU_ROW_HEIGHT = 30;
 const MENU_PADDING = 8;
 
@@ -88,6 +94,20 @@ const ACTION_LABELS = {
   [DESKTOP_CONTEXT_ACTIONS.PASTE]: '粘贴',
   [DESKTOP_CONTEXT_ACTIONS.CUT]: '剪切',
   [DESKTOP_CONTEXT_ACTIONS.INSPECT]: '检查',
+};
+
+const SESSION_ACTION_ICONS = {
+  [DESKTOP_CONTEXT_ACTIONS.PIN_SESSION]: 'pin',
+  [DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION]: 'pin',
+  [DESKTOP_CONTEXT_ACTIONS.OPEN_SESSION]: 'chat',
+  [DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION]: 'edit',
+  [DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE]: 'copy',
+  [DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID]: 'copy',
+  [DESKTOP_CONTEXT_ACTIONS.EXPORT_SESSION]: 'Download',
+  [DESKTOP_CONTEXT_ACTIONS.OPEN_IN_EXPLORER]: 'folder',
+  [DESKTOP_CONTEXT_ACTIONS.ARCHIVE_SESSION]: 'archive',
+  [DESKTOP_CONTEXT_ACTIONS.SELECT_ALL]: 'list',
+  [DESKTOP_CONTEXT_ACTIONS.INSPECT]: 'Inspect',
 };
 
 function parseDesktopResult(value) {
@@ -267,6 +287,11 @@ async function runAction(
   if (!action) return;
   if (!canRunContextMenuAction(action, { allowNativeActions })) return;
 
+  if (typeof item?.onSelect === 'function') {
+    await item.onSelect();
+    return;
+  }
+
   switch (action) {
     case DESKTOP_CONTEXT_ACTIONS.OPEN_IN_EXPLORER:
       await openTargetInExplorer(actionTarget);
@@ -385,13 +410,14 @@ async function runAction(
 
 function actionLabel(action) {
   const id = typeof action === 'string' ? action : action.id;
-  return ACTION_LABELS[id] || id;
+  return action?.label || ACTION_LABELS[id] || id;
 }
 
 export function DesktopContextMenu() {
   const [menu, setMenuState] = useState(null);
   const [pendingConfirm, setPendingConfirm] = useState(null);
   const menuRef = useRef(null);
+  const menuElementRef = useRef(null);
   const reopenTimerRef = useRef(0);
   const targetRef = useRef(null);
   const lastSelectionRef = useRef({ target: null, text: '' });
@@ -442,17 +468,25 @@ export function DesktopContextMenu() {
       if (event.target instanceof Element && event.target.closest('.ace-desktop-context-menu')) return;
       close();
     };
+    const closeOnOutsidePress = (event) => {
+      if (!menuRef.current && !reopenTimerRef.current) return;
+      if (menuElementRef.current?.contains(event.target)) return;
+      // Native title-bar dragging can consume mouseup/click and block repaint.
+      // Dismiss before mousedown enters the native bridge; leave the press intact.
+      flushSync(close);
+    };
     const onContextMenu = (event) => {
       // 控制台终端区由 ConsoleDock 自己处理右键(VS Code 式 复制/粘贴),这里放行
       // (不 preventDefault / 不 stopPropagation),让事件继续冒泡到终端的 onContextMenu。
-      const rawTarget = event.target;
+      const explicit = event.type === OPEN_DESKTOP_CONTEXT_MENU_EVENT ? event.detail : null;
+      const rawTarget = explicit?.target || event.target;
       if (rawTarget instanceof Element && rawTarget.closest('.ace-console-term')) return;
 
       const candidateTargets = contextTargetsFromElement(rawTarget);
       event.preventDefault();
       event.stopPropagation();
 
-      const target = event.target;
+      const target = rawTarget;
       targetRef.current = target;
       const editableTarget = editableTargetFromElement(target);
       const editable = !!editableTarget;
@@ -480,7 +514,7 @@ export function DesktopContextMenu() {
         ? selectionContextFromWindowSelection({ target, selectedText })
         : null;
       const debug = !!window.__ACECODE_DESKTOP_DEBUG__;
-      const items = buildDesktopContextMenuItems({
+      const contextItems = explicit?.includeContextActions === false ? [] : buildDesktopContextMenuItems({
         editable,
         hasSelection,
         debug,
@@ -488,16 +522,21 @@ export function DesktopContextMenu() {
         ...contextTargets,
         sessionPinTarget,
       });
+      const items = withMenuSeparators([...(explicit?.leadingItems || []), ...contextItems]);
+      const width = explicit ? ICON_MENU_WIDTH : MENU_WIDTH;
+      const x = explicit ? explicit.x - width : event.clientX;
+      const y = explicit ? explicit.y : event.clientY;
       const pos = clampContextMenuPosition({
-        x: event.clientX,
-        y: event.clientY,
-        width: MENU_WIDTH,
-        height: items.length * MENU_ROW_HEIGHT + MENU_PADDING,
+        x, y, width,
+        height: items.length * MENU_ROW_HEIGHT + MENU_PADDING + items.filter((item) => item.separatorBefore).length * 9,
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
       });
       openWithSwitchGap({
         ...pos,
+        x, y, width,
+        trigger: explicit?.trigger,
+        showIcons: !!explicit,
         items,
         selectedText,
         selectionContext,
@@ -505,24 +544,50 @@ export function DesktopContextMenu() {
       });
     };
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') close();
+      const currentMenu = menuRef.current;
+      if (!currentMenu) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        currentMenu.trigger?.focus();
+      } else if (event.key === 'Tab') {
+        close();
+        currentMenu.trigger?.focus();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        const buttons = [...(menuElementRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [])];
+        if (!buttons.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const index = buttons.indexOf(document.activeElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+          : index < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next].focus();
+      }
     };
 
+    document.addEventListener(OPEN_DESKTOP_CONTEXT_MENU_EVENT, onContextMenu);
+    document.addEventListener(CLOSE_DESKTOP_CONTEXT_MENU_EVENT, close);
     document.addEventListener('contextmenu', onContextMenu, true);
     document.addEventListener('selectionchange', rememberSelection);
     document.addEventListener('select', rememberSelection, true);
     document.addEventListener('click', closeFromPointer, true);
-    document.addEventListener('wheel', close, true);
+    document.addEventListener('wheel', closeFromPointer, true);
     document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', closeOnOutsidePress, true);
     window.addEventListener('blur', close);
     window.addEventListener('resize', close);
     return () => {
+      document.removeEventListener(OPEN_DESKTOP_CONTEXT_MENU_EVENT, onContextMenu);
+      document.removeEventListener(CLOSE_DESKTOP_CONTEXT_MENU_EVENT, close);
       document.removeEventListener('contextmenu', onContextMenu, true);
       document.removeEventListener('selectionchange', rememberSelection);
       document.removeEventListener('select', rememberSelection, true);
       document.removeEventListener('click', closeFromPointer, true);
-      document.removeEventListener('wheel', close, true);
+      document.removeEventListener('wheel', closeFromPointer, true);
       document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', closeOnOutsidePress, true);
       window.removeEventListener('blur', close);
       window.removeEventListener('resize', close);
       clearReopenTimer();
@@ -534,59 +599,77 @@ export function DesktopContextMenu() {
     return () => notifyNativeSurfaceOverlayChange();
   }, [menu]);
 
+  useLayoutEffect(() => {
+    const element = menuElementRef.current;
+    if (!menu || !element) return;
+    const rect = element.getBoundingClientRect();
+    const position = clampContextMenuPosition({
+      x: menu.x, y: menu.y, width: rect.width, height: rect.height,
+      viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+    });
+    if (position.left !== menu.left || position.top !== menu.top) setMenu({ ...menu, ...position });
+    if (menu.trigger && !element.contains(document.activeElement)) {
+      element.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+    }
+  }, [menu, setMenu]);
+
   if (!menu && !pendingConfirm) return null;
 
   return (
     <>
       {menu && (
         <div
+          ref={menuElementRef}
           className="ace-desktop-context-menu"
           data-ace-native-overlay="overlap"
-          style={{ left: menu.left, top: menu.top }}
+          style={{ left: menu.left, top: menu.top, width: menu.width }}
           role="menu"
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
         >
           {menu.items.map((action) => (
-            <button
-              key={typeof action === 'string' ? action : action.id}
-              type="button"
-              role="menuitem"
-              disabled={typeof action === 'object' && action.enabled === false}
-              className={[
-                'ace-desktop-context-menu-item',
-                typeof action === 'object' && action.separatorBefore ? 'ace-desktop-context-menu-separator' : '',
-                typeof action === 'object' && action.danger ? 'ace-desktop-context-menu-danger' : '',
-              ].filter(Boolean).join(' ')}
-              onClick={async () => {
-                if (typeof action === 'object' && action.enabled === false) return;
-                const target = targetRef.current;
-                const selectedText = menu.selectedText || '';
-                const selectionContext = menu.selectionContext || null;
-                const richComposerSelection = menu.richComposerSelection || null;
-                close();
-                if (typeof action === 'object' && action.confirm) {
-                  setPendingConfirm({
+            <Fragment key={typeof action === 'string' ? action : action.id}>
+              {action.separatorBefore && <div role="separator" className="ace-desktop-context-menu-separator" />}
+              <button
+                type="button"
+                role="menuitem"
+                disabled={typeof action === 'object' && action.enabled === false}
+                className={[
+                  'ace-desktop-context-menu-item',
+                  typeof action === 'object' && action.danger ? 'ace-desktop-context-menu-danger' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={async () => {
+                  if (typeof action === 'object' && action.enabled === false) return;
+                  const target = targetRef.current;
+                  const selectedText = menu.selectedText || '';
+                  const selectionContext = menu.selectionContext || null;
+                  const richComposerSelection = menu.richComposerSelection || null;
+                  close();
+                  menu.trigger?.focus();
+                  if (typeof action === 'object' && action.confirm) {
+                    setPendingConfirm({
+                      action,
+                      target,
+                      selectedText,
+                      selectionContext,
+                      richComposerSelection,
+                    });
+                    return;
+                  }
+                  await runAction(
                     action,
                     target,
                     selectedText,
                     selectionContext,
                     richComposerSelection,
-                  });
-                  return;
-                }
-                await runAction(
-                  action,
-                  target,
-                  selectedText,
-                  selectionContext,
-                  richComposerSelection,
-                  { allowNativeActions },
-                );
-              }}
-            >
-              {actionLabel(action)}
-            </button>
+                    { allowNativeActions },
+                  );
+                }}
+              >
+                {menu.showIcons && <VsIcon name={action.icon || SESSION_ACTION_ICONS[action.id] || 'list'} size={16} />}
+                <span>{actionLabel(action)}</span>
+              </button>
+            </Fragment>
           ))}
         </div>
       )}

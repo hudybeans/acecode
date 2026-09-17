@@ -51,7 +51,7 @@ import {
   SIDE_PANEL_CONTEXT_EFFECTS,
   sidePanelContextActionEffect,
 } from '../lib/sidePanelContextActions.js';
-import { FileTypeIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
+import { FileTypeIcon, VsIcon } from './Icon.jsx';
 import { ChangeCompactList } from './ChangeReview.jsx';
 import { GitChangesPanel } from './GitChangesPanel.jsx';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
@@ -108,23 +108,11 @@ function TreeIndent({ depth, activeGuideIndex = -1 }) {
 
 function TreeArrowIcon({ open }) {
   return (
-    <svg
+    <VsIcon
+      name={open ? 'expandDown' : 'expandRight'}
+      size={14}
       className="ace-file-tree-arrow"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d={open ? 'M6 9L12 15L18 9' : 'M9 18L15 12L9 6'}
-        stroke="currentColor"
-        strokeWidth="1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    />
   );
 }
 
@@ -731,12 +719,13 @@ export function SidePanel({
           <button
             type="button"
             onClick={onToggleCollapse}
-            className="ace-side-panel-collapse-btn"
+            className="ace-side-panel-collapse-btn ace-list-panel-toggle"
             title={collapsed ? '展开列表面板' : '收起列表面板'}
             aria-label={collapsed ? '展开列表面板' : '收起列表面板'}
             aria-expanded={!collapsed}
+            aria-pressed={!collapsed}
           >
-            <PanelToggleIcon side="right" size={15} />
+            <VsIcon name="listPanel" size={16} />
           </button>
         )}
       </div>

@@ -1,3 +1,4 @@
+import { VsIcon } from './Icon.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { toast } from './Toast.jsx';
@@ -7,7 +8,7 @@ import { themePackageSize } from '../lib/themePackages.js';
 
 const actionClass = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border border-border bg-surface text-[12px] hover:bg-surface-hi disabled:opacity-50';
 function LibraryIcon({ workshop = false }) {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{workshop ? <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18Z" /></> : <path d="M12 16V3m-5 5 5-5 5 5M4 17v4h16v-4" />}</svg>;
+  return <VsIcon name={workshop ? 'world' : 'Upload'} size={16} />;
 }
 
 export function ThemeLibraryActions({ downloads }) {
@@ -68,7 +69,7 @@ function ThemeImportDialog({ downloads, onClose }) {
   const installing = busy === 'install';
   return <Modal width={500} layerClassName="z-[400]" labelledBy="theme-import-title" onClose={onClose} dismissOnBackdrop={!installing} dismissOnEscape={!installing}>
     <div className="p-5">
-      <div className="flex items-center justify-between gap-3"><h3 id="theme-import-title" className="text-base font-semibold">本地导入</h3><button type="button" className="text-fg-2 p-1 rounded hover:bg-surface-hi disabled:opacity-50" aria-label="关闭导入" disabled={installing} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" fill="none" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg></button></div>
+      <div className="flex items-center justify-between gap-3"><h3 id="theme-import-title" className="text-base font-semibold">本地导入</h3><button type="button" className="text-fg-2 p-1 rounded hover:bg-surface-hi disabled:opacity-50" aria-label="关闭导入" disabled={installing} onClick={onClose}><VsIcon name="close" size={18} /></button></div>
       <input type="file" ref={input} accept=".zip,application/zip" className="hidden" onChange={(event) => { const selected = event.target.files?.[0]; event.target.value = ''; if (selected) void choose(selected); }} />
       <p className="mt-2 text-[12px] text-fg-mute">导入从 ACECode 导出或主题工坊下载的完整主题 ZIP</p>
       <button type="button" className="mt-4 w-full rounded-lg border border-dashed border-border py-5 px-3 text-sm text-accent hover:bg-surface-hi disabled:opacity-50" disabled={!!busy} onClick={() => input.current?.click()}>{file ? '更换文件' : '选择主题 ZIP'}</button>

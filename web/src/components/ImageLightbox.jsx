@@ -270,7 +270,7 @@ export function ImageLightbox({ preview, onClose, contextMenuAttrs }) {
           disabled={transform.scale <= LIGHTBOX_MIN_SCALE}
           onClick={() => zoomTo(transformRef.current.scale / BUTTON_ZOOM_FACTOR)}
         >
-          <span aria-hidden="true" className="text-lg leading-none">-</span>
+          <VsIcon name="Minus" size={15} />
         </button>
         <button
           type="button"

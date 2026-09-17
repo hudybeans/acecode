@@ -4,6 +4,8 @@
 .AppleDouble
 .LSOverride
 Icon?
+# Keep authored interface artwork on case-insensitive filesystems.
+!/web/src/lib/icons/
 
 # Build directories
 **/build/

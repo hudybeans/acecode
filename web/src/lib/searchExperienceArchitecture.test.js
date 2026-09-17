@@ -19,10 +19,10 @@ function run(name, fn) {
   }
 }
 
-run('conversation title owns the find button and transcript search root', () => {
+run('conversation menu owns find and retains the transcript search root', () => {
   const chatView = source('components/ChatView.jsx');
-  assert.match(chatView, /onClick=\{onFindInConversation\}/);
-  assert.match(chatView, /aria-label="搜索当前对话内容"/);
+  assert.match(chatView, /onSelect: onFindInConversation/);
+  assert.match(chatView, /id: 'find_conversation', label: '查找', icon: 'search'/);
   assert.match(chatView, /data-conversation-find-root="true"/);
 });
 

@@ -484,24 +484,12 @@ function attentionMeta(state) {
 function SidebarDisclosure({ expanded, className = '' }) {
   const icon = SIDEBAR_DISCLOSURE_ICON;
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={icon.width}
-      height={icon.height}
-      viewBox={icon.viewBox}
-      fill="none"
+    <VsIcon
+      name={icon.name}
+      size={icon.size}
       className={clsx('block shrink-0 transition-transform', className)}
       style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-      aria-hidden="true"
-    >
-      <path
-        d={icon.path}
-        stroke={icon.stroke}
-        strokeWidth={icon.strokeWidth}
-        strokeLinecap={icon.strokeLinecap}
-        strokeLinejoin={icon.strokeLinejoin}
-      />
-    </svg>
+    />
   );
 }
 
@@ -520,7 +508,7 @@ function SidebarNavItem({ item, onClick }) {
       className="ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
-        <VsIcon name={item.icon} size={16} />
+        <VsIcon name={item.icon} size={18} />
       </span>
       <span className="flex-1 min-w-0 truncate">{item.label}</span>
     </button>
@@ -536,26 +524,8 @@ function countObjectKeys(value) {
   return Object.keys(value).length;
 }
 
-const CUSTOM_SIDEBAR_ICON_FILES = Object.freeze({
-  lightbulb: 'IntellisenseLightBulbSparkle',
-  mcp: 'MCP',
-});
-
 function CustomSidebarIcon({ icon }) {
-  const file = CUSTOM_SIDEBAR_ICON_FILES[icon];
-  if (!file) return <VsIcon name={icon} size={16} />;
-  return (
-    <img
-      src={`/vs-icons/${file}.svg`}
-      alt=""
-      width="16"
-      height="16"
-      className="ace-sidebar-custom-icon"
-      draggable="false"
-      aria-hidden="true"
-      data-monochrome="true"
-    />
-  );
+  return <VsIcon name={icon} size={18} className="ace-sidebar-custom-icon" />;
 }
 
 function CustomSidebarItem({ item, count, onClick }) {
@@ -625,7 +595,7 @@ function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpe
         aria-controls={listId}
       >
         <span className="relative w-6 h-6 flex items-center justify-center shrink-0">
-          <span className="ace-sidebar-extensions-icon flex"><VsIcon name="extension" size={16} /></span>
+          <span className="ace-sidebar-extensions-icon flex"><VsIcon name="extension" size={18} /></span>
           <span className="ace-sidebar-extensions-arrow absolute inset-0 flex items-center justify-center"><SidebarDisclosure expanded /></span>
         </span>
         <span className="flex-1 min-w-0 text-left truncate">扩展</span>
@@ -1270,7 +1240,7 @@ function SessionRow({
           {remoteControlBound && (
             <VsIcon
               name="computer"
-              size={14}
+              size={18}
               className="text-accent"
               data-remote-control-session-icon="true"
             />
@@ -1319,7 +1289,7 @@ function SessionRow({
             title={pinned ? '取消置顶' : '置顶'}
             aria-label={pinned ? '取消置顶' : '置顶'}
           >
-            <VsIcon name="pin" size={13} />
+            <VsIcon name="pin" size={18} />
           </button>
         )}
         <button
@@ -1344,20 +1314,20 @@ function SessionRow({
               : '归档'}
         >
           {sessionMarker ? (
-            <span className="relative block w-[14px] h-[14px]" aria-hidden="true">
+            <span className="relative block w-[18px] h-[18px]" aria-hidden="true">
               <VsIcon
                 name={sessionMarker === 'loop' ? 'alarm' : 'worktree'}
-                size={14}
+                size={18}
                 className="absolute inset-0 opacity-100 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
               />
               <VsIcon
                 name="archive"
-                size={14}
+                size={18}
                 className="absolute inset-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               />
             </span>
           ) : (
-            <VsIcon name="archive" size={14} />
+            <VsIcon name="archive" size={18} />
           )}
         </button>
       </span>
@@ -1669,7 +1639,7 @@ function WorkspaceGroup({
         onClick={() => (ws.active ? onToggle(ws.hash) : onActivate(ws))}
       >
         <span className="w-6 h-6 flex items-center justify-center shrink-0">
-          <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={14} />
+          <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />
         </span>
         {editing ? (
           <input
@@ -1698,7 +1668,7 @@ function WorkspaceGroup({
             className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="工作区菜单"
             aria-label="工作区菜单"
-          ><VsIcon name="workspaceMenu" size={16} /></button>
+          ><VsIcon name="workspaceMenu" size={18} /></button>
           <button
             data-sidebar-workspace-new-task="true"
             type="button"
@@ -1707,7 +1677,7 @@ function WorkspaceGroup({
             className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="在此工作区新建任务"
             aria-label="在此工作区新建任务"
-          ><VsIcon name="newSession" size={16} /></button>
+          ><VsIcon name="newSession" size={18} /></button>
         </span>
       </div>
       {expanded && (
@@ -3637,7 +3607,7 @@ export function Sidebar({
                     title="全部收缩工作区"
                     aria-label="全部收缩工作区"
                   >
-                    <VsIcon name="collapseAll" size={16} />
+                    <VsIcon name="collapseAll" size={18} />
                   </button>
                   <button
                     data-tour-target="sidebar-add-project"
@@ -3647,7 +3617,7 @@ export function Sidebar({
                     title="添加工作区"
                     aria-label="添加工作区"
                   >
-                    <VsIcon name="folderAdd" size={16} />
+                    <VsIcon name="folderAdd" size={18} />
                   </button>
                 </>
               )}

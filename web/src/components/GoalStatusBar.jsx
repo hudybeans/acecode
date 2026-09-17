@@ -6,34 +6,13 @@ import { VsIcon } from './Icon.jsx';
 
 function GoalIcon({ className = '' }) {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      className={className}
-    >
-      <path d="M12 13V2l8 4-8 4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20.56 10.22a9 9 0 1 1-12.55-5.29" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-      <path d="M8 10a5 5 0 1 0 8.9 2.02" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    </svg>
+    <VsIcon name="Goal" size={16} className={className} />
   );
 }
 
 function PauseIcon({ className = '' }) {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 14 14"
-      fill="none"
-      aria-hidden="true"
-      className={className}
-    >
-      <rect x="3" y="2.25" width="2.4" height="9.5" rx="1" fill="currentColor" />
-      <rect x="8.6" y="2.25" width="2.4" height="9.5" rx="1" fill="currentColor" />
-    </svg>
+    <VsIcon name="Pause" size={14} className={className} />
   );
 }
 

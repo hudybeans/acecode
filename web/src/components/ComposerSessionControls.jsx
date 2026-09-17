@@ -125,34 +125,13 @@ function useAdaptiveComposerControls(rootRef, measureKey) {
 
 function PermissionShieldIcon({ className = '' }) {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden="true"
-      className={className}
-    >
-      <path
-        d="M8 1.5 13 3.4v3.8c0 3.1-1.85 5.8-5 7.3-3.15-1.5-5-4.2-5-7.3V3.4L8 1.5Z"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinejoin="round"
-      />
-      <path d="M8 4.5v4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-      <circle cx="8" cy="11.1" r=".75" fill="currentColor" />
-    </svg>
+    <VsIcon name="ShieldWarning" size={16} className={className} />
   );
 }
 
 function SignalBars() {
   return (
-    <svg width="12" height="11" viewBox="0 0 12 11" aria-hidden="true" className="shrink-0">
-      <rect x="0" y="8" width="2.2" height="3" rx="0.5" fill="currentColor" />
-      <rect x="3.2" y="5.5" width="2.2" height="5.5" rx="0.5" fill="currentColor" />
-      <rect x="6.4" y="3" width="2.2" height="8" rx="0.5" fill="currentColor" />
-      <rect x="9.6" y="0.5" width="2.2" height="10.5" rx="0.5" fill="currentColor" />
-    </svg>
+    <VsIcon name="Signal" size={12} className="shrink-0" style={{ height: 11 }} />
   );
 }
 
@@ -336,7 +315,7 @@ export function ComposerSessionControls({
               aria-label={`已派遣${expertType === 'team' ? '专家团' : '专家'}：${expertName}`}
               className="flex min-w-0 items-center gap-1.5"
             >
-              <VsIcon name={expertType === 'team' ? 'extension' : 'brain'} size={14} className="shrink-0" />
+              <VsIcon name="expert" size={14} className="shrink-0" />
               <span className="ace-composer-adaptive-content min-w-0 truncate text-[11px] font-medium">{expertName}</span>
               <span className="ace-composer-adaptive-content shrink-0 text-[9px] opacity-70">
                 {expertType === 'team' ? '专家团' : '专家'}

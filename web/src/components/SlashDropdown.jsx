@@ -235,7 +235,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
           data-scroll-indicator="above"
           className="shrink-0 px-3 py-1 text-[11px] text-fg-mute bg-surface-alt border-b border-border"
         >
-          ↑ {aboveCount} more above
+          <VsIcon name="ArrowUp" size={12} /> {aboveCount} more above
         </div>
       )}
       <div
@@ -284,7 +284,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
           data-scroll-indicator="below"
           className="shrink-0 px-3 py-1 text-[11px] text-fg-mute bg-surface-alt border-t border-border"
         >
-          ↓ {belowCount} more below
+          <VsIcon name="ArrowDown" size={12} /> {belowCount} more below
         </div>
       )}
     </div>

@@ -49,7 +49,7 @@ export function SidebarQuickMenu({
         }}
         className="w-9 h-9 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
       >
-        <VsIcon name="settings" size={20} />
+        <VsIcon name="settings" size={18} />
       </button>
       {open && (
         <AnchoredMenu
@@ -77,7 +77,7 @@ export function SidebarQuickMenu({
                   className="w-full h-8 px-2 rounded-md flex items-center gap-2 text-[13px] text-fg-2 hover:bg-surface-hi hover:text-fg transition text-left disabled:opacity-50 disabled:cursor-wait"
                 >
                   <span className="w-5 shrink-0 flex items-center justify-center">
-                    <VsIcon name={action.icon} size={action.iconSize} className={checkingUpdates ? 'animate-spin' : ''} />
+                    <VsIcon name={action.icon} size={18} className={checkingUpdates ? 'animate-spin' : ''} />
                   </span>
                   <span>{action.label}</span>
                 </button>

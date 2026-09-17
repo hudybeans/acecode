@@ -261,7 +261,10 @@ run('Agent Browser hides WebView2 blank and failure documents behind React surfa
   assert.match(panel, /data-browser-surface=\{surface\.kind\}/);
   assert.match(panel, /无法打开此页面|agentBrowserSurfacePresentation/);
   assert.match(icons, /globe:\s*'BrowserGlobe'/);
-  assert.match(browserGlobe, /<circle[^>]+r="20"/);
+  assert.match(browserGlobe, /viewBox="0 0 20 20"/);
+  assert.match(browserGlobe, /stroke="currentColor"/);
+  assert.match(browserGlobe, /<circle[^>]+cx="10"[^>]+cy="10"/);
+  assert.match(browserGlobe, /<ellipse[^>]+cx="10"[^>]+cy="10"/);
   assert.match(styles, /\.ace-agent-browser-status/);
   assert.match(styles, /background: var\(--ace-surface\)/);
   assert.doesNotMatch(

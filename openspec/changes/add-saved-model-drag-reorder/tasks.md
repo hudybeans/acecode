@@ -10,3 +10,7 @@
 ## 3. Validate integration
 
 - [x] 3.1 Run frontend tests/build, strict OpenSpec validation, and diff checks; record results and native desktop verification limits.
+
+## 4. Refine drag presentation
+
+- [x] 4.1 Make the complete model card follow the pointer without changing its size or grab offset; verify card/handle dragging, stationary source geometry, scrolling, input isolation, and cleanup in Chromium, then run frontend tests/build and scoped validation.

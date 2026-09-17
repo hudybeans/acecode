@@ -1,3 +1,4 @@
+import { VsIcon } from './Icon.jsx';
 import { clsx } from '../lib/format.js';
 
 /**
@@ -62,24 +63,12 @@ export function ActivityLine({
           className="ace-activity-line-chevron flex h-4 w-4 shrink-0 items-center justify-center"
           aria-hidden="true"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
+          <VsIcon
+            name="expandDown"
+            size={16}
             className="block shrink-0"
             style={{ transform: `rotate(${expanded ? 0 : -90}deg)` }}
-            aria-hidden="true"
-          >
-            <path
-              d="M4 6L8 10L12 6"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          />
         </span>
       )}
       <span className="min-w-0 flex-1" aria-hidden="true" />
