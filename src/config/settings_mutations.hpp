@@ -81,6 +81,11 @@ SettingsMutationResult remove_saved_model_setting(
     const std::function<bool(const std::string&)>& is_used_by_busy_session,
     const SettingsMutationOptions& options = {});
 
+// names must contain every model exposed by GET /api/models exactly once.
+SettingsMutationResult reorder_saved_models_setting(
+    const std::vector<std::string>& names,
+    const SettingsMutationOptions& options = {});
+
 SettingsMutationResult set_default_model_setting(
     const std::string& name,
     const SettingsMutationOptions& options = {});

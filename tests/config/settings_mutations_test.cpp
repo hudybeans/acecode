@@ -395,3 +395,125 @@ TEST(SettingsMutations, DiskOnlyConfigureMutationDoesNotAdvanceProcessRevision) 
     EXPECT_TRUE(result.persisted);
     EXPECT_EQ(acecode::current_saved_models_revision(), before);
 }
+
+// 拖动仅更换数组顺序，必须保留最新连接字段、默认模型与无关设置。
+TEST(SettingsMutations, ReorderPreservesLatestProfilesAndDefault) {
+    SettingsMutationTempDir temp;
+    acecode::AppConfig initial;
+    initial.saved_models = {
+        {"first", "openai", "https://example.invalid/v1", "old-key", "one"},
+        {"second", "openai", "https://example.invalid/v1", "key-two", "two"},
+        {"third", "openai", "https://example.invalid/v1", "key-three", "three"},
+    };
+    initial.default_model_name = "second";
+    acecode::AppConfig live = initial;
+    initial.saved_models[0].api_key = "latest-key";
+    initial.saved_models[0].context_window = 128000;
+    initial.saved_models[0].request_headers = {{"X-Custom", "latest"}};
+    initial.max_sessions = 73;
+    acecode::save_config(initial, temp.config_path());
+
+    const auto revision = acecode::current_saved_models_revision();
+    const auto result = acecode::reorder_saved_models_setting(
+        {"third", "first", "second"}, options_for(temp, &live));
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.persisted);
+    EXPECT_EQ(acecode::current_saved_models_revision(), revision + 1);
+    const auto saved = acecode::load_config_from_path(temp.config_path());
+    ASSERT_EQ(saved.saved_models.size(), 3u);
+    EXPECT_EQ(saved.saved_models[0].name, "third");
+    EXPECT_EQ(saved.saved_models[1].name, "first");
+    EXPECT_EQ(saved.saved_models[2].name, "second");
+    EXPECT_EQ(saved.saved_models[1].api_key, "latest-key");
+    EXPECT_EQ(saved.saved_models[1].context_window, 128000);
+    EXPECT_EQ(saved.saved_models[1].request_headers.at("X-Custom"), "latest");
+    EXPECT_EQ(saved.default_model_name, "second");
+    EXPECT_EQ(saved.max_sessions, 73);
+    EXPECT_TRUE(acecode::saved_model_lists_equal(live.saved_models, saved.saved_models));
+}
+
+// 重复、缺失、未知或过期名称都不能覆盖磁盘，也不能发布新 revision。
+TEST(SettingsMutations, ReorderRejectsNonPermutationsWithoutPublishing) {
+    SettingsMutationTempDir temp;
+    acecode::AppConfig initial;
+    initial.saved_models = {
+        {"first", "openai", "https://example.invalid/v1", "key", "one"},
+        {"second", "openai", "https://example.invalid/v1", "key", "two"},
+    };
+    acecode::save_config(initial, temp.config_path());
+    acecode::AppConfig live = initial;
+    const auto revision = acecode::current_saved_models_revision();
+    for (const auto& order : std::vector<std::vector<std::string>>{
+             {}, {"first"}, {"first", "first"}, {"first", "unknown"},
+             {"first", "second", "extra"}}) {
+        const auto result = acecode::reorder_saved_models_setting(
+            order, options_for(temp, &live));
+        EXPECT_FALSE(result.ok);
+        EXPECT_FALSE(result.persisted);
+        EXPECT_EQ(result.error_code, "MODEL_ORDER_CONFLICT");
+        EXPECT_EQ(acecode::current_saved_models_revision(), revision);
+        EXPECT_TRUE(acecode::saved_model_lists_equal(live.saved_models, initial.saved_models));
+        EXPECT_TRUE(acecode::saved_model_lists_equal(
+            acecode::load_config_from_path(temp.config_path()).saved_models,
+            initial.saved_models));
+    }
+}
+
+TEST(SettingsMutations, ReorderNoOpAndPersistenceFailureKeepLiveOrder) {
+    SettingsMutationTempDir temp;
+    acecode::AppConfig initial;
+    initial.saved_models = {
+        {"first", "openai", "https://example.invalid/v1", "key", "one"},
+        {"second", "openai", "https://example.invalid/v1", "key", "two"},
+    };
+    acecode::save_config(initial, temp.config_path());
+    acecode::AppConfig live = initial;
+    const auto revision = acecode::current_saved_models_revision();
+    auto options = options_for(temp, &live);
+    const auto unchanged = acecode::reorder_saved_models_setting(
+        {"first", "second"}, options);
+    ASSERT_TRUE(unchanged.ok) << unchanged.error;
+    EXPECT_FALSE(unchanged.changed);
+    EXPECT_FALSE(unchanged.persisted);
+    EXPECT_EQ(acecode::current_saved_models_revision(), revision);
+
+    options.config_path = std::filesystem::path(temp.config_path()).parent_path().string();
+    const auto failed = acecode::reorder_saved_models_setting(
+        {"second", "first"}, options);
+    EXPECT_FALSE(failed.ok);
+    EXPECT_EQ(failed.error_kind, acecode::SettingsMutationErrorKind::Persistence);
+    EXPECT_EQ(acecode::current_saved_models_revision(), revision);
+    EXPECT_TRUE(acecode::saved_model_lists_equal(live.saved_models, initial.saved_models));
+}
+
+TEST(SettingsMutations, EmptySavedModelOrderIsANoOp) {
+    SettingsMutationTempDir temp;
+    acecode::AppConfig initial;
+    acecode::save_config(initial, temp.config_path());
+    const auto result = acecode::reorder_saved_models_setting({}, options_for(temp));
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_FALSE(result.changed);
+}
+
+// 停用的 legacy Provider 不出现在管理列表中，但必须原位保留。
+TEST(SettingsMutations, ReorderPreservesHiddenLegacyProfiles) {
+    SettingsMutationTempDir temp;
+    acecode::AppConfig initial;
+    initial.saved_models = {
+        {"first", "openai", "https://example.invalid/v1", "key", "one"},
+        {"legacy", "codex", "", "", "old-model"},
+        {"second", "openai", "https://example.invalid/v1", "key", "two"},
+    };
+    initial.default_model_name = "first";
+    acecode::save_config(initial, temp.config_path());
+    acecode::AppConfig live = initial;
+    const auto result = acecode::reorder_saved_models_setting(
+        {"second", "first"}, options_for(temp, &live));
+    ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(live.saved_models.size(), 3u);
+    EXPECT_EQ(live.saved_models[0].name, "second");
+    EXPECT_EQ(live.saved_models[1].name, "legacy");
+    EXPECT_EQ(live.saved_models[1].provider, "codex");
+    EXPECT_EQ(live.saved_models[2].name, "first");
+    EXPECT_EQ(live.default_model_name, "first");
+}

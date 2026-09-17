@@ -10852,3 +10852,43 @@ TEST(SecurityCenterSmoke, AuditRoutesListSummarizeExportAndClear) {
     ASSERT_EQ(cleared.status_code, 200) << cleared.text;
     EXPECT_EQ(json::parse(cpr::Get(cpr::Url{fx.url("/api/security/audit/summary")}).text)["total"], 0);
 }
+
+// HTTP 排序必须持久化，并且不能抢占名为 reorder 的模型编辑路由。
+TEST(WebServerHttp, SavedModelOrderPersistsAndValidatesRequests) {
+    WebServerFixture fx;
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const auto added = cpr::Post(cpr::Url{fx.url("/api/models")}, headers,
+        cpr::Body{json{{"name", "reorder"}, {"provider", "copilot"}, {"model", "gpt-4o"}}.dump()});
+    ASSERT_EQ(added.status_code, 200) << added.text;
+    const auto set_default = cpr::Post(cpr::Url{fx.url("/api/config/default-model")}, headers,
+        cpr::Body{json{{"name", "fixture-copilot"}}.dump()});
+    ASSERT_EQ(set_default.status_code, 200) << set_default.text;
+
+    const auto reordered = cpr::Post(cpr::Url{fx.url("/api/config/model-order")}, headers,
+        cpr::Body{json{{"names", {"reorder", "fixture-copilot"}}}.dump()});
+    ASSERT_EQ(reordered.status_code, 200) << reordered.text;
+    EXPECT_EQ(json::parse(reordered.text), json({{"ok", true}}));
+    const auto listed = cpr::Get(cpr::Url{fx.url("/api/models")});
+    ASSERT_EQ(listed.status_code, 200);
+    EXPECT_EQ(json::parse(listed.text)[0]["name"], "reorder");
+    const auto saved = acecode::load_config_from_path((fx.tmp_dir / "config.json").string());
+    ASSERT_EQ(saved.saved_models.size(), 2u);
+    EXPECT_EQ(saved.saved_models[0].name, "reorder");
+    EXPECT_EQ(saved.default_model_name, "fixture-copilot");
+
+    for (const auto& body : std::vector<std::string>{"{", "[]", "{}", R"({"names":[1]})"}) {
+        const auto invalid = cpr::Post(cpr::Url{fx.url("/api/config/model-order")}, headers,
+            cpr::Body{body});
+        EXPECT_EQ(invalid.status_code, 400) << invalid.text;
+    }
+    const auto conflict = cpr::Post(cpr::Url{fx.url("/api/config/model-order")}, headers,
+        cpr::Body{json{{"names", {"reorder", "reorder"}}}.dump()});
+    EXPECT_EQ(conflict.status_code, 409);
+    EXPECT_EQ(json::parse(conflict.text)["error"], "MODEL_ORDER_CONFLICT");
+    EXPECT_EQ(fx.cfg.saved_models[0].name, "reorder");
+
+    const auto edited = cpr::Put(cpr::Url{fx.url("/api/models/reorder")}, headers,
+        cpr::Body{json{{"name", "reorder"}, {"provider", "copilot"}, {"model", "gpt-4.1"}}.dump()});
+    ASSERT_EQ(edited.status_code, 200) << edited.text;
+    EXPECT_EQ(json::parse(edited.text)["model"], "gpt-4.1");
+}

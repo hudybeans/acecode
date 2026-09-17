@@ -1,10 +1,12 @@
 #include "settings_mutations.hpp"
 #include "permissions.hpp"
+#include "model_provider_registry.hpp"
 #include "saved_models_revision.hpp"
 
 #include <algorithm>
 #include <optional>
 #include <utility>
+#include <unordered_set>
 
 namespace acecode {
 namespace {
@@ -315,6 +317,53 @@ SettingsMutationResult remove_saved_model_setting(
     if (edit_error != SavedModelEditError::OK) {
         result.error_code = to_string(edit_error);
     }
+    return result;
+}
+
+SettingsMutationResult reorder_saved_models_setting(
+    const std::vector<std::string>& names,
+    const SettingsMutationOptions& options) {
+    bool invalid_order = false;
+    auto result = run_mutation(
+        [&names, &invalid_order](AppConfig& cfg, std::string& error) {
+            const auto enabled = [](const ModelProfile& profile) {
+                return is_runtime_model_provider_enabled(profile.provider);
+            };
+            const auto visible_count = static_cast<std::size_t>(
+                std::count_if(cfg.saved_models.begin(), cfg.saved_models.end(), enabled));
+            std::unordered_set<std::string> seen;
+            std::vector<ModelProfile> ordered_visible;
+            ordered_visible.reserve(names.size());
+            if (names.size() == visible_count) {
+                for (const auto& name : names) {
+                    const auto found = std::find_if(
+                        cfg.saved_models.begin(), cfg.saved_models.end(),
+                        [&name, &enabled](const ModelProfile& profile) {
+                            return profile.name == name && enabled(profile);
+                        });
+                    if (found == cfg.saved_models.end() || !seen.insert(name).second) break;
+                    ordered_visible.push_back(*found);
+                }
+            }
+            if (ordered_visible.size() != visible_count ||
+                ordered_visible.size() != names.size()) {
+                invalid_order = true;
+                error = "model order must contain every visible saved model exactly once";
+                return false;
+            }
+            // 旧配置可保留停用 Provider；它们未出现在 GET /api/models 中。
+            auto reordered = cfg.saved_models;
+            std::size_t index = 0;
+            for (auto& profile : reordered) {
+                if (enabled(profile)) profile = ordered_visible[index++];
+            }
+            if (saved_model_lists_equal(cfg.saved_models, reordered)) return false;
+            cfg.saved_models = std::move(reordered);
+            return true;
+        },
+        options,
+        true);
+    if (invalid_order) result.error_code = "MODEL_ORDER_CONFLICT";
     return result;
 }
 

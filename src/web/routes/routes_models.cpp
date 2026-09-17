@@ -600,6 +600,47 @@ void WebServer::Impl::register_models() {
             return with_cors(req, std::move(response));
         });
 
+        CROW_ROUTE(app, "/api/config/model-order").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/config/model-order").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (!deps.app_config) return crow::response(503);
+
+            auto json_err = [&](int status, const char* code, const std::string& msg) {
+                crow::response r(status);
+                r.body = json{{"error", code}, {"message", msg}}.dump();
+                r.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(r));
+            };
+            const auto body = json::parse(req.body, nullptr, false);
+            if (body.is_discarded()) return json_err(400, "BAD_JSON", "invalid JSON body");
+            if (!body.is_object() || !body.contains("names") ||
+                !body["names"].is_array() ||
+                !std::all_of(body["names"].begin(), body["names"].end(),
+                    [](const json& name) { return name.is_string(); })) {
+                return json_err(400, "BAD_REQUEST", "expected {names: string[]}");
+            }
+
+            std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
+            SettingsMutationOptions options;
+            options.config_path = deps.config_path;
+            options.live_config = deps.app_config;
+            const auto result = reorder_saved_models_setting(
+                body["names"].get<std::vector<std::string>>(), options);
+            if (!result.ok) {
+                const bool conflict = result.error_code == "MODEL_ORDER_CONFLICT";
+                return json_err(conflict ? 409 : 500,
+                    conflict ? "MODEL_ORDER_CONFLICT" : "PERSIST_FAILED", result.error);
+            }
+            crow::response r(200);
+            r.add_header("Content-Type", "application/json");
+            r.body = json{{"ok", true}}.dump();
+            return with_cors(req, std::move(r));
+        });
+
         // POST /api/models: 新增 saved_models 条目。body = SavedModelDraft JSON。
         // 失败时 cfg 不变;落盘失败时 cfg 内存回滚保持与磁盘一致。
         CROW_ROUTE(app, "/api/models").methods(crow::HTTPMethod::POST)

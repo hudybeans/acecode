@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api.js';
 import { lookupErrorMessage } from '../../lib/errors.js';
 import {
@@ -44,6 +44,7 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
   const [catalogError, setCatalogError] = useState('');
   const [savedQuery, setSavedQuery] = useState('');
   const [mutationBusy, setMutationBusy] = useState('');
+  const reorderPending = useRef(false);
   const [blockedDeletes, setBlockedDeletes] = useState(() => new Set());
   const [profileDialog, setProfileDialog] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -457,6 +458,26 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
     }
   }, [addPayloadQueue, announceMutation, loadSavedModels]);
 
+  const reorderModels = useCallback(async (nextModels) => {
+    if (mutationBusy || modelsLoading || reorderPending.current
+      || nextModels.every((model, index) => model.name === models[index]?.name)) return;
+    const previous = models;
+    reorderPending.current = true;
+    setMutationBusy('reorder');
+    setModels(nextModels);
+    try {
+      await api.reorderModels(nextModels.map((model) => model.name));
+      onModelProfileUpdated?.({ type: 'reorder' });
+    } catch (error) {
+      setModels(previous);
+      toast({ kind: 'err', text: lookupErrorMessage(error?.code, error?.message) });
+      await loadSavedModels({ quiet: true });
+    } finally {
+      reorderPending.current = false;
+      setMutationBusy('');
+    }
+  }, [models, modelsLoading, mutationBusy, loadSavedModels, onModelProfileUpdated]);
+
   const setDefaultModel = useCallback(async (model) => {
     if (mutationBusy) return;
     setMutationBusy(`default:${model.name}`);
@@ -545,6 +566,7 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
           onQueryChange={setSavedQuery}
           loading={modelsLoading}
           busy={mutationBusy}
+          onReorder={reorderModels}
           blockedDeletes={blockedDeletes}
           onRefresh={() => { void loadSavedModels(); }}
           onAdd={openAddDialog}

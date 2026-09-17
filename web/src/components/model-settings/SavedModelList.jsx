@@ -1,3 +1,4 @@
+import { useSavedModelReorder } from './useSavedModelReorder.js';
 import { clsx } from '../../lib/format.js';
 import { filterSavedModels } from '../../lib/modelManager.js';
 import { RefreshIcon, VsIcon } from '../Icon.jsx';
@@ -16,13 +17,49 @@ function SavedModelRow({
   isDefault,
   busy,
   deleteBlocked,
+  reorder,
+  reorderEnabled,
   onSetDefault,
   onEdit,
   onDelete,
 }) {
   const disabled = !!busy;
   return (
-    <article role="listitem" className="flex min-w-0 flex-wrap items-center gap-3 rounded-md border border-border bg-surface px-3.5 py-2.5">
+    <article
+      role="listitem"
+      data-saved-model-name={model.name}
+      onPointerDown={(event) => reorder.onPointerDown(event, model)}
+      onDragStart={(event) => event.preventDefault()}
+      className={clsx(
+        'relative flex min-w-0 flex-wrap items-center gap-3 rounded-md border border-border bg-surface px-3.5 py-2.5',
+        reorderEnabled && !disabled && 'cursor-grab',
+        reorder.drag?.source === model.name && 'opacity-50',
+      )}
+    >
+      {reorder.drag?.target === model.name && (
+        <span aria-hidden="true" className={clsx(
+          'pointer-events-none absolute -inset-x-px h-0.5 rounded bg-accent',
+          reorder.drag.placement === 'before' ? '-top-1.5' : '-bottom-1.5',
+        )} />
+      )}
+      <button
+        type="button"
+        aria-label={`调整 ${model.name} 的顺序`}
+        title="拖动排序，也可按上下方向键"
+        aria-disabled={!reorderEnabled || disabled}
+        onPointerDown={(event) => reorder.onPointerDown(event, model, true)}
+        onKeyDown={(event) => reorder.onKeyDown(event, model)}
+        className={clsx(
+          '-mr-2 flex h-7 w-4 shrink-0 touch-none items-center justify-center rounded text-fg-mute focus:outline-none focus:ring-1 focus:ring-accent',
+          reorderEnabled && !disabled ? 'cursor-grab hover:text-fg active:cursor-grabbing' : 'cursor-default opacity-40',
+        )}
+      >
+        <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor" aria-hidden="true">
+          <circle cx="4" cy="4" r="1" /><circle cx="8" cy="4" r="1" />
+          <circle cx="4" cy="8" r="1" /><circle cx="8" cy="8" r="1" />
+          <circle cx="4" cy="12" r="1" /><circle cx="8" cy="12" r="1" />
+        </svg>
+      </button>
       <ProviderIcon provider={model} />
       <div className="min-w-[180px] flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -91,6 +128,7 @@ export function SavedModelList({
   onQueryChange,
   loading = false,
   busy = '',
+  onReorder,
   blockedDeletes = new Set(),
   onRefresh,
   onAdd,
@@ -99,6 +137,9 @@ export function SavedModelList({
   onDelete,
 }) {
   const filtered = filterSavedModels(models, query);
+  const reorder = useSavedModelReorder({
+    models, filtered, query, disabled: loading || !!busy, onReorder,
+  });
   return (
     <section aria-labelledby="saved-models-title">
       <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
@@ -153,11 +194,13 @@ export function SavedModelList({
           正在加载已保存模型…
         </div>
       ) : filtered.length > 0 ? (
-        <div className="space-y-2" role="list">
+        <div ref={reorder.listRef} className="space-y-2" role="list" aria-label="已保存模型">
           {filtered.map((model) => (
             <SavedModelRow
               key={model.name}
               model={model}
+              reorder={reorder}
+              reorderEnabled={!!onReorder && filtered.length > 1}
               isDefault={model.name === defaultName}
               busy={!!busy}
               deleteBlocked={!!(

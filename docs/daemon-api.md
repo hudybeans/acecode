@@ -326,6 +326,7 @@ update their transcript presentation.
 | POST | `/api/hooks/:id/enable` | enable hook |
 | GET | `/api/models` | list saved model profiles |
 | POST | `/api/models` | add saved model profile |
+| POST | `/api/config/model-order` | persist saved model order (`{names: string[]}`) |
 | PUT | `/api/models/:name` | update saved model profile |
 | DELETE | `/api/models/:name` | remove saved model profile |
 | POST | `/api/models/probe` | probe provider model ids |
@@ -415,6 +416,15 @@ update their transcript presentation.
 | POST | `/api/pty/:id/resize` | resize PTY |
 | POST | `/api/pty/:id/title` | set PTY title |
 | PUT | `/api/console/config` | write console shell config |
+
+`POST /api/config/model-order` requires authentication and a complete permutation of
+the current model names returned by `GET /api/models`. Legacy profiles belonging
+to disabled providers retain their positions and contents. It returns `{"ok": true}` on success, `400` for
+malformed JSON or a non-string-array `names`, `409 MODEL_ORDER_CONFLICT` for a
+duplicate, missing, or unknown name, and `500 PERSIST_FAILED` if saving fails.
+The mutation reorders the latest profiles atomically without changing their
+contents or `default_model_name`. `GET /api/models` returns the persisted order;
+an unchanged order performs no write.
 
 ---
 

@@ -246,6 +246,7 @@ import './errors.test.js';
 import './modelPicker.test.js';
 import './modelAlias.test.js';
 import './modelManager.test.js';
+import './savedModelOrder.test.js';
 import './modelSettings.test.js';
 import './modelConnectionTest.test.js';
 import './providerCatalogGroups.test.js';

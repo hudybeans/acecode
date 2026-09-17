@@ -1,6 +1,9 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '调整 {{p0}} 的顺序': 'Reorder {{p0}}',
+  '拖动排序，也可按上下方向键': 'Drag to reorder, or use the up and down arrow keys',
+  '模型列表已发生变化，请刷新后重新排序': 'The model list has changed. Refresh it and reorder again.',
   '思考深度': 'Reasoning depth',
   '思考深度：{{p0}}': 'Reasoning depth: {{p0}}',
   '思考深度设置失败：': 'Could not update reasoning depth: ',
