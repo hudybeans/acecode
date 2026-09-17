@@ -200,7 +200,8 @@ void register_headless_tools(
     const std::shared_ptr<ThreadToolDeps>& thread_deps,
     const std::shared_ptr<WorkspaceToolDeps>& workspace_deps) {
     register_session_builtin_tools(tools, cfg);
-    tools.register_tool(create_ask_user_question_tool_async(cfg.ask.max_questions));
+    tools.register_tool(create_ask_user_question_tool_async(
+        cfg.ask.max_questions, cfg.ask.max_options));
     if (skill_registry && cfg.skills.allowed &&
         !cfg.skills.allowed->empty()) {
         tools.register_tool(create_skills_list_tool(*skill_registry, &cfg));
@@ -346,7 +347,7 @@ int run_print_mode(const HeadlessCliOptions& opts) {
         }
     }
 
-    // Skill / MCP 先按“当前配置真实可用”做精确名称预检。两者都在本地
+    // Skill / MCP 先按"当前配置真实可用"做精确名称预检。两者都在本地
     // cfg 副本上编译成 allowlist,因此未知/全局 disabled 名称能在启动网络
     // 子系统和 provider 之前以 usage error 失败。
     {

@@ -541,6 +541,10 @@ std::vector<std::string> validate_config(const AppConfig& cfg) {
         errors.push_back("ask.max_questions out of range (1-50): " +
                          std::to_string(cfg.ask.max_questions));
     }
+    if (cfg.ask.max_options < 4 || cfg.ask.max_options > 8) {
+        errors.push_back("ask.max_options out of range (4-8): " +
+                         std::to_string(cfg.ask.max_options));
+    }
     if (cfg.openai.stream_timeout_ms <= 0) {
         errors.push_back("openai.stream_timeout_ms must be > 0");
     }
@@ -1386,6 +1390,23 @@ static AppConfig load_config_from_path_once(
                                          std::to_string(normalized));
                             }
                             cfg.ask.max_questions = normalized;
+                        }
+                    }
+                    // AskUserQuestion 选项数量上限。不存在时保持默认上限 6。
+                    // 非整数忽略,整数统一钳制到 [4,8]。
+                    if (aj.contains("max_options")) {
+                        const auto& value = aj["max_options"];
+                        if (!value.is_number_integer()) {
+                            LOG_WARN("[config] ask.max_options must be an integer; ignoring");
+                        } else {
+                            const int normalized = clamp_config_integer(value, 4, 8);
+                            if (value != normalized) {
+                                LOG_WARN("[config] ask.max_options=" +
+                                         value.dump() +
+                                         " is outside [4, 8]; clamping to " +
+                                         std::to_string(normalized));
+                            }
+                            cfg.ask.max_options = normalized;
                         }
                     }
                 }
@@ -2403,6 +2424,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         nlohmann::json askj = nlohmann::json::object();
         if (cfg.ask.max_questions != ask_d.max_questions)
             askj["max_questions"] = cfg.ask.max_questions;
+        if (cfg.ask.max_options != ask_d.max_options)
+            askj["max_options"] = cfg.ask.max_options;
         if (!askj.empty()) j["ask"] = askj;
 
         TuiConfig tui_d;

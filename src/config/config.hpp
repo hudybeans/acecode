@@ -254,6 +254,9 @@ struct AskConfig {
     // 单次 AskUserQuestion 调用允许的题目数量；所有运行端共享。
     // load_config clamp 到 [1, 50]，默认 10。
     int max_questions = 10;
+    // 单个问题允许的选项数量上限；所有运行端共享。
+    // load_config clamp 到 [4, 8]，默认 6。
+    int max_options = 6;
 };
 
 struct TuiConfig {
@@ -336,7 +339,7 @@ struct LspServerOverride {
     nlohmann::json initialization;         // initializationOptions 原样透传
 };
 
-// LSP 集成总配置。enabled=false 时:lsp 工具不注册、编辑后不注入诊断、
+// LSP 集成总配置。enabled=false 时:lsp 工具不注册、不注入诊断、
 // 不 spawn 任何 server 进程 —— 行为与引入 LSP 前完全一致。
 struct LspConfig {
     bool enabled = true;

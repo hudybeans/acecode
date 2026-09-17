@@ -19,6 +19,12 @@ inline constexpr int kDefaultAskMaxQuestions = 10;
 inline constexpr int kMinAskQuestions = 1;
 inline constexpr int kMaxAskQuestions = 50;
 
+// 选项数量上限：可配置，默认 6，合法范围 [4, 8]。
+// 与 AskConfig.max_options 的默认值与钳制范围保持一致。
+inline constexpr int kDefaultAskMaxOptions = 6;
+inline constexpr int kMinAskMaxOptions = 4;
+inline constexpr int kMaxAskMaxOptions = 8;
+
 // 解析 + 校验 `AskUserQuestion` 工具的 JSON 参数。成功时返回解析出来的
 // question 列表,失败时返回 std::nullopt 并把错误消息写入 `err`
 // (以 "questions" / "options" / "unique" / "labels" / "header" 等关键词
@@ -30,6 +36,12 @@ std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
 // AppConfig::ask.max_questions;保留上面的无参上限版本供独立调用方兼容。
 std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
     const std::string& arguments_json, std::string& err, int max_questions);
+
+// 同时指定题目上限与选项数量上限；选项上限应来自已校验的
+// AppConfig::ask.max_options，钳制到 [4,8]。
+std::optional<std::vector<AskQuestion>> validate_ask_user_question_args(
+    const std::string& arguments_json, std::string& err, int max_questions,
+    int max_options);
 
 // 拼接最终的 ToolResult 输出字符串。question_order 保留模型给问题的原始顺序,
 // answers 的 value 对于 multi-select 是调用方已经用 ", " 拼好的单一字符串。
@@ -96,5 +108,6 @@ ToolResult make_timeout_adopted_ask_result(
 // 直接报错(该会话没接提问通道 = AskUserQuestion 不可用)。
 ToolImpl create_ask_user_question_tool_async();
 ToolImpl create_ask_user_question_tool_async(int max_questions);
+ToolImpl create_ask_user_question_tool_async(int max_questions, int max_options);
 
 } // namespace acecode
