@@ -194,7 +194,6 @@ function taskCompleteDisplayText(summary, output) {
 
 export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessionRunning = true }) {
   const { t: translate } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const contextIdRef = useRef('');
   if (!contextIdRef.current) {
     contextIdRef.current = `tool-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -220,6 +219,13 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     attachments = [],
     askUserQuestionResult = null,
   } = entry || {};
+  const shouldExpandAskResult = isDone
+    && success !== false
+    && askUserQuestionItems(askUserQuestionResult).length > 0;
+  const [expanded, setExpanded] = useState(shouldExpandAskResult);
+  useEffect(() => {
+    if (shouldExpandAskResult) setExpanded(true);
+  }, [shouldExpandAskResult]);
   const attachmentItems = useMemo(() => normalizeAttachmentList(attachments), [attachments]);
   const genericSummary = useMemo(
     () => fallbackToolSummary(tool || 'tool', args),

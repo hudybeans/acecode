@@ -257,7 +257,8 @@ await run('历史问答保留多选标记和完整答案', () => {
   const html = renderQuestionToolForTest(item);
   assert.match(html, /data-question-feedback="submit"/);
   assert.match(html, /data-ask-user-question-result="true"/);
-  assert.doesNotMatch(html, /A, B\nC/, '答案默认折叠,只在用户展开活动行后显示');
+  assert.match(html, /data-desktop-tool-expanded="true"/);
+  assert.match(html, /A, B\nC/, '历史问答结果默认展开并保留完整答案');
 });
 
 console.log('questionFeedbackPersistence tests passed');

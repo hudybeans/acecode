@@ -215,11 +215,13 @@ run('连续提问时待答工具不复用上一题的提交或取消反馈', () 
   }
 });
 
-run('共享工具行直接承载折叠结果,无需 ChatView 回调或独立反馈卡', () => {
+run('共享工具行默认展开已提交结果,仍保留折叠入口', () => {
   const item = lastAskUserQuestionItem(load([userMessage(), askToolMessage(SUBMIT_METADATA)]).items);
   const html = renderQuestionToolForTest(item);
   assert.equal((html.match(/data-question-feedback="submit"/g) || []).length, 1);
   assert.match(html, /data-ask-user-question-result="true"/);
+  assert.match(html, /data-desktop-tool-expanded="true"/);
+  assert.match(html, /你最喜欢的语言\?|Rust|目标平台\?|Windows, Linux/);
   assert.match(html, /data-tool-activity/);
   assert.doesNotMatch(html, /全部提交完成|（多选）/);
 });
