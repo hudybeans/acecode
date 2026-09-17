@@ -4470,6 +4470,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [onQuestionResolve]);
 
+
   const sidePanelMounted = showSidePanel;
   const sidePanelNavigationCollapsed = sidePanelCollapsed || sidePanelListCollapsed;
   const previewScope = useMemo(
@@ -4943,51 +4944,58 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             <InteractiveHomeLogo enabled={homeLogoEffectEnabled} />
             <h1 className="ace-home-title">{homeProjectTitle}</h1>
             <div data-tour-target="home-composer" className="ace-home-composer">
-              <InputBar
-                ref={inputRef}
-                variant="hero"
-                attentionRequest={homeComposerAttentionRequest}
-                pathReferenceApi={api}
-                currentSessionId=""
-                cwd={selectedHomeWorkspace?.cwd || ''}
-                expertOptions={recentExperts}
-                selectedExpertId={composerExpertId}
-                selectedExpertName={composerExpert?.display_name || ''}
-                selectedExpertType={composerExpert?.type || 'agent'}
-                expertRemoving={expertDetaching}
-                onSelectExpert={selectComposerExpert}
-                onRemoveExpert={detachComposerExpert}
-                onOpenExpertComponents={() => setExpertPickerOpen(true)}
-                history={composerHistory}
-                historyEntries={composerHistoryEntries}
-                value={composerValue}
-                onChange={handleComposerChange}
-                onSubmit={submit}
-                disabled={!!questionForView}
-                submitting={homeSubmitting || reasoningSwitching}
-                placeholder="向 ACECode 描述任务，或输入 / 命令..."
-                {...composerInputProps}
-                fileDropManagedExternally
-                onFileDragActiveChange={setChatFileDropActive}
-                sessionControls={{
-                  model: homeModelLabel,
-                  modelOptions,
-                  selectedModelName: homeModelName,
-                  modelLoad: homeModelLoad,
-                  modelSwitching: modelSwitching || reasoningSwitching,
-                  modelRefreshing,
-                  reasoningOptions: composerReasoningOptions(selectedHomeModel, homeReasoningEffort),
-                  reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
-                  onReasoningChange: changeComposerReasoning,
-                  onModelChange: changeComposerModel,
-                  onRefreshModels: refreshSessionModels,
-                  onOpenModelSettings,
-                  tokenBudget: homeTokenBudget,
-                  permissionMode,
-                  permissionSwitching,
-                  onPermissionModeChange: changeComposerPermissionMode,
-                }}
-              />
+              {questionForView ? (
+                <QuestionPicker
+                  request={questionForView}
+                  onResolve={resolveQuestion}
+                  originLabel={questionOriginLabel}
+                />
+              ) : (
+                <InputBar
+                  ref={inputRef}
+                  variant="hero"
+                  attentionRequest={homeComposerAttentionRequest}
+                  pathReferenceApi={api}
+                  currentSessionId=""
+                  cwd={selectedHomeWorkspace?.cwd || ''}
+                  expertOptions={recentExperts}
+                  selectedExpertId={composerExpertId}
+                  selectedExpertName={composerExpert?.display_name || ''}
+                  selectedExpertType={composerExpert?.type || 'agent'}
+                  expertRemoving={expertDetaching}
+                  onSelectExpert={selectComposerExpert}
+                  onRemoveExpert={detachComposerExpert}
+                  onOpenExpertComponents={() => setExpertPickerOpen(true)}
+                  history={composerHistory}
+                  historyEntries={composerHistoryEntries}
+                  value={composerValue}
+                  onChange={handleComposerChange}
+                  onSubmit={submit}
+                  submitting={homeSubmitting || reasoningSwitching}
+                  placeholder="向 ACECode 描述任务，或输入 / 命令..."
+                  {...composerInputProps}
+                  fileDropManagedExternally
+                  onFileDragActiveChange={setChatFileDropActive}
+                  sessionControls={{
+                    model: homeModelLabel,
+                    modelOptions,
+                    selectedModelName: homeModelName,
+                    modelLoad: homeModelLoad,
+                    modelSwitching: modelSwitching || reasoningSwitching,
+                    modelRefreshing,
+                    reasoningOptions: composerReasoningOptions(selectedHomeModel, homeReasoningEffort),
+                    reasoningDisabled: busy || homeSubmitting || composerSubmitting || reasoningSwitching || modelSwitching || modelRefreshing,
+                    onReasoningChange: changeComposerReasoning,
+                    onModelChange: changeComposerModel,
+                    onRefreshModels: refreshSessionModels,
+                    onOpenModelSettings,
+                    tokenBudget: homeTokenBudget,
+                    permissionMode,
+                    permissionSwitching,
+                    onPermissionModeChange: changeComposerPermissionMode,
+                  }}
+                />
+              )}
             </div>
             <div className="flex items-center gap-2 mr-auto ml-0">
             <div className="relative">
@@ -5090,9 +5098,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             </div>
           </div>
         </div>
-        {questionForView && (
-          <QuestionPicker request={questionForView} onResolve={resolveQuestion} />
-        )}
+
         {createProjectOpen && (
           <CreateProjectModal
             api={api}
@@ -5488,13 +5494,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </Suspense>
       )}
 
-      {questionForView && (
-        <QuestionPicker
-          request={questionForView}
-          onResolve={resolveQuestion}
-          originLabel={questionOriginLabel}
-        />
-      )}
 
       <SideChatWindow
         {...sideChatState}
@@ -5523,7 +5522,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         </div>
       ) : (
         <div className="ace-composer-dock">
-          {!questionForView ? (
+          {questionForView ? (
+            <QuestionPicker
+              request={questionForView}
+              onResolve={resolveQuestion}
+              originLabel={questionOriginLabel}
+              className="mx-2.5"
+            />
+          ) : (
             <>
           <InputBar
             ref={inputRef}
@@ -5588,7 +5594,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             onIntentChange={handleGitPillIntentChange}
           />
           </>
-          ) : null}
+          )}
         </div>
       )}
       <SessionContentLoading

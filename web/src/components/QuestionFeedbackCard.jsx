@@ -1,8 +1,10 @@
 // AskUserQuestion 提交/取消/插话后的反馈卡(设计稿样式):
 //   - submit:左侧小对勾 + 「全部提交完成」+ 逐题 Q&A 清单(未作答灰字)
 //   - cancel:左侧小叉 + 「已取消全部回答」
+
 //   - interject:单行灰字提示「已改为直接输入，取消作答」(TUI/IM 等通道把问题
 //     以「用户改为直接输入」收掉时落盘的 interjected 标记)
+// 结果态卡片无投影,与对话流气泡融合(设计稿 .ask-box:has(.ask-summary/.ask-canceled))。
 import { VsIcon } from './Icon.jsx';
 
 export function QuestionFeedbackCard({ feedback }) {
@@ -56,6 +58,7 @@ export function QuestionFeedbackCard({ feedback }) {
           </ul>
         )}
       </div>
+
     </section>
   );
 }

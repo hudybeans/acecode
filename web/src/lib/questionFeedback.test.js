@@ -63,7 +63,7 @@ const { ToolBlock } = vm.runInNewContext(`${toolTransformed.code}; ({ ToolBlock 
   React, ...React, ...format,
   compactOneLinePreview, createdFileSource, normalizeAttachmentList,
   fallbackToolSummary, questionFeedbackForTool, QuestionFeedbackCard,
-  useTranslation() {},
+  useTranslation: () => ({ t: (text) => text }),
   renderMarkdown: () => '',
   VsIcon: () => null,
   ToolSummaryIcon: () => null,
@@ -215,13 +215,15 @@ run('连续提问时待答工具不复用上一题的提交或取消反馈', () 
   }
 });
 
-run('共享工具行后紧跟一张反馈卡,无需 ChatView 回调', () => {
+run('共享工具行默认展开已提交结果,仍保留折叠入口', () => {
   const item = lastAskUserQuestionItem(load([userMessage(), askToolMessage(SUBMIT_METADATA)]).items);
   const html = renderQuestionToolForTest(item);
   assert.equal((html.match(/data-question-feedback="submit"/g) || []).length, 1);
-  assert.ok(html.indexOf('data-tool-activity') < html.indexOf('data-question-feedback'));
-  assert.match(html, /全部提交完成/);
-  assert.match(html, /（多选）/);
+  assert.match(html, /data-ask-user-question-result="true"/);
+  assert.match(html, /data-desktop-tool-expanded="true"/);
+  assert.match(html, /你最喜欢的语言\?|Rust|目标平台\?|Windows, Linux/);
+  assert.match(html, /data-tool-activity/);
+  assert.doesNotMatch(html, /全部提交完成|（多选）/);
 });
 
 run('切换会话后只渲染新会话自己的问答结果', () => {
@@ -291,9 +293,9 @@ run('工具改名或历史页缺少调用名时结构化结果仍渲染反馈卡
 
 // 触发场景:TUI/IM 通道里 AskUserQuestion 挂起时用户直接输入插话,daemon 落盘
 // ask_user_question_result={interjected:true, items:[]} 且 success=true。
-// 期望:渲染「已改为直接输入,取消作答」卡,而不是取消卡,也不是 Q/A 确认卡;
+// 期望:与显式取消使用同一行内展示文案,但保留 interject 数据标记;
 // 历史页重载后(工具改名、无调用名)同样可恢复。
-run('插话取消作答渲染专属反馈卡,且改名后仍可恢复', () => {
+run('插话取消作答复用取消展示,且改名后仍可恢复', () => {
   const item = {
     kind: 'tool',
     tool: {
@@ -306,8 +308,8 @@ run('插话取消作答渲染专属反馈卡,且改名后仍可恢复', () => {
   assert.equal(questionFeedbackForItem(item)?.kind, 'interject');
   const html = renderQuestionToolForTest(item);
   assert.equal((html.match(/data-question-feedback="interject"/g) || []).length, 1);
-  assert.ok(html.includes('已改为直接输入'));
-  assert.doesNotMatch(html, /data-question-feedback="cancel"|data-question-feedback="submit"|已取消全部回答/);
+  assert.ok(html.includes('用户已取消回答'));
+  assert.doesNotMatch(html, /data-question-feedback="cancel"|data-question-feedback="submit"|全部提交完成/);
   for (const tool of ['', 'request_input']) {
     const renamed = { ...item, tool: { ...item.tool, tool } };
     assert.equal(questionFeedbackForItem(renamed)?.kind, 'interject');

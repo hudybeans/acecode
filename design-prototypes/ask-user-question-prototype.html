@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AskUserQuestion 展开与折叠原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ace-bg: #f7f7f8;
+      --ace-surface: #ffffff;
+      --ace-surface-alt: #f5f5f6;
+      --ace-surface-hi: #ececef;
+      --ace-border: #dedee3;
+      --ace-fg: #202124;
+      --ace-fg-2: #4f5157;
+      --ace-fg-mute: #85878f;
+      --ace-accent: #6d5bd0;
+      --ace-accent-bg: #f0edff;
+      --ace-ok: #2f9d61;
+      --ace-danger: #d64c4c;
+      --sidebar: 270px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+      --shadow-lg: 0 14px 40px rgb(20 20 30 / 10%), 0 2px 10px rgb(20 20 30 / 6%);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      color: var(--ace-fg);
+      background: var(--ace-bg);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+
+    .app { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); height: 100%; }
+    .sidebar {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      border-right: 1px solid var(--ace-border);
+      background: #f2f2f3;
+    }
+    .brand { display: flex; align-items: center; gap: 8px; padding: 15px 18px 13px; font-weight: 700; }
+    .brand-mark {
+      display: grid; width: 20px; height: 20px; place-items: center;
+      border-radius: 6px; color: white; background: var(--ace-fg); font-size: 11px;
+    }
+    .version { color: var(--ace-fg-mute); font-size: 11px; font-weight: 500; }
+    .nav { padding: 2px 7px 12px; }
+    .nav-row, .session-row {
+      display: flex; width: 100%; align-items: center; gap: 9px; border: 0;
+      border-radius: 7px; background: transparent; padding: 7px 10px; text-align: left;
+    }
+    .nav-row:hover, .session-row:hover { background: var(--ace-surface-hi); }
+    .nav-icon { width: 22px; color: var(--ace-fg-2); text-align: center; }
+    .sidebar-scroll { min-height: 0; flex: 1; overflow: auto; padding: 0 7px; }
+    .section-label { padding: 14px 11px 5px; color: var(--ace-fg-mute); font-size: 12px; font-weight: 600; }
+    .session-row { justify-content: space-between; padding-left: 13px; }
+    .session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-time { color: var(--ace-fg-mute); font-size: 11px; white-space: nowrap; }
+    .session-row.active { background: var(--ace-accent-bg); }
+    .sidebar-foot { border-top: 1px solid var(--ace-border); padding: 9px 8px; }
+
+    .main { display: flex; min-width: 0; flex-direction: column; background: var(--ace-bg); }
+    .topbar {
+      display: flex; height: 42px; flex: 0 0 42px; align-items: center; gap: 4px;
+      border-bottom: 1px solid var(--ace-border); background: var(--ace-surface); padding: 0 10px;
+    }
+    .icon-button {
+      display: grid; width: 30px; height: 30px; place-items: center; border: 0;
+      border-radius: 6px; background: transparent; color: var(--ace-fg-2); cursor: pointer;
+    }
+    .icon-button:hover { background: var(--ace-surface-hi); }
+    .task-title { margin-left: 8px; color: var(--ace-fg-2); font-size: 13px; }
+    .spacer { flex: 1; }
+
+    .stage { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }
+    .conversation {
+      width: min(820px, calc(100% - 48px)); min-height: 0; flex: 1; margin: 0 auto;
+      overflow: auto; padding: 42px 14px 210px;
+    }
+    .user-message { display: flex; justify-content: flex-end; margin-bottom: 26px; }
+    .bubble {
+      max-width: 76%; border-radius: 17px 17px 4px 17px; background: var(--ace-surface-hi);
+      padding: 10px 14px; line-height: 1.55;
+    }
+    .assistant-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+    .avatar {
+      display: grid; width: 27px; height: 27px; place-items: center; border-radius: 8px;
+      background: var(--ace-fg); color: white; font-size: 11px; font-weight: 700;
+    }
+    .assistant-copy { color: var(--ace-fg-2); line-height: 1.65; }
+
+    .tool-output { margin-top: 16px; }
+    .tool-label {
+      display: flex; width: 100%; align-items: center; gap: 7px; margin-bottom: 7px;
+      border: 0; background: transparent; padding: 0; color: var(--ace-fg-mute);
+      font-size: 12px; text-align: left;
+    }
+    button.tool-label { cursor: pointer; }
+    button.tool-label:hover { color: var(--ace-fg-2); }
+    .tool-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ace-accent); }
+    .tool-name { flex: 1; }
+
+    .result-card {
+      display: none; width: 100%; overflow: hidden; border: 1px solid var(--ace-border);
+      border-radius: 12px; background: var(--ace-surface);
+    }
+    .result-card.expanded { display: block; }
+    .chevron { color: var(--ace-fg-mute); transition: transform 160ms ease; }
+    .tool-label[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+    .result-body { padding: 2px 14px 8px; }
+    .answer-row { padding: 9px 1px; border-bottom: 1px solid var(--ace-border); }
+    .answer-row:last-child { border-bottom: 0; }
+    .question { color: var(--ace-fg-mute); font-size: 12px; line-height: 1.4; }
+    .answer { margin-top: 3px; font-size: 13px; font-weight: 500; line-height: 1.5; }
+    .answer.muted { color: var(--ace-fg-mute); font-weight: 400; }
+    .cancel-copy { padding: 3px 1px; color: var(--ace-fg-mute); font-size: 13px; }
+
+    .composer-dock {
+      position: absolute; right: 0; bottom: 0; left: 0; padding: 18px 24px 20px;
+      background: linear-gradient(to bottom, transparent, var(--ace-bg) 20%, var(--ace-bg));
+    }
+    .composer-wrap { width: min(820px, calc(100% - 28px)); margin: 0 auto; }
+    .ask-card {
+      display: flex; max-height: min(610px, calc(100vh - 100px)); flex-direction: column;
+      overflow: hidden; border: 1px solid var(--ace-border); border-radius: 14px;
+      background: var(--ace-surface); box-shadow: var(--shadow-lg);
+    }
+    .ask-header {
+      display: flex; min-height: 49px; align-items: center; gap: 8px;
+      border-bottom: 1px solid var(--ace-border); padding: 8px 12px 8px 15px;
+    }
+    .ask-heading { min-width: 0; flex: 1; }
+    .origin { overflow: hidden; color: var(--ace-fg-mute); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .ask-title { margin-top: 2px; font-size: 15px; font-weight: 600; }
+    .multi { margin-left: 5px; color: var(--ace-fg-mute); font-size: 12px; font-weight: 400; }
+    .counter { color: var(--ace-fg-mute); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .ask-body { min-height: 0; overflow: auto; padding: 8px; }
+    .option {
+      display: flex; align-items: center; gap: 11px; border: 0; border-radius: 9px;
+      padding: 9px 10px; cursor: pointer; user-select: none;
+    }
+    .option:hover, .option.selected { background: var(--ace-surface-hi); }
+    .option-mark {
+      display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center;
+      border: 1px solid var(--ace-fg-mute); border-radius: 50%; color: var(--ace-fg-mute);
+      font-size: 11px; font-weight: 600;
+    }
+    .option.selected .option-mark { border-color: var(--ace-fg); background: var(--ace-fg); color: var(--ace-bg); }
+    .option-copy { min-width: 0; flex: 1; text-align: left; }
+    .option-title { font-size: 14px; font-weight: 600; }
+    .recommended {
+      margin-left: 6px; border: 1px solid var(--ace-border); border-radius: 4px;
+      color: var(--ace-fg-mute); padding: 1px 4px; font-size: 10px; font-weight: 500;
+    }
+    .option-desc { margin-top: 2px; color: var(--ace-fg-mute); font-size: 12px; }
+    .custom-row { margin: 4px 10px 0; border-top: 1px solid var(--ace-border); padding-top: 7px; }
+    .custom-inner { display: flex; align-items: center; gap: 11px; border-radius: 9px; padding: 5px 0; }
+    .custom-input { min-width: 0; height: 34px; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ace-fg); }
+    .count { color: var(--ace-fg-mute); font-size: 11px; }
+    .ask-actions {
+      display: flex; justify-content: flex-end; gap: 8px; margin: 6px 10px 0;
+      border-top: 1px solid var(--ace-border); padding: 9px 0 2px;
+    }
+    .button {
+      height: 32px; border: 0; border-radius: 8px; padding: 0 12px;
+      background: var(--ace-surface-hi); color: var(--ace-fg-2); cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .button:hover { filter: brightness(.97); }
+    .button.primary { background: var(--ace-fg); color: var(--ace-bg); }
+    .key { margin-left: 5px; color: inherit; font-size: 10px; opacity: .55; }
+    .ask-card.collapsed .ask-header { border-bottom: 0; }
+    .ask-card.collapsed .ask-body { display: none; }
+    .ask-card.collapsed .origin, .ask-card.collapsed .ask-title { display: none; }
+    .collapsed-title { display: none; color: var(--ace-fg-2); font-size: 13px; font-weight: 500; }
+    .ask-card.collapsed .collapsed-title { display: block; }
+
+    .prototype-controls {
+      position: fixed; top: 54px; right: 18px; z-index: 20; width: 198px;
+      border: 1px solid var(--ace-border); border-radius: 11px; background: rgb(255 255 255 / 92%);
+      box-shadow: 0 8px 28px rgb(20 20 30 / 12%); padding: 10px; backdrop-filter: blur(12px);
+    }
+    .controls-title { margin: 1px 3px 8px; font-size: 11px; font-weight: 700; color: var(--ace-fg-mute); letter-spacing: .04em; }
+    .segmented { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px; padding: 3px; border-radius: 8px; background: var(--ace-surface-alt); }
+    .segment { border: 0; border-radius: 6px; background: transparent; padding: 6px 3px; cursor: pointer; font-size: 11px; }
+    .segment.active { background: var(--ace-surface); box-shadow: 0 1px 4px rgb(20 20 30 / 10%); font-weight: 600; }
+    .hint { margin: 8px 3px 1px; color: var(--ace-fg-mute); font-size: 10px; line-height: 1.45; }
+    [hidden] { display: none !important; }
+
+    @media (max-width: 900px) {
+      :root { --sidebar: 220px; }
+      .prototype-controls { top: 49px; right: 9px; }
+    }
+    @media (max-width: 680px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .prototype-controls { position: absolute; width: 184px; }
+      .conversation { width: calc(100% - 24px); padding-top: 106px; }
+      .composer-dock { padding-inline: 8px; }
+      .composer-wrap { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="项目栏">
+      <div class="brand"><span class="brand-mark">A</span><span>ACECode</span><span class="version">v0.9.14</span></div>
+      <nav class="nav">
+        <button class="nav-row"><span class="nav-icon">＋</span><span>新建任务</span></button>
+        <button class="nav-row"><span class="nav-icon">◷</span><span>定时任务</span></button>
+        <button class="nav-row"><span class="nav-icon">◇</span><span>扩展</span></button>
+      </nav>
+      <div class="sidebar-scroll">
+        <div class="section-label">任务 (4)</div>
+        <button class="session-row active"><span class="session-title">AskUserQuestion 展开与折叠</span><span class="session-time">现在</span></button>
+        <button class="session-row"><span class="session-title">随机三道单选题</span><span class="session-time">1小时前</span></button>
+        <button class="session-row"><span class="session-title">随机单选多选问答</span><span class="session-time">2天前</span></button>
+        <div class="section-label">工作区 (2)</div>
+        <button class="session-row"><span class="session-title">▾　acecode</span></button>
+        <button class="session-row"><span class="session-title">　　问答卡片原型</span><span class="session-time">今天</span></button>
+      </div>
+      <div class="sidebar-foot"><button class="nav-row"><span class="nav-icon">⚙</span><span>设置</span></button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-button" title="收起项目栏">☰</button>
+        <button class="icon-button" title="后退">‹</button>
+        <button class="icon-button" title="前进">›</button>
+        <span class="task-title">AskUserQuestion 交互讨论</span>
+        <span class="spacer"></span>
+        <button class="icon-button" title="控制台">⌘</button>
+        <button class="icon-button" title="右侧面板">▯</button>
+      </header>
+
+      <section class="stage">
+        <div class="conversation">
+          <div class="user-message"><div class="bubble">请先确认这次改动中问答卡片的交互偏好。</div></div>
+          <div class="assistant-row">
+            <div class="avatar">A</div>
+            <div>
+              <div class="assistant-copy">我会通过 AskUserQuestion 收集选择，并在工具输出中保留提交结果。</div>
+
+              <div id="submitted-output" class="tool-output" hidden>
+                <button id="result-toggle" class="tool-label" type="button" aria-expanded="false">
+                  <span class="tool-dot"></span><span class="tool-name">AskUserQuestion</span><span class="chevron" aria-hidden="true">⌄</span>
+                </button>
+                <div id="result-card" class="result-card">
+                  <div class="result-body">
+                    <div class="answer-row"><div class="question">1. 结果默认如何展示？</div><div class="answer">默认折叠</div></div>
+                    <div class="answer-row"><div class="question">2. 折叠标题显示什么？</div><div class="answer">不显示额外摘要行</div></div>
+                    <div class="answer-row"><div class="question">3. 点击哪里展开？（多选）</div><div class="answer">AskUserQuestion 工具标题行、右侧箭头提示状态</div></div>
+                    <div class="answer-row"><div class="question">4. 是否保留“全部提交完成”？</div><div class="answer">不保留</div></div>
+                    <div class="answer-row"><div class="question">5. 其他建议</div><div class="answer muted">未作答</div></div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="cancelled-output" class="tool-output" hidden>
+                <div class="tool-label"><span class="tool-dot"></span><span>AskUserQuestion</span></div>
+                <div class="cancel-copy">用户已取消回答</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="composer-dock" class="composer-dock">
+          <div class="composer-wrap">
+            <section id="ask-card" class="ask-card" aria-label="AskUserQuestion">
+              <div class="ask-header">
+                <div class="ask-heading">
+                  <div class="origin">AskUserQuestion</div>
+                  <div class="ask-title">提交后默认如何展示？<span class="multi">(可多选)</span></div>
+                  <div class="collapsed-title">5 个问题待回答</div>
+                </div>
+                <button class="icon-button" type="button" aria-label="上一题">‹</button>
+                <span class="counter">1 / 5</span>
+                <button class="icon-button" type="button" aria-label="下一题">›</button>
+                <button id="collapse-ask" class="icon-button" type="button" aria-label="折叠">⌄</button>
+              </div>
+              <div class="ask-body">
+                <div class="option selected" role="checkbox" aria-checked="true">
+                  <span class="option-mark">✓</span>
+                  <span class="option-copy"><span class="option-title">默认折叠</span><span class="recommended">推荐</span><span class="option-desc">对话流保持紧凑，需要时再查看逐题答案</span></span>
+                </div>
+                <div class="option" role="checkbox" aria-checked="false">
+                  <span class="option-mark">2</span>
+                  <span class="option-copy"><span class="option-title">提交展开</span><span class="option-desc">提交后立即展示完整答案列表</span></span>
+                </div>
+                <div class="option" role="checkbox" aria-checked="false">
+                  <span class="option-mark">3</span>
+                  <span class="option-copy"><span class="option-title">记忆上次状态</span><span class="option-desc">沿用提交前的展开或折叠状态</span></span>
+                </div>
+                <div class="custom-row">
+                  <div class="custom-inner"><span class="option-mark">4</span><input class="custom-input" placeholder="输入你的答案" maxlength="500"><span class="count">0/500</span></div>
+                </div>
+                <div class="ask-actions">
+                  <button id="cancel-button" class="button" type="button">取消</button>
+                  <button id="submit-button" class="button primary" type="button">提交 <span class="key">Ctrl + Enter</span></button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="prototype-controls" aria-label="原型状态切换">
+    <div class="controls-title">原型状态</div>
+    <div class="segmented">
+      <button class="segment active" data-mode="asking">提问中</button>
+      <button class="segment" data-mode="submitted">已提交</button>
+      <button class="segment" data-mode="cancelled">已取消</button>
+    </div>
+    <div id="control-hint" class="hint">可选择答案、折叠问题，或直接提交／取消。</div>
+  </aside>
+
+  <script>
+    const askCard = document.querySelector('#ask-card');
+    const composerDock = document.querySelector('#composer-dock');
+    const submittedOutput = document.querySelector('#submitted-output');
+    const cancelledOutput = document.querySelector('#cancelled-output');
+    const resultCard = document.querySelector('#result-card');
+    const resultToggle = document.querySelector('#result-toggle');
+    const controlHint = document.querySelector('#control-hint');
+    const segments = [...document.querySelectorAll('.segment')];
+
+    function setMode(mode) {
+      composerDock.hidden = mode !== 'asking';
+      submittedOutput.hidden = mode !== 'submitted';
+      cancelledOutput.hidden = mode !== 'cancelled';
+      if (mode === 'submitted') {
+        resultCard.classList.remove('expanded');
+        resultToggle.setAttribute('aria-expanded', 'false');
+      }
+      segments.forEach((button) => button.classList.toggle('active', button.dataset.mode === mode));
+      controlHint.textContent = mode === 'asking'
+        ? '可选择答案、折叠问题，或直接提交／取消。'
+        : mode === 'submitted'
+          ? '提交结果默认折叠；点击 AskUserQuestion 标题行展开逐题答案。'
+          : '取消结果只是工具输出中的普通弱化文字。';
+    }
+
+    segments.forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
+    document.querySelector('#submit-button').addEventListener('click', () => setMode('submitted'));
+    document.querySelector('#cancel-button').addEventListener('click', () => setMode('cancelled'));
+
+    document.querySelector('#collapse-ask').addEventListener('click', (event) => {
+      const collapsed = askCard.classList.toggle('collapsed');
+      event.currentTarget.textContent = collapsed ? '⌃' : '⌄';
+      event.currentTarget.setAttribute('aria-label', collapsed ? '展开' : '折叠');
+    });
+
+    document.querySelectorAll('.option').forEach((option) => option.addEventListener('click', () => {
+      option.classList.toggle('selected');
+      const selected = option.classList.contains('selected');
+      option.setAttribute('aria-checked', String(selected));
+      option.querySelector('.option-mark').textContent = selected ? '✓' : [...document.querySelectorAll('.option')].indexOf(option) + 1;
+    }));
+
+    document.querySelector('.custom-input').addEventListener('input', (event) => {
+      document.querySelector('.count').textContent = `${event.target.value.length}/500`;
+    });
+
+    resultToggle.addEventListener('click', () => {
+      const expanded = resultCard.classList.toggle('expanded');
+      resultToggle.setAttribute('aria-expanded', String(expanded));
+    });
+  </script>
+</body>
+</html>

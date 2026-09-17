@@ -254,7 +254,11 @@ await run('历史问答保留多选标记和完整答案', () => {
   const state = loadMessages(turn);
   const item = projectCollapsedTranscriptItems(state.items).find((entry) => entry.kind === 'tool');
   assert.equal(item.tool.askUserQuestionResult.items[0].multiSelect, true);
-  assert.match(renderQuestionToolForTest(item), /A, B\nC/);
+  const html = renderQuestionToolForTest(item);
+  assert.match(html, /data-question-feedback="submit"/);
+  assert.match(html, /data-ask-user-question-result="true"/);
+  assert.match(html, /data-desktop-tool-expanded="true"/);
+  assert.match(html, /A, B\nC/, '历史问答结果默认展开并保留完整答案');
 });
 
 console.log('questionFeedbackPersistence tests passed');
