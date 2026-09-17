@@ -74,6 +74,7 @@ export const zhCN = {
     sidebarLoading: '正在加载“{{title}}”…',
     sidebarLoadingFallback: '正在加载会话…',
     sidebarQueueHint: '只保留最近一次点击，空闲后自动打开',
+    pendingReply: '待回复',
     transcriptLoading: '正在读取会话内容…',
     transcriptError: '会话内容加载失败，请切换后重试',
   },

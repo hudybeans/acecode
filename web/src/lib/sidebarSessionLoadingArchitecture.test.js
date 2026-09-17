@@ -40,28 +40,43 @@ run('侧栏先投影最新选择，再通过有界池恢复会话', () => {
   assert.match(selection, /replaceSessionSelectionIntent\(intent\)/);
   assert.match(selection, /sessionLoadPoolRef\.current\.request\(/);
   assert.match(selection, /sessionLoadPoolRef\.current\.cancelPending\(\)/);
+  assert.ok(
+    selection.indexOf('onSelect?.({') < selection.indexOf('await sessionLoadPoolRef.current.request('),
+    'main content must switch before the slow runtime resume settles',
+  );
+  assert.match(selection, /onSelect\?\.\(\{[\s\S]*active: session\.active === true/);
+  assert.match(selection, /resumePending: session\.active !== true/);
+  assert.match(selection, /preserveSidebarSessionLoading: true/);
+  assert.match(source('lib/sessionTranscript.js'), /resumePending === true/);
 });
 
-run('只有仍为最新点击的恢复结果可以提交导航', () => {
+run('最新点击立即提交导航且旧恢复结果不能覆盖它', () => {
   const sidebar = source('components/Sidebar.jsx');
   const selection = between(sidebar, 'const selectSession', 'const onRename');
   const latestGuards = selection.match(
     /sessionSelectionIntentRef\.current\?\.sequence !== sequence/g,
   ) || [];
 
-  assert.ok(latestGuards.length >= 3, 'error, result and commit paths must all reject stale clicks');
-  assert.ok(
-    selection.indexOf('sessionSelectionIntentRef.current?.sequence !== sequence')
-      < selection.indexOf('onSelect?.({'),
-    'latest-only guard must run before navigation commit',
+  assert.ok(latestGuards.length >= 2, 'error and completion paths must reject stale resumes');
+  assert.equal(
+    (selection.match(/onSelect\?\.\(\{/g) || []).length,
+    3,
+    'the session is projected immediately, cleared on failure, and promoted on success',
   );
-  assert.match(selection, /if \(result\.status === 'superseded'\) return/);
+  const firstCommit = selection.indexOf('onSelect?.({');
+  const resumeRequest = selection.indexOf('await sessionLoadPoolRef.current.request(');
+  const liveCommit = selection.lastIndexOf('onSelect?.({');
+  assert.ok(firstCommit < resumeRequest && resumeRequest < liveCommit,
+    'the latest click must project before resume and promote after it');
 });
 
-run('外部导航、归档和卸载会清理侧栏 pending 意图', () => {
+run('乐观导航保留恢复意图，外部导航、归档和卸载会清理它', () => {
   const sidebar = source('components/Sidebar.jsx');
   const app = source('App.jsx');
 
+  assert.match(sidebar, /revealedIntent && activeRef\?\.resumePending !== true/);
+  assert.match(sidebar, /!revealedIntent && activeNavigationIdentity !== intent\.baselineNavigationIdentity/);
+  assert.match(app, /if \(!options\.preserveSidebarSessionLoading\) resetSidebarSessionLoading\(\)/);
   assert.match(sidebar, /sessionLoadResetSequence = 0/);
   assert.match(sidebar, /cancelSessionSelection\(\);\s*\}, \[cancelSessionSelection, sessionLoadResetSequence\]\)/);
   assert.match(sidebar, /sessionSelectionIntentRef\.current\?\.loadKey === loadKey[\s\S]*cancelSessionSelection\(\)/);

@@ -34,11 +34,30 @@ run('SessionRow uses the AskUserQuestion slot with exact permission wording', ()
   assert.match(row, />\s*权限请求\s*</);
   assert.match(row, /pendingPermission \? \(/);
   assert.match(row, /: !editing && pendingQuestion \? \(/);
+  assert.match(row, /data-sidebar-pending-reply="true"/);
+  assert.match(row, /className="[^"]*bg-accent[^"]*font-normal[^"]*text-white"/);
+  assert.match(row, /\{tr\('sessionNavigation\.pendingReply'\)\}/);
+  assert.doesNotMatch(row, />\s*等待回复\s*</);
   assert.ok(
     row.indexOf('pendingPermission ?') < row.indexOf('pendingQuestion ?'),
     'permission pill must take precedence over the question pill',
   );
   assert.match(row, /onSelect\?\.\(s\)/);
+});
+
+run('running sessions use the four-dot breathing indicator', () => {
+  const sidebar = source('components/Sidebar.jsx');
+  const styles = source('styles/globals.css');
+  const indicator = between(sidebar, 'function SessionAttentionIndicator', 'function SessionHoverCard');
+  assert.match(indicator, /if \(attention !== 'in_progress' && attention !== 'unread'\) return null/);
+  assert.equal((indicator.match(/ace-session-loading-dot is-/g) || []).length, 4);
+  assert.match(indicator, /role="status"/);
+  assert.match(styles, /\.ace-session-loading-orbit\s*\{[\s\S]*animation: ace-session-loading-turn 6\.47s linear infinite/);
+  assert.match(styles, /\.ace-session-loading-dot\.is-top/);
+  assert.match(styles, /\.ace-session-loading-dot\.is-right/);
+  assert.match(styles, /\.ace-session-loading-dot\.is-bottom/);
+  assert.match(styles, /\.ace-session-loading-dot\.is-left/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.ace-session-loading-orbit/);
 });
 
 run('permission state reaches pinned, no-workspace, and workspace session rows', () => {

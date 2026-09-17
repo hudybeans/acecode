@@ -688,8 +688,22 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
 }
 
 function SessionAttentionIndicator({ attention, meta }) {
+  if (attention !== 'in_progress' && attention !== 'unread') return null;
+
   return attention === 'in_progress' ? (
-    <span className="ace-session-loading shrink-0" title={meta.label} aria-label={meta.label} />
+    <span
+      className="ace-session-loading shrink-0"
+      title={meta.label}
+      role="status"
+      aria-label={meta.label}
+    >
+      <span className="ace-session-loading-orbit" aria-hidden="true">
+        <span className="ace-session-loading-dot is-top" />
+        <span className="ace-session-loading-dot is-right" />
+        <span className="ace-session-loading-dot is-bottom" />
+        <span className="ace-session-loading-dot is-left" />
+      </span>
+    </span>
   ) : (
     <span className={clsx('w-2 h-2 rounded-full shrink-0 box-border', meta.dot)} title={meta.label} />
   );
@@ -1275,10 +1289,11 @@ function SessionRow({
           </span>
         ) : !editing && pendingQuestion ? (
           <span
-            className="ace-sidebar-row-idle-slot shrink-0 rounded-full border border-ok-border bg-ok-bg px-2 py-[1px] text-[11px] font-medium leading-[18px] text-ok"
+            data-sidebar-pending-reply="true"
+            className="ace-sidebar-row-idle-slot shrink-0 rounded-full border border-accent bg-accent px-2 py-[1px] text-[11px] font-normal leading-[18px] text-white"
             title="等待用户回复 AskUserQuestion"
           >
-            等待回复
+            {tr('sessionNavigation.pendingReply')}
           </span>
         ) : null}
         {showSessionTime && !editing && !pendingPermission && !pendingQuestion && (
@@ -2000,14 +2015,15 @@ export function Sidebar({
   useEffect(() => {
     const intent = sessionSelectionIntentRef.current;
     if (!intent) return;
-    if (sidebarRevealTargetKey(revealTarget) === intent.revealKey) {
+    const revealedIntent = sidebarRevealTargetKey(revealTarget) === intent.revealKey;
+    if (revealedIntent && activeRef?.resumePending !== true) {
       cancelSessionSelection({ cancelPending: false });
       return;
     }
-    if (activeNavigationIdentity !== intent.baselineNavigationIdentity) {
+    if (!revealedIntent && activeNavigationIdentity !== intent.baselineNavigationIdentity) {
       cancelSessionSelection();
     }
-  }, [activeNavigationIdentity, cancelSessionSelection, revealTarget]);
+  }, [activeNavigationIdentity, activeRef?.resumePending, cancelSessionSelection, revealTarget]);
 
   useEffect(() => {
     if (handledSessionLoadResetSequenceRef.current === sessionLoadResetSequence) return;
@@ -3321,45 +3337,61 @@ export function Sidebar({
       }
     }
 
-    let selectedTarget = target;
-    if (session.active) {
-      sessionLoadPoolRef.current.cancelPending();
-      onSessionLoadStateChangeRef.current?.(null);
-    } else {
-      let result;
-      try {
-        result = await sessionLoadPoolRef.current.request(
-          loadKey,
-          () => resumeSidebarSession(ws, session),
-        );
-      } catch (error) {
-        if (sessionSelectionIntentRef.current?.sequence !== sequence) return;
-        cancelSessionSelection({ cancelPending: false });
-        toast({ kind: 'err', text: '恢复失败:' + (error?.message || '') });
-        return;
-      }
-      if (result.status === 'superseded') return;
-      if (sessionSelectionIntentRef.current?.sequence !== sequence) return;
-      selectedTarget = sidebarSessionTarget(ws, session, result.value || {});
-    }
-
-    if (sessionSelectionIntentRef.current?.sequence !== sequence) return;
-    if (selectedTarget.noWorkspace) {
+    if (target.noWorkspace) {
       setActiveWorkspaceHash('');
       setWorkspaces((prev) => prev.map((item) => ({ ...item, active: false })));
     }
     markSessionRead({
-      ...(selectedTarget.noWorkspace ? normalizeNoWorkspaceSession(session) : session),
-      id: selectedTarget.sessionId,
-      workspace_hash: selectedTarget.workspaceHash,
-      cwd: selectedTarget.cwd,
+      ...(target.noWorkspace ? normalizeNoWorkspaceSession(session) : session),
+      id: target.sessionId,
+      workspace_hash: target.workspaceHash,
+      cwd: target.cwd,
     });
-    onSessionLoadStateChangeRef.current?.(null);
+    // 会话历史可直接从磁盘读取，不需要等运行时恢复完成。先切换主内容，
+    // 把耗时的 Provider / hook 恢复留在后台，避免一次点击被阻塞数秒。
     onSelect?.({
-      ...selectedTarget,
-      active: true,
+      ...target,
+      // 运行时尚未恢复时不要提前声明 active，否则 ChatView 会立即
+      // 建立实时连接，而 daemon 尚未注册该会话并返回 unknown session。
+      active: session.active === true,
+      resumePending: session.active !== true,
       ...expertReferenceForSession(session),
-    });
+    }, { preserveSidebarSessionLoading: true });
+
+    if (session.active) {
+      sessionLoadPoolRef.current.cancelPending();
+      onSessionLoadStateChangeRef.current?.(null);
+      return;
+    }
+
+    let result;
+    try {
+      result = await sessionLoadPoolRef.current.request(
+        loadKey,
+        () => resumeSidebarSession(ws, session),
+      );
+    } catch (error) {
+      if (sessionSelectionIntentRef.current?.sequence !== sequence) return;
+      cancelSessionSelection({ cancelPending: false });
+      onSelect?.({
+        ...target,
+        active: false,
+        resumePending: false,
+        ...expertReferenceForSession(session),
+      }, { preserveSidebarSessionLoading: true });
+      toast({ kind: 'err', text: '恢复失败:' + (error?.message || '') });
+      return;
+    }
+    if (result.status === 'superseded') return;
+    if (sessionSelectionIntentRef.current?.sequence !== sequence) return;
+    const resumedTarget = sidebarSessionTarget(ws, session, result.value || {});
+    onSelect?.({
+      ...resumedTarget,
+      active: true,
+      resumePending: false,
+      ...expertReferenceForSession(session),
+    }, { preserveSidebarSessionLoading: true });
+    onSessionLoadStateChangeRef.current?.(null);
   };
 
   const onRename = async (hash, name) => {
@@ -3675,7 +3707,7 @@ export function Sidebar({
                 width: sessionDragGhost.width,
               }}
             >
-              <span className="w-2 h-2 rounded-full shrink-0 box-border border border-fg-mute/55" />
+              <span className="w-2 shrink-0" aria-hidden="true" />
               <span className="flex-1 min-w-0 truncate">{sessionDragGhost.title}</span>
               <span className="text-[10px] text-fg-mute shrink-0">{sessionDragGhost.timeText}</span>
             </div>
