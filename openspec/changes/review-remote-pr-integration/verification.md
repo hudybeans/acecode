@@ -23,3 +23,11 @@ Reviewed PRs #51, #52, #57, #58 and #59 against master `a92e471e`. All five orig
 - `openspec validate add-configurable-ask-option-limit --strict`, `openspec validate review-remote-pr-integration --strict`, and whitespace checks passed.
 
 No live-provider conversation, packaged desktop rebuild, or native desktop visual verification was performed. The local C++ build included unrelated concurrent source edits; the focused review-owned configuration/question paths passed. Web validation also passed independently without those concurrent edits.
+
+## Publication
+
+- Repair commit: `9a30a2b78d3e945549dc7b95c0d6adfc8fd67a00`.
+- GitHub confirmed PRs #51, #52, #57, #58 and #59 merged on 2026-09-17; no open PRs remained.
+- Local `master`, `origin/master`, and `git ls-remote origin refs/heads/master` matched; divergence was `0 0`.
+- SHA-256 checks confirmed 16 unrelated modified/untracked files remained unchanged through commit and push.
+- Post-merge CI: https://github.com/tmoonlight/acecode/actions/runs/35175527345 (running when this publication record was written).
