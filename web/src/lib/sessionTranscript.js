@@ -1649,10 +1649,13 @@ export function loadTranscriptHistory(state, data = {}) {
 }
 
 export function canLiveMonitorSession(sessionRef, live = 'auto') {
-  if (live === true) return true;
-  if (live === false) return false;
   const ref = normalizeSessionRef(sessionRef);
-  if (!ref) return false;
+  // Optimistic navigation can render a disk-backed session before the daemon
+  // has finished registering its runtime entry. This safety boundary must win
+  // even when the caller generally enables live monitoring for writable chats.
+  if (ref?.resumePending === true) return false;
+  if (live === true) return true;
+  if (live === false || !ref) return false;
   const status = ref.status || ref.attention_state || ref.read_state || '';
   return !!(
     ref.active ||

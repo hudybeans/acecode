@@ -2531,6 +2531,23 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
+@keyframes ace-session-loading-turn { to { transform: rotate(360deg); } }
+@keyframes ace-session-loading-dot-top {
+  0%, 100% { transform: translateY(-5px); }
+  36%, 72% { transform: translateY(-2.35px); }
+}
+@keyframes ace-session-loading-dot-right {
+  0%, 100% { transform: translateX(5px); }
+  36%, 72% { transform: translateX(2.35px); }
+}
+@keyframes ace-session-loading-dot-bottom {
+  0%, 100% { transform: translateY(5px); }
+  36%, 72% { transform: translateY(2.35px); }
+}
+@keyframes ace-session-loading-dot-left {
+  0%, 100% { transform: translateX(-5px); }
+  36%, 72% { transform: translateX(-2.35px); }
+}
 .ace-spinner {
   display: inline-block; width: 1em; height: 1em;
   border: 2px solid rgba(var(--ace-fg-mute-rgb), 0.40);
@@ -2544,14 +2561,45 @@ body {
   border-top-color: rgba(var(--ace-fg-mute-rgb), 0.40);
 }
 .ace-session-loading {
+  position: relative;
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid rgba(var(--ace-accent-rgb), 0.24);
-  border-top-color: var(--ace-accent);
+  width: 16px;
+  height: 16px;
+  color: var(--ace-accent);
+}
+.ace-session-loading-orbit {
+  position: absolute;
+  inset: 0;
+  animation: ace-session-loading-turn 6.47s linear infinite;
+}
+.ace-session-loading-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5.5px;
+  height: 5.5px;
+  margin: -2.75px 0 0 -2.75px;
   border-radius: 9999px;
-  animation: ace-spin .75s linear infinite;
-  box-shadow: 0 0 4px rgba(var(--ace-accent-rgb), 0.35);
+  background: currentColor;
+  transform-origin: center;
+  animation-duration: 2.156s;
+  animation-timing-function: cubic-bezier(.65, 0, .35, 1);
+  animation-iteration-count: infinite;
+}
+.ace-session-loading-dot.is-top { animation-name: ace-session-loading-dot-top; }
+.ace-session-loading-dot.is-right { animation-name: ace-session-loading-dot-right; }
+.ace-session-loading-dot.is-bottom { animation-name: ace-session-loading-dot-bottom; }
+.ace-session-loading-dot.is-left { animation-name: ace-session-loading-dot-left; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ace-session-loading-orbit,
+  .ace-session-loading-dot {
+    animation: none;
+  }
+  .ace-session-loading-dot.is-top { transform: translateY(-3.5px); }
+  .ace-session-loading-dot.is-right { transform: translateX(3.5px); }
+  .ace-session-loading-dot.is-bottom { transform: translateY(3.5px); }
+  .ace-session-loading-dot.is-left { transform: translateX(-3.5px); }
 }
 
 /* Upgrade progress is deliberately quicker than the 350ms status polling interval,

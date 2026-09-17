@@ -74,6 +74,7 @@ export const enUS = {
     sidebarLoading: 'Loading “{{title}}”…',
     sidebarLoadingFallback: 'Loading conversation…',
     sidebarQueueHint: 'Only the latest click is kept and will open when a slot is free.',
+    pendingReply: 'Reply needed',
     transcriptLoading: 'Loading conversation content…',
     transcriptError: 'Conversation content failed to load. Switch away and retry.',
   },

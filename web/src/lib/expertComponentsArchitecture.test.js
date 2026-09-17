@@ -219,7 +219,7 @@ test('all real composers host the picker in place and opening prompts use atomic
   assert.match(controls, /onClick=\{onRemoveExpert\}/);
 
   assert.match(sidebar, /function expertReferenceForSession/);
-  assert.equal((sidebar.match(/\.\.\.expertReferenceForSession\(session\)/g) || []).length, 2);
+  assert.equal((sidebar.match(/\.\.\.expertReferenceForSession\(session\)/g) || []).length, 4);
 
   assert.match(app, /<ExpertComponentsPage/);
   assert.match(app, /recentExpertIds=\{recentExpertIds\}/);

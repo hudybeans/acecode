@@ -515,8 +515,8 @@ export function App() {
     setActiveRef(next);
   }, [resetSidebarSessionLoading]);
 
-  const navigateToRef = useCallback((nextRefOrUpdater) => {
-    resetSidebarSessionLoading();
+  const navigateToRef = useCallback((nextRefOrUpdater, options = {}) => {
+    if (!options.preserveSidebarSessionLoading) resetSidebarSessionLoading();
     const current = activeRefRef.current;
     const next = typeof nextRefOrUpdater === 'function'
       ? nextRefOrUpdater(current)
