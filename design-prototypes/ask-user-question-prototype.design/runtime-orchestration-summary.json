@@ -1,0 +1,213 @@
+{
+  "project": {
+    "resolvedLane": "library_bound",
+    "selectedIntentWorkflowRead": true,
+    "contextRequirementsLoaded": [
+      {
+        "path": "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "intent-workflows/intent-page-library-bound/design-library-ingestion.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "intent-workflows/intent-page-library-bound/design-token-fidelity-rules.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "intent-workflows/intent-page-library-bound/component-conformance-rules.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "intent-workflows/intent-page-library-bound/icon-source-priority-rules.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      }
+    ],
+    "contextReadScope": "library-bound-strict",
+    "validationRunDiscipline": "validate-design-workspace + finish-readiness",
+    "lowValueCallWatchdog": {
+      "noProgressNextAction": "move-to-readiness"
+    },
+    "dispatchPreflightManifest": [
+      {
+        "nodeId": "page-ask-user-question",
+        "packetType": "LibraryBoundPagePacket",
+        "allowedWritePaths": [
+          "pages/ask-user-question.html",
+          "assets/"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/ask-user-question.html",
+            "assets/"
+          ]
+        }
+      }
+    ],
+    "expectedDispatches": [
+      {
+        "nodeId": "page-ask-user-question",
+        "packetType": "LibraryBoundPagePacket",
+        "status": "completed",
+        "changedFiles": ["pages/ask-user-question.html"],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "sha256:page-ask-user-question-v1",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0,
+          "imagesGeneratedCalls": 0
+        }
+      }
+    ]
+  },
+  "designSource": {
+    "libraryIdentity": {
+      "name": "Apple",
+      "id": "dl_builtin_apple",
+      "version": 0,
+      "scope": "built-in-global",
+      "path": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple",
+      "versionSource": "metadata.json"
+    },
+    "brandPrefix": "apple",
+    "cssPath": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\colors_and_type.css",
+    "actualTokenNameReference": [
+      "--apple-background",
+      "--apple-foreground",
+      "--apple-card",
+      "--apple-card-foreground",
+      "--apple-primary",
+      "--apple-primary-foreground",
+      "--apple-secondary",
+      "--apple-secondary-foreground",
+      "--apple-muted",
+      "--apple-muted-foreground",
+      "--apple-accent",
+      "--apple-accent-foreground",
+      "--apple-border",
+      "--apple-input",
+      "--apple-ring",
+      "--apple-destructive",
+      "--apple-destructive-foreground",
+      "--apple-success",
+      "--apple-success-foreground",
+      "--apple-icon",
+      "--apple-icon-muted",
+      "--font-sans",
+      "--font-mono",
+      "--radius",
+      "--spacing",
+      "--shadow-sm",
+      "--shadow-md",
+      "--shadow-lg",
+      "--shadow-xl"
+    ],
+    "designDecisionSummary": "Apple风格设计系统，克制优雅的视觉基调。低饱和强调色，轻微hover变化，避免高饱和鲜艳颜色与强对比。主色#007AFF，圆角1.2rem，间距基数0.24rem，字体DM Sans。阴影轻盈，以1px边框为主要分隔手段。",
+    "componentIndexSummary": [
+      { "slug": "button", "hasPreview": true, "hasContract": true },
+      { "slug": "card", "hasPreview": true, "hasContract": true },
+      { "slug": "input", "hasPreview": true, "hasContract": true },
+      { "slug": "navigation", "hasPreview": true, "hasContract": true },
+      { "slug": "product-grid", "hasPreview": true, "hasContract": true },
+      { "slug": "comparison-table", "hasPreview": true, "hasContract": true }
+    ],
+    "componentPlan": [
+      {
+        "slug": "button",
+        "contractKind": "legacy-json",
+        "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-button.html",
+        "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\button.json"
+      },
+      {
+        "slug": "card",
+        "contractKind": "legacy-json",
+        "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-card.html",
+        "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\card.json"
+      },
+      {
+        "slug": "input",
+        "contractKind": "legacy-json",
+        "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-input.html",
+        "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\input.json"
+      }
+    ],
+    "tokenFidelity": "strict",
+    "iconAssets": {
+      "source": "assets/icons",
+      "projectIconDir": "assets/icons/dl_builtin_apple",
+      "libraryKey": "dl_builtin_apple",
+      "renderMethod": "css-mask",
+      "pathTemplate": "../assets/icons/dl_builtin_apple/{name}.svg",
+      "availableNames": [
+        "arrow-down", "arrow-left", "arrow-right", "arrow-up",
+        "box", "check", "chevron-down", "chevron-left", "chevron-right", "chevron-up",
+        "chevrons-down-up", "chevrons-up-down", "circle-alert", "circle-check",
+        "circle-minus", "circle-pause", "circle-play", "circle-plus",
+        "circle-question-mark", "external-link", "file", "folder-open", "folder",
+        "funnel", "grip", "heart", "house", "mail", "map-pin",
+        "message-circle-more", "mouse-pointer-click", "pen-line", "send-horizontal",
+        "star", "tag", "thumbs-down", "thumbs-up", "trash-2", "triangle-alert", "user"
+      ],
+      "totalCount": 39,
+      "coloringRule": "currentColor by default; override with Library token when needed"
+    },
+    "forbiddenInventedComponents": [],
+    "allowedComponents": [
+      "button", "card", "input", "navigation", "product-grid", "comparison-table"
+    ],
+    "styleConstraints": {
+      "radiusMax": "1.2rem",
+      "spacingBase": "0.24rem",
+      "fontSizeBody": "14px",
+      "controlHeightDefault": "44px"
+    },
+    "productContext": {
+      "kitType": "consumer-imaging-design-system",
+      "productType": "ACECode Web UI - AskUserQuestion Component"
+    }
+  },
+  "pages": {
+    "page-ask-user-question": {
+      "componentPlan": [
+        {
+          "slug": "button",
+          "contractKind": "legacy-json",
+          "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-button.html",
+          "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\button.json"
+        },
+        {
+          "slug": "card",
+          "contractKind": "legacy-json",
+          "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-card.html",
+          "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\card.json"
+        },
+        {
+          "slug": "input",
+          "contractKind": "legacy-json",
+          "previewFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\preview\\component-input.html",
+          "contractFile": "c:\\Users\\Administrator\\.trae-cn\\design_libraries\\Apple\\components\\input.json"
+        }
+      ],
+      "componentsRead": [],
+      "extraComponentsRead": []
+    }
+  }
+}

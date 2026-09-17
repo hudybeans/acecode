@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AskUserQuestion TUI 静态原型</title>
+  <style>
+    :root {
+      --bg: #0a0e13;
+      --panel: #111822;
+      --panel-2: #17212d;
+      --panel-3: #0e141c;
+      --line: #2a3949;
+      --text: #edf3f8;
+      --muted: #8d9baa;
+      --dim: #5c6b79;
+      --accent: #65b5ff;
+      --accent-2: #2c6ea8;
+      --selected: #173b57;
+      --focus: #233243;
+      --warning: #f2bd68;
+      --success: #75d39c;
+      --danger: #ee8d8d;
+      --shadow: 0 22px 60px rgba(0,0,0,.4);
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(59, 103, 142, .18), transparent 32rem),
+        var(--bg);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .prototype-shell { min-height: 100vh; padding: 28px 24px 106px; }
+    .prototype-header {
+      max-width: 1180px; margin: 0 auto 18px; display: flex; gap: 16px;
+      align-items: flex-start; justify-content: space-between;
+    }
+    .eyebrow { color: var(--accent); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 4px 0 6px; font-size: 22px; font-weight: 600; }
+    .intro { color: var(--muted); margin: 0; max-width: 730px; }
+    .prototype-badge {
+      border: 1px solid #795f32; color: var(--warning); background: rgba(101, 72, 23, .2);
+      padding: 6px 10px; white-space: nowrap; font-size: 12px;
+    }
+
+    .control-strip {
+      max-width: 1180px; margin: 0 auto 16px; padding: 10px 12px; display: flex;
+      align-items: center; flex-wrap: wrap; gap: 8px 18px; border: 1px solid var(--line);
+      background: rgba(17, 24, 34, .82); border-radius: 8px;
+    }
+    .control-label { color: var(--muted); font-size: 12px; }
+    .control-group { display: flex; align-items: center; gap: 6px; }
+    .control-button {
+      border: 1px solid var(--line); background: var(--panel-3); border-radius: 4px;
+      padding: 5px 9px; cursor: pointer; color: var(--muted);
+    }
+    .control-button:hover, .control-button.active { color: var(--text); border-color: var(--accent-2); background: #162b3d; }
+
+    .stage {
+      max-width: 1180px; margin: 0 auto; min-height: 650px; border: 1px solid #304355;
+      border-radius: 10px; background: #080c11; box-shadow: var(--shadow); overflow: hidden;
+    }
+    .stage-topbar {
+      height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 13px;
+      color: var(--dim); border-bottom: 1px solid #243340; background: #0d131a; font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #506273; }
+    .dot:first-child { background: #d37868; }
+    .dot:nth-child(2) { background: #d4a85c; }
+    .dot:nth-child(3) { background: #6eb789; }
+    .stage-content { min-height: 616px; }
+
+    .question-window { display: flex; flex-direction: column; min-height: 616px; }
+    .question-main { flex: 1; display: flex; min-height: 0; }
+    .content-column { width: 100%; min-width: 0; padding: 36px 46px 0; }
+    .question-title { margin-bottom: 27px; }
+    .question-kicker { color: var(--accent); font-size: 12px; margin-bottom: 10px; }
+    .question-heading { font-size: 20px; margin: 0; font-weight: 500; letter-spacing: -.02em; }
+    .question-meta { color: var(--muted); margin-top: 7px; font-size: 12px; }
+
+    .option-list { display: grid; gap: 5px; max-width: 950px; }
+    .option-row {
+      display: grid; grid-template-columns: 29px 33px minmax(180px, 35%) minmax(0, 1fr); gap: 5px;
+      align-items: start; padding: 8px 10px; border: 1px solid transparent; border-radius: 4px;
+      cursor: pointer; min-height: 41px;
+    }
+    .option-row:hover, .option-row.focus { background: var(--focus); border-color: #36516a; }
+    .option-row.selected { background: var(--selected); border-color: #327aaa; }
+    .option-row.focus.selected { background: #1d4e70; }
+    .option-number { color: var(--muted); text-align: right; }
+    .option-mark { color: var(--accent); white-space: nowrap; }
+    .option-label { color: var(--text); }
+    .option-description { color: var(--muted); }
+    .recommended { color: var(--warning); font-size: 11px; margin-left: 7px; }
+    .custom-row { margin-top: 7px; }
+    .custom-row .option-mark { color: var(--success); }
+    .custom-row.draft { color: var(--dim); }
+    .custom-input {
+      width: 100%; border: 0; border-bottom: 1px solid #54718a; background: transparent;
+      color: var(--text); padding: 0 2px 2px; outline: none;
+    }
+    .caret { color: var(--accent); animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .long-content { max-height: 310px; overflow-y: auto; padding-right: 12px; scrollbar-color: #3b6e93 #101821; }
+    .long-content::-webkit-scrollbar { width: 10px; }
+    .long-content::-webkit-scrollbar-track { background: #101821; }
+    .long-content::-webkit-scrollbar-thumb { background: #3b6e93; border-radius: 6px; }
+    .scroll-hint { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; margin: 9px 2px 0; }
+
+    .bottom-help {
+      border-top: 1px solid #263644; background: #0e151d; padding: 11px 46px 13px;
+      color: var(--muted); font-size: 12px;
+    }
+    .help-line { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    .help-line + .help-line { margin-top: 5px; color: var(--dim); }
+    kbd { color: var(--text); border: 1px solid #415363; background: #18232d; border-radius: 3px; padding: 1px 4px; }
+    .source { color: #a58bd1; }
+
+    /* Variant A: terminal flow */
+    .variant-a .content-column { padding-top: 43px; }
+    .variant-a .question-title { max-width: 880px; }
+    .variant-a .option-row { grid-template-columns: 29px 33px minmax(200px, 32%) minmax(0, 1fr); }
+    .variant-a .bottom-help { min-height: 72px; }
+
+    /* Variant B: centered card / strong question hierarchy */
+    .variant-b { background: #0c1219; }
+    .variant-b .question-main { justify-content: center; padding: 32px; }
+    .variant-b .content-column {
+      width: min(900px, 100%); padding: 29px 35px 32px; border: 1px solid #2b4255;
+      border-radius: 8px; background: linear-gradient(145deg, #141f2b, #0e151d);
+    }
+    .variant-b .question-title { padding-bottom: 19px; margin-bottom: 19px; border-bottom: 1px solid #2b3947; }
+    .variant-b .question-heading { font-size: 19px; }
+    .variant-b .option-row { grid-template-columns: 29px 33px minmax(190px, 40%) minmax(0, 1fr); padding: 11px 12px; min-height: 50px; }
+    .variant-b .bottom-help { background: #0a1016; padding-left: 32px; padding-right: 32px; }
+
+    /* Variant C: split view, explicit progress and answer inspector */
+    .variant-c .question-main { display: grid; grid-template-columns: 190px minmax(0, 1fr); }
+    .variant-c .progress-rail { border-right: 1px solid #263644; background: #0b1118; padding: 22px 13px; }
+    .variant-c .rail-title { color: var(--dim); font-size: 11px; text-transform: uppercase; margin-bottom: 15px; }
+    .variant-c .rail-item { display: flex; gap: 8px; padding: 9px 7px; color: var(--muted); border-left: 2px solid transparent; }
+    .variant-c .rail-item.current { color: var(--text); border-left-color: var(--accent); background: #152433; }
+    .variant-c .rail-item.done { color: var(--success); }
+    .variant-c .rail-num { width: 20px; }
+    .variant-c .content-column { padding: 31px 37px 0; }
+    .variant-c .question-heading { font-size: 18px; }
+    .variant-c .option-row { grid-template-columns: 29px 33px minmax(160px, 38%) minmax(0, 1fr); }
+    .answer-inspector { margin-top: 27px; padding: 11px 13px; border-left: 2px solid var(--accent-2); background: #0c1822; color: var(--muted); font-size: 12px; }
+    .answer-inspector strong { color: var(--text); font-weight: 400; }
+
+    .summary-card { max-width: 950px; border: 1px solid #2b4255; background: #101a24; border-radius: 6px; overflow: hidden; }
+    .summary-head { display: flex; justify-content: space-between; gap: 15px; padding: 15px 17px; background: #142433; border-bottom: 1px solid #2b4255; }
+    .summary-head strong { font-weight: 500; }
+    .summary-head span { color: var(--muted); font-size: 12px; }
+    .summary-body { padding: 5px 17px; max-height: 325px; overflow-y: auto; }
+    .summary-item { display: grid; grid-template-columns: 28px minmax(180px, 32%) minmax(0, 1fr); gap: 10px; padding: 14px 0; border-bottom: 1px solid #263644; }
+    .summary-item:last-child { border-bottom: 0; }
+    .summary-index { color: var(--accent); }
+    .summary-question { color: var(--text); }
+    .summary-answer { color: var(--success); }
+    .summary-answer.not-answered { color: var(--warning); }
+    .summary-help { margin-top: 11px; color: var(--muted); font-size: 12px; }
+
+    .toast { position: fixed; right: 26px; bottom: 78px; padding: 10px 13px; border: 1px solid #347b58; background: #10271d; color: var(--success); box-shadow: 0 10px 30px rgba(0,0,0,.35); border-radius: 5px; }
+    .toast.hidden { display: none; }
+    .timeout-banner { margin-bottom: 14px; padding: 9px 12px; border-left: 3px solid var(--warning); background: #2b2111; color: var(--warning); font-size: 12px; }
+
+    .variant-switcher {
+      position: fixed; z-index: 5; left: 50%; bottom: 18px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 7px; padding: 7px; border: 1px solid #526b7c;
+      border-radius: 24px; background: rgba(17, 26, 35, .96); box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    }
+    .variant-switcher button { border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 16px; padding: 6px 9px; }
+    .variant-switcher button:hover { background: #263b4b; color: var(--text); }
+    .variant-label { min-width: 192px; text-align: center; color: var(--text); font-size: 12px; }
+    .variant-label small { color: var(--muted); }
+
+    @media (max-width: 760px) {
+      .prototype-shell { padding: 16px 10px 100px; }
+      .prototype-header { display: block; }
+      .prototype-badge { display: inline-block; margin-top: 12px; }
+      .content-column { padding: 25px 17px 0; }
+      .bottom-help { padding: 10px 17px 12px; }
+      .option-row, .variant-a .option-row, .variant-b .option-row, .variant-c .option-row { grid-template-columns: 25px 30px minmax(120px, 42%) minmax(0, 1fr); font-size: 12px; }
+      .variant-c .question-main { grid-template-columns: 128px minmax(0, 1fr); }
+      .variant-c .content-column { padding: 23px 15px 0; }
+      .variant-b .question-main { padding: 14px; }
+      .variant-b .content-column { padding: 21px 14px 24px; }
+      .summary-item { grid-template-columns: 24px 1fr; }
+      .summary-answer { grid-column: 2; }
+      .variant-label { min-width: 145px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype-shell">
+    <header class="prototype-header">
+      <div>
+        <div class="eyebrow">ACECode TUI / AskUserQuestion</div>
+        <h1>提问模式静态原型</h1>
+        <p class="intro">用于先观察布局、密度和状态层级。点击下面的场景按钮，或使用底部切换条比较三种结构方向。</p>
+      </div>
+      <div class="prototype-badge">PROTOTYPE ONLY · 不代表生产实现</div>
+    </header>
+
+    <section class="control-strip" aria-label="原型场景控制">
+      <span class="control-label">场景：</span>
+      <div class="control-group">
+        <button class="control-button active" data-scene="single">单题·单选</button>
+        <button class="control-button" data-scene="multi">多题·第 2/4 题</button>
+        <button class="control-button" data-scene="multiple">多选题</button>
+        <button class="control-button" data-scene="custom">自定义编辑</button>
+        <button class="control-button" data-scene="summary">汇总页</button>
+        <button class="control-button" data-scene="long">长内容滚动</button>
+        <button class="control-button" data-scene="timeout">超时 / Toast</button>
+      </div>
+    </section>
+
+    <section class="stage" id="stage" aria-label="TUI 提问窗口原型"></section>
+  </main>
+
+  <div id="toast" class="toast hidden">Copied to clipboard</div>
+
+  <nav class="variant-switcher" aria-label="布局变体切换">
+    <button id="previous-variant" type="button" aria-label="上一个布局">←</button>
+    <div class="variant-label" id="variant-label"></div>
+    <button id="next-variant" type="button" aria-label="下一个布局">→</button>
+  </nav>
+
+  <script>
+    // Three radically different TUI compositions, switchable with ?variant=A|B|C.
+    // This is deliberately standalone and throwaway: no production code or persistence.
+    const variants = [
+      { key: 'A', name: 'Terminal flow', description: '终端优先，内容最大化' },
+      { key: 'B', name: 'Focused card', description: '居中卡片，问题层级更强' },
+      { key: 'C', name: 'Progress rail', description: '左侧进度，适合多题问卷' }
+    ];
+    const state = { variant: readVariant(), scene: 'single', selected: 0 };
+    const optionLabels = ['环游世界', '掌握一项新技能', '陪伴亲友并享受生活', '做一件有意义的事'];
+    const optionDescriptions = ['探索未知，体验不同文化与风景', '持续学习并提升专业能力', '拥有充足时间陪伴亲友并享受生活', '帮助他人解决问题并创造积极影响'];
+
+    function readVariant() {
+      const value = new URLSearchParams(location.search).get('variant');
+      return variants.some(item => item.key === value) ? value : 'A';
+    }
+
+    function setVariant(key) {
+      state.variant = key;
+      const url = new URL(location.href);
+      url.searchParams.set('variant', key);
+      history.replaceState({}, '', url);
+      render();
+    }
+
+    function cycleVariant(direction) {
+      const index = variants.findIndex(item => item.key === state.variant);
+      setVariant(variants[(index + direction + variants.length) % variants.length].key);
+    }
+
+    function setScene(scene) {
+      state.scene = scene;
+      if (scene === 'custom') state.selected = 4;
+      else if (scene === 'multiple') state.selected = 1;
+      else state.selected = 0;
+      document.querySelectorAll('[data-scene]').forEach(button => button.classList.toggle('active', button.dataset.scene === scene));
+      render();
+    }
+
+    function markSelected(index) {
+      state.selected = index;
+      render();
+    }
+
+    function questionHeading(scene) {
+      if (scene === 'multi') return '如果明天开始拥有一整个月的自由时间，你最想做什么？';
+      if (scene === 'multiple') return '哪些因素会影响你选择一个新的开发工具？';
+      if (scene === 'custom') return '如果明天可以免费旅行，你最想去哪里？';
+      if (scene === 'summary') return '请确认你对下面问题的回答';
+      if (scene === 'long') return '你最希望 ACECode 下一步优先改善哪些方面？';
+      if (scene === 'timeout') return '当任务遇到不确定选择时，你更偏好哪种处理方式？';
+      return '如果明天可以免费旅行，你最想去哪里？';
+    }
+
+    function optionData(scene) {
+      if (scene === 'multiple') return [
+        ['上手速度', '尽快从想法进入可运行状态'], ['类型安全', '尽早发现错误并获得编辑器提示'],
+        ['生态与集成', '方便接入现有工具链和服务'], ['团队协作', '让约定、审查和交接更顺畅']
+      ];
+      if (scene === 'long') return [
+        ['更快的响应速度', '减少等待，保持连续的思考节奏'], ['更清晰的工具反馈', '知道当前工具做了什么、还剩什么'],
+        ['更灵活的模型切换', '按任务在不同模型之间快速切换'], ['更好的会话恢复', '中断后可以准确回到原来的上下文'],
+        ['更简单的权限控制', '在安全和效率之间更容易做选择'], ['更完整的差异预览', '在写入前后都能看懂实际变化'],
+        ['更多自动化能力', '把重复的检查、构建和验证交给代理'], ['更好的问答体验', '用最少操作表达清楚真实意图']
+      ];
+      if (scene === 'timeout') return [
+        ['自动选择推荐项', '让流程继续，不因短暂离开而阻塞'], ['等待我回来', '保留现场，直到我明确做出选择'],
+        ['取消当前问题', '无法确认时不让模型猜测我的意图'], ['交给模型判断', '由模型基于上下文选择风险最低的方案']
+      ];
+      return optionLabels.map((label, index) => [label, optionDescriptions[index]]);
+    }
+
+    function marks(scene, index) {
+      const isMultiple = scene === 'multiple';
+      const selected = isMultiple ? (index === 1 || index === 3) : index === state.selected;
+      return { selected, symbol: isMultiple ? (selected ? '[x]' : '[ ]') : (selected ? '(●)' : '( )') };
+    }
+
+    function renderOptions(scene) {
+      const data = optionData(scene);
+      const customActive = scene === 'custom' || state.selected === data.length;
+      const rows = data.map((item, index) => {
+        const mark = marks(scene, index);
+        const focus = index === state.selected && scene !== 'custom';
+        return `<div class="option-row ${mark.selected ? 'selected' : ''} ${focus ? 'focus' : ''}" data-option="${index}">
+          <span class="option-number">${index + 1}</span><span class="option-mark">${mark.symbol}</span>
+          <span class="option-label">${item[0]}${index === 0 ? '<span class="recommended">[Recommended]</span>' : ''}</span>
+          <span class="option-description">${item[1]}</span>
+        </div>`;
+      }).join('');
+      const customText = scene === 'custom' ? '用户正在输入的内容' : (scene === 'multiple' ? '补充说明（可选）' : 'Type your own answer here');
+      return rows + `<div class="option-row custom-row ${customActive ? 'selected focus' : 'draft'}" data-option="custom">
+        <span class="option-number">${data.length + 1}</span><span class="option-mark">${customActive ? '(●)' : '( )'}</span>
+        <span class="option-label">${customActive ? '<span class="caret">❯</span>' : ''} ${customText}${scene === 'custom' ? '<span class="caret">▌</span>' : ''}</span>
+        <span class="option-description">${scene === 'multiple' ? '自定义回答可以与预设项同时存在' : '自定义回答与预设项互斥'}</span>
+      </div>`;
+    }
+
+    function renderSummary() {
+      const items = [
+        ['你最想去哪里？', '去海边度假'], ['你更希望如何安排时间？', 'Not answered'],
+        ['你会邀请谁一起出发？', '陪伴家人和朋友']
+      ];
+      return `<div class="summary-card"><div class="summary-head"><strong>回答汇总</strong><span>3 个问题 · 可返回修改</span></div><div class="summary-body">${items.map((item, index) => `<div class="summary-item"><span class="summary-index">${index + 1}</span><span class="summary-question">${item[0]}</span><span class="summary-answer ${item[1] === 'Not answered' ? 'not-answered' : ''}">${item[1]}</span></div>`).join('')}</div></div><p class="summary-help"><kbd>Enter</kbd> 提交完整问卷　<kbd>←</kbd> / <kbd>Shift+Tab</kbd> 回到最后一题　<kbd>→</kbd> / <kbd>Tab</kbd> 回到第一题</p>`;
+    }
+
+    function renderContent() {
+      const scene = state.scene;
+      const isSummary = scene === 'summary';
+      const data = optionData(scene);
+      const isLong = scene === 'long';
+      const current = scene === 'multi' ? 'Question 2/4 [Decision]' : (isSummary ? 'Questionnaire complete' : 'Question 1/1 [Decision]');
+      const answerInspector = state.variant === 'C' && !isSummary ? `<div class="answer-inspector">当前答案：<strong>${scene === 'multiple' ? '上手速度 + 生态与集成' : scene === 'custom' ? '用户正在输入的内容' : '未提交，焦点位于第 ' + (state.selected + 1) + ' 项'}</strong></div>` : '';
+      const timeout = scene === 'timeout' ? '<div class="timeout-banner">⏱ 已到截止时间：已自动选择「自动选择推荐项」并继续　<span>固定截止时间，不因操作重置</span></div>' : '';
+      const body = isSummary ? renderSummary() : `<div class="${isLong ? 'long-content' : ''}">${timeout}${renderOptions(scene)}</div>${isLong ? '<div class="scroll-hint"><span>滚动查看全部选项</span><span>▾ 还有 4 项</span></div>' : ''}${answerInspector}`;
+      const rail = state.variant === 'C' ? `<aside class="progress-rail"><div class="rail-title">问卷进度</div><div class="rail-item done"><span class="rail-num">✓</span><span>出发地点</span></div><div class="rail-item current"><span class="rail-num">2</span><span>时间安排</span></div><div class="rail-item"><span class="rail-num">3</span><span>同行的人</span></div><div class="rail-item"><span class="rail-num">4</span><span>最终确认</span></div></aside>` : '';
+      return `<div class="question-window variant-${state.variant.toLowerCase()}"><div class="question-main">${rail}<section class="content-column"><div class="question-title"><div class="question-kicker">${current}</div><h2 class="question-heading">${questionHeading(scene)}</h2><div class="question-meta">选择一项最符合你当前想法的答案</div></div>${body}</section></div><footer class="bottom-help"><div class="help-line"><span><kbd>↑</kbd>/<kbd>↓</kbd> 选择　<kbd>Space</kbd> 切换　<kbd>Enter</kbd> 提交</span><span><kbd>←</kbd>/<kbd>→</kbd> ${isSummary ? '切换题目' : '切换题目'}　<kbd>y</kbd> 复制</span></div><div class="help-line"><span><kbd>Tab</kbd> 下一题　<kbd>Esc</kbd> ${isSummary ? '取消问答' : '取消选择'}　<kbd>Shift+X</kbd> 取消问答</span><span class="source">${scene === 'multi' || scene === 'summary' ? 'source: subtask · background question' : 'source: main session'}</span></div></footer></div>`;
+    }
+
+    function render() {
+      document.getElementById('stage').innerHTML = `<div class="stage-topbar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>acecode · interactive · ask_user_question</span></div><div class="stage-content">${renderContent()}</div>`;
+      const current = variants.find(item => item.key === state.variant);
+      document.getElementById('variant-label').innerHTML = `<strong>${current.key}</strong> · ${current.name}<br><small>${current.description}</small>`;
+      bindOptionClicks();
+    }
+
+    function bindOptionClicks() {
+      document.querySelectorAll('[data-option]').forEach(row => row.addEventListener('click', () => {
+        if (row.dataset.option === 'custom') setScene('custom');
+        else markSelected(Number(row.dataset.option));
+      }));
+    }
+
+    document.querySelectorAll('[data-scene]').forEach(button => button.addEventListener('click', () => setScene(button.dataset.scene)));
+    document.getElementById('previous-variant').addEventListener('click', () => cycleVariant(-1));
+    document.getElementById('next-variant').addEventListener('click', () => cycleVariant(1));
+    document.addEventListener('keydown', event => {
+      if (event.target.matches('input, textarea, [contenteditable]')) return;
+      if (event.key === 'ArrowLeft') cycleVariant(-1);
+      if (event.key === 'ArrowRight') cycleVariant(1);
+      if (event.key.toLowerCase() === 'y') {
+        const toast = document.getElementById('toast');
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 1800);
+      }
+    });
+    window.addEventListener('popstate', () => { state.variant = readVariant(); render(); });
+    render();
+  </script>
+</body>
+</html>
