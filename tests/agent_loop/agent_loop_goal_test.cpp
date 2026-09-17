@@ -42,7 +42,7 @@ class AgentLoopGoalHarness {
 public:
     explicit AgentLoopGoalHarness(const std::string& hint)
         : cwd_(temp_cwd(hint)) {
-        sm_.start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
+        sm_->start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
         tools_.register_tool(acecode::create_get_goal_tool());
         tools_.register_tool(acecode::create_create_goal_tool());
         tools_.register_tool(acecode::create_update_goal_tool());
@@ -70,7 +70,7 @@ public:
         };
         loop_ = std::make_unique<acecode::AgentLoop>(
             accessor, tools_, cb, cwd_.string(), perms_);
-        loop_->set_session_manager(&sm_);
+        loop_->set_session_manager(sm_.get());
         sub_ = loop_->events().subscribe([this](const acecode::SessionEvent& evt) {
             std::lock_guard<std::mutex> lk(events_mu_);
             events_.push_back(evt);
@@ -80,27 +80,28 @@ public:
     ~AgentLoopGoalHarness() {
         if (loop_ && sub_ != 0) loop_->events().unsubscribe(sub_);
         loop_.reset();
+        sm_.reset(); // Close SQLite handles before deleting the project on Windows.
         fs::remove_all(cwd_);
         fs::remove_all(acecode::SessionStorage::get_project_dir(cwd_.string()));
     }
 
     acecode_test::StubLlmProvider& provider() { return *provider_; }
-    acecode::SessionManager& session_manager() { return sm_; }
+    acecode::SessionManager& session_manager() { return *sm_; }
     acecode::AgentLoop& loop() { return *loop_; }
     acecode::ToolExecutor& tools() { return tools_; }
     acecode::PermissionManager& permissions() { return perms_; }
     int confirm_requests() const { return confirm_requests_.load(); }
 
     void create_goal(std::optional<std::int64_t> budget = std::nullopt) {
-        const std::string sid = sm_.ensure_active_session_id();
+        const std::string sid = sm_->ensure_active_session_id();
         ASSERT_FALSE(sid.empty());
-        ASSERT_TRUE(sm_.goal_store()->replace_thread_goal(
+        ASSERT_TRUE(sm_->goal_store()->replace_thread_goal(
             sid, "finish the goal", budget, acecode::ThreadGoalStatus::Active));
         loop_->restore_goal_runtime();
     }
 
     std::optional<acecode::ThreadGoal> goal() {
-        return sm_.goal_store()->get_thread_goal(sm_.current_session_id());
+        return sm_->goal_store()->get_thread_goal(sm_->current_session_id());
     }
 
     bool submit_and_wait(const std::string& prompt,
@@ -168,7 +169,8 @@ private:
         std::make_shared<acecode_test::StubLlmProvider>();
     acecode::ToolExecutor tools_;
     acecode::PermissionManager perms_;
-    acecode::SessionManager sm_;
+    std::unique_ptr<acecode::SessionManager> sm_ =
+        std::make_unique<acecode::SessionManager>();
     std::unique_ptr<acecode::AgentLoop> loop_;
     acecode::EventDispatcher::SubscriptionId sub_ = 0;
 
@@ -301,12 +303,15 @@ TEST(AgentLoopGoal, ResumeAfterAbortClearsStaleAbortAndContinues) {
     h.create_goal();
     h.provider().set_latency_ms(200);
 
-    std::thread aborter([&h] {
-        std::this_thread::sleep_for(50ms);
+    bool provider_started = false;
+    std::thread aborter([&] {
+        provider_started = h.wait_until([&] { return h.provider().turn_count() > 0; });
         h.loop().abort();
     });
-    ASSERT_TRUE(h.submit_and_wait("start", 10s));
+    const bool finished = h.submit_and_wait("start", 10s);
     aborter.join();
+    ASSERT_TRUE(provider_started);
+    ASSERT_TRUE(finished);
 
     auto paused = h.goal();
     ASSERT_TRUE(paused.has_value());

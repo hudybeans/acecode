@@ -1028,7 +1028,7 @@ SessionRegistry::make_entry_locked(const std::string& id,
     }
     // LOOP permission is definition-scoped. A daemon-wide --dangerous flag
     // must not silently turn a LOOP configured as Default into Yolo.
-    if (opts.loop_execution) entry->perm->set_dangerous(false);
+    if (opts.loop_execution || !opts.inherit_dangerous_mode) entry->perm->set_dangerous(false);
     // 显式传入的 permission_mode 优先于 resume meta 恢复值:headless
     // `-p --resume <id> --permission-mode accept-edits` 若被静默忽略,脚本
     // 会在 default 模式下被写权限门自动拒绝,极难排查。web resume 不传该
@@ -1245,6 +1245,8 @@ bool SessionRegistry::resume(const std::string& id, const SessionOptions& opts) 
     entry_opts.model_name = resolved.model_name;
     entry_opts.permission_mode = resolved.permission_mode;
     entry_opts.reasoning_effort = resolved.reasoning_effort;
+
+    entry_opts.inherit_dangerous_mode = resolved.inherit_dangerous_mode;
     entry_opts.expert_id = meta.expert_id;
     entry_opts.expert_member_id = meta.expert_member_id;
     auto entry = make_entry_locked(id, entry_opts, &meta);
@@ -1653,6 +1655,53 @@ void SessionRegistry::handle_auto_title_turn_finished(
     if (retry.has_value()) {
         start_auto_title_attempt(id, std::move(*retry));
     }
+}
+
+std::size_t SessionRegistry::refresh_sandbox_config(const SandboxConfig& sandbox) {
+    auto snapshot = std::make_shared<SandboxConfig>(sandbox);
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    std::size_t queued = 0;
+    for (const auto& entry : targets) {
+        auto* loop = entry->loop.get();
+        const auto receipt = loop->enqueue_control([entry, loop, snapshot]() {
+            loop->set_sandbox_config(*snapshot);
+            return true;
+        });
+        (void)receipt;
+        ++queued;
+    }
+    return queued;
+}
+
+std::size_t SessionRegistry::refresh_exec_rules() {
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    std::size_t queued = 0;
+    for (const auto& entry : targets) {
+        auto* loop = entry->loop.get();
+        const auto receipt = loop->enqueue_control([entry, loop]() {
+            loop->refresh_exec_rules();
+            return true;
+        });
+        (void)receipt;
+        ++queued;
+    }
+    return queued;
 }
 
 void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {

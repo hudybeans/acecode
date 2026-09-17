@@ -1,3 +1,5 @@
+import { composerContentFromMessage, composerContentSignature, composerContentText } from './composerContent.js';
+
 export function isInputHistoryNavigationMode({ value = '', editedSinceHistory = false } = {}) {
   return String(value ?? '').length === 0 || !editedSinceHistory;
 }
@@ -19,6 +21,28 @@ export function userInputTextFromTranscriptItem(item) {
 }
 
 const MAX_COMPOSER_HISTORY = 500;
+
+export function buildComposerHistoryEntries({ cwdHistory = [], transcriptItems = [] } = {}) {
+  const merged = Array.from(cwdHistory || []).map((text) => ({ text: String(text || '') }));
+  for (const item of transcriptItems || []) {
+    if (item?.kind !== 'msg' || item.role !== 'user') continue;
+    const composer_content = composerContentFromMessage(item);
+    merged.push({
+      text: composer_content ? composerContentText(composer_content) : userInputTextFromTranscriptItem(item),
+      ...(composer_content ? { composer_content } : {}),
+    });
+  }
+  const seen = new Set();
+  return merged.filter((entry) => entry.text.trim() || entry.composer_content?.parts?.length)
+    .reverse().filter((entry) => {
+      // Legacy text records are superseded by a matching structured transcript entry.
+      const key = entry.composer_content ? `${entry.text}\u0000${composerContentSignature(entry.composer_content)}` : entry.text;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      if (entry.composer_content) seen.add(entry.text);
+      return true;
+    }).slice(0, MAX_COMPOSER_HISTORY).reverse();
+}
 
 // 上下键翻的历史 = per-cwd 输入历史(与 TUI 共享,受 max_entries 截断)+ 当前
 // transcript 会话中用户发过的消息。会话消息排在尾部,↑ 优先翻到当前会话的输入,

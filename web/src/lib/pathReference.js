@@ -77,7 +77,7 @@ export function replacePathReferenceToken(text, token, relativePath, {
   });
   return {
     text: input.slice(0, begin) + replacement + input.slice(end),
-    cursor: begin + replacement.length,
+    cursor: begin + replacement.length - (enterDirectory && replacement.endsWith('"') ? 1 : 0),
   };
 }
 

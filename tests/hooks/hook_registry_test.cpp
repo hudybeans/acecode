@@ -144,6 +144,56 @@ TEST(HookRegistry, ParsesCodexCommandFieldsAndDefaultTimeout) {
     EXPECT_FALSE(hook.skipped);
 }
 
+TEST(HookRegistry, DisabledCodexSourceRetainsDiagnosticWithoutHandlers) {
+    auto config = nlohmann::json::parse(R"({
+        "enabled": false,
+        "hooks": {
+            "PostToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "user-hook"}]}
+            ]
+        }
+    })");
+    auto source = source_for("/repo/.codex/hooks.json");
+    auto registry = acecode::parse_codex_hooks_json_source(config, source);
+    acecode::apply_hook_trust_state(registry, acecode::HookTrustStore{}, true);
+
+    EXPECT_TRUE(registry.feature_enabled);
+    EXPECT_TRUE(registry.hooks.empty());
+    ASSERT_EQ(registry.sources.size(), 1u);
+    EXPECT_EQ(registry.sources[0].id, source.id);
+    ASSERT_EQ(registry.sources[0].diagnostics.size(), 1u);
+    EXPECT_EQ(registry.sources[0].diagnostics[0].code, "HOOK_SOURCE_DISABLED");
+    ASSERT_EQ(registry.diagnostics.size(), 1u);
+    EXPECT_EQ(registry.diagnostics[0].code, "HOOK_SOURCE_DISABLED");
+    EXPECT_EQ(registry.diagnostics[0].severity, acecode::HookDiagnosticSeverity::Info);
+    EXPECT_EQ(registry.diagnostics[0].source_id, source.id);
+}
+
+TEST(HookRegistry, MissingOrTrueSourceEnabledPreservesDefinitionsAndTrust) {
+    auto config = nlohmann::json::parse(R"({
+        "hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "user-hook"}]}
+            ]
+        }
+    })");
+    auto source = source_for("/repo/.codex/hooks.json");
+    auto implicit = acecode::parse_codex_hooks_json_source(config, source);
+    ASSERT_EQ(implicit.hooks.size(), 1u);
+    acecode::HookTrustStore store;
+    acecode::trust_hook_definition(store, implicit.hooks[0]);
+
+    config["enabled"] = true;
+    auto explicit_enabled = acecode::parse_codex_hooks_json_source(config, source);
+    acecode::apply_hook_trust_state(explicit_enabled, store, true);
+
+    ASSERT_EQ(explicit_enabled.hooks.size(), 1u);
+    EXPECT_EQ(explicit_enabled.hooks[0].id, implicit.hooks[0].id);
+    EXPECT_EQ(explicit_enabled.hooks[0].definition_hash, implicit.hooks[0].definition_hash);
+    EXPECT_EQ(explicit_enabled.hooks[0].trust_status, acecode::HookTrustStatus::Trusted);
+    EXPECT_TRUE(explicit_enabled.diagnostics.empty());
+}
+
 TEST(HookRegistry, DetectsBarePermissionResolvedObjectAsCodexHooks) {
     auto j = nlohmann::json::parse(R"({
         "PermissionResolved": [
@@ -369,7 +419,7 @@ TEST(HookRegistry, SourceDiscoveryReportsMalformedSources) {
     EXPECT_TRUE(saw_missing);
 }
 
-TEST(HookRegistry, OfficialSeedHookLoadsManagedWithoutRewritingUserConfig) {
+TEST(HookRegistry, DisabledOfficialSeedPreservesUserConfigurationAndTrust) {
     TempTree tmp;
     const fs::path ace_home = tmp.root / "ace-home";
     const auto& seed = acecode::default_hook_seeds().front();
@@ -396,24 +446,30 @@ TEST(HookRegistry, OfficialSeedHookLoadsManagedWithoutRewritingUserConfig) {
     const auto second = acecode::load_hook_registry(opts);
 
     EXPECT_EQ(read_text(user_path), user_config);
-    ASSERT_EQ(first.hooks.size(), 10u);
+    ASSERT_EQ(first.hooks.size(), 1u);
     ASSERT_EQ(second.hooks.size(), first.hooks.size());
-    std::size_t managed_count = 0;
-    std::size_t pending_count = 0;
-    for (std::size_t i = 0; i < first.hooks.size(); ++i) {
-        EXPECT_EQ(first.hooks[i].id, second.hooks[i].id);
-        if (first.hooks[i].trust_status ==
-            acecode::HookTrustStatus::ManagedTrusted) {
-            ++managed_count;
-            EXPECT_TRUE(first.hooks[i].managed);
-        }
-        if (first.hooks[i].trust_status ==
-            acecode::HookTrustStatus::PendingReview) {
-            ++pending_count;
-        }
-    }
-    EXPECT_EQ(managed_count, 9u);
-    EXPECT_EQ(pending_count, 1u);
+    EXPECT_EQ(first.hooks[0].id, second.hooks[0].id);
+    EXPECT_FALSE(first.hooks[0].managed);
+    EXPECT_EQ(first.hooks[0].command.command, "user-hook");
+    EXPECT_EQ(first.hooks[0].trust_status, acecode::HookTrustStatus::PendingReview);
+    ASSERT_EQ(first.sources.size(), 2u);
+    const auto& managed_source = first.sources[0];
+    EXPECT_TRUE(managed_source.managed);
+    EXPECT_EQ(acecode::path_from_utf8(managed_source.path), managed_path);
+    ASSERT_EQ(managed_source.diagnostics.size(), 1u);
+    EXPECT_EQ(managed_source.diagnostics[0].code, "HOOK_SOURCE_DISABLED");
+
+    acecode::HookTrustStore store;
+    acecode::trust_hook_definition(store, first.hooks[0]);
+    const auto trusted = acecode::load_hook_registry(opts, &store);
+    ASSERT_EQ(trusted.hooks.size(), 1u);
+    EXPECT_EQ(trusted.hooks[0].trust_status, acecode::HookTrustStatus::Trusted);
+
+    acecode::set_hook_disabled(store, trusted.hooks[0], true);
+    const auto disabled = acecode::load_hook_registry(opts, &store);
+    ASSERT_EQ(disabled.hooks.size(), 1u);
+    EXPECT_EQ(disabled.hooks[0].trust_status, acecode::HookTrustStatus::Disabled);
+    EXPECT_EQ(read_text(user_path), user_config);
 }
 
 TEST(HookRegistry, ModifiedSeedHookIsPreservedButNotAutomaticallyTrusted) {

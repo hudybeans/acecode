@@ -41,13 +41,15 @@ public:
         // continuation. Plan mode keeps maybe_continue_goal() idle and avoids
         // racing /goal pause against a background turn on faster CI hosts.
         perms_.set_mode(acecode::PermissionMode::Plan);
-        sm_.start_session(cwd_.string(), "stub", "model", "sid-" + hint);
-        loop_.set_session_manager(&sm_);
+        sm_->start_session(cwd_.string(), "stub", "model", "sid-" + hint);
+        loop_.set_session_manager(sm_.get());
         acecode::register_goal_command(registry_);
     }
 
     ~GoalCommandHarness() {
         loop_.shutdown();
+        loop_.set_session_manager(nullptr);
+        sm_.reset();
         fs::remove_all(cwd_);
         fs::remove_all(acecode::SessionStorage::get_project_dir(cwd_.string()));
     }
@@ -61,7 +63,7 @@ public:
             tracker_,
             perms_,
         };
-        ctx.session_manager = &sm_;
+        ctx.session_manager = sm_.get();
         ctx.tools = &tools_;
         ctx.command_registry = &registry_;
         ctx.cwd = cwd_.string();
@@ -74,12 +76,13 @@ public:
     }
 
     std::optional<acecode::ThreadGoal> goal() {
-        return sm_.goal_store()->get_thread_goal(sm_.current_session_id());
+        return sm_->goal_store()->get_thread_goal(sm_->current_session_id());
     }
 
     acecode::TuiState state_;
     acecode::CommandRegistry registry_;
-    acecode::SessionManager sm_;
+    std::unique_ptr<acecode::SessionManager> sm_ =
+        std::make_unique<acecode::SessionManager>();
     acecode::ToolExecutor tools_;
     acecode::PermissionManager perms_;
     acecode::AppConfig config_;
@@ -132,8 +135,8 @@ TEST(GoalCommand, RejectsInvalidBudget) {
 TEST(GoalCommand, ResumeBlockedGoalMakesItActive) {
     GoalCommandHarness h("blocked_resume");
 
-    const std::string sid = h.sm_.current_session_id();
-    ASSERT_TRUE(h.sm_.goal_store()->replace_thread_goal(
+    const std::string sid = h.sm_->current_session_id();
+    ASSERT_TRUE(h.sm_->goal_store()->replace_thread_goal(
         sid, "wait for a decision", std::nullopt, acecode::ThreadGoalStatus::Blocked));
 
     ASSERT_TRUE(h.dispatch("/goal resume"));

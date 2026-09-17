@@ -9,14 +9,14 @@ import {
 
 const viewport = { left: 0, top: 0, width: 1280, height: 900 };
 const initial = createSideChatGeometry(viewport);
-assert.deepEqual(initial, { left: 200, top: 50, width: 880, height: 800 });
+assert.deepEqual(initial, { left: 340, top: 140, width: 600, height: 620 });
 
 // Toolbar activation aligns top-left where it fits and preserves resized dimensions.
 assert.deepEqual(anchorSideChatGeometry(initial, { left: 120, top: 40 }, viewport), {
-  left: 120, top: 40, width: 880, height: 800,
+  left: 120, top: 40, width: 600, height: 620,
 });
-assert.deepEqual(anchorSideChatGeometry(initial, { left: 1200, top: 100 }, viewport), {
-  left: 388, top: 88, width: 880, height: 800,
+assert.deepEqual(anchorSideChatGeometry(initial, { left: 1200, top: 850 }, viewport), {
+  left: 668, top: 268, width: 600, height: 620,
 });
 assert.deepEqual(anchorSideChatGeometry({ ...initial, width: 420, height: 360 }, { left: 120, top: 40 }, viewport), {
   left: 120, top: 40, width: 420, height: 360,
@@ -26,7 +26,7 @@ assert.deepEqual(anchorSideChatGeometry(initial, { left: 420, top: 210 }, { left
 });
 
 assert.deepEqual(moveSideChatGeometry(initial, 9000, -9000, viewport), {
-  left: 388, top: 12, width: 880, height: 800,
+  left: 668, top: 12, width: 600, height: 620,
 });
 
 // Opposite edges stay anchored while west/north edges stop at the minimum size.
@@ -37,10 +37,10 @@ const north = resizeSideChatGeometry(initial, 'n', 0, 9000, viewport);
 assert.equal(north.height, 260);
 assert.equal(north.top + north.height, initial.top + initial.height);
 const northWest = resizeSideChatGeometry(initial, 'nw', -9000, -9000, viewport);
-assert.deepEqual(northWest, { left: 12, top: 12, width: 1068, height: 838 });
+assert.deepEqual(northWest, { left: 12, top: 12, width: 928, height: 748 });
 
 const southEast = resizeSideChatGeometry(initial, 'se', 9000, 9000, viewport);
-assert.deepEqual(southEast, { left: 200, top: 50, width: 1068, height: 838 });
+assert.deepEqual(southEast, { left: 340, top: 140, width: 928, height: 748 });
 
 // Narrow viewports and keyboard/pinch-zoom offsets keep the full window visible.
 assert.deepEqual(clampSideChatGeometry(initial, { width: 280, height: 230 }), {
@@ -73,6 +73,6 @@ for (const width of [0, 20, 280, 390, 1280, 3000]) {
 }
 
 assert.deepEqual(clampSideChatGeometry({ left: NaN, top: Infinity, width: -1, height: Infinity }, viewport), {
-  left: 12, top: 12, width: 300, height: 800,
+  left: 12, top: 12, width: 300, height: 620,
 });
 console.log('sideChatGeometry.test.js: all tests passed');

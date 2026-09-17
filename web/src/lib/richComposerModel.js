@@ -1,9 +1,11 @@
 import { resolveLeadingSlashCommand } from './slashCommands.js';
 import { normalizeReferencePath } from './pathReference.js';
 import { sessionReferenceTokenAt } from './sessionReference.js';
+import { normalizeComposerContent } from './composerContent.js';
 
 export const COMPOSER_PARAGRAPH = 'paragraph';
 export const COMPOSER_COMMAND_TAG = 'command-tag';
+export const COMPOSER_SKILL_TAG = 'skill-tag';
 export const COMPOSER_PATH_TAG = 'path-tag';
 export const COMPOSER_SESSION_TAG = 'session-tag';
 export const COMPOSER_ATTACHMENT_TAG = 'attachment-tag';
@@ -86,6 +88,10 @@ export function isComposerCommandTag(value) {
   return !!value && value.type === COMPOSER_COMMAND_TAG;
 }
 
+export function isComposerSkillTag(value) {
+  return !!value && value.type === COMPOSER_SKILL_TAG;
+}
+
 export function isComposerPathTag(value) {
   return !!value && value.type === COMPOSER_PATH_TAG;
 }
@@ -100,6 +106,7 @@ export function isComposerAttachmentTag(value) {
 
 export function isComposerInlineTag(value) {
   return isComposerCommandTag(value)
+    || isComposerSkillTag(value)
     || isComposerPathTag(value)
     || isComposerSessionTag(value)
     || isComposerAttachmentTag(value);
@@ -149,12 +156,12 @@ function composerSessionTag(token, reference) {
   };
 }
 
-function composerAttachmentTag(attachment, index = 0) {
+export function composerAttachmentTag(attachment, index = 0) {
   const attachmentKey = String(
-    attachment?.local_id || attachment?.id || attachment?.name || index,
+    attachment?.local_id || attachment?.key || attachment?.id || attachment?.name || index,
   );
   const name = String(attachment?.name || 'attachment');
-  const mimeType = String(attachment?.mime_type || '');
+  const mimeType = String(attachment?.mime_type || attachment?.mimeType || '');
   const kind = isComposerImageAttachment(attachment) ? 'image' : 'file';
   return {
     type: COMPOSER_ATTACHMENT_TAG,
@@ -244,7 +251,7 @@ function appendTokenizedLine(children, text, options = {}) {
           end: session.end,
           tag: composerSessionTag(session.token, session.reference),
         }
-      : (text[cursor] === '@' ? pathTagAt(text, cursor, options) : null);
+      : (!options.sessionOnly && text[cursor] === '@' ? pathTagAt(text, cursor, options) : null);
     if (!parsed) {
       cursor += 1;
       continue;
@@ -361,26 +368,118 @@ export function composerAttachmentItemsSignature(attachments = []) {
     )));
 }
 
-export function composerDocumentWithSynchronizedAttachments(document, attachments = []) {
-  const blocks = safeComposerDocument(document).map((block) => cloneComposerNode(block));
-  blocks.forEach((block) => {
-    const children = Array.isArray(block?.children) ? block.children : [];
-    block.children = children.filter((child) => !isComposerAttachmentTag(child));
-    if (block.children.length === 0) block.children.push({ text: '' });
+export function composerDocumentWithSynchronizedAttachments(document, attachments = [], {
+  appendMissing = true,
+} = {}) {
+  const records = new Map(Array.from(attachments || []).map((item, index) => {
+    const tag = composerAttachmentTag(item, index);
+    return [tag.attachmentKey, tag];
+  }));
+  const present = new Set();
+  const blocks = safeComposerDocument(document).map((block) => {
+    const children = [];
+    for (const child of block.children || []) {
+      if (isComposerAttachmentTag(child)) {
+        const updated = records.get(child.attachmentKey);
+        if (updated) {
+          appendTag(children, updated);
+          present.add(child.attachmentKey);
+        }
+      } else {
+        appendExistingChild(children, child);
+      }
+    }
+    return { ...block, children: children.length ? children : [{ text: '' }] };
   });
-
-  const firstBlock = blocks[0];
-  const retainedChildren = Array.isArray(firstBlock?.children)
-    ? firstBlock.children
-    : [{ text: '' }];
-  const nextChildren = [];
-  Array.from(attachments || []).forEach((attachment, index) => {
-    appendTag(nextChildren, composerAttachmentTag(attachment, index));
-  });
-  retainedChildren.forEach((child) => appendExistingChild(nextChildren, child));
-  if (nextChildren.length === 0) nextChildren.push({ text: '' });
-  firstBlock.children = nextChildren;
+  // Only legacy import prepends resources. Live editing inserts new references
+  // at a Slate selection and only reconciles existing nodes in place.
+  if (appendMissing) {
+    const leading = [];
+    for (const [key, tag] of records) {
+      if (!present.has(key)) appendTag(leading, tag);
+    }
+    blocks[0].children.forEach((child) => appendExistingChild(leading, child));
+    blocks[0].children = leading;
+  }
   return blocks;
+}
+
+export function composerSkillTag(skill) {
+  return {
+    type: COMPOSER_SKILL_TAG,
+    name: String(skill?.name || ''),
+    token: String(skill?.token || skill?.mention || `$${skill?.name || ''}`),
+    path: String(skill?.path || ''),
+    kind: 'skill',
+    description: String(skill?.description || ''),
+    children: [{ text: '' }],
+  };
+}
+
+export function composerContentFromDocument(document = []) {
+  const parts = [];
+  const addText = (text) => {
+    if (!text) return;
+    const previous = parts[parts.length - 1];
+    if (previous?.type === 'text') previous.text += text;
+    else parts.push({ type: 'text', text });
+  };
+  safeComposerDocument(document).forEach((block, blockIndex) => {
+    if (blockIndex) addText('\n');
+    for (const child of block.children || []) {
+      if (isComposerAttachmentTag(child)) {
+        const part = {
+          type: 'attachment', key: child.attachmentKey, id: child.attachmentId || '',
+          name: child.name || 'attachment', kind: child.kind || 'file',
+        };
+        if (child.mimeType) part.mime_type = child.mimeType;
+        if (child.path) part.path = child.path;
+        parts.push(part);
+      } else if (isComposerSkillTag(child)) {
+        const part = { type: 'skill', name: child.name, token: child.token };
+        if (child.path) part.path = child.path;
+        parts.push(part);
+      } else if (isComposerPathTag(child)) {
+        parts.push({ type: 'path', path: child.path, token: child.token, directory: !!child.directory });
+      } else {
+        addText(composerInlineText(child));
+      }
+    }
+  });
+  return { version: 1, parts };
+}
+
+export function composerDocumentFromContent(content, commands = [], attachments = []) {
+  const normalized = normalizeComposerContent(content);
+  if (!normalized) return composerDocumentFromText('', commands);
+  const blocks = [{ type: COMPOSER_PARAGRAPH, children: [] }];
+  const records = Array.from(attachments || []);
+  for (const part of normalized.parts) {
+    let children = blocks[blocks.length - 1].children;
+    if (part.type === 'text') {
+      part.text.split('\n').forEach((line, index) => {
+        if (index) {
+          if (!children.length) children.push({ text: '' });
+          children = [];
+          blocks.push({ type: COMPOSER_PARAGRAPH, children });
+        }
+        appendTokenizedLine(children, line, { sessionOnly: true });
+      });
+    } else if (part.type === 'path') {
+      appendTag(children, composerPathTag(part.token, part.path));
+    } else if (part.type === 'skill') {
+      const command = commands.find((item) => item.kind === 'skill' && item.name === part.name);
+      appendTag(children, composerSkillTag({ ...command, ...part }));
+    } else if (part.type === 'attachment') {
+      const record = records.find((item, index) => (
+        composerAttachmentTag(item, index).attachmentKey === part.key
+        || (part.id && item.id === part.id)
+      ));
+      appendTag(children, composerAttachmentTag({ ...part, ...record, local_id: part.key }));
+    }
+  }
+  for (const block of blocks) if (!block.children.length) block.children.push({ text: '' });
+  return composerDocumentWithSynchronizedLeadingCommand(blocks, composerTextFromDocument(blocks), commands);
 }
 
 function leadingCommandTextIndex(children, token) {
@@ -628,34 +727,39 @@ function collapsedSelection(selection) {
     && anchor.path.every((part, index) => part === focus.path[index]);
 }
 
-export function composerAdjacentAttachmentKey(document, selection, direction) {
-  if (!collapsedSelection(selection)) return '';
+export function composerAdjacentAttachmentPath(document, selection, direction) {
+  if (!collapsedSelection(selection)) return null;
   const blocks = safeComposerDocument(document);
   const point = selection.anchor;
   const blockIndex = Number.isFinite(point?.path?.[0]) ? point.path[0] : -1;
-  if (blockIndex < 0 || blockIndex >= blocks.length) return '';
+  if (blockIndex < 0 || blockIndex >= blocks.length) return null;
   const children = Array.isArray(blocks[blockIndex]?.children)
     ? blocks[blockIndex].children
     : [];
   const childIndex = Number.isFinite(point?.path?.[1]) ? point.path[1] : -1;
-  if (childIndex < 0 || childIndex >= children.length) return '';
+  if (childIndex < 0 || childIndex >= children.length) return null;
 
   const child = children[childIndex];
-  if (isComposerAttachmentTag(child)) return String(child.attachmentKey || '');
-  if (!isTextNode(child)) return '';
-  if (direction === 'backward' && point.offset !== 0) return '';
-  if (direction === 'forward' && point.offset !== child.text.length) return '';
+  if (isComposerAttachmentTag(child)) return [blockIndex, childIndex];
+  if (!isTextNode(child)) return null;
+  if (direction === 'backward' && point.offset !== 0) return null;
+  if (direction === 'forward' && point.offset !== child.text.length) return null;
 
   const step = direction === 'backward' ? -1 : 1;
   for (let index = childIndex + step; index >= 0 && index < children.length; index += step) {
     const candidate = children[index];
     if (isComposerAttachmentTag(candidate)) {
-      return String(candidate.attachmentKey || '');
+      return [blockIndex, index];
     }
     if (isTextNode(candidate) && candidate.text.length === 0) continue;
-    return '';
+    return null;
   }
-  return '';
+  return null;
+}
+
+export function composerAdjacentAttachmentKey(document, selection, direction) {
+  const path = composerAdjacentAttachmentPath(document, selection, direction);
+  return path ? String(document[path[0]].children[path[1]].attachmentKey || '') : '';
 }
 
 export function composerAdjacentTagDeletionRange(document, selection, direction) {
@@ -696,6 +800,41 @@ export function composerSelectionFromPlainTextRange(
     return { anchor: endPoint, focus: startPoint };
   }
   return { anchor: startPoint, focus: endPoint };
+}
+
+export function composerSelectionForTextReplacement(document, start, end = start) {
+  const blocks = safeComposerDocument(document);
+  const totalLength = composerTextFromDocument(blocks).length;
+  const safeStart = Math.max(0, Math.min(totalLength, Number.isFinite(start) ? start : 0));
+  const safeEnd = Math.max(safeStart, Math.min(totalLength, Number.isFinite(end) ? end : safeStart));
+  const fallback = composerSelectionFromPlainTextRange(blocks, safeStart, safeEnd);
+
+  // Several editable points can share an offset because attachments have no
+  // serialized text. Explicit replacements leave those boundary references out.
+  const exactTextPoint = (target, takeLast) => {
+    let offset = 0;
+    let result = null;
+    for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+      const children = Array.isArray(blocks[blockIndex]?.children) ? blocks[blockIndex].children : [];
+      for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
+        const child = children[childIndex];
+        const length = composerInlineSerializedLength(child);
+        if (isTextNode(child) && target >= offset && target <= offset + length) {
+          result = { path: [blockIndex, childIndex], offset: target - offset };
+          if (!takeLast) return result;
+        }
+        offset += length;
+      }
+      if (blockIndex < blocks.length - 1) offset += 1;
+    }
+    return result;
+  };
+
+  const anchor = exactTextPoint(safeStart, true) || fallback.anchor;
+  const focus = safeStart === safeEnd
+    ? anchor
+    : (exactTextPoint(safeEnd, false) || fallback.focus);
+  return { anchor, focus };
 }
 
 export function richComposerModelFromText(value = '', commands = []) {

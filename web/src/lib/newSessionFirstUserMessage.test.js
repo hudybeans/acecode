@@ -155,3 +155,61 @@ run('架构: 只在主页首发接入临时行并在 session 提升前记录', (
   assert.match(homeFlow, /if \(explicitHomeSend && createdSessionId\)/);
   assert.doesNotMatch(activeFlow, /setPendingNewSessionFirstUserMessage|firstUserMessageText/);
 });
+
+const mixedContent = { version: 1, parts: [
+  { type: 'text', text: 'Use ' },
+  { type: 'skill', name: 'review', token: '$review' },
+  { type: 'text', text: ' on ' },
+  { type: 'attachment', key: 'local-file', id: '', name: 'notes.md', kind: 'file' },
+  { type: 'text', text: ' please' },
+] };
+
+run('optimistic first messages retain inline skills/files and hydrate local preview resources', () => {
+  const pending = createPendingNewSessionFirstUserMessage({
+    sessionId: 'session-1', text: 'Use $review on  please', composerContent: mixedContent,
+    attachments: [{ local_id: 'local-file', name: 'notes.md', kind: 'file', preview_url: 'blob:local-preview' }],
+  });
+  assert.deepEqual(pending.item.composerContent, mixedContent);
+  assert.equal(pending.item.contentParts[0].attachment.local_id, 'local-file');
+  assert.equal(pending.item.contentParts[0].attachment.preview_url, 'blob:local-preview');
+  assert.equal(withPendingNewSessionFirstUserMessage([], pending, 'session-1')[0], pending.item);
+});
+
+run('attachment-only optimistic messages render immediately and reconcile after upload IDs change', () => {
+  const composerContent = { version: 1, parts: [mixedContent.parts[3]] };
+  const pending = createPendingNewSessionFirstUserMessage({ sessionId: 'session-1', text: '', composerContent });
+  assert.ok(pending);
+  assert.equal(withPendingNewSessionFirstUserMessage([], pending, 'session-1').length, 1);
+  const canonical = canonicalUser({ content: '', displayText: '' });
+  canonical.composerContent = { version: 1, parts: [{ ...composerContent.parts[0], id: 'uploaded-1' }] };
+  const source = [canonical];
+  assert.equal(withPendingNewSessionFirstUserMessage(source, pending, 'session-1'), source);
+});
+
+run('structured canonical matching keeps distinct attachment positions and ignores upload metadata', () => {
+  const pending = createPendingNewSessionFirstUserMessage({ sessionId: 'session-1', composerContent: mixedContent });
+  const canonical = canonicalUser({ content: 'expanded prompt', displayText: 'Use $review on  please' });
+  canonical.metadata.composer_content = { version: 1, parts: mixedContent.parts.map((part) => (
+    part.type === 'attachment' ? { ...part, id: 'uploaded-1' } : part
+  )) };
+  const source = [canonical, assistant()];
+  assert.equal(withPendingNewSessionFirstUserMessage(source, pending, 'session-1'), source);
+  canonical.metadata.composer_content = { version: 1, parts: [
+    { ...mixedContent.parts[3], id: 'uploaded-1' },
+    ...mixedContent.parts.filter((part) => part.type !== 'attachment'),
+  ] };
+  assert.equal(withPendingNewSessionFirstUserMessage(source, pending, 'session-1').length, 3);
+});
+
+run('legacy canonical text and attachment-only resources still deduplicate optimistic input', () => {
+  const pending = createPendingNewSessionFirstUserMessage({ sessionId: 'session-1', composerContent: mixedContent });
+  const canonical = canonicalUser({ content: 'expanded prompt', displayText: 'Use $review on  please' });
+  assert.equal(withPendingNewSessionFirstUserMessage([canonical], pending, 'session-1').length, 1);
+  const fileOnly = createPendingNewSessionFirstUserMessage({
+    sessionId: 'session-1', text: '',
+    attachments: [{ local_id: 'local-file', id: 'uploaded-1', name: 'notes.md', kind: 'file' }],
+  });
+  const oldCanonical = canonicalUser({ content: '', displayText: '' });
+  oldCanonical.contentParts = [{ type: 'file', attachment: { id: 'uploaded-1', name: 'notes.md' } }];
+  assert.equal(withPendingNewSessionFirstUserMessage([oldCanonical], fileOnly, 'session-1').length, 1);
+});

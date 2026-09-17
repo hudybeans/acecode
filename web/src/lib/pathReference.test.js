@@ -61,6 +61,17 @@ test('folder picker inserts at the saved caret', () => {
   );
 });
 
+test('entering a quoted directory leaves the caret inside its closing quote', () => {
+  const source = 'before @my after';
+  const query = pathReferenceTokenAtCursor(source, 10);
+  const next = replacePathReferenceToken(source, query, 'my dir', { directory: true, enterDirectory: true });
+  assert.equal(next.text, 'before @"my dir/" after');
+  assert.equal(next.text[next.cursor], '"');
+  const typed = next.text.slice(0, next.cursor) + 'no' + next.text.slice(next.cursor);
+  assert.equal(pathReferenceTokenAtCursor(typed, next.cursor + 2).path, 'my dir/no');
+  assert.equal(typed, 'before @"my dir/no" after');
+});
+
 test('explicit cwd-external folders keep absolute paths', () => {
   assert.deepEqual(
     insertPathReferenceAtCaret('处理', 2, 'D:/共享 目录', { directory: true }),

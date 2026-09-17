@@ -44,6 +44,7 @@ import { ModelSettingsSection } from './model-settings/ModelSettingsSection.jsx'
 import { ImageGenerationSettings } from './ImageGenerationSettings.jsx';
 import { SummaryGenerationSettings } from './SummaryGenerationSettings.jsx';
 import { ToolRewriteSettings } from './ToolRewriteSettings.jsx';
+import { SecurityCenterSettings } from './SecurityCenterSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
 import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
@@ -376,6 +377,7 @@ export function SettingsPage({
           )}
           {activeNavKey === 'tools' && <SectionTools onCheckUpdates={onCheckUpdates} onModelProfileUpdated={onModelProfileUpdated} />}
           {activeNavKey === 'hooks' && <SectionHooks />}
+          {activeNavKey === 'security' && <SecurityCenterSettings />}
           {activeNavKey === 'archived' && <SectionArchived />}
           {activeNavKey === 'usage' && <SectionUsage />}
           {activeNavKey === 'feedback' && <FeedbackForm />}

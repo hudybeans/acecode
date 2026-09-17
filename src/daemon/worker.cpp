@@ -1,4 +1,6 @@
 #include "worker.hpp"
+#include "../channels/runtime.hpp"
+#include "../session/session_serializer.hpp"
 
 #include "../desktop/folder_picker.hpp"
 #include "../desktop/context_picker.hpp"
@@ -42,6 +44,7 @@
 #include "../tool/bash_tool.hpp"
 #include "../tool/builtin_tool_registry.hpp"
 #include "../tool/tool_rewrites.hpp"
+#include "../security/audit_log.hpp"
 #include "../tool/file_read_tool.hpp"
 #include "../tool/file_write_tool.hpp"
 #include "../tool/file_edit_tool.hpp"
@@ -510,6 +513,8 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     // 「工具重写」(<data_dir>/tool-rewrites.json)必须先于任何 register_tool
     // 发布到进程,注册期的模型侧名冲突检查才拿得到真实映射。
     acecode::tool_rewrites::load_and_apply(acecode::get_acecode_dir());
+    // 安全审计存储(openspec add-security-center):失败只记日志,record 退化为 no-op。
+    acecode::security::audit_log().configure(acecode::get_acecode_dir());
 
     acecode::ToolExecutor tools;
     acecode::register_session_builtin_tools(tools, cfg_mut);
@@ -565,6 +570,28 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
 
     acecode::SessionRegistry registry(std::move(reg_deps));
     acecode::LocalSessionClient client(registry);
+    acecode::channels::GatewayDeps channel_deps{client};
+    channel_deps.permissions = [&registry](const std::string& id) {
+        auto entry = registry.acquire(id);
+        return entry && entry->prompter ? entry->prompter->snapshot_pending_requests()
+                                        : std::vector<nlohmann::json>{};
+    };
+    channel_deps.session_cwd = [&registry](const std::string& id) {
+        auto entry = registry.acquire(id);
+        if (!entry) throw std::runtime_error("Unknown channel session");
+        return entry->cwd;
+    };
+    channel_deps.transcript = [&registry](const std::string& id) {
+        nlohmann::json result = nlohmann::json::array();
+        auto entry = registry.acquire(id);
+        if (!entry || !entry->sm) return result;
+        const auto messages = entry->sm->load_active_messages();
+        const auto begin = messages.size() > 100 ? messages.size() - 100 : 0;
+        for (std::size_t i = begin; i < messages.size(); ++i)
+            result.push_back(nlohmann::json::parse(acecode::serialize_message(messages[i])));
+        return result;
+    };
+    acecode::channels::Runtime channel_runtime(std::move(channel_deps));
     subagent_deps->registry = &registry;
     subagent_deps->client   = &client;
     subagent_deps->config   = &cfg_mut;
@@ -894,7 +921,9 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
         server.stop();
     });
 
+    channel_runtime.start();
     int rc = server.run();
+    channel_runtime.stop();
     task_suggestions->shutdown();
     // Remove the external listener before any daemon-owned service begins
     // teardown. The controller destructor is a second, idempotent safety net.

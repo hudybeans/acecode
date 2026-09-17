@@ -26,6 +26,7 @@ export const SETTINGS_NAV_GROUPS = [
       { key: 'models', label: '模型', icon: 'brain' },
       { key: 'tools', label: '工具', icon: 'tool' },
       { key: 'hooks', label: '钩子', icon: 'hook' },
+      { key: 'security', label: '安全中心', icon: 'lock' },
     ],
   },
   {

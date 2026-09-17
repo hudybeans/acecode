@@ -47,6 +47,7 @@
 #include "config/config.hpp"
 #include "headless/headless_options.hpp"
 #include "headless/headless_runner.hpp"
+#include "channels/command.hpp"
 #include "utils/encoding.hpp"
 #include "utils/power_inhibitor.hpp"
 #include "network/proxy_resolver.hpp"
@@ -63,6 +64,7 @@
 #include "tool/bash_tool.hpp"
 #include "tool/builtin_tool_registry.hpp"
 #include "tool/tool_rewrites.hpp"
+#include "security/audit_log.hpp"
 #include "tool/file_read_tool.hpp"
 #include "tool/file_write_tool.hpp"
 #include "tool/file_edit_tool.hpp"
@@ -2789,6 +2791,7 @@ static void print_top_level_help() {
         "  acecode -p [options] \"<prompt>\"    Headless print mode (acecode -p --help)\n"
         "  acecode configure                  Interactive provider/model setup\n"
         "  acecode daemon <subcommand>        Background daemon + Web UI (acecode daemon help)\n"
+        "  acecode channels <command>         WhatsApp channel management (acecode channels help)\n"
 #ifdef _WIN32
         "  acecode service <subcommand>       Windows service management (acecode service help)\n"
 #endif
@@ -2930,6 +2933,10 @@ static std::optional<int> dispatch_non_tui_command(int argc, char* argv[]) {
 #else
         tokens = argv_tail(argc, argv, 1);
 #endif
+        if (!tokens.empty() && tokens.front() == "channels") {
+            return acecode::channels::run_cli(
+                std::vector<std::string>(tokens.begin() + 1, tokens.end()), std::cout, std::cerr);
+        }
         if (acecode::headless::should_enter_print_mode(tokens)) {
             auto opts = acecode::headless::parse_headless_cli_options(tokens);
             // --help 优先于用法报错:`-p --help` 后面跟什么都先出帮助。
@@ -5278,6 +5285,9 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     // 「工具重写」与 daemon 共用同一份 <data_dir>/tool-rewrites.json,
     // 必须先于 register_tool 发布(见 src/tool/tool_rewrites.hpp)。
     tool_rewrites::load_and_apply(get_acecode_dir());
+    // 安全审计存储(openspec add-security-center):TUI 的审批决策同样入账,
+    // 在 Desktop 的安全中心里查看。
+    security::audit_log().configure(get_acecode_dir());
 
     ToolExecutor tools;
     SkillRegistry skill_registry;

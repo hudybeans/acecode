@@ -17,6 +17,7 @@
 #include "sandbox/exec_permission.hpp"
 #include "sandbox/sandbox_denial.hpp"
 #include "sandbox/sandbox_runtime.hpp"
+#include "security/audit_log.hpp"
 
 #include <vector>
 #include <string>
@@ -351,6 +352,12 @@ public:
         sandbox_runtime_.set_availability_override_for_tests(value);
     }
     std::string sandbox_command(const std::string& args);
+    // 重新读取全局 / 项目规则文件(设置页改了托管规则文件之后由 daemon 触发)。
+    void refresh_exec_rules() { reload_exec_rules(); }
+    // 安全审计接收器(openspec add-security-center D1):审批门每个「决定已作出」
+    // 的分支调一次。默认落到进程级 security::audit_log();单测注入 lambda 收集。
+    // 只应在会话未运行时设置。
+    void set_audit_sink(security::AuditSink sink) { audit_sink_ = std::move(sink); }
 
     void set_context_window(int cw) {
         context_window_.store(cw, std::memory_order_relaxed);
@@ -494,6 +501,7 @@ public:
 
 private:
     void worker_main();
+    void recover_worker_task_error(const char* detail, bool chat_task);
     bool has_queued_user_work_locked() const;
     void join_side_question_threads();
     void run_agent(const std::string& user_message);
@@ -760,6 +768,14 @@ private:
     // 「批准并记住」:把前缀写进全局规则文件并重载;返回错误信息,空 = 成功。
     std::string remember_exec_rule(const sandbox::ExecPermission& permission);
     void reload_exec_rules();
+    // 写一条审计(补 ts / session_id / cwd 后交给 audit_sink_)。异常一律吞掉:
+    // 审计失败不能影响工具执行。
+    void record_audit(const std::string& category, const std::string& tool,
+                      const std::string& target, const std::string& decision,
+                      const std::string& source, const std::string& reason,
+                      const std::string& sandbox = {},
+                      nlohmann::json detail = nlohmann::json::object());
+    security::AuditSink audit_sink_;
     std::string sandbox_prompt_description() const;
     mutable std::mutex sandbox_prompt_mutex_;
     mutable std::optional<std::pair<PermissionMode, std::string>> sandbox_prompt_snapshot_;

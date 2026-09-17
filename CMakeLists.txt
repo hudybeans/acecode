@@ -7,7 +7,7 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.19 LANGUAGES C CXX)
+project(acecode VERSION 0.9.20 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
 
@@ -269,6 +269,7 @@ set(ACECODE_TESTABLE_TUI_SOURCES
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_session.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/ask_question_text.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/chat_file_link.cpp
+    ${CMAKE_SOURCE_DIR}/src/tui/channels_setup.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/text_truncation.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/paste_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/tui/pending_attachment_selection.cpp
@@ -396,6 +397,9 @@ target_include_directories(acecode_testable PUBLIC
     ${CMAKE_SOURCE_DIR}/external/cpp-mcp/include
     ${CMAKE_SOURCE_DIR}/external/cpp-mcp/common
 )
+
+set_property(SOURCE src/channels/bridge.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    ACECODE_CHANNEL_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets/channels/whatsapp")
 target_link_libraries(acecode_testable PUBLIC
     cpr::cpr
     ftxui::screen
@@ -455,6 +459,23 @@ target_link_libraries(acecode PRIVATE
     ftxui::dom
     ftxui::component
 )
+
+add_custom_command(TARGET acecode POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:acecode>/channels/whatsapp"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/bridge.mjs"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/protocol.mjs"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package.json"
+        "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package-lock.json"
+        "$<TARGET_FILE_DIR:acecode>/channels/whatsapp"
+    VERBATIM)
+
+install(FILES
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/bridge.mjs"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/protocol.mjs"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package.json"
+    "${CMAKE_SOURCE_DIR}/assets/channels/whatsapp/package-lock.json"
+    DESTINATION channels/whatsapp COMPONENT whatsapp_channel)
 if(WIN32)
     # main.cpp and tui/ime_windows.cpp use the Windows IME API. MSVC also
     # accepts #pragma comment(lib), while MinGW requires the explicit target.

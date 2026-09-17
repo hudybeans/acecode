@@ -297,6 +297,59 @@ TEST(HookRuntime, UnsupportedOutputFieldsProduceDiagnostics) {
               std::string::npos);
 }
 
+TEST(HookManagerRuntime, InactiveHooksDoNotSerializeInvalidUtf8Payload) {
+    acecode::HookRegistrySnapshot snapshot;
+    int invocations = 0;
+    acecode::HookManager manager(snapshot, acecode::HookProcessRunner{},
+        [&](const std::string&, const std::string&, int, const std::string&) {
+            ++invocations;
+            return ok_json_result("{}");
+        });
+    acecode::HookDispatchRequest request;
+    request.event_name = acecode::kCodexHookEventPostToolUse;
+    request.matcher_value = "bash";
+    request.payload = {{"output", std::string(58, 'x') +
+                                  std::string("\xC0\xB4\xD4\xB4", 4)}};
+    ASSERT_THROW(request.payload.dump(), nlohmann::json::type_error);
+
+    acecode::HookAggregateOutcome empty;
+    ASSERT_NO_THROW(empty = manager.dispatch_codex(request));
+    EXPECT_EQ(empty.matched_count, 0u);
+    EXPECT_EQ(empty.invoked_count, 0u);
+
+    snapshot.hooks.push_back(make_hook("other-tool", request.event_name,
+                                       "AskUserQuestion"));
+    snapshot.hooks.push_back(make_hook("other-event",
+                                       acecode::kCodexHookEventStop, "*"));
+    snapshot.hooks.push_back(make_hook("disabled", request.event_name, "Bash",
+                                       acecode::HookTrustStatus::Disabled));
+    snapshot.hooks.push_back(make_hook("pending", request.event_name, "Bash",
+                                       acecode::HookTrustStatus::PendingReview));
+    auto unsupported = make_hook("unsupported", request.event_name, "Bash");
+    unsupported.kind = acecode::HookHandlerKind::UnsupportedPrompt;
+    snapshot.hooks.push_back(std::move(unsupported));
+    auto skipped = make_hook("skipped", request.event_name, "Bash");
+    skipped.skipped = true;
+    snapshot.hooks.push_back(std::move(skipped));
+    auto legacy = make_hook("legacy", request.event_name, "Bash");
+    legacy.legacy_direct = true;
+    snapshot.hooks.push_back(std::move(legacy));
+    auto no_command = make_hook("no-command", request.event_name, "Bash");
+    no_command.command.command.clear();
+    snapshot.hooks.push_back(std::move(no_command));
+    snapshot.hooks.push_back(make_hook("bad-matcher", request.event_name, "["));
+    manager.refresh_registry(std::move(snapshot));
+
+    acecode::HookAggregateOutcome inactive;
+    ASSERT_NO_THROW(inactive = manager.dispatch_codex(request));
+    EXPECT_EQ(inactive.matched_count, 6u);
+    EXPECT_EQ(inactive.skipped_count, 6u);
+    EXPECT_EQ(inactive.invoked_count, 0u);
+    ASSERT_EQ(inactive.diagnostics.size(), 1u);
+    EXPECT_EQ(inactive.diagnostics[0].code, "HOOK_MATCHER_INVALID_REGEX");
+    EXPECT_EQ(invocations, 0);
+}
+
 TEST(HookManagerRuntime, DispatchSkipsPendingAndRunsTrustedHooks) {
     acecode::HookRegistrySnapshot snapshot;
     snapshot.feature_enabled = true;

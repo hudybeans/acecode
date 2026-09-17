@@ -167,6 +167,25 @@ private:
 
 } // namespace
 
+TEST(RemoteControlHub, StructuredChannelMessageKeepsQuotesFilesAndBoundIdentity) {
+    auto sender = std::make_shared<FakeSender>();
+    RemoteControlHub hub;
+    hub.enable("token", "bound-session", sender);
+    OutboundMessage message;
+    message.type = "file";
+    message.session_id = "wrong-session";
+    message.in_reply_to = "incoming-id";
+    message.attachment = {{"id", "attachment-id"}};
+    hub.notify_outbound(message);
+    ASSERT_TRUE(sender->wait_for_count(1, std::chrono::seconds(2)));
+    const auto sent = sender->sent().front();
+    EXPECT_EQ(sent.session_id, "bound-session");
+    EXPECT_EQ(sent.in_reply_to, "incoming-id");
+    EXPECT_GT(sent.seq, 0u);
+    EXPECT_EQ(acecode::rc::outbound_message_to_json(sent)["attachment"]["id"], "attachment-id");
+    hub.disable();
+}
+
 // 场景:hub 未启用时收到入站。期望:拒绝并给出 Disabled 码,统计入 rejected。
 TEST(RemoteControlHub, DisabledRejectsInbound) {
     RemoteControlHub hub;

@@ -221,8 +221,9 @@ public:
     std::string current_title_source() const;
 
     // Persisted unsubmitted chat input draft for the active session.
-    void set_input_draft(std::string draft);
+    void set_input_draft(std::string draft, nlohmann::json composer_content = nullptr);
     std::string current_input_draft() const;
+    nlohmann::json current_input_draft_content() const;
 
     // Persisted runtime state for the active session.
     void set_permission_mode(std::string mode, bool persist_immediately = true);
@@ -310,6 +311,7 @@ private:
     bool user_title_touched_ = false;
     bool local_user_title_write_pending_ = false;
     std::string input_draft_;
+    nlohmann::json input_draft_content_;
     std::string permission_mode_ = "default";
     std::string pre_plan_permission_mode_;
     TokenUsage last_token_usage_;

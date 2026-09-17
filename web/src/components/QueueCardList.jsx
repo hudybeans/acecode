@@ -10,25 +10,32 @@
 //  - 卡片整体不变色 hover,按钮自身才有 hover
 //  - SENDING 短暂窗口卡片仍渲染但 opacity-60,接力到 transcript 由 WS 帧驱动
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { clsx } from '../lib/format.js';
 import { buildQueueCardItem } from '../lib/queueCardItem.js';
 import { Modal } from './Modal.jsx';
 import { VsIcon } from './Icon.jsx';
+import { RichComposer } from './RichComposer.jsx';
+import { composerContentAttachments } from '../lib/composerContent.js';
+import { useSlashCommands } from './SlashCommandsContext.jsx';
 
 function QueueCardEditDialog({ card, onClose, onSave }) {
   const [draft, setDraft] = useState(card.editText || '');
+  const [content, setContent] = useState(card.composerContent);
+  const { commands } = useSlashCommands();
+  const resources = useMemo(() => composerContentAttachments(card.composerContent), [card.composerContent]);
   const trimmed = draft.trim();
-  const canSave = trimmed.length > 0 || card.hasExtras;
+  const canSave = trimmed.length > 0 || composerContentAttachments(content).length > 0 || card.hasContexts || (!content && card.hasExtras);
 
   useEffect(() => {
     setDraft(card.editText || '');
-  }, [card.queuedId, card.editText]);
+    setContent(card.composerContent);
+  }, [card.queuedId, card.editText, card.composerContent]);
 
   const submit = (event) => {
     event.preventDefault();
     if (!canSave) return;
-    onSave?.(card.queuedId, draft);
+    onSave?.(card.queuedId, draft, content);
     onClose?.();
   };
 
@@ -44,15 +51,18 @@ function QueueCardEditDialog({ card, onClose, onSave }) {
           <h2 id="queue-card-edit-title" className="text-[14px] font-semibold text-fg">编辑排队消息</h2>
         </div>
         <div className="min-h-0 overflow-y-auto ace-scrollbar px-4 py-4">
-          <textarea
-            rows={7}
+          <RichComposer
             value={draft}
+            composerContent={content}
+            attachments={resources}
+            commands={commands}
+            submitOnEnter={false}
             aria-label="排队消息内容"
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(text, nextContent) => { setDraft(text); setContent(nextContent); }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && canSave) {
                 event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
+                event.currentTarget.closest('form')?.requestSubmit();
               }
             }}
             className="min-h-[180px] w-full resize-none rounded-lg border border-border bg-surface-alt px-3 py-2.5 text-[13px] leading-5 text-fg outline-none transition focus:border-accent"

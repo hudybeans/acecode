@@ -309,6 +309,15 @@ HookRegistrySnapshot parse_codex_hooks_json_source(const nlohmann::json& root,
         return snapshot;
     }
 
+    if (root.contains("enabled") && root["enabled"].is_boolean() &&
+        !root["enabled"].get<bool>()) {
+        auto d = diag(HookDiagnosticSeverity::Info, "HOOK_SOURCE_DISABLED",
+                      "hook source is disabled by config", source);
+        snapshot.sources.back().diagnostics.push_back(d);
+        snapshot.diagnostics.push_back(std::move(d));
+        return snapshot;
+    }
+
     const nlohmann::json* hooks_obj = nullptr;
     if (root.contains("hooks") && root["hooks"].is_object()) {
         hooks_obj = &root["hooks"];

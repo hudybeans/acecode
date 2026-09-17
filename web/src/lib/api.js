@@ -394,8 +394,11 @@ export function createApi(base = null) {
     purgeSession:     (id)           => request('DELETE', `/api/sessions/${encodeURIComponent(id)}?purge=1`, undefined, base),
     getSessionDraft:  (id, workspaceHash = '') =>
       request('GET', sessionDraftPath(id, workspaceHash), undefined, base),
-    setSessionDraft:  (id, text = '', workspaceHash = '') =>
-      request('PUT', sessionDraftPath(id, workspaceHash), { text }, base),
+    setSessionDraft:  (id, text = '', workspaceHash = '', composerContent = null) =>
+      request('PUT', sessionDraftPath(id, workspaceHash), {
+        text,
+        ...(composerContent ? { composer_content: composerContent } : {}),
+      }, base),
     setSessionTitle:  (id, title = '', workspaceHash = '') =>
       request('PUT', sessionTitlePath(id, workspaceHash), { title }, base),
     setSessionExpert: (id, expertId, options = {}) => {
@@ -595,6 +598,15 @@ export function createApi(base = null) {
       { config, confirm_cost: true }, base, { timeoutMs: 615000 }),
     getToolRewrites: ()              => request('GET', '/api/config/tool-rewrites', undefined, base),
     setToolRewrites: (settings)      => request('PUT', '/api/config/tool-rewrites', settings, base, { keepalive: true }),
+    // 安全中心(Settings > 编码 > 安全中心,openspec add-security-center)。
+    getSandboxSettings: ()           => request('GET', '/api/config/sandbox', undefined, base),
+    setSandboxSettings: (settings)   => request('PUT', '/api/config/sandbox', settings, base),
+    getExecRules: ()                 => request('GET', '/api/security/exec-rules', undefined, base),
+    setExecRules: (payload)          => request('PUT', '/api/security/exec-rules', payload, base),
+    listAudit: (query = '')          => request('GET', '/api/security/audit' + query, undefined, base),
+    auditSummary: ()                 => request('GET', '/api/security/audit/summary', undefined, base),
+    exportAudit: (query = '')        => request('GET', '/api/security/audit/export' + query, undefined, base),
+    clearAudit: ()                   => request('DELETE', '/api/security/audit', undefined, base),
     setConnectors: (cfg)             => request('PUT',    '/api/config/connectors', cfg, base),
     getUpgradeConfig: ()             => request('GET',    '/api/config/upgrade', undefined, base),
     setUpgradeConfig: (cfg)          => request('PUT',    '/api/config/upgrade', cfg, base),

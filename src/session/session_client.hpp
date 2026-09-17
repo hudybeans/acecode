@@ -211,6 +211,9 @@ struct SessionOptions {
     // 靠它兜底。
     WorktreeSessionInfo inherited_worktree;
     std::string write_root;
+
+    // External channel sessions must not inherit a host's local-only bypass.
+    bool inherit_dangerous_mode = true;
 };
 
 // ----- Current session model state -----

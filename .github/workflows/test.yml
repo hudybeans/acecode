@@ -33,6 +33,10 @@ jobs:
       - name: Install web dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test channel protocol and npm packaging
+        working-directory: .
+        run: node --test assets/channels/whatsapp/protocol.test.mjs tests/scripts/npm_packages_test.mjs
+
       - name: Test web UI
         run: pnpm test
 

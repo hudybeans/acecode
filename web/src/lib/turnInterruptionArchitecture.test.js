@@ -101,7 +101,7 @@ test('queue cards expose an edit icon immediately left of interject and save via
   assert.match(dialog, /编辑排队消息/);
   assert.match(dialog, /aria-label="排队消息内容"/);
   assert.match(chat, /onSaveEdit=\{saveQueuedEdit\}/);
-  assert.match(chat, /updateQueuedInputContent\(prev, queuedId, nextText\)/);
+  assert.match(chat, /updateQueuedInputContent\(prev, queuedId, nextText, \{ composerContent \}\)/);
   assert.match(queue, /export function updateQueuedInputContent/);
 });
 

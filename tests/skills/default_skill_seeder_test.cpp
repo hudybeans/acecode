@@ -612,6 +612,45 @@ TEST_F(DefaultSkillSeederTest,
     EXPECT_FALSE(skill_outcome->acecode_owned);
 }
 
+TEST_F(DefaultSkillSeederTest, RepairsMissingOwnedHookFileWithOldAndEqualMarkers) {
+    ASSERT_TRUE(acecode::reconcile_default_global_skills(home, seed_root).version_written);
+    const auto& seed = acecode::default_hook_seeds().front();
+    const fs::path target = home / "hooks" / seed.relative_path;
+    const fs::path source = seed_root.parent_path() / "hooks" / seed.relative_path;
+    write_seed_version(seed_root, kSeedVersion2);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        ASSERT_TRUE(fs::remove(target / "hooks.json"));
+        ASSERT_TRUE(fs::is_empty(target));
+        const auto repaired = acecode::reconcile_default_global_skills(home, seed_root);
+        EXPECT_TRUE(repaired.attempted);
+        EXPECT_TRUE(repaired.version_written) << repaired.error;
+        EXPECT_EQ(count_hook_outcome(repaired, "updated"), 1u);
+        EXPECT_EQ(read_file(target / "hooks.json"), read_file(source / "hooks.json"));
+    }
+}
+
+TEST_F(DefaultSkillSeederTest, PreservesMissingHookInUnknownOrNonemptyDirectory) {
+    const auto& seed = acecode::default_hook_seeds().front();
+    const fs::path unknown_home = root / "unknown-home";
+    const fs::path unknown_target = unknown_home / "hooks" / seed.relative_path;
+    fs::create_directories(unknown_target);
+    const auto unknown = acecode::reconcile_default_global_skills(unknown_home, seed_root);
+    ASSERT_TRUE(unknown.version_written) << unknown.error;
+    EXPECT_EQ(count_hook_outcome(unknown, "preserved_user_modified"), 1u);
+    EXPECT_TRUE(fs::is_empty(unknown_target));
+
+    ASSERT_TRUE(acecode::reconcile_default_global_skills(home, seed_root).version_written);
+    const fs::path target = home / "hooks" / seed.relative_path;
+    ASSERT_TRUE(fs::remove(target / "hooks.json"));
+    write_file(target / "user-note.txt", "keep this file");
+    write_seed_version(seed_root, kSeedVersion2);
+    const auto preserved = acecode::reconcile_default_global_skills(home, seed_root);
+    EXPECT_TRUE(preserved.version_written) << preserved.error;
+    EXPECT_EQ(count_hook_outcome(preserved, "preserved_user_modified"), 1u);
+    EXPECT_EQ(read_file(target / "user-note.txt"), "keep this file");
+    EXPECT_FALSE(fs::exists(target / "hooks.json"));
+}
+
 TEST_F(DefaultSkillSeederTest, PreservesUnknownExistingTarget) {
     const auto& seed = acecode::default_skill_seeds().front();
     const fs::path existing = home / "skills" / seed.relative_path;
@@ -872,6 +911,72 @@ TEST_F(DefaultSkillSeederTest, PreservesModifiedAcecodeOwnedHook) {
 }
 
 TEST(DefaultSkillSeedRegistryTest,
+     LastEnabledOfficialHookUpgradesToDisabledWithoutChangingUserHook) {
+    const fs::path source_file = fs::absolute(fs::path(__FILE__));
+    const fs::path repository_root =
+        source_file.parent_path().parent_path().parent_path();
+    const fs::path packaged_seed = repository_root / "assets" / "seed";
+    const fs::path temp_root = make_temp_root("disable-previous-official-hook");
+    const fs::path home = temp_root / "profile" / ".acecode";
+    const fs::path target = home / "hooks" / "agent-reporting";
+    const auto bundled = read_json(
+        packaged_seed / "hooks" / "agent-reporting" / "hooks.json");
+    auto previous_official = bundled;
+    ASSERT_EQ(previous_official.erase("enabled"), 1u);
+    const std::string previous_hash = acecode::sha256_hex(previous_official.dump());
+    EXPECT_EQ(previous_hash,
+              "daeb5ce4f3ff42d1717c9997b9627bc6daf00df9ec24643203253da2aae30644");
+    const auto& seed = acecode::default_hook_seeds().front();
+    ASSERT_NE(std::find(seed.previous_definition_sha256s.begin(),
+                        seed.previous_definition_sha256s.end(), previous_hash),
+              seed.previous_definition_sha256s.end());
+    write_file(target / "hooks.json", previous_official.dump(2) + "\n");
+    write_file(home / "seed.version", "2026-09-15.3\n");
+
+    const fs::path user_hooks = home / "hooks.json";
+    const std::string user_config = R"({
+        "enabled": true,
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "user-hook"}]}]}
+    })";
+    write_file(user_hooks, user_config);
+    acecode::HookLoadOptions options;
+    options.acecode_home = home.string();
+    options.codex_home = (temp_root / "missing-codex").string();
+    options.include_project_sources = false;
+    const auto before = acecode::load_hook_registry(options);
+    ASSERT_EQ(before.hooks.size(), 1u);
+    acecode::HookTrustStore trust_store;
+    acecode::trust_hook_definition(trust_store, before.hooks[0]);
+
+    const auto result = acecode::reconcile_default_global_skills(
+        home, packaged_seed / "skills");
+
+    ASSERT_TRUE(result.version_written) << result.error;
+    const auto* outcome = find_hook_outcome(result, seed.name);
+    ASSERT_NE(outcome, nullptr);
+    EXPECT_EQ(outcome->result, "updated");
+    EXPECT_TRUE(outcome->acecode_owned);
+    const auto installed = read_json(target / "hooks.json");
+    EXPECT_EQ(installed, bundled);
+    EXPECT_EQ(installed.at("enabled"), false);
+    EXPECT_EQ(read_file(user_hooks), user_config);
+    EXPECT_EQ(trim_ascii(read_file(home / "seed.version")),
+              trim_ascii(read_file(packaged_seed / "seed.version")));
+
+    const auto after = acecode::load_hook_registry(options, &trust_store);
+    ASSERT_EQ(after.hooks.size(), 1u);
+    EXPECT_FALSE(after.hooks[0].managed);
+    EXPECT_EQ(after.hooks[0].command.command, "user-hook");
+    EXPECT_EQ(after.hooks[0].trust_status, acecode::HookTrustStatus::Trusted);
+    ASSERT_EQ(after.sources.size(), 2u);
+    ASSERT_EQ(after.sources[0].diagnostics.size(), 1u);
+    EXPECT_EQ(after.sources[0].diagnostics[0].code, "HOOK_SOURCE_DISABLED");
+
+    std::error_code cleanup_error;
+    fs::remove_all(temp_root, cleanup_error);
+}
+
+TEST(DefaultSkillSeedRegistryTest,
      PackagedHookRepairsDriftedStateForKnownPreviousOfficialDefinition) {
     const fs::path source_file = fs::absolute(fs::path(__FILE__));
     const fs::path repository_root =
@@ -883,6 +988,7 @@ TEST(DefaultSkillSeedRegistryTest,
 
     auto previous_official = read_json(
         packaged_seed / "hooks" / "agent-reporting" / "hooks.json");
+    ASSERT_EQ(previous_official.erase("enabled"), 1u);
     ASSERT_EQ(previous_official["hooks"].erase("SessionTitleChanged"), 1u);
     const auto& hook_seed = acecode::default_hook_seeds().front();
     ASSERT_NE(
@@ -948,6 +1054,7 @@ TEST(DefaultSkillSeedRegistryTest,
 
     auto previous_official = read_json(
         packaged_seed / "hooks" / "agent-reporting" / "hooks.json");
+    ASSERT_EQ(previous_official.erase("enabled"), 1u);
     ASSERT_EQ(previous_official["hooks"].erase("SessionTitleChanged"), 1u);
     const auto& hook_seed = acecode::default_hook_seeds().front();
     ASSERT_NE(
@@ -987,6 +1094,7 @@ TEST(DefaultSkillSeedRegistryTest,
 
     auto modified = read_json(
         packaged_seed / "hooks" / "agent-reporting" / "hooks.json");
+    ASSERT_EQ(modified.erase("enabled"), 1u);
     ASSERT_EQ(modified["hooks"].erase("SessionTitleChanged"), 1u);
     modified["hooks"]["SessionStart"][0]["hooks"][0]["command"] =
         "user-owned-command";
@@ -1041,6 +1149,7 @@ TEST(DefaultSkillSeedRegistryTest,
 
     auto previous_official = read_json(
         packaged_seed / "hooks" / "agent-reporting" / "hooks.json");
+    ASSERT_EQ(previous_official.erase("enabled"), 1u);
     ASSERT_EQ(previous_official["hooks"].erase("SessionTitleChanged"), 1u);
     write_file(target / "hooks.json", previous_official.dump(2) + "\n");
     ASSERT_TRUE(fs::create_directories(target / "user-data"));
@@ -1522,13 +1631,14 @@ TEST(DefaultSkillSeedRegistryTest, PackagedManifestVersionAndHashesAgree) {
     }
     ASSERT_EQ(manifest["hooks"].size(), 1u);
     const auto& packaged_hook = manifest["hooks"][0];
-    EXPECT_EQ(
-        read_json(
-            seed_root / "hooks" /
-            packaged_hook["relative_path"].get<std::string>() /
-            "hooks.json"),
-        read_json(repository_root / "docs" / "examples" /
-                  "herdr-hooks.json"));
+    const auto bundled_config = read_json(
+        seed_root / "hooks" /
+        packaged_hook["relative_path"].get<std::string>() / "hooks.json");
+    const auto active_example = read_json(
+        repository_root / "docs" / "examples" / "herdr-hooks.json");
+    EXPECT_EQ(bundled_config.at("enabled"), false);
+    EXPECT_TRUE(active_example.value("enabled", true));
+    EXPECT_EQ(bundled_config.at("hooks"), active_example.at("hooks"));
 }
 
 TEST(DefaultSkillSeedRegistryTest,
@@ -1775,13 +1885,13 @@ TEST(DefaultSkillSeedRegistryTest, PackagedResourcesInitializeACleanUserHome) {
     hook_options.codex_home = (temp_root / "missing-codex").string();
     hook_options.include_project_sources = false;
     const auto hook_registry = acecode::load_hook_registry(hook_options);
-    ASSERT_EQ(hook_registry.hooks.size(), 9u);
-    for (const auto& hook : hook_registry.hooks) {
-        EXPECT_TRUE(hook.managed);
-        EXPECT_EQ(
-            hook.trust_status,
-            acecode::HookTrustStatus::ManagedTrusted);
-    }
+    EXPECT_TRUE(hook_registry.hooks.empty());
+    ASSERT_EQ(hook_registry.sources.size(), 1u);
+    EXPECT_TRUE(hook_registry.sources[0].managed);
+    ASSERT_EQ(hook_registry.sources[0].diagnostics.size(), 1u);
+    EXPECT_EQ(hook_registry.sources[0].diagnostics[0].code, "HOOK_SOURCE_DISABLED");
+    EXPECT_EQ(read_json(home / "hooks" / "agent-reporting" / "hooks.json").at("enabled"),
+              false);
 
     const auto state =
         read_json(acecode::default_skill_seed_state_path(home));

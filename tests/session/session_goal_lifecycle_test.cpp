@@ -29,10 +29,23 @@ acecode::ChatMessage msg(std::string role, std::string content) {
     return m;
 }
 
+struct ScopedGoalDirectory {
+    fs::path path;
+    ~ScopedGoalDirectory() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+        EXPECT_FALSE(ec) << ec.message();
+        ec.clear();
+        fs::remove_all(acecode::SessionStorage::get_project_dir(path.string()), ec);
+        EXPECT_FALSE(ec) << ec.message();
+    }
+};
+
 } // namespace
 
 TEST(SessionGoalLifecycle, ResumeLoadsPersistedGoalFromProjectSqlite) {
     auto cwd = temp_cwd("resume");
+    const ScopedGoalDirectory cleanup{cwd};
     const std::string sid = "sid-goal-resume";
 
     acecode::SessionManager writer;
@@ -53,12 +66,11 @@ TEST(SessionGoalLifecycle, ResumeLoadsPersistedGoalFromProjectSqlite) {
     EXPECT_EQ(goal->status, acecode::ThreadGoalStatus::Active);
     EXPECT_EQ(goal->token_budget, 5000);
 
-    fs::remove_all(cwd);
-    fs::remove_all(acecode::SessionStorage::get_project_dir(cwd.string()));
 }
 
 TEST(SessionGoalLifecycle, ForkCopiesGoalWithNewIdAndResetCounters) {
     auto cwd = temp_cwd("fork");
+    const ScopedGoalDirectory cleanup{cwd};
     acecode::SessionManager sm;
     sm.start_session(cwd.string(), "stub", "model", "sid-goal-fork-source");
     sm.on_message(msg("user", "keep"));
@@ -86,12 +98,11 @@ TEST(SessionGoalLifecycle, ForkCopiesGoalWithNewIdAndResetCounters) {
     EXPECT_EQ(fork_goal->time_used_seconds, 0);
     EXPECT_NE(fork_goal->goal_id, source_goal->goal_id);
 
-    fs::remove_all(cwd);
-    fs::remove_all(acecode::SessionStorage::get_project_dir(cwd.string()));
 }
 
 TEST(SessionGoalLifecycle, CompactRewriteLeavesGoalRowIntact) {
     auto cwd = temp_cwd("compact");
+    const ScopedGoalDirectory cleanup{cwd};
     acecode::SessionManager sm;
     sm.start_session(cwd.string(), "stub", "model", "sid-goal-compact");
     sm.on_message(msg("user", "before compact"));
@@ -105,6 +116,4 @@ TEST(SessionGoalLifecycle, CompactRewriteLeavesGoalRowIntact) {
     EXPECT_EQ(goal->objective, "survive compact");
     EXPECT_EQ(goal->status, acecode::ThreadGoalStatus::Paused);
 
-    fs::remove_all(cwd);
-    fs::remove_all(acecode::SessionStorage::get_project_dir(cwd.string()));
 }

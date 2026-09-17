@@ -63,7 +63,11 @@ export function flattenCommands(payload) {
   }
   if (payload && Array.isArray(payload.skills)) {
     for (const c of payload.skills) {
-      if (c && c.name) out.push({ kind: 'skill', name: c.name, description: c.description || '' });
+      if (c && c.name) out.push({
+        kind: 'skill', name: c.name, description: c.description || '',
+        ...(c.path ? { path: c.path } : {}),
+        ...(c.mention ? { mention: c.mention } : {}),
+      });
     }
   }
   return out;
@@ -259,4 +263,20 @@ export function parseExecutableBuiltinCommand(value) {
     args: text.slice(leading.headLength).trim(),
     display_text: text,
   };
+}
+
+// Slash commands remain leading-only; skills can be selected at any caret.
+export function commandQueryAtCursor(value = '', cursor = String(value).length) {
+  const text = String(value);
+  const caret = Math.max(0, Math.min(text.length, Number(cursor) || 0));
+  // Skill names use identifier characters. Prose in Chinese and punctuation
+  // can touch the trigger without being consumed as part of its replacement.
+  let begin = caret - 1;
+  while (begin >= 0 && /[A-Za-z0-9_.:-]/.test(text[begin])) begin -= 1;
+  const trigger = text[begin];
+  if (trigger !== '/' && trigger !== '$') return null;
+  if (begin > 0 && /[A-Za-z0-9_.:/\\$-]/.test(text[begin - 1])) return null;
+  let end = caret;
+  while (end < text.length && /[A-Za-z0-9_.:-]/.test(text[end])) end += 1;
+  return { begin, end, query: text.slice(begin + 1, caret), leading: begin === 0 && trigger === '/', trigger };
 }

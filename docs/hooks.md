@@ -6,7 +6,10 @@ Reference behavior follows the OpenAI Codex hooks documentation: <https://develo
 
 ## Enable Or Disable
 
-Codex-compatible hooks are enabled by default.
+Codex-compatible hook discovery is enabled by default. Bundled seed hooks,
+including `agent-reporting`, are installed with `enabled: false` and do not
+run by default. Upgrades also disable unchanged official seed copies;
+user-global and project hook files keep their existing configuration.
 
 ```json
 {
@@ -31,7 +34,13 @@ Project-local hook files are loaded only for the active trusted workspace. Inval
 
 ## Codex-Compatible Shape
 
-Codex-compatible hook files use an event object, matcher groups, and handlers:
+Codex-compatible hook files use an event object, matcher groups, and handlers.
+A boolean top-level `enabled: false` disables that entire source and records a
+source diagnostic without registering its handlers. Omit `enabled` or set it
+to `true` to load user hook definitions under the usual trust policy. If no
+matching trusted command can run, ACECode does not serialize event input.
+
+Example of an active user hook source:
 
 ```json
 {
@@ -57,6 +66,19 @@ Codex-compatible hook files use an event object, matcher groups, and handlers:
 Command handlers run through the platform shell. `commandWindows` or `command_windows` overrides `command` on Windows. `timeout` is seconds and defaults to `600`.
 
 Unsupported `prompt` and `agent` handlers are parsed as skipped hooks with diagnostics. `async: true` Codex command hooks are also skipped.
+
+## Failure Isolation
+
+Command output is decoded as strict Unicode UTF-8, with a Windows codepage
+fallback for legacy subprocesses. Hook stdin replaces any remaining malformed
+UTF-8 bytes with the Unicode replacement character, including nested values
+and object keys. The original event object is not modified.
+
+Runner exceptions produce `HOOK_FAILED` diagnostics and do not terminate the
+agent or prevent later eligible hooks from running. Explicit hook decisions
+already collected still apply. Legacy asynchronous hooks log a failed invocation
+and continue consuming their queue. Unexpected agent task errors end the current
+turn with an error and restore idle state so later user tasks can run.
 
 ## Trust Review
 

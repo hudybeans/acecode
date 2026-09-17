@@ -1,6 +1,7 @@
 #include "session_manager.hpp"
 #include "permissions.hpp"
 #include "session_serializer.hpp"
+#include "fork_attachment_context.hpp"
 #include "session_rewind.hpp"
 #include "session_title_generator.hpp"
 #include "session_user_message_search.hpp"
@@ -278,6 +279,7 @@ void SessionManager::start_session(const std::string& cwd,
     user_title_touched_ = false;
     local_user_title_write_pending_ = false;
     input_draft_.clear();
+    input_draft_content_ = nullptr;
     permission_mode_ = "default";
     pre_plan_permission_mode_.clear();
     last_token_usage_ = {};
@@ -338,6 +340,7 @@ bool SessionManager::ensure_created() {
     meta.title = pending_title_;
     meta.title_source = title_source_;
     meta.input_draft = input_draft_;
+    meta.input_draft_content = input_draft_content_;
     meta.permission_mode = permission_mode_;
     meta.pre_plan_permission_mode = pre_plan_permission_mode_;
     meta.turn_count = turn_count_;
@@ -650,6 +653,7 @@ std::vector<ChatMessage> SessionManager::resume_session(const std::string& sessi
                               title_source_ == "user-cleared" ||
                               title_source_ == "legacy";
         input_draft_ = meta.input_draft;
+        input_draft_content_ = meta.input_draft_content;
         permission_mode_ = normalize_permission_mode_name(meta.permission_mode);
         pre_plan_permission_mode_ =
             normalize_pre_plan_permission_mode_name(meta.pre_plan_permission_mode);
@@ -807,6 +811,7 @@ void SessionManager::end_current_session() {
     user_title_touched_ = false;
     local_user_title_write_pending_ = false;
     input_draft_.clear();
+    input_draft_content_ = nullptr;
     last_token_usage_ = {};
     session_token_usage_ = {};
     todos_.clear();
@@ -860,6 +865,7 @@ std::string SessionManager::fork_active_session(const std::vector<ChatMessage>& 
     session_token_usage_ = {};
     last_user_summary_.clear();
     input_draft_.clear();
+    input_draft_content_ = nullptr;
     todos_.clear();
     loop_id_.clear();
     loop_run_id_.clear();
@@ -960,7 +966,7 @@ std::string SessionManager::fork_session_to_new_id(
     std::lock_guard<std::mutex> lk(mu_);
     if (!started_) return {};
 
-    const auto fork_messages =
+    auto fork_messages =
         reset_latest_compact_window_for_fork(retained_prefix);
 
     // ensure project_dir 存在 — 即使当前 manager 还没 ensure_created
@@ -975,6 +981,13 @@ std::string SessionManager::fork_session_to_new_id(
     const std::string new_session_id = SessionStorage::generate_session_id();
     const std::string new_jsonl = SessionStorage::session_path(project_dir_, new_session_id);
     const std::string new_meta  = SessionStorage::meta_path(project_dir_, new_session_id);
+    std::string attachment_error;
+    if (!copy_fork_composer_attachments(fork_messages, project_dir_, session_id_,
+                                       new_session_id, attachment_error)) {
+        last_error_ = "fork attachment copy failed: " + attachment_error;
+        LOG_WARN("[session] " + last_error_);
+        return {};
+    }
     std::set<std::string> retained_user_uuids;
     for (const auto& msg : fork_messages) {
         if (msg.role == "user" && !msg.uuid.empty()) {
@@ -996,6 +1009,9 @@ std::string SessionManager::fork_session_to_new_id(
     std::string last_user_summary;
     bool io_error = false;
     try {
+        // An empty prefix is a real fork before the first user message. Resume
+        // must still find a canonical transcript and restore its saved draft.
+        if (fork_messages.empty()) SessionStorage::write_messages(new_jsonl, {});
         for (const auto& msg : fork_messages) {
             if (is_file_checkpoint_message(msg)) continue;
             if (is_turn_timing_message(msg)) continue;
@@ -1213,6 +1229,7 @@ bool SessionManager::update_meta(
     meta.title = pending_title_;
     meta.title_source = title_source_;
     meta.input_draft = input_draft_;
+    meta.input_draft_content = input_draft_content_;
     meta.permission_mode = permission_mode_;
     meta.pre_plan_permission_mode = pre_plan_permission_mode_;
     meta.last_token_usage = last_token_usage_;
@@ -1463,16 +1480,21 @@ bool SessionManager::set_expert_binding_and_input_draft(
     const std::string previous_expert_id = expert_id_;
     const std::string previous_member_id = expert_member_id_;
     const std::string previous_input_draft = input_draft_;
+    const auto previous_input_draft_content = input_draft_content_;
 
     expert_id_ = std::move(expert_id);
     expert_member_id_ = expert_id_.empty() ? std::string{} : std::move(member_id);
-    if (input_draft) input_draft_ = std::move(*input_draft);
+    if (input_draft) {
+        if (*input_draft != input_draft_) input_draft_content_ = nullptr;
+        input_draft_ = std::move(*input_draft);
+    }
 
     if (!created_ && started_ && input_draft && !input_draft_.empty()) {
         if (!ensure_created()) {
             expert_id_ = previous_expert_id;
             expert_member_id_ = previous_member_id;
             input_draft_ = previous_input_draft;
+            input_draft_content_ = previous_input_draft_content;
             return false;
         }
     }
@@ -1480,6 +1502,7 @@ bool SessionManager::set_expert_binding_and_input_draft(
         expert_id_ = previous_expert_id;
         expert_member_id_ = previous_member_id;
         input_draft_ = previous_input_draft;
+        input_draft_content_ = previous_input_draft_content;
         return false;
     }
     return true;
@@ -1535,10 +1558,11 @@ std::string SessionManager::current_title_source() const {
     return title_source_;
 }
 
-void SessionManager::set_input_draft(std::string draft) {
+void SessionManager::set_input_draft(std::string draft, nlohmann::json composer_content) {
     std::lock_guard<std::mutex> lk(mu_);
     input_draft_ = std::move(draft);
-    if (!created_ && started_ && !input_draft_.empty()) {
+    input_draft_content_ = std::move(composer_content);
+    if (!created_ && started_ && (!input_draft_.empty() || input_draft_content_.is_object())) {
         ensure_created();
     }
     if (!created_) return;
@@ -1572,12 +1596,18 @@ void SessionManager::set_input_draft(std::string draft) {
         meta.loop_run_id = loop_run_id_;
     }
     meta.input_draft = input_draft_;
+    meta.input_draft_content = input_draft_content_;
     SessionStorage::write_meta(meta_path_str_, meta);
 }
 
 std::string SessionManager::current_input_draft() const {
     std::lock_guard<std::mutex> lk(mu_);
     return input_draft_;
+}
+
+nlohmann::json SessionManager::current_input_draft_content() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return input_draft_content_;
 }
 
 void SessionManager::set_permission_mode(std::string mode, bool persist_immediately) {

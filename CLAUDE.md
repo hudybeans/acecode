@@ -93,6 +93,23 @@ goal 无人值守下 bash 的 Prompt 决策与其它写工具一样自动放行,
 `ExecDecision::sandbox`(auto 下危险命令留在 workspace-write 里),Forbidden 不受影响;
 回归 `agent_loop_goal_test.cpp::UnattendedGoalAutoApprovesDangerousBashInsideSandbox`。
 
+**安全中心(openspec add-security-center)**:设置 > 编码 > 安全中心 = 沙箱开关 / 文件安全
+(三张清单)/ 命令安全(托管规则文件)/ 审计中心,是上面这套模型的界面,不改判定语义。
+审计存储 `src/security/audit_log` 是进程级单例 SQLite(`<data_dir>/security/audit.sqlite3`,
+上限 20000 条),三个入口(worker / TUI main / headless)启动时 `configure`;**唯一记录入口是
+AgentLoop 审批门**里的 `audit_gate` / `record_audit`,每个「决定已作出」的分支记一条(bash 每次
+决策、写文件工具与其它需确认工具的决策、沙盒拒绝 category=sandbox 且 target 只放被拒路径、
+remember / 授权 category=rule);**只读工具的自动放行不记**,否则每回合几十条读把日志淹掉。
+AgentLoop 经 `set_audit_sink` 注入接收器,单测用 lambda 收集不碰磁盘。REST 在
+`routes_security.cpp` + `handlers/security_handler.cpp`(纯函数):`/api/config/sandbox` 写
+config.json 后经 `SessionRegistry::refresh_sandbox_config` 对活跃会话 `enqueue_control` 下发;
+`/api/security/exec-rules` 只整体重写 `default.rules` / `default.sandboxed.rules` 两个托管文件
+(`write_rules_file` 先 parse 往返校验再原子落盘,注释与 match / not_match 丢弃;禁用前缀名单
+同样约束界面上的 allow 规则),其它 `*.rules` 只读;`/api/security/audit*` 列表 / 汇总 / 导出 /
+清空。前端 `lib/securityCenter.js` 纯逻辑 + `components/SecurityCenterSettings.jsx`;新中文文案
+先补 `i18n-en-overrides.mjs` 再 `pnpm i18n:catalog`。Windows 受限令牌管不了读,界面如实标注
+读清单 / 黑名单只拦写。
+
 `image_generate` uses `config.image_generation` and supports generation and
 editing through the Images API. Settings > Tools > Image generation owns its
 configuration; it is not a chat-model entry. Saving settings refreshes the shared

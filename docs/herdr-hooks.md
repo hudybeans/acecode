@@ -1,14 +1,16 @@
 # Herdr custom-agent hook
 
-ACECode does not contain a Herdr reporter or inspect Herdr environment variables in core code. The default versioned seed installs [`examples/herdr-hooks.json`](examples/herdr-hooks.json) as a managed hook package that connects generic ACECode lifecycle hooks to Herdr's custom-agent CLI.
+ACECode does not contain a Herdr reporter or inspect Herdr environment variables in core code. The versioned seed contains the same handlers as [`examples/herdr-hooks.json`](examples/herdr-hooks.json), but the managed package is disabled by default. The active example connects generic ACECode lifecycle hooks to Herdr's custom-agent CLI when explicitly installed and trusted.
 
 ## Default installation
 
 When a build containing this seed starts, ACECode reconciles it to
 `~/.acecode/hooks/agent-reporting/hooks.json` before loading the hook registry.
-The official definition is loaded as `ManagedTrusted`, so no manual merge or trust
-approval is required. Existing `~/.acecode/hooks.json`, `~/.codex/hooks.json`, and
-project hook files are left untouched.
+The official definition has top-level `enabled: false`: it remains installed,
+but contributes no runnable handlers and reports a disabled-source diagnostic.
+Upgrades replace unchanged older official copies with this disabled definition.
+Existing `~/.acecode/hooks.json`, `~/.codex/hooks.json`, and project hook files
+are left untouched.
 
 The seed is versioned and idempotent. ACECode updates an unchanged ACECode-owned
 copy on a later bundle revision, but preserves a user-modified copy. If an older
@@ -18,9 +20,12 @@ startup. Recovery is refused when the definition changed or the package contains
 any additional file or directory. A modified or malformed copy never receives
 managed automatic trust.
 
-Start ACECode inside a Herdr pane to use the integration. The example JSON remains
-available as a readable reference; copying it manually is unnecessary and can cause
-duplicate reports if that copy is separately trusted.
+To opt in, merge the active example's `hooks` entries into a Codex-shaped user
+hook source, such as `~/.codex/hooks.json`, preserve any existing entries, then
+refresh and review/trust the imported hooks in Settings. Start ACECode inside
+a Herdr pane after enabling the integration. Keep only one active copy to avoid
+duplicate reports. Do not enable it by editing the managed seed: that changes
+its fingerprint and the managed loader will withhold trust.
 
 The same JSON includes POSIX `command` entries and Windows `commandWindows`
 entries. Lifecycle commands require `HERDR_ENV=1`, `HERDR_PANE_ID`, and

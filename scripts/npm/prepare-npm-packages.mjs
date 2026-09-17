@@ -31,6 +31,8 @@ const DESKTOP_PACKAGE = `${SCOPE}/desktop`;
 const REPO_URL = 'https://github.com/tmoonlight/acecode';
 const MODELS_DEV_FILES = ['LICENSE', 'MANIFEST.json', 'api.json'];
 const MODELS_DEV_RELATIVE_DIR = path.join('share', 'acecode', 'models_dev');
+const CHANNEL_FILES = ['bridge.mjs', 'package-lock.json', 'package.json', 'protocol.mjs'];
+const CHANNEL_RELATIVE_DIR = path.join('channels', 'whatsapp');
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -40,42 +42,42 @@ const PLATFORMS = [
     ciId: 'linux-x64',
     os: 'linux',
     cpu: 'x64',
-    files: ['acecode', 'acecode-desktop', 'acecode-logo.png', 'share'],
+    files: ['acecode', 'acecode-desktop', 'acecode-logo.png', 'share', 'channels'],
     executables: ['acecode', 'acecode-desktop'],
   },
   {
     ciId: 'linux-arm64',
     os: 'linux',
     cpu: 'arm64',
-    files: ['acecode', 'acecode-desktop', 'acecode-logo.png', 'share'],
+    files: ['acecode', 'acecode-desktop', 'acecode-logo.png', 'share', 'channels'],
     executables: ['acecode', 'acecode-desktop'],
   },
   {
     ciId: 'windows-x64',
     os: 'win32',
     cpu: 'x64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
     executables: [],
   },
   {
     ciId: 'windows-arm64',
     os: 'win32',
     cpu: 'arm64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
     executables: [],
   },
   {
     ciId: 'macos-x64',
     os: 'darwin',
     cpu: 'x64',
-    files: ['acecode', 'ACECode.app', 'share'],
+    files: ['acecode', 'ACECode.app', 'share', 'channels'],
     executables: ['acecode'],
   },
   {
     ciId: 'macos-arm64',
     os: 'darwin',
     cpu: 'arm64',
-    files: ['acecode', 'ACECode.app', 'share'],
+    files: ['acecode', 'ACECode.app', 'share', 'channels'],
     executables: ['acecode'],
   },
 ];
@@ -135,12 +137,23 @@ function validateModelsDevRegistry(rootDir, label) {
   }
 }
 
+function validateChannelAssets(rootDir, label) {
+  const channelDir = path.join(rootDir, CHANNEL_RELATIVE_DIR);
+  for (const file of CHANNEL_FILES) {
+    if (!fs.existsSync(path.join(channelDir, file)) ||
+        !fs.statSync(path.join(channelDir, file)).isFile()) {
+      throw new Error(`${label} missing WhatsApp bridge asset: ${file}`);
+    }
+  }
+}
+
 function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
   const srcDir = path.join(inputRoot, `acecode-${platform.ciId}`);
   if (!fs.existsSync(srcDir)) {
     throw new Error(`缺少输入目录: ${srcDir}`);
   }
   validateModelsDevRegistry(srcDir, `平台 ${platform.ciId} 输入产物`);
+  validateChannelAssets(srcDir, `Platform ${platform.ciId}`);
   const pkgName = `${SCOPE}/${platform.os}-${platform.cpu}`;
   const outDir = path.join(outputRoot, 'platform', `${platform.os}-${platform.cpu}`);
   fs.mkdirSync(outDir, { recursive: true });
@@ -151,7 +164,15 @@ function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
     if (!fs.existsSync(src)) {
       throw new Error(`平台 ${platform.ciId} 缺少产物文件: ${src}`);
     }
-    fs.cpSync(src, dst, { recursive: true });
+    if (file === 'channels') {
+      const channelDir = path.join(outDir, CHANNEL_RELATIVE_DIR);
+      fs.mkdirSync(channelDir, { recursive: true });
+      for (const asset of CHANNEL_FILES) {
+        fs.copyFileSync(path.join(srcDir, CHANNEL_RELATIVE_DIR, asset), path.join(channelDir, asset));
+      }
+    } else {
+      fs.cpSync(src, dst, { recursive: true });
+    }
   }
   for (const exe of platform.executables) {
     fs.chmodSync(path.join(outDir, exe), 0o755);
@@ -165,6 +186,10 @@ function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
     validateModelsDevRegistry(
       path.join(outDir, 'ACECode.app', 'Contents', 'Resources'),
       `平台 ${platform.ciId} 的 ACECode.app`
+    );
+    validateChannelAssets(
+      path.join(outDir, 'ACECode.app', 'Contents', 'Resources'),
+      `Platform ${platform.ciId} app bundle`
     );
     chmodExecutableRecursive(macosDir);
   }

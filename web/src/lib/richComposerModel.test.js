@@ -15,12 +15,16 @@ import {
   composerAttachmentItemsSignature,
   composerAttachmentTagsSignature,
   composerDocumentFromText,
+  composerDocumentFromContent,
+  composerContentFromDocument,
+  COMPOSER_SKILL_TAG,
   composerDocumentWithSynchronizedAttachments,
   composerDocumentWithSynchronizedLeadingCommand,
   composerPlainTextOffsetForPoint,
   composerPlainTextRangeFromSelection,
   composerPointForPlainTextOffset,
   composerSelectionFromPlainTextRange,
+  composerSelectionForTextReplacement,
   composerTextFromDocument,
   isComposerImageAttachment,
   normalizeComposerPlainText,
@@ -512,4 +516,129 @@ run('plainTextFromClipboardHtml fails closed when parsing is unavailable', () =>
   assert.equal(plainTextFromClipboardHtml('<b>styled</b>', {
     parseHtml() { throw new Error('invalid clipboard html'); },
   }), '');
+});
+
+run('ordered content round-trips inline files, skills and multiline text without moving references', () => {
+  const content = { version: 1, parts: [
+    { type: 'text', text: 'Use ' },
+    { type: 'skill', name: 'openspec-explore', token: '$openspec-explore', path: '/skills/explore/SKILL.md' },
+    { type: 'text', text: ' on ' },
+    { type: 'attachment', key: 'upload-1', id: 'att-1', name: 'report.md', kind: 'file' },
+    { type: 'text', text: '\ncompare ' },
+    { type: 'path', path: 'src/main.cpp', token: '@src/main.cpp', directory: false },
+  ] };
+  const document = composerDocumentFromContent(content, COMMANDS);
+  assert.deepEqual(composerContentFromDocument(document), content);
+  assert.equal(composerTextFromDocument(document), 'Use $openspec-explore on \ncompare @src/main.cpp');
+  assert.equal(document[0].children.some((child) => child.type === COMPOSER_SKILL_TAG), true);
+});
+
+run('upload metadata synchronization keeps files between the same words and never resurrects deleted references', () => {
+  const content = { version: 1, parts: [
+    { type: 'text', text: 'before ' },
+    { type: 'attachment', key: 'local-1', id: '', name: 'report.md', kind: 'file' },
+    { type: 'text', text: ' after' },
+  ] };
+  const pending = composerDocumentFromContent(content);
+  const resources = [{ local_id: 'local-1', id: 'uploaded', name: 'report.md', kind: 'file' }];
+  const ready = composerDocumentWithSynchronizedAttachments(pending, resources, { appendMissing: false });
+  const parts = composerContentFromDocument(ready).parts;
+  assert.deepEqual(parts.map((part) => part.type), ['text', 'attachment', 'text']);
+  assert.equal(parts[1].id, 'uploaded');
+  assert.equal(parts[0].text, 'before ');
+  assert.equal(parts[2].text, ' after');
+  const deleted = composerDocumentFromText('before after', COMMANDS);
+  const synced = composerDocumentWithSynchronizedAttachments(deleted, resources, { appendMissing: false });
+  assert.equal(composerContentFromDocument(synced).parts.some((part) => part.type === 'attachment'), false);
+});
+
+run('structured text parts retain literal reference-like prose on restoration', () => {
+  const content = { version: 1, parts: [
+    { type: 'text', text: 'Explain @src/main.cpp and $review as literal text.\nDo not alter it.' },
+  ] };
+  assert.deepEqual(composerContentFromDocument(composerDocumentFromContent(content, COMMANDS)), content);
+});
+
+run('structured text restores existing stable session-reference badges without changing the content contract', () => {
+  const token = formatSessionReferenceToken({ id: 'task-reference', title: 'Referenced task' }, { trailingSpace: false });
+  const content = { version: 1, parts: [{ type: 'text', text: `Compare ${token} now` }] };
+  const document = composerDocumentFromContent(content, COMMANDS);
+  assert.equal(document[0].children.some((child) => child.type === COMPOSER_SESSION_TAG), true);
+  assert.deepEqual(composerContentFromDocument(document), content);
+});
+
+for (const [leftCount, rightCount] of [[1, 0], [0, 1], [1, 1], [2, 2]]) {
+  run(`explicit text replacement preserves ${leftCount} preceding and ${rightCount} following attachments`, () => {
+    const attachment = { type: 'attachment', key: 'same-file', id: 'uploaded-file', name: 'report.md', kind: 'file' };
+    const document = composerDocumentFromContent({ version: 1, parts: [
+      { type: 'text', text: 'before ' },
+      ...Array.from({ length: leftCount }, () => ({ ...attachment })),
+      { type: 'text', text: '@' },
+      ...Array.from({ length: rightCount }, () => ({ ...attachment })),
+      { type: 'text', text: ' after' },
+    ] });
+    const textIndex = document[0].children.findIndex((child) => child.text?.includes('@'));
+    const textOffset = document[0].children[textIndex].text.indexOf('@');
+    const range = composerSelectionForTextReplacement(document, 7, 8);
+    assert.deepEqual(range, {
+      anchor: { path: [0, textIndex], offset: textOffset },
+      focus: { path: [0, textIndex], offset: textOffset + 1 },
+    });
+    assert.deepEqual(composerPlainTextRangeFromSelection(document, range), {
+      start: 7, end: 8, direction: 'forward',
+    });
+    const collapsed = composerSelectionForTextReplacement(document, 7, 7);
+    assert.deepEqual(collapsed.anchor, range.anchor);
+    assert.deepEqual(collapsed.focus, collapsed.anchor);
+    if (leftCount) {
+      assert.deepEqual(composerSelectionFromPlainTextRange(document, 7, 8).anchor, {
+        path: [0, 0], offset: 7,
+      }, 'ordinary selection mapping stays unchanged');
+    }
+  });
+}
+
+run('explicit text replacement crosses lines while retaining boundary attachments', () => {
+  const attachment = { type: 'attachment', key: 'file', id: 'uploaded', name: 'report.md', kind: 'file' };
+  const document = composerDocumentFromContent({ version: 1, parts: [
+    { type: 'text', text: 'prefix' }, attachment,
+    { type: 'text', text: 'one\ntwo' }, attachment,
+    { type: 'text', text: 'suffix' },
+  ] });
+  assert.deepEqual(composerSelectionForTextReplacement(document, 6, 13), {
+    anchor: { path: [0, 2], offset: 0 },
+    focus: { path: [1, 0], offset: 3 },
+  });
+  assert.deepEqual(composerSelectionForTextReplacement(document, 9, 10), {
+    anchor: { path: [0, 2], offset: 3 },
+    focus: { path: [1, 0], offset: 0 },
+  });
+});
+
+run('explicit text replacement selects complete tags and falls back atomically inside a tag', () => {
+  const token = '@src/main.cpp';
+  const attachment = { type: 'attachment', key: 'file', id: 'uploaded', name: 'report.md', kind: 'file' };
+  const document = composerDocumentFromContent({ version: 1, parts: [
+    { type: 'text', text: 'use ' }, attachment,
+    { type: 'path', path: 'src/main.cpp', token }, attachment,
+    { type: 'text', text: ' next' },
+  ] });
+  assert.deepEqual(composerSelectionForTextReplacement(document, 4, 4 + token.length), {
+    anchor: { path: [0, 2], offset: 0 },
+    focus: { path: [0, 4], offset: 0 },
+  });
+  assert.deepEqual(composerSelectionForTextReplacement(document, 6, 8),
+    composerSelectionFromPlainTextRange(document, 6, 8));
+  const collapsed = composerSelectionForTextReplacement(document, 6, 6);
+  assert.deepEqual(collapsed.anchor, collapsed.focus);
+  assert.deepEqual(collapsed, composerSelectionFromPlainTextRange(document, 6, 6));
+});
+
+run('explicit empty insertion skips repeated attachments without selecting any occurrence', () => {
+  const attachment = { type: 'attachment', key: 'same-file', id: 'uploaded', name: 'report.md', kind: 'file' };
+  const document = composerDocumentFromContent({ version: 1, parts: [attachment, attachment] });
+  assert.deepEqual(composerSelectionForTextReplacement(document, 0, 0), {
+    anchor: { path: [0, 4], offset: 0 },
+    focus: { path: [0, 4], offset: 0 },
+  });
 });

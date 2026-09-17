@@ -3,6 +3,8 @@
 #include "../../commands/opencode_command.hpp"
 #include "../../config/config.hpp"
 #include "../../skills/skill_init.hpp"
+#include "../../skills/skill_activation.hpp"
+#include "../../utils/utf8_path.hpp"
 #include "../../skills/skill_registry.hpp"
 #include "../../utils/encoding.hpp"
 
@@ -133,6 +135,8 @@ nlohmann::json build_commands_payload(const SkillRegistry& global_skills,
             arr.push_back({
                 {"name", ensure_utf8(s.name)},
                 {"description", ensure_utf8(s.description)},
+                {"path", path_to_utf8_generic(s.skill_md_path)},
+                {"mention", build_skill_invocation_hint(s, {})},
             });
         }
         out["skills"] = std::move(arr);

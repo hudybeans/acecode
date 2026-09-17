@@ -1,3 +1,5 @@
+import { normalizeComposerContent, composerContentAttachments } from './composerContent.js';
+
 export const QUEUED_INPUT_STATE = Object.freeze({
   QUEUED: 'queued',
   SENDING: 'sending',
@@ -23,6 +25,9 @@ function normalizePayload({ text, payload } = {}) {
       contexts: Array.isArray(payload.contexts) ? payload.contexts : [],
     };
     if (payload.swarm_mode === true) normalized.swarm_mode = true;
+    const content = normalizeComposerContent(payload.composer_content);
+    if (content) normalized.composer_content = content;
+    if (Array.isArray(payload.session_references)) normalized.session_references = payload.session_references;
     return normalized;
   }
   return {
@@ -69,6 +74,7 @@ export function enqueueQueuedInput(state, { sessionId, text, payload, now = Date
     messageId: '',
     role: 'user',
     content,
+    ...(queuedPayload.composer_content ? { composerContent: queuedPayload.composer_content } : {}),
     ts: now,
     queued: {
       id,
@@ -221,6 +227,7 @@ export function acceptedQueuedInputEvent(item, { now = Date.now() } = {}) {
     payload: {
       client_message_id: clientMessageId,
       content,
+      ...(payload.composer_content ? { composer_content: payload.composer_content } : {}),
     },
     timestamp_ms: now,
   };
@@ -230,7 +237,7 @@ export function retryQueuedInput(state, id) {
   return setQueuedInputState(state, id, QUEUED_INPUT_STATE.QUEUED, { error: '' });
 }
 
-export function updateQueuedInputContent(state, id, text, { now = Date.now() } = {}) {
+export function updateQueuedInputContent(state, id, text, { now = Date.now(), composerContent } = {}) {
   const nextText = normalizeText(text);
   return updateQueuedInput(state, id, (item) => {
     const currentState = item?.queued?.state;
@@ -240,14 +247,20 @@ export function updateQueuedInputContent(state, id, text, { now = Date.now() } =
       payload: {
         ...(item.queued.payload || {}),
         text: nextText,
+        ...(composerContent !== undefined ? { composer_content: composerContent }
+          : item.content !== nextText ? { composer_content: null } : {}),
       },
     });
+    if (composerContent !== undefined && payload.composer_content) {
+      payload.attachments = composerContentAttachments(payload.composer_content).filter((attachment) => attachment.id).map(({ id }) => ({ id }));
+    }
     const hasExtras = payload.attachments.length > 0 || payload.contexts.length > 0;
     if (nextText.trim().length === 0 && !hasExtras) return item;
-    if (item.content === nextText && item.queued.payload?.text === nextText) return item;
+    if (composerContent === undefined && item.content === nextText && item.queued.payload?.text === nextText) return item;
     return {
       ...item,
       content: nextText,
+      composerContent: payload.composer_content || null,
       queued: {
         ...item.queued,
         payload,

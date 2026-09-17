@@ -22,6 +22,7 @@
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tool/builtin_tool_registry.hpp"
 #include "../tool/tool_rewrites.hpp"
+#include "../security/audit_log.hpp"
 #include "../tool/spawn_subagent_tool.hpp"
 #include "../tool/skill_view_tool.hpp"
 #include "../tool/skills_tool.hpp"
@@ -405,6 +406,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
 
     // 「工具重写」先于 register_headless_tools 发布(与 daemon / TUI 同一份文件)。
     tool_rewrites::load_and_apply(acecode::get_acecode_dir());
+    // 安全审计与 daemon / TUI 同一份数据库;headless 的自动拒绝 / yolo 放行同样入账。
+    security::audit_log().configure(acecode::get_acecode_dir());
     network::proxy_resolver().probe_and_maybe_fallback();
 
     acecode::lsp::init(cfg.lsp, cwd);

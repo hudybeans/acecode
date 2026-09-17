@@ -292,6 +292,8 @@ struct WebServer::Impl {
     std::mutex image_generation_test_mu;
     // 串行化 tool-rewrites.json 的读改写(它不在 config.json 里,不受 app_config_mu 管)。
     std::mutex tool_rewrites_mu;
+    // 串行化 <data_dir>/rules/*.rules 托管文件的读改写(安全中心 > 命令安全)。
+    std::mutex exec_rules_mu;
 
     mutable std::mutex attention_mu;
     mutable std::unordered_set<std::string> loaded_attention_workspaces;
@@ -446,13 +448,15 @@ struct WebServer::Impl {
                                       bool require_archived);
     crow::response session_input_draft_response(const crow::request& req,
                                                  const std::string& id,
-                                                 const std::string& text);
+                                                 const std::string& text,
+                                                 const nlohmann::json& composer_content = nullptr);
     crow::response session_todos_response(const crow::request& req,
                                            const acecode::desktop::WorkspaceMeta& ws,
                                            const std::string& id,
                                            const std::vector<TodoItem>& todos);
     std::optional<crow::response> parse_session_input_draft_request(const crow::request& req,
-                                                                     std::string& text);
+                                                                     std::string& text,
+                                                                     nlohmann::json& composer_content);
     std::shared_ptr<SessionEntry> active_session_entry_for_workspace(
         const acecode::desktop::WorkspaceMeta& ws,
         const std::string& id) const;
@@ -565,6 +569,7 @@ struct WebServer::Impl {
     void register_image_generation();
     void register_summary_generation();
     void register_tool_rewrites();
+    void register_security();
 
     void register_health();
     void register_usage();

@@ -121,6 +121,7 @@ void WebServer::Impl::register_routes() {
     register_image_generation();
     register_summary_generation();
     register_tool_rewrites();
+    register_security();
     register_experts();
     register_loops();
     register_ui_preferences();

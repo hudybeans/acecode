@@ -293,6 +293,9 @@ bool SessionStorage::write_meta(const std::string& meta_path, const SessionMeta&
     if (!meta.input_draft.empty()) {
         j["input_draft"] = meta.input_draft;
     }
+    if (meta.input_draft_content.is_object()) {
+        j["input_draft_content"] = meta.input_draft_content;
+    }
     j["permission_mode"] = normalize_permission_mode_name(meta.permission_mode);
     if (!meta.pre_plan_permission_mode.empty()) {
         j["pre_plan_permission_mode"] =
@@ -382,6 +385,9 @@ SessionMeta SessionStorage::read_meta(const std::string& meta_path) {
             if (meta.title.empty()) meta.title_source.clear();
         }
         meta.input_draft     = j.value("input_draft",     std::string{});
+        if (j.contains("input_draft_content") && j["input_draft_content"].is_object()) {
+            meta.input_draft_content = j["input_draft_content"];
+        }
         meta.permission_mode = normalize_permission_mode_name(
             j.value("permission_mode", std::string{"default"}));
         meta.pre_plan_permission_mode = normalize_pre_plan_permission_mode_name(

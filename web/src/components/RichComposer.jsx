@@ -17,6 +17,8 @@ import {
   Editable,
   ReactEditor,
   Slate,
+  useFocused,
+  useSelected,
   withReact,
 } from 'slate-react';
 import {
@@ -30,25 +32,36 @@ import {
   COMPOSER_EXTERNAL_SYNC_ACTIONS,
   appendComposerLocalEcho,
   classifyComposerExternalSync,
-  composerAdjacentAttachmentKey,
+  composerAdjacentAttachmentPath,
   composerAdjacentTagDeletionRange,
   composerAttachmentItemsSignature,
-  composerAttachmentTagsSignature,
+  composerAttachmentTag,
+  composerContentFromDocument,
+  composerDocumentFromContent,
+  composerSkillTag,
   composerDocumentFromText,
-  composerDocumentWithSynchronizedAttachments,
   composerDocumentWithSynchronizedLeadingCommand,
   composerLeadingCommandSignature,
+  composerInlineTagRanges,
   composerPlainTextRangeFromSelection,
   composerSelectionFromPlainTextRange,
+  composerSelectionForTextReplacement,
   composerTextFromDocument,
   isComposerAttachmentTag,
   isComposerCommandTag,
+  isComposerSkillTag,
   isComposerInlineTag,
   isComposerPathTag,
   isComposerSessionTag,
   normalizeComposerPlainText,
   plainTextFromClipboardData,
 } from '../lib/richComposerModel.js';
+import {
+  normalizeComposerContent,
+  composerContentSignature,
+  composerContentText,
+  composerContentClipboardText,
+} from '../lib/composerContent.js';
 import { filesFromTransfer } from '../lib/composerFileTransfer.js';
 import {
   RICH_COMPOSER_CONTEXT_PASTE_ACTIONS,
@@ -76,14 +89,15 @@ function commandTagTitle(command) {
   return command?.description || presentation.label || command?.name || command?.token || '';
 }
 
-function CommandTagElement({ attributes, children, element }) {
+function CommandTagElement({ attributes, children, element, selected }) {
   const displayName = String(element?.name || element?.token || '').replace(/^\/+/, '');
   return (
     <span
       {...attributes}
       contentEditable={false}
       draggable={false}
-      data-composer-inline-tag="command"
+      data-composer-inline-tag={isComposerSkillTag(element) ? 'skill' : 'command'}
+      data-composer-selected={selected || undefined}
       data-slash-chip-kind={element?.kind || 'skill'}
       className="ace-cmd-token ace-slate-inline-tag"
       title={commandTagTitle(element)}
@@ -96,7 +110,7 @@ function CommandTagElement({ attributes, children, element }) {
   );
 }
 
-function PathTagElement({ attributes, children, element }) {
+function PathTagElement({ attributes, children, element, selected }) {
   const path = String(element?.path || element?.token || '').replace(/^@(?:"(.*)"|(.*))$/, '$1$2');
   return (
     <span
@@ -104,6 +118,7 @@ function PathTagElement({ attributes, children, element }) {
       contentEditable={false}
       draggable={false}
       data-composer-inline-tag="path"
+      data-composer-selected={selected || undefined}
       className="ace-cmd-token ace-slate-inline-tag ace-slate-path-tag"
       title={element?.token || path}
       onDragStart={(event) => event.preventDefault()}
@@ -117,7 +132,7 @@ function PathTagElement({ attributes, children, element }) {
   );
 }
 
-function SessionTagElement({ attributes, children, element }) {
+function SessionTagElement({ attributes, children, element, selected }) {
   const title = String(element?.title || element?.sessionId || '');
   const workspaceName = String(element?.workspaceName || '');
   return (
@@ -126,6 +141,7 @@ function SessionTagElement({ attributes, children, element }) {
       contentEditable={false}
       draggable={false}
       data-composer-inline-tag="session"
+      data-composer-selected={selected || undefined}
       className="ace-cmd-token ace-slate-inline-tag ace-slate-session-tag"
       title={workspaceName ? `${title} · ${workspaceName}` : title}
       onDragStart={(event) => event.preventDefault()}
@@ -141,6 +157,7 @@ function AttachmentTagElement({
   attributes,
   children,
   element,
+  selected,
   onPreviewAttachment,
   onRemoveAttachment,
 }) {
@@ -154,6 +171,7 @@ function AttachmentTagElement({
       contentEditable={false}
       draggable={false}
       data-composer-inline-tag="attachment"
+      data-composer-selected={selected || undefined}
       data-desktop-attachment-id={`composer:${attachmentKey}`}
       data-desktop-attachment-name={name}
       data-desktop-attachment-url={element?.url || undefined}
@@ -187,7 +205,7 @@ function AttachmentTagElement({
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          onRemoveAttachment?.(attachmentKey);
+          onRemoveAttachment?.(attachmentKey, element);
         }}
       >
         <VsIcon name="close" size={9} />
@@ -197,18 +215,21 @@ function AttachmentTagElement({
 }
 
 function ComposerElement({ onPreviewAttachment, onRemoveAttachment, ...props }) {
+  const selected = useSelected();
+  const focused = useFocused();
+  const tagProps = { ...props, selected: selected && focused };
   if (isComposerAttachmentTag(props.element)) {
     return (
       <AttachmentTagElement
-        {...props}
+        {...tagProps}
         onPreviewAttachment={onPreviewAttachment}
         onRemoveAttachment={onRemoveAttachment}
       />
     );
   }
-  if (isComposerCommandTag(props.element)) return <CommandTagElement {...props} />;
-  if (isComposerPathTag(props.element)) return <PathTagElement {...props} />;
-  if (isComposerSessionTag(props.element)) return <SessionTagElement {...props} />;
+  if (isComposerCommandTag(props.element) || isComposerSkillTag(props.element)) return <CommandTagElement {...tagProps} />;
+  if (isComposerPathTag(props.element)) return <PathTagElement {...tagProps} />;
+  if (isComposerSessionTag(props.element)) return <SessionTagElement {...tagProps} />;
   return (
     <div {...props.attributes} className="ace-slate-composer-paragraph">
       {props.children}
@@ -319,12 +340,23 @@ function replaceEditorDocument(editor, nextDocument, {
 function deleteAdjacentTag(editor, direction) {
   const range = composerAdjacentTagDeletionRange(editor.children, editor.selection, direction);
   if (!range) return false;
-  Transforms.select(editor, composerSelectionFromPlainTextRange(
-    editor.children,
-    range.start,
-    range.end,
-  ));
-  Transforms.delete(editor);
+  const tag = composerInlineTagRanges(editor.children).find((item) => item.start === range.start);
+  if (!tag) return false;
+  // Plain offsets collapse every attachment to zero characters. Delete the
+  // actual tag path so an adjacent file cannot be swept into the same range.
+  HistoryEditor.withNewBatch(editor, () => {
+    Editor.withoutNormalizing(editor, () => {
+      const [blockIndex, childIndex] = tag.path;
+      const following = editor.children[blockIndex]?.children[childIndex + 1];
+      if (typeof following?.text === 'string' && /^[ \t]/.test(following.text)) {
+        const path = [blockIndex, childIndex + 1];
+        Transforms.delete(editor, { at: {
+          anchor: { path, offset: 0 }, focus: { path, offset: 1 },
+        } });
+      }
+      Transforms.removeNodes(editor, { at: tag.path });
+    });
+  });
   return true;
 }
 
@@ -340,24 +372,20 @@ function insertPlainText(editor, text) {
 
 function deleteSelectedPlainText(editor) {
   if (!editor.selection || Range.isCollapsed(editor.selection)) return false;
-  const selection = composerPlainTextRangeFromSelection(editor.children, editor.selection);
-  if (selection.start === selection.end) return false;
-  Transforms.select(editor, composerSelectionFromPlainTextRange(
-    editor.children,
-    selection.start,
-    selection.end,
-    selection.direction,
-  ));
+  // Slate ranges distinguish both sides of zero-text attachments. Converting
+  // through character offsets here would omit files from mixed selections.
   Transforms.delete(editor);
   return true;
 }
 
+const COMPOSER_CLIPBOARD_TYPE = 'application/x-acecode-composer-content';
+
 function writeSelectedPlainText(event, editor) {
   if (!editor.selection || Range.isCollapsed(editor.selection)) return false;
-  const text = composerTextFromDocument(editor.children);
-  const selection = composerPlainTextRangeFromSelection(editor.children, editor.selection);
+  const content = composerContentFromDocument(Editor.fragment(editor, editor.selection));
   try {
-    event.clipboardData?.setData('text/plain', text.slice(selection.start, selection.end));
+    event.clipboardData?.setData('text/plain', composerContentClipboardText(content));
+    event.clipboardData?.setData(COMPOSER_CLIPBOARD_TYPE, JSON.stringify(content));
   } catch {
     return false;
   }
@@ -365,13 +393,79 @@ function writeSelectedPlainText(event, editor) {
   return true;
 }
 
+function removeAttachmentReference(editor, attachmentKey, occurrencePath = null) {
+  HistoryEditor.withNewBatch(editor, () => {
+    Transforms.removeNodes(editor, {
+      at: occurrencePath || [],
+      match: (node) => isComposerAttachmentTag(node) && (!attachmentKey || node.attachmentKey === attachmentKey),
+    });
+  });
+}
+
+function insertComposerContent(editor, content, commands, attachments) {
+  const normalized = normalizeComposerContent(content);
+  if (!normalized) return false;
+  // Clipboard references must resolve in this composer's resource registry.
+  // A different session can still paste the readable text fallback.
+  if (normalized.parts.some((part) => part.type === 'attachment' && !attachments.some((record, index) => (
+    composerAttachmentTag(record, index).attachmentKey === part.key
+    || (part.id && record.id === part.id)
+  )))) return false;
+  HistoryEditor.withNewBatch(editor, () => {
+    Transforms.insertFragment(editor, composerDocumentFromContent(normalized, commands, attachments));
+  });
+  return true;
+}
+
+function replaceComposerTextPreservingReferences(editor, nextText, commands, replacementRange) {
+  const previous = composerTextFromDocument(editor.children);
+  if (previous === nextText) return composerContentFromDocument(editor.children);
+  let start = 0;
+  while (start < previous.length && start < nextText.length && previous[start] === nextText[start]) start += 1;
+  let end = previous.length;
+  let nextEnd = nextText.length;
+  while (end > start && nextEnd > start && previous[end - 1] === nextText[nextEnd - 1]) {
+    end -= 1;
+    nextEnd -= 1;
+  }
+  // A completed @ query must be parsed with its prefix intact. A minimal text
+  // diff would keep the old @ and parse only "session:..." or a path suffix.
+  const rangeBegin = replacementRange?.begin;
+  const rangeEnd = replacementRange?.end;
+  const replacementEnd = rangeEnd + nextText.length - previous.length;
+  if (Number.isInteger(rangeBegin) && Number.isInteger(rangeEnd)
+    && rangeBegin >= 0 && rangeEnd >= rangeBegin && rangeEnd <= previous.length
+    && replacementEnd >= rangeBegin && replacementEnd <= nextText.length
+    && previous.slice(0, rangeBegin) === nextText.slice(0, rangeBegin)
+    && previous.slice(rangeEnd) === nextText.slice(replacementEnd)) {
+    start = rangeBegin;
+    end = rangeEnd;
+    nextEnd = replacementEnd;
+  }
+  const current = currentPlainSelection(editor.children, editor.selection);
+  const preserveActualCaret = editor.selection && Range.isCollapsed(editor.selection)
+    && start === end && current.start === start;
+  HistoryEditor.withNewBatch(editor, () => {
+    if (!preserveActualCaret) Transforms.select(editor, composerSelectionForTextReplacement(editor.children, start, end));
+    const inserted = nextText.slice(start, nextEnd);
+    if (inserted) Transforms.insertFragment(editor, replacementRange?.plainText
+      ? composerDocumentFromContent({ version: 1, parts: [{ type: 'text', text: inserted }] }, commands)
+      : composerDocumentFromText(inserted, commands));
+    else Transforms.delete(editor);
+  });
+  return composerContentFromDocument(editor.children);
+}
+
 function RichComposerShell({
   value,
+  composerContent = null,
+  onComposerContentChange,
   syncKey = '',
   commands,
   attachments = [],
   disabled,
   placeholder,
+  'aria-label': ariaLabel,
   className,
   placeholderClassName,
   style,
@@ -380,6 +474,7 @@ function RichComposerShell({
   onCompositionStart,
   onCompositionEnd,
   onSubmit,
+  submitOnEnter = true,
   onPasteFiles,
   onPasteFilesystemItems,
   onPreviewAttachment,
@@ -389,6 +484,11 @@ function RichComposerShell({
   onSelectionChange,
 }, ref) {
   const normalizedValue = normalizeComposerPlainText(value);
+  const externalContent = normalizeComposerContent(composerContent);
+  const hasExternalContent = !!externalContent && composerContentText(externalContent) === normalizedValue;
+  const externalSignature = hasExternalContent ? composerContentSignature(externalContent) : normalizedValue;
+  const contentPropRef = useRef(null);
+  contentPropRef.current = hasExternalContent ? externalContent : null;
   const normalizedSyncKey = String(syncKey ?? '');
   const syncIdentityRef = useRef({ key: normalizedSyncKey, generation: 0 });
   if (syncIdentityRef.current.key !== normalizedSyncKey) {
@@ -404,18 +504,22 @@ function RichComposerShell({
   attachmentsRef.current = attachments;
   const initialValueRef = useRef(null);
   if (!initialValueRef.current) {
-    initialValueRef.current = composerDocumentFromText(normalizedValue, commands, attachments);
+    initialValueRef.current = hasExternalContent
+      ? composerDocumentFromContent(externalContent, commands, attachments)
+      : composerDocumentFromText(normalizedValue, commands, attachments);
   }
   const editor = useMemo(
     () => withComposerInlineTags(withHistory(withReact(createEditor()))),
     [],
   );
   const editableRef = useRef(null);
+  const seenAttachmentKeysRef = useRef(new Set(attachments.map((item, index) => composerAttachmentTag(item, index).attachmentKey)));
+  const pendingAttachmentSelectionRef = useRef(null);
   const latestTextRef = useRef(composerTextFromDocument(initialValueRef.current));
   const documentSyncGenerationRef = useRef(activeSyncGeneration);
   const lastExternalStateRef = useRef({
     generation: activeSyncGeneration,
-    text: normalizedValue,
+    text: externalSignature,
   });
   const localEchoStateRef = useRef({
     generation: activeSyncGeneration,
@@ -504,14 +608,14 @@ function RichComposerShell({
           exactMatch: false,
           suppressThrow: true,
         });
-        if (slateSelection) return currentPlainSelection(editor.children, slateSelection);
+        if (slateSelection) return { ...currentPlainSelection(editor.children, slateSelection), slateRange: slateSelection };
       } catch {
         // Fall through to Slate's last synchronized selection. Browser engines
         // can briefly expose a DOM selection while Slate is reconciling it.
       }
     }
     try {
-      return currentPlainSelection(editor.children, editor.selection);
+      return { ...currentPlainSelection(editor.children, editor.selection), slateRange: editor.selection };
     } catch {
       const fallback = selectionRef.current;
       const end = composerTextFromDocument(editor.children).length;
@@ -540,11 +644,10 @@ function RichComposerShell({
     const direction = requestedSelection?.direction || 'none';
 
     try {
-      Transforms.select(editor, composerSelectionFromPlainTextRange(
-        editor.children,
-        start,
-        end,
-        direction,
+      const exactRange = requestedSelection?.slateRange;
+      const validRange = exactRange && Editor.hasPath(editor, exactRange.anchor.path) && Editor.hasPath(editor, exactRange.focus.path);
+      Transforms.select(editor, validRange ? exactRange : composerSelectionFromPlainTextRange(
+        editor.children, start, end, direction,
       ));
       insertPlainText(editor, normalizedText);
       publishSelection(editor.selection);
@@ -606,130 +709,114 @@ function RichComposerShell({
     };
   }, [handleContextPasteAction]);
 
+  const publishDocument = useCallback(() => {
+    const content = composerContentFromDocument(editor.children);
+    const text = composerTextFromDocument(editor.children);
+    latestTextRef.current = text;
+    const activeGeneration = syncIdentityRef.current.generation;
+    if (documentSyncGenerationRef.current !== activeGeneration) return;
+    const localEchoState = localEchoStateRef.current;
+    const localEchoes = localEchoState.generation === activeGeneration ? localEchoState.values : [];
+    // Store both representations while a legacy parent adopts structured state.
+    localEchoStateRef.current = {
+      generation: activeGeneration,
+      values: appendComposerLocalEcho(appendComposerLocalEcho(localEchoes, text), composerContentSignature(content)),
+    };
+    onChange?.(text, content);
+    onComposerContentChange?.(content);
+  }, [editor, onChange, onComposerContentChange]);
+
   useEffect(() => {
-    const nextText = normalizedValue;
     const currentDocument = editor.children;
     const currentText = composerTextFromDocument(currentDocument);
+    const currentSignature = hasExternalContent
+      ? composerContentSignature(composerContentFromDocument(currentDocument)) : currentText;
     const generationChanged = documentSyncGenerationRef.current !== activeSyncGeneration;
     const localEchoState = localEchoStateRef.current;
-    const localEchoes = localEchoState.generation === activeSyncGeneration
-      ? localEchoState.values
-      : [];
+    const localEchoes = localEchoState.generation === activeSyncGeneration ? localEchoState.values : [];
     const lastExternalState = lastExternalStateRef.current;
-    const lastExternalText = lastExternalState.generation === activeSyncGeneration
-      ? lastExternalState.text
-      : '';
     let reactEditorComposing = false;
     try { reactEditorComposing = ReactEditor.isComposing(editor); } catch {}
     const decision = classifyComposerExternalSync({
-      compositionProtected: (
-        compositionStateRef.current.active
-        || compositionStateRef.current.settling
-        || reactEditorComposing
-      ),
+      compositionProtected: compositionStateRef.current.active || compositionStateRef.current.settling || reactEditorComposing,
       generationChanged,
-      currentText,
-      nextText,
-      lastExternalText,
+      currentText: currentSignature,
+      nextText: externalSignature,
+      lastExternalText: lastExternalState.generation === activeSyncGeneration ? lastExternalState.text : '',
       localEchoes,
     });
     if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.DEFER) return;
-
-    if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.REPLACE) {
-      localEchoStateRef.current = { generation: activeSyncGeneration, values: [] };
-      lastExternalStateRef.current = { generation: activeSyncGeneration, text: nextText };
-    } else if (decision.acknowledgedEchoCount > 0) {
-      localEchoStateRef.current = {
-        generation: activeSyncGeneration,
-        values: localEchoes.slice(decision.acknowledgedEchoCount),
-      };
-      lastExternalStateRef.current = { generation: activeSyncGeneration, text: nextText };
-    } else if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.ACCEPT) {
-      lastExternalStateRef.current = { generation: activeSyncGeneration, text: nextText };
-    }
-
     const replacesText = decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.REPLACE;
-    const attachmentsChanged = composerAttachmentTagsSignature(currentDocument)
-      !== attachmentSignature;
-    let nextDocument = null;
-
     if (replacesText) {
-      nextDocument = composerDocumentFromText(
-        nextText,
-        commandsRef.current,
-        attachmentsRef.current,
-      );
-    } else {
-      const withAttachments = attachmentsChanged
-        ? composerDocumentWithSynchronizedAttachments(currentDocument, attachmentsRef.current)
-        : currentDocument;
-      const synchronized = composerDocumentWithSynchronizedLeadingCommand(
-        withAttachments,
-        currentText,
-        commandsRef.current,
-      );
-      if (
-        !Array.isArray(currentDocument)
-        || currentDocument.length === 0
-        || attachmentsChanged
-        || composerAttachmentTagsSignature(synchronized)
-          !== composerAttachmentTagsSignature(currentDocument)
-        || composerLeadingCommandSignature(synchronized)
-          !== composerLeadingCommandSignature(currentDocument)
-      ) {
-        nextDocument = synchronized;
+      localEchoStateRef.current = { generation: activeSyncGeneration, values: [] };
+      lastExternalStateRef.current = { generation: activeSyncGeneration, text: externalSignature };
+      const document = contentPropRef.current
+        ? composerDocumentFromContent(contentPropRef.current, commandsRef.current, attachmentsRef.current)
+        : composerDocumentFromText(normalizedValue, commandsRef.current);
+      replaceEditorDocument(editor, document, { selectEnd: true, clearHistory: true });
+      documentSyncGenerationRef.current = activeSyncGeneration;
+      if (generationChanged) {
+        seenAttachmentKeysRef.current = new Set(attachmentsRef.current.map((item, index) => composerAttachmentTag(item, index).attachmentKey));
+        pendingAttachmentSelectionRef.current?.unref();
+        pendingAttachmentSelectionRef.current = null;
       }
+    } else if (decision.acknowledgedEchoCount > 0) {
+      localEchoStateRef.current = { generation: activeSyncGeneration, values: localEchoes.slice(decision.acknowledgedEchoCount) };
+      lastExternalStateRef.current = { generation: activeSyncGeneration, text: externalSignature };
+    } else if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.ACCEPT) {
+      lastExternalStateRef.current = { generation: activeSyncGeneration, text: externalSignature };
     }
 
-    if (!nextDocument) {
-      latestTextRef.current = currentText;
-      return;
-    }
-    let preservedSelection = null;
-    if (!replacesText) {
-      try { preservedSelection = currentPlainSelection(currentDocument, editor.selection); } catch {}
-    }
-    const replaced = replaceEditorDocument(editor, nextDocument, {
-      selection: preservedSelection,
-      selectEnd: true,
-      clearHistory: replacesText,
+    // Metadata changes never replace the document or its selection/history.
+    const records = new Map(attachmentsRef.current.map((item, index) => {
+      const tag = composerAttachmentTag(item, index);
+      return [tag.attachmentKey, tag];
+    }));
+    const existing = [...Editor.nodes(editor, { at: [], match: isComposerAttachmentTag })];
+    HistoryEditor.withoutSaving(editor, () => {
+      for (const [node, path] of existing) {
+        const tag = records.get(node.attachmentKey);
+        if (tag && JSON.stringify(node) !== JSON.stringify(tag)) {
+          const { children, ...metadata } = tag;
+          Transforms.setNodes(editor, metadata, { at: path });
+        }
+      }
     });
-    documentSyncGenerationRef.current = activeSyncGeneration;
-    const actualText = composerTextFromDocument(editor.children);
-    latestTextRef.current = actualText;
-    if (!replaced && replacesText && actualText !== nextText) {
-      lastExternalStateRef.current = { generation: activeSyncGeneration, text: actualText };
+    const present = new Set(existing.map(([node]) => node.attachmentKey));
+    const unseen = [...records].filter(([key]) => !seenAttachmentKeysRef.current.has(key) && !present.has(key));
+    for (const key of records.keys()) seenAttachmentKeysRef.current.add(key);
+    if (unseen.length) {
+      const saved = pendingAttachmentSelectionRef.current?.unref();
+      pendingAttachmentSelectionRef.current = null;
+      HistoryEditor.withNewBatch(editor, () => {
+        if (saved) Transforms.select(editor, saved);
+        if (!editor.selection) Transforms.select(editor, Editor.end(editor, []));
+        for (const [, tag] of unseen) {
+          Transforms.insertNodes(editor, tag);
+          Transforms.move(editor);
+        }
+      });
     }
+    const synchronized = composerDocumentWithSynchronizedLeadingCommand(
+      editor.children, composerTextFromDocument(editor.children), commandsRef.current,
+    );
+    if (composerLeadingCommandSignature(synchronized) !== composerLeadingCommandSignature(editor.children)) {
+      replaceEditorDocument(editor, synchronized, {
+        selection: currentPlainSelection(editor.children, editor.selection), clearHistory: false,
+      });
+    }
+    latestTextRef.current = composerTextFromDocument(editor.children);
     publishSelection(editor.selection);
   }, [
-    activeSyncGeneration,
-    attachmentSignature,
-    commandSignature,
-    editor,
-    normalizedValue,
-    publishSelection,
-    syncRevision,
+    activeSyncGeneration, attachmentSignature, commandSignature, editor,
+    externalSignature, hasExternalContent, normalizedValue, publishSelection, syncRevision,
   ]);
 
-  const handleValueChange = useCallback((nextDocument) => {
-    const text = composerTextFromDocument(nextDocument);
-    const previousText = latestTextRef.current;
-    latestTextRef.current = text;
+  const handleValueChange = useCallback(() => {
+    setSyncRevision((revision) => revision + 1);
     publishSelection(editor.selection);
-    const activeGeneration = syncIdentityRef.current.generation;
-    if (documentSyncGenerationRef.current !== activeGeneration) return;
-    if (text !== previousText) {
-      const localEchoState = localEchoStateRef.current;
-      const localEchoes = localEchoState.generation === activeGeneration
-        ? localEchoState.values
-        : [];
-      localEchoStateRef.current = {
-        generation: activeGeneration,
-        values: appendComposerLocalEcho(localEchoes, text),
-      };
-    }
-    onChange?.(text);
-  }, [editor, onChange, publishSelection]);
+    publishDocument();
+  }, [editor, publishDocument, publishSelection]);
 
   const handleSlateSelectionChange = useCallback((selection) => {
     publishSelection(selection);
@@ -780,6 +867,41 @@ function RichComposerShell({
     getEditorStateText() {
       return latestTextRef.current;
     },
+    getComposerContent() {
+      return composerContentFromDocument(editor.children);
+    },
+    setComposerContent(content, { selectEnd = true } = {}) {
+      const document = composerDocumentFromContent(content, commandsRef.current, attachmentsRef.current);
+      replaceEditorDocument(editor, document, { selectEnd, clearHistory: true });
+      publishDocument();
+      publishSelection(editor.selection);
+      return composerContentFromDocument(editor.children);
+    },
+    replaceTextPreservingReferences(next, replacementRange) {
+      const content = replaceComposerTextPreservingReferences(editor, normalizeComposerPlainText(next), commandsRef.current, replacementRange);
+      publishDocument();
+      publishSelection(editor.selection);
+      return content;
+    },
+    insertSkill(skill, start, end) {
+      HistoryEditor.withNewBatch(editor, () => {
+        Transforms.select(editor, composerSelectionForTextReplacement(editor.children, start, end));
+        Transforms.insertFragment(editor, [{ type: 'paragraph', children: [
+          { text: '' }, composerSkillTag(skill), { text: ' ' },
+        ] }]);
+      });
+      publishDocument();
+      publishSelection(editor.selection);
+      return composerContentFromDocument(editor.children);
+    },
+    reserveAttachmentSelection() {
+      pendingAttachmentSelectionRef.current?.unref();
+      if (editor.selection) pendingAttachmentSelectionRef.current = Editor.rangeRef(editor, editor.selection, { affinity: 'forward' });
+    },
+    removeAttachment(key) {
+      removeAttachmentReference(editor, key);
+      publishDocument();
+    },
     replaceText(next, { selectEnd = true } = {}) {
       const nextDocument = composerDocumentFromText(
         next,
@@ -798,15 +920,24 @@ function RichComposerShell({
       latestTextRef.current = actualText;
       publishSelection(editor.selection);
     },
-  }), [editor, publishSelection]);
+  }), [editor, publishDocument, publishSelection]);
+
+  const removeAttachment = useCallback((key, element) => {
+    let occurrencePath = null;
+    if (element) {
+      try { occurrencePath = ReactEditor.findPath(editor, element); } catch { return; }
+    }
+    removeAttachmentReference(editor, key, occurrencePath);
+    publishDocument();
+  }, [editor, publishDocument]);
 
   const renderElement = useCallback((props) => (
     <ComposerElement
       {...props}
       onPreviewAttachment={onPreviewAttachment}
-      onRemoveAttachment={onRemoveAttachment}
+      onRemoveAttachment={removeAttachment}
     />
-  ), [onPreviewAttachment, onRemoveAttachment]);
+  ), [onPreviewAttachment, removeAttachment]);
   const renderPlaceholder = useCallback(({ attributes, children }) => (
     <span
       {...attributes}
@@ -844,7 +975,7 @@ function RichComposerShell({
       return;
     }
 
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && submitOnEnter) {
       if (event.ctrlKey && isDesktopShell()) {
         event.preventDefault();
         editor.insertBreak();
@@ -869,26 +1000,26 @@ function RichComposerShell({
     }
 
     if (event.key === 'Backspace') {
-      const attachmentKey = composerAdjacentAttachmentKey(
+      const attachmentPath = composerAdjacentAttachmentPath(
         editor.children,
         editor.selection,
         'backward',
       );
-      if (attachmentKey && onRemoveAttachment) {
+      if (attachmentPath) {
         event.preventDefault();
-        onRemoveAttachment(attachmentKey);
+        removeAttachmentReference(editor, null, attachmentPath);
         return;
       }
     }
     if (event.key === 'Delete') {
-      const attachmentKey = composerAdjacentAttachmentKey(
+      const attachmentPath = composerAdjacentAttachmentPath(
         editor.children,
         editor.selection,
         'forward',
       );
-      if (attachmentKey && onRemoveAttachment) {
+      if (attachmentPath) {
         event.preventDefault();
-        onRemoveAttachment(attachmentKey);
+        removeAttachmentReference(editor, null, attachmentPath);
         return;
       }
     }
@@ -900,7 +1031,7 @@ function RichComposerShell({
     if (event.key === 'Delete' && deleteAdjacentTag(editor, 'forward')) {
       event.preventDefault();
     }
-  }, [disabled, editor, isComposingKeyEvent, onKeyDown, onRemoveAttachment, onSubmit]);
+  }, [disabled, editor, isComposingKeyEvent, onKeyDown, onSubmit, submitOnEnter]);
 
   const requestClipboardTextFallback = useCallback((capturedSelection) => {
     const clipboard = window.navigator?.clipboard;
@@ -930,6 +1061,14 @@ function RichComposerShell({
       return true;
     }
 
+    let copiedContent = null;
+    try { copiedContent = normalizeComposerContent(JSON.parse(clipboardData?.getData?.(COMPOSER_CLIPBOARD_TYPE) || 'null')); } catch {}
+    if (copiedContent && insertComposerContent(editor, copiedContent, commandsRef.current, attachmentsRef.current)) {
+      consume();
+      publishDocument();
+      return true;
+    }
+
     const files = filesFromTransfer(clipboardData, { source: 'paste' });
     const text = plainTextFromClipboardData(clipboardData);
     const hasTextFormat = clipboardHasTextFormat(clipboardData);
@@ -955,6 +1094,8 @@ function RichComposerShell({
     applyPlainTextPaste,
     capturePasteSelection,
     disabled,
+    editor,
+    publishDocument,
     onPasteFiles,
     onPasteFilesystemItems,
     requestClipboardTextFallback,
@@ -1047,7 +1188,7 @@ function RichComposerShell({
       <Editable
         ref={editableRef}
         data-ace-rich-composer="true"
-        aria-label={placeholder}
+        aria-label={ariaLabel || placeholder}
         aria-disabled={disabled ? 'true' : undefined}
         readOnly={disabled}
         placeholder={placeholder}

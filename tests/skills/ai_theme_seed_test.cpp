@@ -256,7 +256,7 @@ TEST_F(AiThemeSeedTest, MessageScaleRevisionUpdatesPreviousManagedThemeAndPrevie
     EXPECT_EQ(outcome->source_id, "acecode:ai-theme@2026-09-15.3");
     EXPECT_TRUE(outcome->acecode_owned);
     EXPECT_EQ(outcome->source_tree_sha256, outcome->installed_tree_sha256);
-    EXPECT_EQ(read_bytes(home_ / "seed.version"), "2026-09-15.3\n");
+    EXPECT_EQ(read_bytes(home_ / "seed.version"), read_bytes(packaged_ / "seed.version"));
     EXPECT_EQ(read_bytes(home_ / relative / "SKILL.md"), read_bytes(packaged_ / relative / "SKILL.md"));
     for (const auto& preview : previews) {
         const auto installed = read_bytes(home_ / relative / preview);

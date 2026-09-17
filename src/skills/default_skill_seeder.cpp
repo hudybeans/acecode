@@ -534,14 +534,40 @@ bool target_matches_known_official_definition(
     }
 }
 
+template <typename Seed>
+bool target_is_empty_owned_hook(
+    const Seed&, const fs::path&, const PreviousSeedState*) {
+    return false;
+}
+
+bool target_is_empty_owned_hook(
+    const DefaultHookSeed&, const fs::path& target_dir,
+    const PreviousSeedState* previous) {
+    if (!previous || !previous->acecode_owned) return false;
+    std::error_code ec;
+    const auto status = fs::symlink_status(target_dir, ec);
+    if (ec || !fs::is_directory(status)) return false;
+    const bool empty = fs::is_empty(target_dir, ec);
+    return !ec && empty;
+}
+
 bool same_version_managed_hooks_need_reconciliation(
     const fs::path& acecode_home) {
+    const auto previous = read_previous_seed_state(
+        default_skill_seed_state_path(acecode_home));
     for (const auto& seed : default_hook_seeds()) {
         const fs::path target_dir =
             acecode_home / "hooks" / seed.relative_path;
         std::error_code ec;
         const bool target_exists = fs::exists(target_dir, ec);
         if (ec || !target_exists) {
+            return true;
+        }
+
+        const auto found = previous.hooks.find(path_to_utf8_generic(seed.relative_path));
+        const auto* previous_entry =
+            found == previous.hooks.end() ? nullptr : &found->second;
+        if (target_is_empty_owned_hook(seed, target_dir, previous_entry)) {
             return true;
         }
 
@@ -1155,7 +1181,8 @@ void reconcile_seed_group(
             previous_it == previous.end() ? nullptr : &previous_it->second;
         if (!previous_state_proves_pristine(
                 previous_entry, target_dir, *target_hash) &&
-            !target_matches_known_official_definition(seed, target_dir)) {
+            !target_matches_known_official_definition(seed, target_dir) &&
+            !target_is_empty_owned_hook(seed, target_dir, previous_entry)) {
             outcome.result = "preserved_user_modified";
             outcome.message =
                 previous_entry
@@ -1284,10 +1311,11 @@ const std::vector<DefaultExpertSeed>& default_expert_seeds() {
 const std::vector<DefaultHookSeed>& default_hook_seeds() {
     static const std::vector<DefaultHookSeed> seeds = {
         {"agent-reporting",
-         "acecode:managed-hook/agent-reporting@2026-08-14.2",
+         "acecode:managed-hook/agent-reporting@2026-09-17.1",
          "agent-reporting",
-         "daeb5ce4f3ff42d1717c9997b9627bc6daf00df9ec24643203253da2aae30644",
+         "90403a8d660fc4086bca9c7c979c8fb8e98321dcebc63aefd1e995addc2fab1e",
          {
+             "daeb5ce4f3ff42d1717c9997b9627bc6daf00df9ec24643203253da2aae30644",
              "b731118b927bb32a5c43083f5d3279ecd4ce3d96137b351c2d105ac3548d9f2f",
              "e139bd9bc1314dfe82cd7a7c018332e7a33c42eb451c8ce1db99f58d18d6ff4e",
          }},

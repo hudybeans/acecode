@@ -1723,6 +1723,8 @@ await run('session draft API uses workspace route when workspace hash is availab
     await client.getSessionDraft('s/a', 'w/a');
     await client.setSessionDraft('s/a', 'draft text', 'w/a');
     await client.setSessionDraft('s/a', '');
+    const composerContent = { version: 1, parts: [{ type: 'text', text: 'draft text' }] };
+    await client.setSessionDraft('s/a', 'draft text', 'w/a', composerContent);
 
     assert.equal(calls[0].url, 'http://127.0.0.1:4567/api/workspaces/w%2Fa/sessions/s%2Fa/draft');
     assert.equal(calls[0].opts.method, 'GET');
@@ -1732,6 +1734,7 @@ await run('session draft API uses workspace route when workspace hash is availab
     assert.equal(calls[2].url, 'http://127.0.0.1:4567/api/sessions/s%2Fa/draft');
     assert.equal(calls[2].opts.method, 'PUT');
     assert.deepEqual(JSON.parse(calls[2].opts.body), { text: '' });
+    assert.deepEqual(JSON.parse(calls[3].opts.body), { text: 'draft text', composer_content: composerContent });
   } finally {
     globalThis.fetch = previousFetch;
   }
