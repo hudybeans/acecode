@@ -549,6 +549,7 @@ const FORK_ACTION_KEY = 'fork-session';
 export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
+  const sessionRuntimeUnavailable = ref?.resumePending === true || ref?.resumeFailed === true;
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
   const stagedExpertDraft = expertDispatchDraftFromRef(ref);
   const readOnlyExternalSession = !!(
@@ -2866,6 +2867,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   }, [api, executeBuiltinCommand]);
 
   const submit = useCallback((text) => {
+    if (sessionRuntimeUnavailable) return;
     const submittedContent = reconcileComposerContentAttachments(composerContentRef.current, composerAttachments);
     const activeAttachments = submittedContent ? composerContentAttachments(submittedContent, composerAttachments, { sessionId: sid }) : composerAttachments;
     if (activeAttachments.some((item) => item.error || (!item.id && !item.pending_upload && !item.uploading))) {
@@ -3191,11 +3193,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
-    if (!targetSid || busy || drainRef.current) return;
+    if (!targetSid || busy || drainRef.current || sessionRuntimeUnavailable) return;
     // 取出待发送项与标记 sending 在同一次提交内完成,避免这中间的取消/编辑被
     // 一份过期快照覆盖。drainRef 仍在提交之前置位,保持原来的重入保护顺序。
     drainRef.current = true;
@@ -3237,7 +3239,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       .finally(() => {
         drainRef.current = false;
       });
-  }, [applyEvent, busy, queueStore, sendInputOrBuiltin, setTailFollowFromAction, updateQueueState]);
+  }, [applyEvent, busy, queueStore, sendInputOrBuiltin, setTailFollowFromAction, updateQueueState, sessionRuntimeUnavailable]);
 
   const prevBusyRef = useRef(busy);
   useEffect(() => {
@@ -5521,7 +5523,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           {tr('externalSession.tuiReadOnly')}
         </div>
       ) : (
-        <div className="ace-composer-dock">
+        <div className="ace-composer-dock" data-question-pending={questionForView ? 'true' : undefined}>
           {questionForView ? (
             <QuestionPicker
               request={questionForView}
@@ -5595,6 +5597,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           />
           </>
           )}
+          <SessionContentLoading
+            phase={ref?.resumeFailed ? 'error' : (ref?.resumePending ? 'loading' : '')}
+          />
         </div>
       )}
       <SessionContentLoading

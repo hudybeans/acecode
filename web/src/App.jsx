@@ -2159,7 +2159,7 @@ export function App() {
               </ChatView>
             )}
             <SessionContentLoading
-              phase={sidebarSessionLoadState?.phase || ''}
+              phase={activeRef?.resumePending ? '' : (sidebarSessionLoadState?.phase || '')}
               title={sidebarSessionLoadState?.title || ''}
               anchorSelector="[data-session-content-loading-anchor='true']"
             />

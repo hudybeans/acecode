@@ -27,7 +27,7 @@ assert.match(homeComposer, /<QuestionPicker/);
 assert.match(homeComposer, /:\s*\(\s*<InputBar/);
 assert.doesNotMatch(homeComposer, /disabled=\{!!questionForView\}/);
 
-const dockStart = chatView.indexOf('<div className="ace-composer-dock">');
+const dockStart = chatView.indexOf('<div className="ace-composer-dock"');
 const dockEnd = chatView.indexOf('<SessionContentLoading', dockStart);
 const dock = chatView.slice(dockStart, dockEnd);
 assert.match(dock, /questionForView\s*\?\s*\(\s*<QuestionPicker/);

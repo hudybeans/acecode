@@ -7,11 +7,11 @@ setlocal
 set "SCRIPT_DIR=%~dp0"
 
 where python >nul 2>&1
-if %errorlevel%==0 (
+if not errorlevel 1 (
     set "PYTHON=python"
 ) else (
     where py >nul 2>&1
-    if %errorlevel%==0 (
+    if not errorlevel 1 (
         set "PYTHON=py"
     ) else (
         echo [ERROR] python or py was not found. Install Python 3.8+ first.

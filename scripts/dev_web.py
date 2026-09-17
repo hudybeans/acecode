@@ -22,18 +22,19 @@ def find_project_root() -> Path:
 
 
 def find_executable(build_dir: Path) -> Path | None:
+    name = "acecode.exe" if os.name == "nt" else "acecode"
     candidates = [
-        build_dir / "acecode.exe",
-        build_dir / "Release" / "acecode.exe",
-        build_dir / "Debug" / "acecode.exe",
-        build_dir / "MinSizeRel" / "acecode.exe",
-        build_dir / "RelWithDebInfo" / "acecode.exe",
+        build_dir / name,
+        build_dir / "Release" / name,
+        build_dir / "Debug" / name,
+        build_dir / "MinSizeRel" / name,
+        build_dir / "RelWithDebInfo" / name,
     ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
 
-    matches = sorted(build_dir.glob("**/acecode.exe")) if build_dir.is_dir() else []
+    matches = sorted(build_dir.glob(f"**/{name}")) if build_dir.is_dir() else []
     return matches[0] if matches else None
 
 
@@ -70,7 +71,7 @@ def main() -> int:
 
     executable = find_executable(build_dir)
     if executable is None:
-        print(f"[ERROR] acecode.exe not found under: {build_dir}", file=sys.stderr)
+        print(f"[ERROR] ACECode executable not found under: {build_dir}", file=sys.stderr)
         print("        Build the acecode target first, or pass --build-dir.", file=sys.stderr)
         return 1
 
@@ -117,10 +118,13 @@ def main() -> int:
         run_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     result = subprocess.run(command, **run_options)
 
+    # Exit 6 means the daemon validated an already-running instance. Other
+    # failures must not be hidden by a stale daemon.port from an earlier run.
+    if result.returncode not in (0, 6):
+        return result.returncode
+
     runtime_dir = _runtime_dir(project_root, args.run_dir)
     port = _wait_for_port(runtime_dir)
-    if result.returncode != 0 and port is None:
-        return result.returncode
     if port is None:
         print("[ERROR] Daemon started without a readable Web UI port.", file=sys.stderr)
         return result.returncode or 1

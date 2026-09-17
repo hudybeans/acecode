@@ -91,7 +91,8 @@ run('右侧局部遮罩不复用全屏导航遮罩且不会挡住侧栏', () => 
   const loading = source('components/SessionContentLoading.jsx');
 
   assert.match(app, /onSessionLoadStateChange=\{setSidebarSessionLoadState\}/);
-  assert.match(app, /<SessionContentLoading\s+phase=\{sidebarSessionLoadState\?\.phase \|\| ''\}/);
+  assert.match(app, /phase=\{activeRef\?\.resumePending \? '' : \(sidebarSessionLoadState\?\.phase \|\| ''\)\}/);
+  assert.match(chat, /phase=\{ref\?\.resumeFailed \? 'error' : \(ref\?\.resumePending \? 'loading' : ''\)\}/);
   assert.match(app, /anchorSelector="\[data-session-content-loading-anchor='true'\]"/);
   assert.equal(
     (chat.match(/data-session-content-loading-anchor="true"/g) || []).length,

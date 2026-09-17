@@ -1284,6 +1284,12 @@ body {
   flex-shrink: 0;
   background: var(--ace-surface);
 }
+.ace-composer-dock[data-question-pending="true"] {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 1;
+  min-height: 0;
+}
 .ace-inputbar-layer {
   /* Home view has no dock wrapper, so the layer itself owns stacking.
      Chat view resets this inside .ace-composer-dock. */

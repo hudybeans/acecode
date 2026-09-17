@@ -1947,7 +1947,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
   var navCounter = box.querySelector('.nav-counter');
   var askTitle = box.querySelector('.ask-title');
   var askOptionsEl = box.querySelector('.ask-options');
-  
+
   if (navPrevBtn && navNextBtn && askOptionsEl) {
     // 模拟题目数据
     var questions = [
@@ -1997,10 +1997,10 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         ]
       }
     ];
-    
+
     var currentQ = 0;
     var isAnimating = false;
-    
+
     function getCurrentQuestionIndex() {
       if (!navCounter) return 0;
       var text = navCounter.textContent.trim();
@@ -2008,21 +2008,21 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
       if (match) return parseInt(match[1], 10) - 1;
       return 0;
     }
-    
+
     currentQ = getCurrentQuestionIndex();
-    
+
     function renderQuestion(idx, direction) {
       if (idx < 0 || idx >= questions.length) return;
       if (isAnimating) return;
       isAnimating = true;
-      
+
       var q = questions[idx];
-      
+
       // 标题、序号、选项 同时淡出 + 微下移
       askTitle.classList.add('fade-out');
       if (navCounter) navCounter.classList.add('fade-out');
       askOptionsEl.classList.add('switching-out');
-      
+
       setTimeout(function() {
         // 更新标题（多选带标签）
         var titleGroup = box.querySelector('.ask-title-group');
@@ -2038,16 +2038,16 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           if (existingBadge) existingBadge.remove();
         }
         askTitle.textContent = q.title;
-        
+
         // 更新序号
         if (navCounter) {
           navCounter.textContent = (idx + 1) + ' / ' + questions.length;
         }
-        
+
         // 重建选项
         var badgeIdx = 1;
         var html = '';
-        
+
         q.options.forEach(function(opt, i) {
           html += '<div class="ask-option">';
           html += '<div class="option-badge">' + badgeIdx + '</div>';
@@ -2065,7 +2065,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           html += '</button></div></div>';
           badgeIdx++;
         });
-        
+
         // 自定义答案行
         html += '<div class="ask-option custom-option">';
         html += '<div class="option-badge dashed">' + badgeIdx + '</div>';
@@ -2073,26 +2073,26 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         html += '<input class="custom-input" type="text" placeholder="输入你的答案">';
         html += '<span class="char-count">0/500</span>';
         html += '</div></div></div>';
-        
+
         askOptionsEl.innerHTML = html;
-        
+
         // 强制回流
         void askOptionsEl.offsetWidth;
-        
+
         // 标题、序号淡入
         askTitle.classList.remove('fade-out');
         if (navCounter) navCounter.classList.remove('fade-out');
-        
+
         // 选项淡入 + 从上方微位移进入
         askOptionsEl.classList.remove('switching-out');
         askOptionsEl.classList.add('switching-in');
-        
+
         // 动画结束后清理
         setTimeout(function() {
           askOptionsEl.classList.remove('switching-in');
           isAnimating = false;
         }, 300);
-        
+
         // 更新底部按钮
         var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
         if (primaryBtn) {
@@ -2110,29 +2110,29 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         }
       }, 180);
     }
-    
+
     // 选项点击：选中切换 + 自定义草稿态灰化
     askOptionsEl.addEventListener('click', function(e) {
       // 点击操作按钮时不切换选中态
       if (e.target.closest('.action-btn')) return;
-      
+
       var option = e.target.closest('.ask-option');
       if (!option) return;
-      
+
       // 点击自定义输入行：聚焦输入框
       if (option.classList.contains('custom-option')) {
         var inp = option.querySelector('.custom-input');
         if (inp) inp.focus();
         return;
       }
-      
+
       var isMulti = questions[currentQ] && questions[currentQ].type === 'multi';
       var allOpts = askOptionsEl.querySelectorAll('.ask-option');
       var optIdx = Array.prototype.indexOf.call(
         askOptionsEl.querySelectorAll('.ask-option:not(.custom-option)'),
         option
       );
-      
+
       if (isMulti) {
         // 多选：切换选中态
         option.classList.toggle('selected');
@@ -2145,7 +2145,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
       } else {
         // 单选
         var isAlreadySelected = option.classList.contains('selected');
-        
+
         // 先清除所有预设选项选中
         allOpts.forEach(function(o, i) {
           if (o.classList.contains('custom-option')) return;
@@ -2157,7 +2157,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           );
           b.textContent = (idx + 1).toString();
         });
-        
+
         // 自定义选项：变为草稿态（如果有内容）
         var custom = askOptionsEl.querySelector('.custom-option');
         if (custom) {
@@ -2171,7 +2171,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
             if (cb) cb.textContent = total.toString();
           }
         }
-        
+
         if (!isAlreadySelected) {
           // 选中当前选项
           option.classList.add('selected');
@@ -2187,7 +2187,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           }
         }
       }
-      
+
       // 更新底部按钮
       var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
       if (primaryBtn) {
@@ -2208,20 +2208,20 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         }
       }
     });
-    
+
     // 自定义输入交互（导航模式）
     askOptionsEl.addEventListener('input', function(e) {
       if (!e.target.classList.contains('custom-input')) return;
       var input = e.target;
       var customOpt = input.closest('.custom-option');
       if (!customOpt) return;
-      
+
       var charCount = customOpt.querySelector('.char-count');
       var badge = customOpt.querySelector('.option-badge');
       var val = input.value;
-      
+
       if (charCount) charCount.textContent = val.length + '/500';
-      
+
       if (val.length > 0) {
         // 有内容：选中自定义，同时取消所有预设选中
         customOpt.classList.add('selected');
@@ -2246,7 +2246,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           badge.textContent = total.toString();
         }
       }
-      
+
       // 更新底部按钮
       var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
       if (primaryBtn) {
@@ -2267,7 +2267,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         }
       }
     });
-    
+
     // 上一题
     navPrevBtn.addEventListener('click', function(e) {
       e.stopPropagation();
@@ -2276,7 +2276,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         renderQuestion(currentQ, -1);
       }
     });
-    
+
     // 下一题
     navNextBtn.addEventListener('click', function(e) {
       e.stopPropagation();
@@ -2285,12 +2285,12 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         renderQuestion(currentQ, 1);
       }
     });
-    
+
     // ============================================================
     // Enter 快捷键：选中当前 hover 选项 + 提交 + 下一题
     // ============================================================
     var hoveredOption = null;
-    
+
     // 追踪 hover 的选项
     box.addEventListener('mouseover', function(e) {
       var opt = e.target.closest('.ask-option');
@@ -2298,31 +2298,31 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         hoveredOption = opt;
       }
     });
-    
+
     // 点击回车图标：选中该行 + 下一题（一步到位）
     box.addEventListener('click', function(e) {
       var enterBtn = e.target.closest('.action-btn.icon-only');
       if (!enterBtn) return;
       e.stopPropagation();
-      
+
       var opt = enterBtn.closest('.ask-option');
       if (!opt || opt.classList.contains('custom-option')) return;
-      
+
       handleEnterSelect(opt);
     });
-    
+
     // 键盘 Enter
     box.setAttribute('tabindex', '0');
     box.style.outline = 'none';
-    
+
     // hover 时聚焦，让键盘事件生效
     box.addEventListener('mouseenter', function() {
       box.focus({ preventScroll: true });
     });
-    
+
     box.addEventListener('keydown', function(e) {
       if (e.key !== 'Enter') return;
-      
+
       // Ctrl+Enter：末题提交全部
       if (e.ctrlKey || e.metaKey) {
         if (currentQ === questions.length - 1) {
@@ -2331,16 +2331,16 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           return;
         }
       }
-      
+
       // 普通 Enter
       // 如果在自定义输入框里，不触发（让用户正常输入）
       if (e.target.classList.contains('custom-input')) return;
-      
+
       // 找要选中的选项：优先 hover 的，其次第一个未选中的推荐项
-      var targetOption = hoveredOption && hoveredOption.closest('.ask-options') === askOptionsEl 
-        ? hoveredOption 
+      var targetOption = hoveredOption && hoveredOption.closest('.ask-options') === askOptionsEl
+        ? hoveredOption
         : null;
-      
+
       if (!targetOption) {
         // 没有 hover 的，选第一个预设选项（带 [推荐] 的优先）
         var recOpt = box.querySelector('.ask-option:not(.custom-option) .option-recommend');
@@ -2349,19 +2349,19 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
       if (!targetOption) {
         targetOption = box.querySelector('.ask-option:not(.custom-option)');
       }
-      
+
       if (targetOption) {
         e.preventDefault();
         handleEnterSelect(targetOption);
       }
     });
-    
+
     function handleEnterSelect(opt) {
       if (isAnimating) return;
-      
+
       var isLast = currentQ === questions.length - 1;
       var isMulti = questions[currentQ] && questions[currentQ].type === 'multi';
-      
+
       // 选中该选项
       if (isMulti) {
         // 多选：切换
@@ -2376,7 +2376,7 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
         // 多选不自动跳下一题
         return;
       }
-      
+
       // 单选：选中
       var allOpts = askOptionsEl.querySelectorAll('.ask-option');
       allOpts.forEach(function(o, i) {
@@ -2388,21 +2388,21 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
       opt.classList.add('selected');
       var sbadge = opt.querySelector('.option-badge');
       sbadge.innerHTML = '<span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>';
-      
+
       // 末题：只选中，不自动提交（需 Ctrl+Enter）
       if (isLast) {
         var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
         if (primaryBtn) primaryBtn.innerHTML = '提交<span class="btn-kbd-hint">Ctrl + Enter</span>';
         return;
       }
-      
+
       // 非末题：一步到位 —— 选中 + 下一题
       setTimeout(function() {
         currentQ++;
         renderQuestion(currentQ, 1);
       }, 120);
     }
-    
+
     function submitAll() {
       // 模拟提交全部
       var primaryBtn = box.querySelector('.ask-footer .btn:last-child');
@@ -2418,12 +2418,12 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
       }
     }
   }
-  
+
   // 折叠/展开（紧凑折叠态）
   var askHeader = box.querySelector('.ask-header');
   var askOptions = box.querySelector('.ask-options');
   var askFooter = box.querySelector('.ask-footer');
-  
+
   if (askHeader && askOptions) {
     var originalHeaderHTML = askHeader.innerHTML;
     var compactHTML =
@@ -2436,21 +2436,21 @@ document.querySelectorAll('.ask-box').forEach(function(box) {
           '</span>' +
         '</button>' +
       '</div>';
-    
+
     function doCollapse() {
       askHeader.innerHTML = compactHTML;
       askOptions.style.display = 'none';
       if (askFooter) askFooter.style.display = 'none';
       box.classList.add('collapsed-compact');
     }
-    
+
     function doExpand() {
       askHeader.innerHTML = originalHeaderHTML;
       askOptions.style.display = '';
       if (askFooter) askFooter.style.display = '';
       box.classList.remove('collapsed-compact');
     }
-    
+
     // 事件委托：在 box 上监听折叠/展开点击
     box.addEventListener('click', function(e) {
       if (e.target.closest('.collapse-btn')) {

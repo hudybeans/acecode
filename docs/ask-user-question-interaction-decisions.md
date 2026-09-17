@@ -16,7 +16,7 @@ This document records the agreed prototype changes for ACECode Desktop/Web. It d
 ## Submitted answers
 
 - A completed AskUserQuestion uses the existing `AskUserQuestion` activity/tool line as its only result header.
-- Submitted answers are collapsed by default, including after history reload.
+- Submitted answers are expanded by default, including after history reload. The activity line can collapse them.
 - The entire activity line toggles the answer details and remains keyboard accessible through the existing activity-line interaction.
 - Expanded answers appear as a compact inline list directly beneath the activity line.
 - The inline list has no independent result heading, summary row, rounded card, success badge, or outer border.

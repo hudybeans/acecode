@@ -61,7 +61,7 @@ run('提交在途只走 submitting,绝不并进 InputBar 的 disabled', () => {
   // 主页与会话 composer 都在提问挂起时**根本不渲染** —— dock 整体换成
   // 提问框,所以它们不需要 disabled,也不该留「请先回答上方问题」这类旧提示。
   assert.doesNotMatch(chatView, /disabled=\{!!questionForView\}/);
-  assert.match(chatView, /<div className="ace-composer-dock">\s*\{questionForView \? \(/);
+  assert.match(chatView, /<div className="ace-composer-dock"[^>]*>\s*\{questionForView \? \(/);
 
   assert.doesNotMatch(chatView, /请先回答上方问题/);
   assert.match(chatView, /submitting=\{composerSubmitting \|\| reasoningSwitching\}/);
@@ -79,7 +79,7 @@ run('提问挂起时 composer 整体让位给提问框,不留插话入口', () =
 
 
   // 输入区只挂在「没有待答问题」的分支里,提问期间 dock 中不存在 InputBar。
-  const dockStart = chatView.indexOf('<div className="ace-composer-dock">');
+  const dockStart = chatView.indexOf('<div className="ace-composer-dock"');
   assert.ok(dockStart > 0, '未找到会话 composer dock');
   const dock = chatView.slice(dockStart, chatView.indexOf('<SessionContentLoading', dockStart));
   assert.match(dock, /\{questionForView \? \(/);

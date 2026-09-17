@@ -5409,7 +5409,8 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     // ToolContext::ask_user_questions 注入(见 agent_loop 里的 set_ask_question_channel
     // 接线)。无需等 state/screen 就绪,但保留在这里以免和下面的 MCP
     // 启动顺序拉开。
-    tools.register_tool(create_ask_user_question_tool_async(config.ask.max_questions));
+    tools.register_tool(create_ask_user_question_tool_async(
+        config.ask.max_questions, config.ask.max_options));
     start_mcp_servers_async(mcp_manager, tools, state, screen);
 
     std::atomic<bool> mcp_first_turn_wait_done{false};

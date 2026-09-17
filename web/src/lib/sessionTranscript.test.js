@@ -2146,6 +2146,8 @@ run('live/static 判定区分 active running 与磁盘历史', () => {
   assert.equal(canLiveMonitorSession({ id: 's1', status: 'idle', active: false }), false);
   assert.equal(canLiveMonitorSession({ id: 's1', active: true, resumePending: true }), false);
   assert.equal(canLiveMonitorSession({ id: 's1', active: true, resumePending: true }, true), false);
+  assert.equal(canLiveMonitorSession({ id: 's1', active: false, resumeFailed: true }, true), false);
+  assert.equal(canLiveMonitorSession({ id: 's1', active: true, resumeFailed: true }), false);
   assert.equal(canLiveMonitorSession({ id: 's1' }, true), true);
   assert.equal(canLiveMonitorSession({ id: 's1', active: true }, false), false);
 });

@@ -92,7 +92,7 @@ TEST(ConfigAskLoader, ClampsValuesOutsideSupportedRange) {
             << "configured=" << test_case.configured;
         remove_file(path);
     }
-    const Case option_cases[] = {{3, 4}, {2, 4}, {9, 8}, {100, 8}};
+    const Case option_cases[] = {{3, 4}, {2, 4}, {9, 8}, {10, 8}, {100, 8}};
     for (const Case test_case : option_cases) {
         const auto path = temp_config_path("clamp-options");
         write_json(path, {{"ask", {{"max_options", test_case.configured}}}});

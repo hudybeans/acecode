@@ -100,6 +100,7 @@ import './subagentPanelSplitArchitecture.test.js';
 import './queueCardItem.test.js';
 import './sessionSubscription.test.js';
 import './sessionTranscript.test.js';
+import './sessionTranscriptRecovery.test.js';
 import './transcriptSelfHeal.test.js';
 import './singleWriterStore.test.js';
 import './transcriptStreamIntegrity.test.js';

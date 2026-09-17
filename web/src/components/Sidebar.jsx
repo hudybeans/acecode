@@ -3377,6 +3377,7 @@ export function Sidebar({
         ...target,
         active: false,
         resumePending: false,
+        resumeFailed: true,
         ...expertReferenceForSession(session),
       }, { preserveSidebarSessionLoading: true });
       toast({ kind: 'err', text: '恢复失败:' + (error?.message || '') });

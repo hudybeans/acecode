@@ -201,7 +201,7 @@ run('chat composer docks the git pill below the input without overlapping it', (
   assert.match(chatView, /className="ace-composer-dock"/);
   assert.match(
     chatView,
-    /<div className="ace-composer-dock">[\s\S]*<InputBar[\s\S]*<GitSessionPill[\s\S]*<\/div>/,
+    /<div className="ace-composer-dock"[^>]*>[\s\S]*<InputBar[\s\S]*<GitSessionPill[\s\S]*<\/div>/,
   );
   assert.match(pill, /ace-git-pill-bar/);
   assert.doesNotMatch(pill, /-mt-1\.5|-mt-\[|margin-top:\s*-/);

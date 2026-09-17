@@ -1,5 +1,15 @@
 ## Verification
 
+### Integration review, 2026-09-17
+
+- Fixed the missing `config.ask.max_options` argument in `src/main.cpp`; TUI, daemon and headless registration now use the configured value.
+- `cmake --build build --target acecode_unit_tests --config Release --parallel 4`: passed.
+- `build/tests/Release/acecode_unit_tests.exe --gtest_filter=ConfigAsk*:AskUserQuestion*:AgentLoopAskUserQuestionParallel.*:AgentLoopQuestionInterjection.*`: 64 tests passed.
+- `MSBuild build/acecode.vcxproj /t:ClCompile /p:Configuration=Release /p:Platform=x64 /m:4 /nr:false`: passed, including the production TUI entry point. The running daemon executable was not relinked or replaced.
+- Strict OpenSpec validation and `git diff --check`: passed.
+
+The following Linux results are retained from the contributor's original report.
+
 ### Build
 
 Fresh Linux x64 build (vcpkg manifest mode, triplet x64-linux, tests feature):
@@ -43,9 +53,9 @@ All ConfigAsk* and AskUserQuestion* tests pass, including the new ones:
 - `AskUserQuestionExecutionTest.ConfiguredOptionLimitRejectsBeforeOpeningChannel` — over-limit rejected before the ask channel opens
 - `AskUserQuestionValidateTest.OptionsLengthOutOfRangeRejected` — updated to the new default (7 rejected)
 
-### Pre-existing environment issue (not caused by this change)
+### Contributor-reported environment issue
 
-The full unit-test binary crashes in teardown of project-state harnesses (`AgentLoopGoal.*`, `AgentLoopTurnSteering.*`, `GoalCommand.*`) with `std::filesystem::filesystem_error: cannot remove: Directory not empty [/home/user/.acecode/projects/<hash>]`. The SessionManager's background writer can recreate files while the harness destructor runs `remove_all`. Evidence this predates the change: `~/.acecode/projects` contains leftover session artifacts timestamped 2026-09-14 17:56 (the day before this change), produced by the same teardown failure. These suites were excluded from the focused run above; they are unrelated to AskUserQuestion configuration.
+The contributor reported teardown failures in project-state harnesses (`AgentLoopGoal.*`, `AgentLoopTurnSteering.*`, `GoalCommand.*`) with `std::filesystem::filesystem_error: cannot remove: Directory not empty [/home/user/.acecode/projects/<hash>]`. Those suites were excluded from the original focused run. Old artifact timestamps alone do not establish that a failure also occurs on master; this review did not reproduce that environment failure. The PR's complete Linux CI subsequently passed.
 
 ### Other checks
 

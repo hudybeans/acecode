@@ -1653,7 +1653,7 @@ export function canLiveMonitorSession(sessionRef, live = 'auto') {
   // Optimistic navigation can render a disk-backed session before the daemon
   // has finished registering its runtime entry. This safety boundary must win
   // even when the caller generally enables live monitoring for writable chats.
-  if (ref?.resumePending === true) return false;
+  if (ref?.resumePending === true || ref?.resumeFailed === true) return false;
   if (live === true) return true;
   if (live === false || !ref) return false;
   const status = ref.status || ref.attention_state || ref.read_state || '';
@@ -1714,6 +1714,7 @@ export function useSessionTranscript(sessionRef, options = {}) {
   // state 在 sid 切换后的首帧仍属于上一会话;在 reset effect 落地前不能把
   // 旧会话的 loaded 状态当成新会话已加载。
   const stateSessionIdRef = useRef(sid);
+  const historyScopeRef = useRef(null);
   sessionRefRef.current = ref;
   const refreshSignatureRef = useRef('');
 
@@ -1748,13 +1749,21 @@ export function useSessionTranscript(sessionRef, options = {}) {
   useEffect(() => {
     stateSessionIdRef.current = sid;
     const baseTitle = sid ? sessionDisplayTitle(sessionRefRef.current) : '';
-    const reset = createTranscriptState({
-      title: baseTitle,
-      isLive,
-      loadState: sid ? 'loading' : 'idle',
-    });
-    store.commit(() => reset);
-    refreshSignatureRef.current = '';
+    const sameHistory = historyScopeRef.current?.sid === sid
+      && historyScopeRef.current?.api === api;
+    historyScopeRef.current = { sid, api };
+    if (sameHistory) {
+      // Runtime recovery changes live eligibility, not transcript identity.
+      // Keep the disk history visible while fetching the live catch-up.
+      store.commit((previous) => ({ ...previous, isLive }));
+    } else {
+      store.commit(() => createTranscriptState({
+        title: baseTitle,
+        isLive,
+        loadState: sid ? 'loading' : 'idle',
+      }));
+      refreshSignatureRef.current = '';
+    }
     if (!sid) return undefined;
 
     let off = false;
