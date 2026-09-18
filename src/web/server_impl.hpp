@@ -589,6 +589,7 @@ struct WebServer::Impl {
     void register_lsp();
     void register_skills();
     void register_commands();
+    std::mutex mcp_config_mu;
     void register_mcp();
     void register_hooks();
     void register_feedback();

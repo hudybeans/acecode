@@ -405,8 +405,10 @@ update their transcript presentation.
 | GET | `/api/update/jobs/:id` | poll one WebUI update job |
 | POST | `/api/update/jobs/:id/cancel` | cancel one WebUI update job before installation |
 | GET | `/api/mcp` | read MCP config |
-| PUT | `/api/mcp` | write MCP config |
-| POST | `/api/mcp/reload` | currently returns 501 |
+| GET | `/api/mcp/schema` | read MCP configuration JSON schemas |
+| PUT | `/api/mcp` | validate, persist, and apply MCP config |
+| POST | `/api/mcp/toggle` | validate and persist one server's enabled state |
+| POST | `/api/mcp/reload` | validate/recover persisted config and apply it |
 | GET | `/api/feedback/desktop/recent-sessions` | list sessions for feedback attachment |
 | POST | `/api/feedback/desktop` | package and upload desktop feedback |
 | GET | `/api/pty/shells` | list console shell choices |
@@ -3742,7 +3744,12 @@ For a successful macOS bundle update, `backup_dir` identifies the retained
 
 ### `GET /api/mcp`
 
-Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
+Reads global `mcp_servers` by default. Add `?workspace=<registered-workspace-hash>`
+to read only that project's `.acecode/mcp.json` entries. The same optional query
+applies to PUT, toggle, and reload. Unknown workspaces return `404`; filesystem
+paths are not accepted as workspace identifiers. `auth_token` is not returned.
+All MCP endpoints require the server's normal authentication and return
+`Cache-Control: no-store`.
 
 ```json
 {
@@ -3761,18 +3768,69 @@ Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
 
 ### `PUT /api/mcp`
 
-Overwrites `mcp_servers`. Body is an object keyed by server name. Success:
+Replaces the selected scope's server map. The body is an object keyed by server
+name, without a `mcp_servers` wrapper. Project files on disk use the wrapper;
+project definitions override matching global names only in that project,
+including disabled definitions. An empty project map removes those overrides.
+
+The raw body must pass the ACECode configuration JSON Schema before any
+persistence, in-memory publication, or runtime update. Omitted `auth_token`
+fields preserve previously saved tokens for the same server; an explicit empty
+string clears a token. Successful writes reconcile the runtime when available:
 
 ```json
-{"saved":true,"reload_required":true}
+{"saved":true,"reload_required":false,"applied":true}
 ```
+
+Without a runtime, saving still succeeds with `applied:false` and
+`reload_required:true`. Persistence failures return `500` without publishing the
+candidate to application configuration. Invalid JSON or schema violations
+return `400` with the complete schema and JSON Pointer diagnostics:
+
+```json
+{
+  "error": "MCP_CONFIG_INVALID",
+  "message": "MCP configuration failed schema validation",
+  "errors": [{"path": "/example/command", "message": "must be string"}],
+  "schema": {"$schema": "http://json-schema.org/draft-07/schema#", "title": "ACECode MCP server configuration"},
+  "specification_url": "https://modelcontextprotocol.io/specification/2026-07-28/schema"
+}
+```
+
+The schema above is abbreviated for documentation; responses include all
+validation rules. Diagnostics do not echo rejected configuration values.
+
+### `GET /api/mcp/schema`
+
+Returns `schema` (the server map accepted by PUT) and `document_schema` (the
+project file wrapper). These are ACECode client configuration schemas; the
+linked MCP specification describes protocol messages. Validation works offline.
+
+### `POST /api/mcp/toggle`
+
+Body: `{"name":"example","enabled":false}`. Both fields are required with
+their declared types. The complete resulting scope is validated and saved
+before updating runtime state. Unknown names return `404`. Success:
+
+```json
+{"name":"example","enabled":false,"applied":true,"retained_for_expert":false}
+```
+
+An explicitly selected expert may retain its server connection after disabling
+the default. Retention is scoped to the exact global/project owner.
 
 ### `POST /api/mcp/reload`
 
-Currently returns `501`:
+Re-reads the selected persisted configuration, validates it, and reconciles its
+runtime registrations and session capability policies. Invalid external edits
+restore the validated `<config-file>.mcp-last-good` snapshot and archive the
+invalid input. Global recovery replaces only `mcp_servers`; project recovery
+affects only that project file. If no valid snapshot exists, returns the schema
+error and starts no servers from the invalid configuration. Returns `503` when
+no runtime is available. Success:
 
 ```json
-{"error":"mcp reload not implemented in v1; restart daemon to pick up changes"}
+{"reloaded":true}
 ```
 
 ### `GET /api/feedback/desktop/recent-sessions?limit=N`

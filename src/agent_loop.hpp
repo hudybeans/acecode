@@ -455,6 +455,9 @@ public:
     void set_tool_capability_policy(ToolCapabilityPolicy policy) {
         tool_capability_policy_ = std::move(policy);
     }
+    const ToolCapabilityPolicy& tool_capability_policy() const {
+        return tool_capability_policy_;
+    }
     void set_git_context_config(const GitContextConfig* cfg) {
         git_context_cfg_ = cfg;
     }

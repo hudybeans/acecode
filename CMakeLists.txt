@@ -176,6 +176,7 @@ list(FILTER ACECODE_TUI_SOURCES INCLUDE REGEX "/src/(tui|markdown)/")
 set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config/config.cpp
     ${CMAKE_SOURCE_DIR}/src/config/config_recovery.cpp
+    ${CMAKE_SOURCE_DIR}/src/config/mcp_config.cpp
     ${CMAKE_SOURCE_DIR}/src/config/model_provider_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/config/request_headers.cpp
     ${CMAKE_SOURCE_DIR}/src/config/saved_models.cpp

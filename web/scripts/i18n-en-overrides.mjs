@@ -1,6 +1,11 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '查看配置 Schema': 'View configuration schema',
+  '配置范围': 'Configuration scope',
+  '全局（所有项目）': 'Global (all projects)',
+  '项目配置与全局配置叠加，同名服务器以项目配置为准。': 'Project servers are combined with global servers. Project definitions override matching names.',
+  'MCP 配置范围': 'MCP configuration scope',
   '调整 {{p0}} 的顺序': 'Reorder {{p0}}',
   '拖动排序，也可按上下方向键': 'Drag to reorder, or use the up and down arrow keys',
   '模型列表已发生变化，请刷新后重新排序': 'The model list has changed. Refresh it and reorder again.',

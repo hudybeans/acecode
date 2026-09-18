@@ -6,7 +6,7 @@
 //   - GET /api/sessions/<id>/messages 返回 events+messages
 //   - GET /api/skills 全量扫描 workspace 项目链 + 全局根,项目 skill 带 source
 //   - GET /api/mcp 返回当前 mcp_servers
-//   - POST /api/mcp/reload 返回 501
+//   - MCP 配置校验、项目范围与无运行时的 reload 返回 503
 //   - 远程 IP(非 loopback)模拟 → 这里用 cpr 走 127.0.0.1 不容易模拟,所以
 //     远程鉴权由 auth_test.cpp 单元覆盖,这里只验路由 wiring 通的部分
 //
@@ -7466,11 +7466,111 @@ TEST(WebServerHttp, McpPutThenGetRoundtrip) {
     EXPECT_EQ(j["test-server"]["command"], "/usr/bin/python3");
 }
 
-// 场景: POST /api/mcp/reload 返回 501(v1 未实装,spec 9.9 文档化的限制)。
-TEST(WebServerHttp, McpReloadIsNotImplemented) {
+// A fixture without an MCP runtime cannot apply a reload.
+TEST(WebServerHttp, McpReloadReportsUnavailableWithoutRuntime) {
     WebServerFixture fx;
     auto r = cpr::Post(cpr::Url{fx.url("/api/mcp/reload")});
-    EXPECT_EQ(r.status_code, 501);
+    EXPECT_EQ(r.status_code, 503);
+}
+
+TEST(WebServerHttp, McpSchemaRejectionPreservesSavedAndRuntimeConfiguration) {
+    WebServerFixture fx;
+    const json valid = {{"secure", {{"transport", "http"}, {"url", "https://example.test"},
+                                    {"auth_token", "sensitive-token"}}}};
+    auto saved = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{valid.dump()});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto before = read_text(fx.tmp_dir / "config.json");
+    const auto backup = read_text(fx.tmp_dir / "config.json.mcp-last-good");
+    auto invalid = valid;
+    invalid["secure"]["timeout_seconds"] = "sensitive-invalid-value";
+    auto rejected = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{invalid.dump()});
+    ASSERT_EQ(rejected.status_code, 400) << rejected.text;
+    const auto error = json::parse(rejected.text);
+    EXPECT_EQ(error["error"], "MCP_CONFIG_INVALID");
+    EXPECT_EQ(error["errors"][0]["path"], "/secure/timeout_seconds");
+    EXPECT_TRUE(error["schema"].is_object());
+    EXPECT_EQ(rejected.text.find("sensitive-"), std::string::npos);
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), before);
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json.mcp-last-good"), backup);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("secure").auth_token, "sensitive-token");
+    const auto schema = cpr::Get(cpr::Url{fx.url("/api/mcp/schema")});
+    ASSERT_EQ(schema.status_code, 200);
+    EXPECT_EQ(json::parse(schema.text)["schema"], error["schema"]);
+    const auto read = cpr::Get(cpr::Url{fx.url("/api/mcp")});
+    ASSERT_EQ(read.status_code, 200);
+    EXPECT_EQ(read.text.find("sensitive-token"), std::string::npos);
+    const auto roundtrip = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{read.text});
+    EXPECT_EQ(roundtrip.status_code, 200);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("secure").auth_token, "sensitive-token");
+}
+
+TEST(WebServerHttp, ProjectMcpEditsAreIndependentOfGlobalAndUnknownWorkspaceIsRejected) {
+    WebServerFixture fx;
+    const auto workspace = fx.workspace_registry->list().front();
+    std::filesystem::create_directories(acecode::path_from_utf8(workspace.cwd) / ".git");
+    const auto project_url = fx.url("/api/mcp?workspace=" + workspace.hash);
+    const json global = {{"same", {{"command", "global-command"}}}};
+    const json project = {{"same", {{"command", "project-command"}}}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{global.dump()}).status_code, 200);
+    ASSERT_EQ(cpr::Put(cpr::Url{project_url}, cpr::Body{project.dump()}).status_code, 200);
+    const auto found = cpr::Get(cpr::Url{project_url});
+    ASSERT_EQ(found.status_code, 200);
+    EXPECT_EQ(json::parse(found.text)["same"]["command"], "project-command");
+    EXPECT_EQ(fx.cfg.mcp_servers.at("same").command, "global-command");
+    auto invalid = cpr::Put(cpr::Url{project_url}, cpr::Body{R"({"same":{"args":5}})"});
+    EXPECT_EQ(invalid.status_code, 400);
+    EXPECT_TRUE(json::parse(invalid.text)["schema"].is_object());
+    auto toggle = cpr::Post(cpr::Url{fx.url("/api/mcp/toggle?workspace=" + workspace.hash)},
+                           cpr::Body{R"({"name":"same","enabled":false})"});
+    ASSERT_EQ(toggle.status_code, 200) << toggle.text;
+    EXPECT_FALSE(fx.cfg.mcp_servers.at("same").disabled);
+    EXPECT_TRUE(json::parse(cpr::Get(cpr::Url{project_url}).text)["same"]["disabled"]);
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp?workspace=missing")}, cpr::Body{project.dump()}).status_code, 404);
+}
+
+TEST(WebServerHttp, McpFailedPersistenceDoesNotPublishCandidateOrToggle) {
+    WebServerFixture fx;
+    const json initial = {{"x", {{"command", "original"}}}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{initial.dump()}).status_code, 200);
+    std::filesystem::remove(fx.tmp_dir / "config.json");
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")},
+        cpr::Body{R"({"x":{"command":"replacement"}})"}).status_code, 500);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("x").command, "original");
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/mcp/toggle")},
+        cpr::Body{R"({"name":"x","enabled":false})"}).status_code, 500);
+    EXPECT_FALSE(fx.cfg.mcp_servers.at("x").disabled);
+}
+
+TEST(WebServerHttp, ProjectMcpReplacementRepairsInvalidDocumentAndCatalogUsesProjectOverride) {
+    WebServerFixture fx;
+    const auto workspace = fx.workspace_registry->list().front();
+    const auto root = acecode::path_from_utf8(workspace.cwd);
+    std::filesystem::create_directories(root / ".git");
+    std::filesystem::create_directories(root / ".acecode");
+    { std::ofstream out(root / ".acecode" / "mcp.json"); out << "{broken"; }
+    const auto url = fx.url("/api/mcp?workspace=" + workspace.hash);
+    auto invalid = cpr::Get(cpr::Url{url});
+    ASSERT_EQ(invalid.status_code, 400);
+    EXPECT_TRUE(json::parse(invalid.text)["schema"].is_object());
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")},
+        cpr::Body{R"({"same":{"command":"global"},"inherited":{"command":"shared"}})"}).status_code, 200);
+    ASSERT_EQ(cpr::Put(cpr::Url{url},
+        cpr::Body{R"({"same":{"transport":"http","url":"https://project.test","disabled":true}})"}).status_code, 200);
+    const auto catalog = cpr::Get(cpr::Url{fx.url("/api/experts/capabilities?workspace=" + workspace.hash)});
+    ASSERT_EQ(catalog.status_code, 200) << catalog.text;
+    const auto rows = json::parse(catalog.text)["mcp_servers"];
+    ASSERT_EQ(rows.size(), 2u);
+    for (const auto& row : rows) {
+        if (row["id"] == "same") {
+            EXPECT_EQ(row["source"], "project");
+            EXPECT_EQ(row["transport"], "http");
+            EXPECT_FALSE(row["default_enabled"].get<bool>());
+        } else {
+            EXPECT_EQ(row["id"], "inherited");
+            EXPECT_EQ(row["source"], "global");
+        }
+    }
 }
 
 // 场景: POST /api/mcp/toggle 翻转某 server 的启用态。fixture 未挂 McpManager,
