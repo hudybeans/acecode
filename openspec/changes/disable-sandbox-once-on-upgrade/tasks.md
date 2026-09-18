@@ -10,6 +10,8 @@
 
 ## 验证记录
 
+- [x] 发布集成：将共享启动迁移依赖加入 `acecode_native_bridge_support`，验证 Desktop 与 CLI 完整链接及配置迁移回归。
+
 - Windows MSVC MinSizeRel：`cmake --build build --config MinSizeRel --target acecode_unit_tests --parallel 4` 通过。
 - `tests/config/` 全部测试套件及 `SecurityHandler`：57 个套件、336 项测试全部通过。覆盖真实 `load_config()` 启动入口及环境变量不落盘。
 - 旧测试 `RuntimeSkillAllowlistIsNeverPersisted` 在再次启动加载前关闭文件读取句柄，以允许 Windows 原子替换；原有业务断言保持不变。

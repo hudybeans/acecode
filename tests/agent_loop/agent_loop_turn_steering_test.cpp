@@ -40,7 +40,7 @@ class TurnSteeringHarness {
 public:
     explicit TurnSteeringHarness(const std::string& hint)
         : cwd_(steering_temp_cwd(hint)) {
-        sm_.start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
+        sm_->start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
 
         acecode::AgentCallbacks callbacks;
         callbacks.on_busy_changed = [this](bool busy) {
@@ -55,7 +55,7 @@ public:
         };
         loop_ = std::make_unique<acecode::AgentLoop>(
             accessor, tools_, callbacks, cwd_.string(), permissions_);
-        loop_->set_session_manager(&sm_);
+        loop_->set_session_manager(sm_.get());
         sub_ = loop_->events().subscribe([this](const acecode::SessionEvent& event) {
             std::lock_guard<std::mutex> lk(events_mu_);
             events_.push_back(event);
@@ -65,13 +65,14 @@ public:
     ~TurnSteeringHarness() {
         if (loop_ && sub_ != 0) loop_->events().unsubscribe(sub_);
         loop_.reset();
+        sm_.reset(); // Close SQLite handles before deleting the project on Windows.
         fs::remove_all(cwd_);
         fs::remove_all(acecode::SessionStorage::get_project_dir(cwd_.string()));
     }
 
     acecode::AgentLoop& loop() { return *loop_; }
     acecode_test::StubLlmProvider& provider() { return *provider_; }
-    acecode::SessionManager& session_manager() { return sm_; }
+    acecode::SessionManager& session_manager() { return *sm_; }
 
     std::string wait_for_active_turn(std::chrono::milliseconds timeout = 5s) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -127,7 +128,8 @@ private:
         std::make_shared<acecode_test::StubLlmProvider>();
     acecode::ToolExecutor tools_;
     acecode::PermissionManager permissions_;
-    acecode::SessionManager sm_;
+    std::unique_ptr<acecode::SessionManager> sm_ =
+        std::make_unique<acecode::SessionManager>();
     std::unique_ptr<acecode::AgentLoop> loop_;
     acecode::EventDispatcher::SubscriptionId sub_ = 0;
 

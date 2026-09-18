@@ -70,7 +70,9 @@ inline bool atomic_write_file(const std::string& path,
                 if (::GetTokenInformation(token, TokenUser, buf.data(), len, &len)) {
                     PSID user_sid = reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid;
                     EXPLICIT_ACCESSW ea{};
-                    ea.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE;
+                    // Rename/replacement needs DELETE on the file when the
+                    // parent does not grant FILE_DELETE_CHILD (e.g. Modify).
+                    ea.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE | DELETE;
                     ea.grfAccessMode = SET_ACCESS;
                     ea.grfInheritance = NO_INHERITANCE;
                     ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;

@@ -19,6 +19,8 @@
 
 ## 用户中断扩展验证记录
 
+- [x] 发布集成：测试清理前销毁 SessionManager，关闭 Windows SQLite 句柄；重新运行重发定向及完整原生回归。
+
 - `pnpm test`、`pnpm build` 通过，生产产物正则兼容性检查通过。
 - `cmake --build build --config Release --target acecode_unit_tests --parallel 6` 通过。
 - C++ 定向回归 34 项通过，覆盖重试、插话、目标中断、回合计时/差异、trajectory、skill、历史恢复及 HTTP 入口。
