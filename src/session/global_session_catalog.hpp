@@ -14,7 +14,7 @@
 
 namespace acecode {
 
-// One globally discoverable top-level session. Project/workspace data is
+// One globally discoverable session. Project/workspace data is
 // descriptive metadata only: workspace visibility never decides whether the
 // entry is present.
 struct GlobalSessionCatalogEntry {
@@ -37,6 +37,11 @@ struct GlobalSessionCatalogError {
 };
 
 struct GlobalSessionCatalogOptions {
+    // Model-facing discovery can explicitly include archived/child sessions.
+    // UI discovery retains its existing top-level, non-archived defaults.
+    bool include_archived = false;
+    bool include_subagents = false;
+
     // Absent or empty means metadata-only discovery. A non-empty query reuses
     // each project's existing user-message index and annotates matching rows.
     std::optional<std::string> content_query;

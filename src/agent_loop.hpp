@@ -206,6 +206,11 @@ public:
     // context parts. Existing text-only submit overloads delegate here.
     void submit(const UserInput& input);
 
+    // Retry only the exact trailing user message while the worker and queue
+    // are idle. Reuses its stored input instead of appending another user.
+    bool retry_last_user_message(const std::string& expected_user_message_id,
+                                 std::string& error);
+
     // Submit a user-initiated shell command triggered by `!` mode. Non-blocking:
     // enqueues on the same worker so it serialises with LLM turns. The worker
     // invokes BashTool directly (no LLM round-trip), emits tool_call + tool_result
@@ -299,6 +304,7 @@ public:
     // Clear all messages (for /clear command)
     void clear_messages() {
         messages_.clear();
+        live_transcript_tail_blocked_ = false;
         last_api_total_tokens_.store(0, std::memory_order_relaxed);
         compact_window_initialized_ = false;
         compact_window_number_ = 0;
@@ -506,7 +512,10 @@ private:
     void join_side_question_threads();
     void run_agent(const std::string& user_message);
     void run_agent_with_input(const UserInput& input,
-                              bool hidden_goal_context = false);
+                              bool hidden_goal_context = false,
+                              const ChatMessage* retry_message = nullptr);
+    std::optional<ChatMessage> retryable_user_message(
+        const std::string& expected_user_message_id) const;
     // Variant that records `display_text` into the user message's metadata.display_text
     // so UI can show the original input while the LLM sees an expanded `prompt`.
     // When `display_text` is empty, behaves identically to run_agent(prompt).
@@ -634,6 +643,8 @@ private:
         std::int64_t turn_started_at_ms = 0;
     };
     UserTurnInfo prepare_user_turn(const UserInput& input, bool hidden_goal_context);
+    UserTurnInfo prepare_retry_user_turn(const ChatMessage& message);
+    void start_user_turn(const UserTurnInfo& info);
 
     // Phase 2: Build the full message list for the LLM provider.
     struct ApiRequestBundle {
@@ -738,12 +749,16 @@ private:
         std::string display_text;
         bool hidden_goal_context = false;
         std::function<void()> control;
+        std::string retry_user_message_id;
     };
 
     ProviderAccessor provider_accessor_;
     ToolExecutor& tools_;
     AgentCallbacks callbacks_;
     std::vector<ChatMessage> messages_;
+    // Visible events (notably errors and partial output) may not be present
+    // in model history or JSONL. They must also invalidate an empty retry.
+    std::atomic<bool> live_transcript_tail_blocked_{false};
     mutable std::mutex side_question_context_mu_;
     std::vector<ChatMessage> side_question_context_;
     std::mutex side_question_threads_mu_;

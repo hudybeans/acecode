@@ -49,6 +49,7 @@ import './fileTreeLocate.test.js';
 import './format.test.js';
 import './inputHistoryNavigation.test.js';
 import './inputBarState.test.js';
+import './trailingUserMessageRetry.test.js';
 import './composerFileTransfer.test.js';
 import './composerAttachmentReservations.test.js';
 import './richComposerContextPaste.test.js';

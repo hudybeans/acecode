@@ -1,7 +1,7 @@
 // 输入框:富文本 composer 自动撑高(最多 8 行) + Enter 发 / Shift+Enter 换行 +
 // 空输入或未编辑的历史项用上下键翻 history。
 //
-// 底部工具栏单独占一行,提交按钮在右侧(只在有内容时变蓝),空内容时灰色不可点。
+// 底部工具栏单独占一行,提交按钮在右侧;空内容仅在可重试末尾用户消息时允许发送。
 //
 // 斜杠命令:value 以 / 开头且无空白时,SlashDropdown 浮层显示在输入框上方。
 // 选中后插入 `/<name> ` 到输入框,不立即发送(builtin 与 skill 行为统一)。
@@ -179,7 +179,7 @@ function ComposerBrowserContextCard({ item, onRemove }) {
 }
 
 export const InputBar = forwardRef(function InputBar({
-  disabled, submitting = false,
+  disabled, submitting = false, canRetryLastUserMessage = false,
   placeholder = '输入消息或 / 命令…', onSubmit, onAbort, busy, goal = null,
   onGoalEdit, onGoalStatusChange, onGoalClear,
   history = [], historyEntries = [], variant = 'default', attentionRequest = 0,
@@ -511,8 +511,7 @@ export const InputBar = forwardRef(function InputBar({
   };
 
   const submit = () => {
-    const v = value.trim();
-    if ((!v && !hasExtras) || disabled || submitting) return;
+    if (!actionState.canSubmit) return;
     onSubmit?.(value);
     if (!isControlled) updateValue('');
     setHistPtr(-1);
@@ -1189,7 +1188,7 @@ export const InputBar = forwardRef(function InputBar({
     }
   };
 
-  const actionState = getInputBarActionState({ value, disabled, busy, hasExtras, submitting });
+  const actionState = getInputBarActionState({ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage });
   const stopControl = getGoalStopControlState({ busy });
   const composerSpacingClass = isHero ? 'px-4 pt-3 pb-1 text-[14px]' : 'px-3 pt-2 pb-1 text-[13px]';
   const hasInlineContexts = otherContextItems.length > 0;

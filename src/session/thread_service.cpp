@@ -1,6 +1,7 @@
 #include "thread_service.hpp"
 
 #include "compact_checkpoint.hpp"
+#include "global_session_catalog.hpp"
 #include "session_manager.hpp"
 #include "session_pin_store.hpp"
 #include "session_registry.hpp"
@@ -8,6 +9,7 @@
 #include "session_user_message_search.hpp"
 #include "thread_repair.hpp"
 #include "../commands/compact.hpp"
+#include "../config/config.hpp"
 #include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
@@ -16,9 +18,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -157,6 +161,131 @@ std::optional<ScopedThread> resolve_thread(
     return scoped;
 }
 
+std::string projects_directory() {
+    return path_to_utf8(path_from_utf8(get_acecode_dir()) / "projects");
+}
+
+std::string storage_workspace_hash(const std::string& project_dir) {
+    return path_to_utf8(path_from_utf8(project_dir).filename());
+}
+
+bool valid_storage_token(const std::string& token) {
+    return !token.empty() && std::all_of(token.begin(), token.end(),
+        [](unsigned char ch) {
+            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                   (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        });
+}
+
+// Read-only lookup. Exact metadata paths avoid loading every session's history
+// just to resolve one id. workspaceHash also disambiguates imported ids.
+std::optional<ScopedThread> resolve_discovered_thread(
+    const ThreadService::Deps& deps,
+    const ThreadScope& scope,
+    const std::string& requested_id,
+    const std::string& workspace_hash,
+    std::string& error) {
+    const std::string id = effective_thread_id(scope, requested_id);
+    if (!valid_storage_token(id) ||
+        (!workspace_hash.empty() && !valid_storage_token(workspace_hash))) {
+        error = "invalid threadId or workspaceHash";
+        return std::nullopt;
+    }
+
+    std::optional<ScopedThread> result;
+    auto retain = [&](ScopedThread candidate) {
+        if (!workspace_hash.empty() &&
+            storage_workspace_hash(candidate.project_dir) != workspace_hash) {
+            return true;
+        }
+        if (result && storage_workspace_hash(result->project_dir) !=
+                          storage_workspace_hash(candidate.project_dir)) {
+            error = "threadId matches multiple ACECode workspaces; pass "
+                    "workspaceHash from list_threads";
+            return false;
+        }
+        if (!result || candidate.active || candidate.caller_manager) {
+            result = std::move(candidate);
+        }
+        return true;
+    };
+    auto read_project = [&](const std::string& project_dir) {
+        ScopedThread candidate;
+        candidate.project_dir = project_dir;
+        candidate.meta = SessionStorage::read_meta(
+            SessionStorage::meta_path(project_dir, id));
+        return candidate.meta.id != id || retain(std::move(candidate));
+    };
+
+    const auto root = path_from_utf8(projects_directory());
+    if (!workspace_hash.empty()) {
+        if (!read_project(path_to_utf8(root / workspace_hash))) return std::nullopt;
+    } else {
+        std::error_code ec;
+        std::filesystem::directory_iterator it(root, ec), end;
+        if (ec == std::errc::no_such_file_or_directory) ec.clear();
+        for (; !ec && it != end; it.increment(ec)) {
+            std::error_code item_ec;
+            if (it->is_directory(item_ec) &&
+                !read_project(path_to_utf8(it->path()))) return std::nullopt;
+            if (item_ec) { ec = item_ec; break; }
+        }
+        if (ec) {
+            error = "failed to discover ACECode thread: " + ec.message();
+            return std::nullopt;
+        }
+    }
+
+    if (deps.registry) {
+        if (auto active = deps.registry->acquire(id)) {
+            ScopedThread candidate;
+            candidate.project_dir = active->sm
+                ? active->sm->current_project_dir() : std::string{};
+            if (candidate.project_dir.empty()) {
+                candidate.project_dir = path_to_utf8(root /
+                    (active->workspace_hash.empty()
+                        ? SessionStorage::compute_project_hash(active->cwd)
+                        : active->workspace_hash));
+            }
+            candidate.meta = active->sm
+                ? active->sm->load_session_meta(id) : SessionMeta{};
+            if (candidate.meta.id.empty()) candidate.meta = synthesize_meta(*active);
+            candidate.active = std::move(active);
+            if (!retain(std::move(candidate))) return std::nullopt;
+        }
+    }
+    if (id == scope.caller_thread_id && scope.caller_manager) {
+        ScopedThread candidate;
+        candidate.project_dir = scope.caller_manager->current_project_dir();
+        if (candidate.project_dir.empty() && !scope.cwd.empty()) {
+            candidate.project_dir = SessionStorage::get_project_dir(scope.cwd);
+        }
+        if (!candidate.project_dir.empty()) {
+            candidate.meta = scope.caller_manager->load_session_meta(id);
+            if (candidate.meta.id.empty()) {
+                candidate.meta.id = id;
+                candidate.meta.cwd = scope.cwd;
+                candidate.meta.title = scope.caller_manager->current_title();
+            }
+            candidate.caller_manager = scope.caller_manager;
+            candidate.is_caller = true;
+            if (result && storage_workspace_hash(result->project_dir) ==
+                              storage_workspace_hash(candidate.project_dir)) {
+                candidate.active = result->active;
+            }
+            if (!retain(std::move(candidate))) return std::nullopt;
+        }
+    }
+    if (!result) {
+        error = "thread not found in ACECode sessions";
+    } else if (id == scope.caller_thread_id && !scope.cwd.empty() &&
+               storage_workspace_hash(result->project_dir) ==
+                   SessionStorage::compute_project_hash(scope.cwd)) {
+        result->is_caller = true;
+    }
+    return result;
+}
+
 std::vector<ChatMessage> load_thread_messages(const ScopedThread& scoped) {
     if (auto* manager = scoped.manager()) {
         auto messages = manager->load_active_messages();
@@ -185,6 +314,9 @@ bool hidden_message(const ChatMessage& message) {
 
 std::optional<std::size_t> parse_cursor_offset(const std::string& cursor) {
     if (cursor.empty()) return std::size_t{0};
+    if (!std::all_of(cursor.begin(), cursor.end(), [](unsigned char ch) {
+            return ch >= '0' && ch <= '9';
+        })) return std::nullopt;
     try {
         std::size_t consumed = 0;
         const auto value = std::stoull(cursor, &consumed, 10);
@@ -206,6 +338,8 @@ json thread_summary(const SessionMeta& meta,
     const bool busy = active && active->busy;
     json out{
         {"threadId", meta.id},
+        {"cwd", meta.cwd},
+        {"noWorkspace", meta.no_workspace},
         {"title", active && !active->title.empty() ? active->title : meta.title},
         {"summary", trim_and_limit(
             active && !active->summary.empty() ? active->summary : meta.summary,
@@ -293,98 +427,81 @@ ThreadServiceResult ThreadServiceResult::fail(std::string error) {
 ThreadService::ThreadService(Deps deps) : deps_(deps) {}
 
 ThreadServiceResult ThreadService::list(const ThreadScope& scope,
-                                        std::size_t limit) const {
-    if (scope.cwd.empty()) {
-        return ThreadServiceResult::fail("thread workspace is unavailable");
-    }
+                                        std::size_t limit,
+                                        const std::string& cursor,
+                                        bool include_archived) const {
+    const auto offset = parse_cursor_offset(cursor);
+    if (!offset) return ThreadServiceResult::fail("invalid thread cursor");
     limit = (std::max)(std::size_t{1},
                        (std::min)(limit, kMaxListLimit));
-    const std::string project_dir =
-        SessionStorage::get_project_dir(scope.cwd);
+    GlobalSessionCatalogOptions options;
+    options.include_archived = include_archived;
+    options.include_subagents = true;
+    const auto catalog = build_global_session_catalog(
+        projects_directory(), deps_.registry
+            ? deps_.registry->list_active() : std::vector<SessionInfo>{}, options);
 
-    std::unordered_map<std::string, SessionMeta> metas;
-    for (auto meta : SessionStorage::list_sessions(project_dir)) {
-        if (!meta.archived) metas.emplace(meta.id, std::move(meta));
+    auto summary = [&](const GlobalSessionCatalogEntry& entry, bool pinned,
+                       int pinned_index = 0) {
+        auto out = thread_summary(entry.meta,
+            entry.active ? &*entry.active : nullptr, pinned, pinned_index);
+        out["workspaceHash"] = storage_workspace_hash(entry.project_dir);
+        out["workspaceName"] = entry.workspace_name;
+        out["workspaceVisible"] = entry.workspace_visible;
+        if (scope.caller_manager && entry.meta.id == scope.caller_thread_id &&
+            entry.project_dir == scope.caller_manager->current_project_dir()) {
+            out["active"] = true;
+        }
+        return out;
+    };
+
+    // The project directory is part of identity: imported ids may coincide
+    // across workspaces, and each project owns its own pin order.
+    std::map<std::string,
+             std::unordered_map<std::string, const GlobalSessionCatalogEntry*>>
+        projects;
+    for (const auto& entry : catalog.entries) {
+        projects[entry.project_dir].emplace(entry.meta.id, &entry);
     }
-
-    std::unordered_map<std::string, SessionInfo> active_infos;
-    if (deps_.registry) {
-        for (auto info : deps_.registry->list_active()) {
-            const bool matches = info.cwd == scope.cwd ||
-                info.workspace_hash ==
-                    SessionStorage::compute_project_hash(scope.cwd);
-            if (!matches) continue;
-            auto found = metas.find(info.id);
-            if (found == metas.end()) {
-                SessionMeta meta = SessionStorage::read_meta(
-                    SessionStorage::meta_path(project_dir, info.id));
-                if (!meta.id.empty() && meta.archived) continue;
-                if (meta.id.empty()) {
-                    meta.id = info.id;
-                    meta.cwd = info.cwd;
-                    meta.created_at = info.created_at;
-                    meta.updated_at = info.updated_at;
-                    meta.summary = info.summary;
-                    meta.title = info.title;
-                    meta.parent_session_id = info.parent_session_id;
-                }
-                metas.emplace(meta.id, std::move(meta));
-            }
-            active_infos.emplace(info.id, std::move(info));
+    std::unordered_set<const GlobalSessionCatalogEntry*> pinned_entries;
+    json pinned_threads = json::array();
+    int pinned_index = 0;
+    for (const auto& [project_dir, entries] : projects) {
+        const auto pins = session_pins::read_pinned_sessions_state(
+            path_from_utf8(project_dir) / "pinned_sessions.json");
+        for (const auto& id : pins.session_ids) {
+            const auto found = entries.find(id);
+            if (found == entries.end() || found->second->meta.archived ||
+                !pinned_entries.insert(found->second).second) continue;
+            pinned_threads.push_back(summary(*found->second, true, ++pinned_index));
         }
     }
 
-    struct Row {
-        SessionMeta meta;
-        const SessionInfo* active = nullptr;
-    };
-    std::unordered_map<std::string, Row> rows_by_id;
-    for (auto& [id, meta] : metas) {
-        auto active = active_infos.find(id);
-        rows_by_id.emplace(id, Row{
-            meta, active == active_infos.end() ? nullptr : &active->second});
+    std::vector<const GlobalSessionCatalogEntry*> regular;
+    for (const auto& entry : catalog.entries) {
+        if (!pinned_entries.count(&entry)) regular.push_back(&entry);
     }
-
-    const auto pin_path = path_from_utf8(project_dir) /
-        "pinned_sessions.json";
-    const auto pins = session_pins::read_pinned_sessions_state(pin_path);
-    std::unordered_set<std::string> pinned_ids;
-    json pinned_threads = json::array();
-    int pinned_index = 0;
-    for (const auto& id : pins.session_ids) {
-        auto found = rows_by_id.find(id);
-        if (found == rows_by_id.end()) continue;
-        pinned_ids.insert(id);
-        pinned_threads.push_back(thread_summary(
-            found->second.meta, found->second.active,
-            true, ++pinned_index));
-    }
-
-    std::vector<const Row*> regular;
-    regular.reserve(rows_by_id.size());
-    for (const auto& [id, row] : rows_by_id) {
-        if (!pinned_ids.count(id)) regular.push_back(&row);
-    }
-    std::sort(regular.begin(), regular.end(), [](const Row* lhs, const Row* rhs) {
-        const std::string lhs_updated = lhs->active &&
-            !lhs->active->updated_at.empty()
-            ? lhs->active->updated_at : lhs->meta.updated_at;
-        const std::string rhs_updated = rhs->active &&
-            !rhs->active->updated_at.empty()
-            ? rhs->active->updated_at : rhs->meta.updated_at;
-        if (lhs_updated != rhs_updated) return lhs_updated > rhs_updated;
-        return lhs->meta.id < rhs->meta.id;
-    });
-
+    const std::size_t start = (std::min)(*offset, regular.size());
+    const std::size_t count = (std::min)(limit, regular.size() - start);
+    const std::size_t next = start + count;
+    const bool has_more = next < regular.size();
     json threads = json::array();
-    for (std::size_t i = 0; i < regular.size() && i < limit; ++i) {
-        threads.push_back(thread_summary(
-            regular[i]->meta, regular[i]->active, false));
+    for (std::size_t i = start; i < next; ++i) {
+        threads.push_back(summary(*regular[i], false));
+    }
+    json errors = json::array();
+    for (const auto& error : catalog.errors) {
+        errors.push_back(json{
+            {"workspaceHash", error.workspace_hash},
+            {"stage", error.stage}, {"message", error.message},
+        });
     }
     return ThreadServiceResult::ok(json{
         {"pinnedThreads", std::move(pinned_threads)},
         {"threads", std::move(threads)},
-        {"hasMore", regular.size() > limit},
+        {"hasMore", has_more},
+        {"nextCursor", has_more ? json(std::to_string(next)) : json(nullptr)},
+        {"errors", std::move(errors)},
     });
 }
 
@@ -394,12 +511,12 @@ ThreadServiceResult ThreadService::read(
     const std::string& cursor,
     std::size_t turn_limit,
     bool include_outputs,
-    std::size_t max_chars_per_item) const {
-    auto scoped = resolve_thread(deps_, scope, requested_id);
-    if (!scoped) {
-        return ThreadServiceResult::fail(
-            "thread is unavailable in the current workspace");
-    }
+    std::size_t max_chars_per_item,
+    const std::string& workspace_hash) const {
+    std::string error;
+    auto scoped = resolve_discovered_thread(
+        deps_, scope, requested_id, workspace_hash, error);
+    if (!scoped) return ThreadServiceResult::fail(std::move(error));
     const auto offset = parse_cursor_offset(cursor);
     if (!offset) return ThreadServiceResult::fail("invalid thread cursor");
     turn_limit = (std::max)(std::size_t{1},
@@ -464,6 +581,9 @@ ThreadServiceResult ThreadService::read(
     }
     return ThreadServiceResult::ok(json{
         {"threadId", scoped->meta.id},
+        {"workspaceHash", storage_workspace_hash(scoped->project_dir)},
+        {"cwd", scoped->meta.cwd},
+        {"noWorkspace", scoped->meta.no_workspace},
         {"title", scoped->manager()
                       ? scoped->manager()->current_title()
                       : scoped->meta.title},
@@ -504,30 +624,35 @@ ThreadServiceResult ThreadService::wait(
     json errors = json::array();
     std::unordered_set<std::string> seen;
     for (const auto& target : targets) {
-        if (target.thread_id.empty() || !seen.insert(target.thread_id).second) {
+        std::string error;
+        auto scoped = resolve_discovered_thread(
+            deps_, scope, target.thread_id, target.workspace_hash, error);
+        if (target.thread_id.empty() || !scoped) {
             errors.push_back(json{
                 {"threadId", target.thread_id},
-                {"error", "empty or duplicate threadId"},
+                {"workspaceHash", target.workspace_hash},
+                {"error", target.thread_id.empty() ? "threadId is required" : error},
             });
             continue;
         }
-        if (target.thread_id == scope.caller_thread_id) {
+        if (scoped->is_caller) {
             errors.push_back(json{
                 {"threadId", target.thread_id},
                 {"error", "the calling thread cannot wait for itself"},
             });
             continue;
         }
-        auto scoped = resolve_thread(deps_, scope, target.thread_id);
-        if (!scoped) {
+        const auto hash = storage_workspace_hash(scoped->project_dir);
+        if (!seen.insert(hash + ':' + target.thread_id).second) {
             errors.push_back(json{
                 {"threadId", target.thread_id},
-                {"error", "thread not found"},
+                {"error", "duplicate thread target"},
             });
             continue;
         }
         State state;
         state.target = target;
+        state.target.workspace_hash = hash;
         state.cursor = target.after_cursor;
         state.active = scoped->active;
         state.terminal = !state.active || !state.active->loop ||
@@ -618,6 +743,7 @@ ThreadServiceResult ThreadService::wait(
             }
             json snapshot{
                 {"threadId", state.target.thread_id},
+                {"workspaceHash", state.target.workspace_hash},
                 {"cursor", std::to_string(state.cursor)},
                 {"active", active},
                 {"busy", busy},

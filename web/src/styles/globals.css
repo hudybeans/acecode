@@ -2540,7 +2540,14 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
-@keyframes ace-session-loading-turn { to { transform: rotate(360deg); } }
+@keyframes ace-session-loading-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes ace-session-loading-fade {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 @keyframes ace-session-loading-dot-top {
   0%, 100% { transform: translateY(-5px); }
   50% { transform: translateY(-3.5px); }
@@ -2578,7 +2585,11 @@ body {
 }
 .ace-session-loading-orbit {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(0deg);
   animation: ace-session-loading-turn 6.47s linear infinite;
 }
 .ace-session-loading-dot {
@@ -2595,20 +2606,31 @@ body {
   animation-timing-function: cubic-bezier(.65, 0, .35, 1);
   animation-iteration-count: infinite;
 }
-.ace-session-loading-dot.is-top { animation-name: ace-session-loading-dot-top; }
-.ace-session-loading-dot.is-right { animation-name: ace-session-loading-dot-right; }
-.ace-session-loading-dot.is-bottom { animation-name: ace-session-loading-dot-bottom; }
-.ace-session-loading-dot.is-left { animation-name: ace-session-loading-dot-left; }
+.ace-session-loading-dot.is-top {
+  transform: translateY(-3.5px);
+  animation-name: ace-session-loading-dot-top;
+}
+.ace-session-loading-dot.is-right {
+  transform: translateX(3.5px);
+  animation-name: ace-session-loading-dot-right;
+}
+.ace-session-loading-dot.is-bottom {
+  transform: translateY(3.5px);
+  animation-name: ace-session-loading-dot-bottom;
+}
+.ace-session-loading-dot.is-left {
+  transform: translateX(-3.5px);
+  animation-name: ace-session-loading-dot-left;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .ace-session-loading-orbit,
-  .ace-session-loading-dot {
+  /* Keep running feedback visible when Windows requests reduced motion. */
+  .ace-session-loading-orbit {
+    animation: ace-session-loading-fade 2.4s ease-in-out infinite;
+  }
+  .ace-session-loading .ace-session-loading-dot {
     animation: none;
   }
-  .ace-session-loading-dot.is-top { transform: translateY(-3.5px); }
-  .ace-session-loading-dot.is-right { transform: translateX(3.5px); }
-  .ace-session-loading-dot.is-bottom { transform: translateY(3.5px); }
-  .ace-session-loading-dot.is-left { transform: translateX(-3.5px); }
 }
 
 /* Upgrade progress is deliberately quicker than the 350ms status polling interval,
@@ -2998,6 +3020,25 @@ body {
 }
 :root[data-color-theme="eva-01"]:not([data-theme-logo-color="custom"]) .ace-brand-logo {
   filter: hue-rotate(55deg);
+}
+.ace-home-content > .ace-home-logo {
+  --ace-home-logo-size: 48px;
+  flex-basis: var(--ace-home-logo-size);
+  width: var(--ace-home-logo-size);
+  height: var(--ace-home-logo-size);
+  margin-bottom: 0;
+}
+.ace-home-content > .ace-home-logo::before {
+  content: none;
+}
+.ace-home-content > .ace-home-logo .ace-home-logo-fallback {
+  width: 100%;
+  height: 100%;
+  filter: none;
+}
+.ace-home-content > .ace-home-logo .ace-home-logo-canvas {
+  width: 156%;
+  height: 156%;
 }
 .ace-home-title {
   margin: 0 0 16px;

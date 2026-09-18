@@ -19,6 +19,7 @@ const ICONS = {
   code: 'Code',
   command: 'TerminalReadWrite',
   collapseAll: 'CollapseAll',
+  columns: 'Columns',
   computer: 'Computer',
   copy: 'Copy',
   darkTheme: 'DarkTheme',

@@ -95,6 +95,7 @@ import {
 } from '../lib/chatInputQueue.js';
 import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from '../lib/stickyUserContext.js';
 import { loadTranscriptHistory, useSessionTranscript } from '../lib/sessionTranscript.js';
+import { trailingUserMessageRetryId } from '../lib/trailingUserMessageRetry.js';
 import { createSingleWriterStore } from '../lib/singleWriterStore.js';
 import { projectCollapsedTranscriptItems } from '../lib/transcriptProjection.js';
 import {
@@ -868,6 +869,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const [selectionPreview, setSelectionPreview] = useState(null);
   const [selectionAction, setSelectionAction] = useState(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const retrySubmissionRef = useRef(null);
+  useEffect(() => () => { retrySubmissionRef.current = null; }, [sid, api]);
   const [draftReadyKey, setDraftReadyKey] = useState('');
   const [acceptedHomeSubmission, setAcceptedHomeSubmission] = useState(null);
   const draftEditVersionRef = useRef(0);
@@ -2880,6 +2883,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     })
   ), [api, commandWorkspaceHash, ref?.noWorkspace, ref?.no_workspace, selectedHomeWorkspace?.noWorkspace, sid]);
 
+  const retryUserMessageId = trailingUserMessageRetryId({
+    sessionId: sid, items, loadState: transcriptLoadState, busy,
+    status: transcriptStatus, streamingId,
+    disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+  });
+
   const sendInputOrBuiltin = useCallback((targetSid, payload) => {
     const text = payloadText(payload);
     const hasExtras = payloadHasExtras(payload);
@@ -2931,7 +2940,32 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const submittedComposerContent = composerContentRef.current;
     const hasExtras = payloadHasExtras(payload) || hasPendingAttachments;
     const hasSwarmMode = payload.swarm_mode === true;
-    if (!payload.text.trim() && !hasExtras) return;
+    if (!payload.text.trim() && !hasExtras) {
+      if (!retryUserMessageId || composerSubmitting || retrySubmissionRef.current) return;
+      const latest = transcript.getState();
+      const latestRetryId = trailingUserMessageRetryId({
+        ...latest, sessionId: sid, loadState: transcriptLoadState,
+        disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+      });
+      if (latestRetryId !== retryUserMessageId) return;
+      const request = { sessionId: sid };
+      retrySubmissionRef.current = request;
+      setComposerSubmitting(true);
+      setTailFollowFromAction({ type: 'new_turn' });
+      dockAutoDismissRef.current();
+      api.retryLastUserMessage(sid, latestRetryId)
+        .catch((error) => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          toast({ kind: 'err', text: '发送失败:' + (error.message || '') });
+        })
+        .finally(() => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          retrySubmissionRef.current = null;
+          setComposerSubmitting(false);
+          restoreChatInputFocusSoon(false);
+        });
+      return;
+    }
     const route = inputRouteForText(payload.text);
     if (route.kind === 'desktop_feedback') {
       if (!sid) {
@@ -3216,7 +3250,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -5530,6 +5564,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
             submitting={composerSubmitting || reasoningSwitching}
+            canRetryLastUserMessage={!!retryUserMessageId}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{

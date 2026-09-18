@@ -6011,6 +6011,53 @@ TEST(WebServerHttp, PostMessageExpandsValidatedSessionReferences) {
         << "valid reference should preserve display text and expand model context";
 }
 
+TEST(WebServerHttp, RetryLastUserMessageValidatesRequestAndPreservesInput) {
+    WebServerFixture fx;
+    const auto created = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({})"});
+    ASSERT_EQ(created.status_code, 201) << created.text;
+    const auto sid = json::parse(created.text)["session_id"].get<std::string>();
+    auto post = [&](const std::string& body) {
+        return cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages/retry")},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+    };
+    for (const auto& body : {"{", "[]", "{}",
+         R"({"expected_user_message_id":1})", R"({"expected_user_message_id":""})",
+         R"({"expected_user_message_id":"user-1","text":"new input"})"}) {
+        EXPECT_EQ(post(body).status_code, 400) << body;
+    }
+    const auto request = R"({"expected_user_message_id":"retry-http-user"})";
+    EXPECT_EQ(post(request).status_code, 409);
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    provider->push_text("retried");
+    provider->set_latency_ms(150);
+    install_test_provider(*entry, provider);
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "retry-http-user";
+    user.content = "original input";
+    entry->loop->push_message(user);
+    entry->sm->on_message(user);
+    EXPECT_EQ(post(R"({"expected_user_message_id":"stale"})").status_code, 409);
+    const auto accepted = post(request);
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    EXPECT_EQ(json::parse(accepted.text)["user_message_id"], user.uuid);
+    EXPECT_EQ(post(request).status_code, 409);
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (entry->loop->has_pending_work() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_FALSE(entry->loop->has_pending_work());
+    EXPECT_EQ(provider->turn_count(), 1);
+    const auto messages = entry->sm->load_active_messages();
+    EXPECT_EQ(std::count_if(messages.begin(), messages.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 1);
+    EXPECT_EQ(post(request).status_code, 409);
+}
+
 TEST(WebServerHttp, TurnSteerValidatesIdentityAndCommitsAcceptedInput) {
     WebServerFixture fx;
     auto create = cpr::Post(

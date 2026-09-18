@@ -361,7 +361,7 @@ export function ChangeReviewDetails({
               aria-pressed={sideBySide}
               onClick={() => setSideBySide((value) => !value)}
             >
-              <VsIcon name="panelRight" size={14} />
+              <VsIcon name="columns" size={14} />
             </button>
             <button
               type="button"

@@ -153,12 +153,16 @@ ToolImpl fork_thread_tool(std::shared_ptr<ThreadToolDeps> deps) {
 ToolImpl list_threads_tool(std::shared_ptr<ThreadToolDeps> deps) {
     return make_tool(
         "list_threads",
-        "List ACECode threads in the current workspace. pinnedThreads always "
-        "contains every pinned thread in UI order; limit applies only to "
-        "non-pinned threads.",
+        "List ACECode threads across all workspaces, including hidden and "
+        "workspace-free threads. Workspace is metadata, not a search boundary. "
+        "pinnedThreads contains every pinned thread in each workspace's pin "
+        "order; limit applies only to non-pinned threads. Pass nextCursor as "
+        "cursor for older threads, and includeArchived to also find archives.",
         object_schema(json{
             {"limit", json{{"type", "integer"},
                             {"minimum", 1}, {"maximum", 50}}},
+            {"cursor", json{{"type", "string"}}},
+            {"includeArchived", json{{"type", "boolean"}}},
         }),
         true,
         [deps](const std::string& arguments,
@@ -171,17 +175,22 @@ ToolImpl list_threads_tool(std::shared_ptr<ThreadToolDeps> deps) {
             const int limit = (std::max)(1,
                 parser->get_or<int>("limit", 20));
             return service_result(service->list(
-                scope_from_context(ctx), static_cast<std::size_t>(limit)));
+                scope_from_context(ctx), static_cast<std::size_t>(limit),
+                parser->get_or<std::string>("cursor", {}),
+                parser->get_or<bool>("includeArchived", false)));
         });
 }
 
 ToolImpl read_thread_tool(std::shared_ptr<ThreadToolDeps> deps) {
     return make_tool(
         "read_thread",
-        "Read recent bounded turn summaries for one ACECode thread without "
-        "opening it. Pass nextCursor to read older turns.",
+        "Read recent bounded turn summaries for an ACECode thread in any "
+        "workspace, including archived threads, without opening it. Pass "
+        "nextCursor as cursor to read older turns. workspaceHash from "
+        "list_threads locates the storage project and disambiguates threadId.",
         object_schema(json{
             {"threadId", json{{"type", "string"}, {"minLength", 1}}},
+            {"workspaceHash", json{{"type", "string"}}},
             {"cursor", json{{"type", "string"}}},
             {"turnLimit", json{{"type", "integer"},
                                 {"minimum", 1}, {"maximum", 20}}},
@@ -208,7 +217,8 @@ ToolImpl read_thread_tool(std::shared_ptr<ThreadToolDeps> deps) {
                     parser->get_or<int>("turnLimit", 8))),
                 parser->get_or<bool>("includeOutputs", false),
                 static_cast<std::size_t>((std::max)(256,
-                    parser->get_or<int>("maxOutputCharsPerItem", 2000)))));
+                    parser->get_or<int>("maxOutputCharsPerItem", 2000))),
+                parser->get_or<std::string>("workspaceHash", {})));
         });
 }
 
@@ -243,8 +253,10 @@ ToolImpl send_message_tool(std::shared_ptr<ThreadToolDeps> deps) {
 ToolImpl wait_threads_tool(std::shared_ptr<ThreadToolDeps> deps) {
     return make_tool(
         "wait_threads",
-        "Wait for the first of up to eight ACECode threads to complete, fail, "
-        "or need attention. timeoutMs: 0 returns an immediate snapshot.",
+        "Wait for the first of up to eight ACECode threads across any "
+        "workspaces to complete, fail, or need attention. timeoutMs: 0 returns "
+        "an immediate snapshot. Each target may include workspaceHash from "
+        "list_threads to locate its storage project.",
         object_schema(json{
             {"targets", json{
                 {"type", "array"}, {"minItems", 1}, {"maxItems", 8},
@@ -254,6 +266,7 @@ ToolImpl wait_threads_tool(std::shared_ptr<ThreadToolDeps> deps) {
                         {"threadId", json{{"type", "string"},
                                            {"minLength", 1}}},
                         {"afterCursor", json{{"type", "string"}}},
+                        {"workspaceHash", json{{"type", "string"}}},
                     }},
                     {"required", json::array({"threadId"})},
                     {"additionalProperties", false},
@@ -286,6 +299,12 @@ ToolImpl wait_threads_tool(std::shared_ptr<ThreadToolDeps> deps) {
                 }
                 ThreadWaitTarget target;
                 target.thread_id = raw["threadId"].get<std::string>();
+                if (raw.contains("workspaceHash")) {
+                    if (!raw["workspaceHash"].is_string()) {
+                        return tool_error("workspaceHash must be a string");
+                    }
+                    target.workspace_hash = raw["workspaceHash"].get<std::string>();
+                }
                 if (raw.contains("afterCursor")) {
                     if (!raw["afterCursor"].is_string()) {
                         return tool_error("afterCursor must be a string");

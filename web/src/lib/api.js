@@ -428,6 +428,12 @@ export function createApi(base = null) {
         : { text: payload };
       return request('POST', `/api/sessions/${encodeURIComponent(id)}/messages`, body, base);
     },
+    retryLastUserMessage: (id, expectedUserMessageId) => request(
+      'POST',
+      `/api/sessions/${encodeURIComponent(id)}/messages/retry`,
+      { expected_user_message_id: expectedUserMessageId },
+      base,
+    ),
     steerTurn:        (id, payload)  => request(
       'POST',
       `/api/sessions/${encodeURIComponent(id)}/turn/steer`,

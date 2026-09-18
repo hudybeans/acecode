@@ -931,19 +931,6 @@ export function PreviewDetailsPanel({
         </div>
         {tabsOverflow && addButton}
         <div className="ace-preview-details-actions">
-          {sidePanelListCollapsed && onToggleSidePanelList && (
-            <button
-              type="button"
-              className="ace-preview-details-action ace-list-panel-toggle"
-              onClick={onToggleSidePanelList}
-              title="展开列表面板"
-              aria-label="展开列表面板"
-              aria-expanded="false"
-              aria-pressed="false"
-            >
-              <VsIcon name="listPanel" size={16} />
-            </button>
-          )}
           <button
             type="button"
             className="ace-preview-details-action"
@@ -963,6 +950,19 @@ export function PreviewDetailsPanel({
           >
             <VsIcon name="close" size={14} />
           </button>
+          {sidePanelListCollapsed && onToggleSidePanelList && (
+            <button
+              type="button"
+              className="ace-preview-details-action ace-list-panel-toggle"
+              onClick={onToggleSidePanelList}
+              title="展开列表面板"
+              aria-label="展开列表面板"
+              aria-expanded="false"
+              aria-pressed="false"
+            >
+              <VsIcon name="listPanel" size={16} />
+            </button>
+          )}
         </div>
       </div>
       <div className="ace-preview-details-body">

@@ -3096,7 +3096,7 @@ function SectionUsage() {
   ];
 
   return (
-    <>
+    <div className="ace-usage-page">
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-xl font-bold">使用情况</h2>
         <button
@@ -3131,7 +3131,7 @@ function SectionUsage() {
         <UsageEmptyState text={note} />
       ) : (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
+          <div className="ace-usage-token-details grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
             {tokenDetails.map(([label, value]) => (
               <div key={label} className="px-3 py-2.5 rounded-md bg-surface border border-border">
                 <div className="text-[11px] text-fg-mute mb-1">{label}</div>
@@ -3218,7 +3218,7 @@ function SectionUsage() {
           </div>
         </>
       ))}
-    </>
+    </div>
   );
 }
 

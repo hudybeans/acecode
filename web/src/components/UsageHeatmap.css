@@ -1,8 +1,16 @@
+.ace-usage-page,
+.ace-usage-summary,
+.ace-usage-activity,
+.ace-usage-token-details {
+  width: 100%;
+  max-width: 732px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .ace-usage-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: 100%;
-  max-width: 732px;
   height: 62px;
   margin-bottom: 40px;
   padding: 10px 0;
@@ -36,8 +44,6 @@
 
 .ace-usage-activity {
   min-width: 0;
-  width: 100%;
-  max-width: 732px;
   margin-bottom: 32px;
 }
 

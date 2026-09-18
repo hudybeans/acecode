@@ -931,16 +931,32 @@ storage directly; they do not call the daemon HTTP API:
 |---|---|
 | `create_thread` | create a background thread and queue its initial prompt |
 | `fork_thread` | fork completed persisted history into a new thread |
-| `list_threads` | return pinned threads plus a bounded recent list |
-| `read_thread` | read bounded, cursor-paginated turns |
+| `list_threads` | globally list pinned threads plus cursor-paginated recent threads |
+| `read_thread` | read bounded, cursor-paginated turns from any workspace |
 | `send_message_to_thread` | queue a follow-up prompt |
-| `wait_threads` | wait for up to eight targets using event cursors |
+| `wait_threads` | wait for up to eight targets across workspaces using event cursors |
 | `set_thread_title` | rename a thread |
 | `set_thread_pinned` | update the existing pinned-session state |
 | `set_thread_archived` | archive or unarchive a thread |
 | `delete_thread` | permanently delete a thread and all descendants |
 | `repair_thread` | append a deterministic repair checkpoint to another thread |
 | `create_workspace` | register an existing absolute directory as a visible workspace |
+
+`list_threads`, `read_thread`, and `wait_threads` discover sessions across the
+entire ACECode data directory, including hidden/unregistered workspaces and
+workspace-free sessions. A caller cwd is not required. List rows include
+`workspaceHash` (the storage project hash, also for workspace-free sessions),
+`cwd`, `noWorkspace`, `workspaceName`, and `workspaceVisible` as metadata.
+Child sessions retain `parentThreadId`. The list excludes archived sessions
+unless `includeArchived:true`; explicit reads can access archived sessions.
+All non-archived pins are returned in `pinnedThreads`, ordered by project hash
+and then that project's persisted pin order. Only `threads` is subject to
+`limit` (default 20, maximum 50). Pass `nextCursor` back as `cursor` to read
+the next page; it is an offset into the current ordering, not a frozen snapshot.
+`errors` reports incomplete project scans. `read_thread` and each `wait_threads`
+target accept optional `workspaceHash` from the list for direct lookup and
+disambiguation when the same `threadId` exists in multiple projects.
+Creation and mutation tools retain their existing calling-workspace semantics.
 
 `delete_thread` also removes search-index and pin records. It may target its
 calling thread, including a cascade whose tree contains the caller. In that
@@ -1208,6 +1224,26 @@ into the new session with new IDs, and saves the restored structured draft.
 Structured attachment references in the retained history are also copied and
 remapped, including their provider content parts and preview records; recalling
 those messages does not depend on the source session's attachment storage.
+
+### `POST /api/sessions/:id/messages/retry`
+
+Retries the exact trailing user message in an idle live session. Body:
+
+```json
+{"expected_user_message_id":"persisted-user-message-id"}
+```
+
+The request accepts only this field. The backend verifies the full visible
+transcript and model history end with that user message, with no active or
+queued work. It checks again when the worker starts. Hidden bookkeeping
+records do not count as transcript messages; assistant (including empty
+messages), tool, system and error messages prevent retry.
+
+The original message, attachments and context are reused without appending
+another user record. Returns `202 {"queued":true,"user_message_id":"..."}`;
+malformed requests return `400`, and unavailable sessions, stale message IDs
+or active/queued work return `409`. This endpoint does not create or resume a
+session, expand commands, or accept new input.
 
 ### `POST /api/sessions/:id/messages`
 

@@ -220,6 +220,42 @@ TEST(GlobalSessionCatalog, MergesActiveSessionsAndKeepsArchiveAuthoritative) {
     EXPECT_EQ(find_entry(catalog, "archived-live", first.hash), nullptr);
 }
 
+TEST(GlobalSessionCatalog, CanIncludeArchivedAndChildSessionsForThreadDiscovery) {
+    TempProjectsRoot root;
+    const auto target = project(root, "C:/projects/thread-discovery");
+    seed_meta(target, "archived", "2026-09-18T01:00:00Z", true);
+    seed_meta(target, "child", "2026-09-18T02:00:00Z", false, "parent");
+
+    acecode::SessionInfo archived;
+    archived.id = "archived";
+    archived.cwd = target.cwd;
+    archived.workspace_hash = target.hash;
+    acecode::SessionInfo child = archived;
+    child.id = "active-child";
+    child.parent_session_id = "parent";
+
+    acecode::GlobalSessionCatalogOptions options;
+    options.include_subagents = true;
+    const auto children = acecode::build_global_session_catalog(
+        root.path().string(), {archived, child}, options);
+    ASSERT_EQ(children.entries.size(), 2u);
+    EXPECT_EQ(find_entry(children, "archived"), nullptr);
+    EXPECT_NE(find_entry(children, "child"), nullptr);
+    EXPECT_NE(find_entry(children, "active-child"), nullptr);
+
+    options.include_archived = true;
+    const auto all = acecode::build_global_session_catalog(
+        root.path().string(), {archived, child}, options);
+    ASSERT_EQ(all.entries.size(), 3u);
+    const auto* archived_entry = find_entry(all, "archived");
+    ASSERT_NE(archived_entry, nullptr);
+    EXPECT_TRUE(archived_entry->meta.archived);
+    EXPECT_TRUE(archived_entry->active.has_value());
+
+    EXPECT_TRUE(acecode::build_global_session_catalog(
+        root.path().string(), {archived, child}).entries.empty());
+}
+
 TEST(GlobalSessionCatalog, SearchesVisibleUserMessagesAcrossHiddenProjects) {
     TempProjectsRoot root;
     const auto hidden = project(root, "C:/projects/content-hidden", "Hidden", false);

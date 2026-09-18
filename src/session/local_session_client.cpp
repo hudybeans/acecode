@@ -78,6 +78,23 @@ bool LocalSessionClient::send_input(const std::string& session_id, const UserInp
     return true;
 }
 
+bool LocalSessionClient::retry_last_user_message(
+    const std::string& session_id,
+    const std::string& expected_user_message_id,
+    std::string& error) {
+    std::shared_lock<std::shared_mutex> migration_lock(environment::data_dir_write_mutex());
+    if (environment::data_dir_writes_blocked()) {
+        error = "data directory migration is in progress";
+        return false;
+    }
+    auto entry = registry_.acquire(session_id);
+    if (!entry || !entry->loop) {
+        error = "unknown session";
+        return false;
+    }
+    return entry->loop->retry_last_user_message(expected_user_message_id, error);
+}
+
 TurnSteerResult LocalSessionClient::steer_input(
     const std::string& session_id,
     const std::string& expected_turn_id,
