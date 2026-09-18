@@ -505,7 +505,7 @@ function SidebarNavItem({ item, onClick }) {
       data-tour-target={item.id === 'new-task' ? 'sidebar-new-task' : undefined}
       onPointerDown={item.id === 'new-task' ? preserveHomeComposerFocus : undefined}
       onClick={onClick}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
         <VsIcon name={item.icon} size={18} />
@@ -590,7 +590,7 @@ function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpe
         type="button"
         onClick={() => setExpanded((value) => !value)}
         data-sidebar-custom-section="true"
-        className="ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition"
+        className="ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition"
         aria-expanded={expanded}
         aria-controls={listId}
       >
@@ -627,7 +627,7 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
   return (
     <div
       data-sidebar-section={sectionId}
-      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center gap-0.5 px-3 pt-3 pb-1 text-[13px] font-medium text-fg-mute"
+      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center gap-0.5 pl-[23px] pr-3 pt-3 pb-1 text-[13px] font-medium text-fg-mute"
     >
       <button
         type="button"
@@ -1633,7 +1633,7 @@ function WorkspaceGroup({
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
         className={clsx(
-          'ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[3px] rounded-md text-[14px] cursor-pointer transition',
+          'ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 pl-[12px] pr-2 py-[3px] rounded-md text-[14px] cursor-pointer transition',
           ws.active ? 'bg-accent-bg text-fg' : 'text-fg hover:bg-surface-hi',
         )}
         onClick={() => (ws.active ? onToggle(ws.hash) : onActivate(ws))}
@@ -3493,7 +3493,7 @@ export function Sidebar({
         style={collapsed ? undefined : { width, minWidth: width }}
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
-        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 px-[18px] py-3 select-none">
+        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 pl-[23px] pr-[18px] py-3 select-none">
           <BrandLogo width="20" height="20" className="ace-brand-logo block shrink-0" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
@@ -3503,7 +3503,7 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-main flex-1 flex flex-col min-h-0">
-          <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto px-1.5 pb-2">
+          <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2">
             {SIDEBAR_NAV_ITEMS.map((item) => (
               item.action === 'extensions' ? (
                 <CustomSidebarSection
@@ -3684,7 +3684,7 @@ export function Sidebar({
             </div>
           )}
         </div>
-        <div className="ace-sidebar-footer shrink-0 px-1.5 py-2 flex items-center gap-1">
+        <div className="ace-sidebar-footer shrink-0 pl-[15px] pr-1.5 py-2 flex items-center gap-1">
           {!collapsed && (
             <SidebarQuickMenu
               data-tour-target="sidebar-settings"
