@@ -2,8 +2,7 @@
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
-// 其余 section (MCP / 使用情况) 当前部分为 UI 占位
-// — 状态走本地 useState,提交按钮无网络副作用,待后端接口就绪后接入。
+// MCP 配置按公共/项目范围通过 API 校验、持久化并应用到运行时。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +12,7 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
 import { SettingsSearch } from './SettingsSearch.jsx';
@@ -47,7 +47,7 @@ import { ToolRewriteSettings } from './ToolRewriteSettings.jsx';
 import { SecurityCenterSettings } from './SecurityCenterSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
-import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
+import { buildMcpServerList, countEnabledMcp, applyMcpToggle, mcpConfigErrorMessage } from '../lib/mcpServers.js';
 import { normalizeConnectorList, applyConnectorToggle } from '../lib/connectors.js';
 import { PERMISSION_MODES, normalizePermissionMode } from '../lib/permissionMode.js';
 import { sessionDisplayTitle } from '../lib/sessionTitle.js';
@@ -1847,6 +1847,10 @@ function SectionSkills() {
 }
 
 function SectionMCP() {
+  const [workspace, setWorkspace] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [schema, setSchema] = useState(null);
+  const [configSchema, setConfigSchema] = useState(null);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1873,14 +1877,15 @@ function SectionMCP() {
     setLoading(true);
     setError('');
     try {
-      const cfg = await api.getMcp();
+      const cfg = await api.getMcp(workspace);
       const loadedText = JSON.stringify(cfg || {}, null, 2);
       lastSavedTextRef.current = loadedText;
       setText(loadedText);
       setSaved(false);
     } catch (e) {
-      setError('加载 MCP 失败:' + (e?.message || ''));
-      toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setLoading(false);
     }
@@ -1888,8 +1893,24 @@ function SectionMCP() {
 
   useEffect(() => {
     let cancelled = false;
+    api.listWorkspaces().then((rows) => {
+      if (!cancelled) setWorkspaces(normalizeWorkspaceList(rows));
+    }).catch(() => {});
+    api.getMcpSchema().then((result) => {
+      if (!cancelled) setConfigSchema(result?.schema || null);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    api.getMcp()
+    setText('');
+    setError('');
+    setSchema(null);
+    setSaved(false);
+    lastSavedTextRef.current = '';
+    api.getMcp(workspace)
       .then((cfg) => {
         if (!cancelled) {
           const loadedText = JSON.stringify(cfg || {}, null, 2);
@@ -1899,18 +1920,20 @@ function SectionMCP() {
       })
       .catch((e) => {
         if (!cancelled) {
-          setError('加载 MCP 失败:' + (e?.message || ''));
-          toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+          setSchema(e?.body?.schema || null);
+          setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+          toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
         }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [workspace]);
 
   const onChange = (value) => {
     setText(value);
+    setSchema(null);
     setSaved(false);
     try {
       JSON.parse(value);
@@ -1931,6 +1954,7 @@ function SectionMCP() {
   };
   const save = async (candidate = text) => {
     if (saving || loading) return false;
+    if (candidate === lastSavedTextRef.current) return true;
     let parsed;
     try {
       parsed = JSON.parse(candidate);
@@ -1943,19 +1967,19 @@ function SectionMCP() {
       setError('JSON 必须是对象');
       return false;
     }
-    if (candidate === lastSavedTextRef.current) return true;
-
     setError('');
     setSaving(true);
     setSaved(false);
     try {
-      await api.putMcp(parsed);
+      await api.putMcp(parsed, workspace);
       lastSavedTextRef.current = candidate;
+      setSchema(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
       return true;
     } catch (e) {
-      const msg = '保存失败:' + (e?.message || '');
+      const msg = '保存失败:' + mcpConfigErrorMessage(e);
+      setSchema(e?.body?.schema || null);
       setError(msg);
       toast({ kind: 'err', text: msg });
       return false;
@@ -1966,10 +1990,12 @@ function SectionMCP() {
   const reload = async () => {
     if (!await save()) return;
     try {
-      const result = await api.reloadMcp();
+      const result = await api.reloadMcp(workspace);
       toast({ kind: 'ok', text: 'Reload: ' + JSON.stringify(result) });
-    } catch {
-      toast({ kind: 'err', text: '当前 daemon 需要重启后加载 MCP 配置' });
+    } catch (e) {
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     }
   };
 
@@ -1992,7 +2018,7 @@ function SectionMCP() {
     setSaved(false);
     setTogglingName(name);
     try {
-      const res = await api.toggleMcpServer(name, enabled);
+      const res = await api.toggleMcpServer(name, enabled, workspace);
       if (res && res.applied === false) {
         toast({ kind: 'ok', text: `${name} 已${enabled ? '启用' : '关闭'};重启 daemon 后生效` });
       } else {
@@ -2003,7 +2029,9 @@ function SectionMCP() {
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       setText(prevText);
-      toast({ kind: 'err', text: '切换失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '切换失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setTogglingName('');
     }
@@ -2015,6 +2043,29 @@ function SectionMCP() {
     <>
       <h2 className="text-xl font-bold mb-5">MCP 服务器</h2>
 
+      <label className="flex flex-wrap items-center gap-3 mb-3 text-[13px]">
+        <span>配置范围</span>
+        <select
+          aria-label="MCP 配置范围"
+          value={workspace}
+          disabled={loading || saving || Boolean(togglingName)}
+          onChange={async (event) => {
+            const next = event.target.value;
+            if (next === workspace || !await save()) return;
+            setLoading(true);
+            setWorkspace(next);
+          }}
+          className="min-w-0 max-w-full h-8 px-2 rounded-md border border-border bg-surface-alt text-fg outline-none focus:border-accent"
+        >
+          <option value="">全局（所有项目）</option>
+          {workspaces.map((ws) => <option key={ws.hash} value={ws.hash}>{ws.name || ws.cwd}</option>)}
+        </select>
+      </label>
+      {workspace && (
+        <p className="text-[12px] text-fg-mute mb-3 break-all">
+          项目配置与全局配置叠加，同名服务器以项目配置为准。
+        </p>
+      )}
       <div className="text-[14px] font-semibold mb-1">服务器配置</div>
       <p className="text-[12px] text-fg-mute mb-3">
         直接编辑 JSON 配置 MCP 服务器连接(stdio / sse / http)
@@ -2035,10 +2086,12 @@ function SectionMCP() {
         style={{ minHeight: 380, tabSize: 2 }}
       />
       {error && (
-        <div className="mt-2 text-[12px] text-danger">{error}</div>
+        <div role="alert" className="mt-2 whitespace-pre-wrap break-words text-[12px] text-danger">{error}</div>
       )}
 
-      <div className="flex items-center justify-between gap-3 mt-3">
+      <McpSchemaDetails schema={schema || (error ? configSchema : null)} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
         <div className="min-w-0 text-[12px] text-fg-mute" aria-live="polite">
           {saving ? '保存中...' : (saved ? '已保存' : '')}
         </div>

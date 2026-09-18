@@ -1,3 +1,4 @@
+#include "../config/mcp_config.hpp"
 #include "../environment/bootstrap.hpp"
 #include "headless_runner.hpp"
 
@@ -215,6 +216,8 @@ void register_headless_tools(
 
 int print_available_capabilities(const HeadlessCliOptions& opts) {
     AppConfig cfg = load_config();
+    cfg.mcp_servers = effective_mcp_config(
+        cfg.mcp_servers, load_project_mcp_config(acecode::current_path_utf8()));
     const auto config_errors = validate_config(cfg);
     if (!config_errors.empty()) {
         for (const auto& error : config_errors) {
@@ -320,6 +323,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
     }
 
     AppConfig cfg = load_config();
+    cfg.mcp_servers = effective_mcp_config(
+        cfg.mcp_servers, load_project_mcp_config(acecode::current_path_utf8()));
     acecode::environment::bootstrap(cfg, {false, true});
     {
         auto errs = validate_config(cfg);
@@ -516,6 +521,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
         reg_deps.tools                    = &tools;
         reg_deps.cwd                      = cwd;
         reg_deps.config                   = &cfg;
+        reg_deps.mcp_manager              = &mcp_runtime.manager();
+        reg_deps.load_project_mcp         = false;
         reg_deps.skill_registry           = &skill_registry;
         reg_deps.memory_registry          = nullptr;
         reg_deps.memory_cfg               = nullptr;

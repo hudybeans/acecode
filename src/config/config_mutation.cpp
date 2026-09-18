@@ -1,4 +1,5 @@
 #include "config_mutation.hpp"
+#include "mcp_config.hpp"
 
 #include "config_recovery.hpp"
 #include "../utils/atomic_file.hpp"
@@ -181,6 +182,10 @@ ConfigMutationResult mutate_config(
         result.ok = true;
         result.changed = changed;
         result.config = std::move(latest);
+        return result;
+    } catch (const McpConfigError& e) {
+        result.error_kind = ConfigMutationErrorKind::Validation;
+        result.error = e.what();
         return result;
     } catch (const std::exception& e) {
         result.error_kind = ConfigMutationErrorKind::Persistence;

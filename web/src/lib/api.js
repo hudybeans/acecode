@@ -5,6 +5,7 @@
 
 import { getToken } from './auth.js';
 import { createSideChatStream } from './sideChatStream.js';
+import { mcpScopeQuery } from './mcpServers.js';
 
 export class ApiError extends Error {
   constructor(status, body) {
@@ -511,10 +512,11 @@ export function createApi(base = null) {
       `/api/skills/${encodeURIComponent(name)}` + (workspaceHash ? '?workspace=' + encodeURIComponent(workspaceHash) : ''),
       {enabled: en}, base),
     getSkillBody:     (name)         => request('GET',    `/api/skills/${encodeURIComponent(name)}/body`, undefined, base),
-    getMcp:           ()             => request('GET',    '/api/mcp', undefined, base),
-    putMcp:           (cfg)          => request('PUT',    '/api/mcp', cfg, base),
-    reloadMcp:        ()             => request('POST',   '/api/mcp/reload', undefined, base),
-    toggleMcpServer:  (name, enabled) => request('POST',  '/api/mcp/toggle', {name, enabled}, base),
+    getMcp:           (workspace = '') => request('GET', '/api/mcp' + mcpScopeQuery(workspace), undefined, base),
+    getMcpSchema:     () => request('GET', '/api/mcp/schema', undefined, base),
+    putMcp:           (cfg, workspace = '') => request('PUT', '/api/mcp' + mcpScopeQuery(workspace), cfg, base),
+    reloadMcp:        (workspace = '') => request('POST', '/api/mcp/reload' + mcpScopeQuery(workspace), undefined, base),
+    toggleMcpServer:  (name, enabled, workspace = '') => request('POST', '/api/mcp/toggle' + mcpScopeQuery(workspace), {name, enabled}, base),
     listHooks:        ()             => request('GET',    '/api/hooks', undefined, base),
     refreshHooks:     ()             => request('POST',   '/api/hooks/refresh', undefined, base),
     trustHook:        (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/trust`, undefined, base),

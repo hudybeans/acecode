@@ -3,6 +3,7 @@
 #include "permissions.hpp"
 #include "config_recovery.hpp"
 #include "config_mutation.hpp"
+#include "mcp_config.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
 #include "../themes/theme_id.hpp"
@@ -808,6 +809,10 @@ static AppConfig load_config_from_path_once(
             }
             active_bytes = raw_stream.str();
             nlohmann::json j = nlohmann::json::parse(*active_bytes);
+            ifs.close();
+            if (recover_mcp_config(j, config_path)) {
+                active_bytes = j.dump(2) + "\n";
+            }
 
             if (j.contains("provider") && j["provider"].is_string()) {
                 cfg.provider = j["provider"].get<std::string>();
@@ -1815,90 +1820,8 @@ static AppConfig load_config_from_path_once(
                 }
             }
 
-            if (j.contains("mcp_servers") && j["mcp_servers"].is_object()) {
-                for (auto it = j["mcp_servers"].begin(); it != j["mcp_servers"].end(); ++it) {
-                    const std::string& server_name = it.key();
-                    const auto& sj = it.value();
-                    if (!sj.is_object()) {
-                        LOG_WARN("[config] mcp_servers['" + server_name + "'] is not an object, skipping");
-                        continue;
-                    }
-
-                    McpServerConfig mcfg;
-
-                    // 设置页开关持久化字段:true = 全 app 禁用。缺省视为启用。
-                    if (sj.contains("disabled") && sj["disabled"].is_boolean()) {
-                        mcfg.disabled = sj["disabled"].get<bool>();
-                    }
-
-                    // Determine transport. Missing field defaults to stdio so
-                    // pre-existing configs keep working unchanged.
-                    std::string transport_str = "stdio";
-                    if (sj.contains("transport") && sj["transport"].is_string()) {
-                        transport_str = sj["transport"].get<std::string>();
-                    }
-                    if (transport_str == "stdio") {
-                        mcfg.transport = McpTransport::Stdio;
-                    } else if (transport_str == "sse") {
-                        mcfg.transport = McpTransport::Sse;
-                    } else if (transport_str == "http") {
-                        mcfg.transport = McpTransport::Http;
-                    } else {
-                        LOG_WARN("[config] mcp_servers['" + server_name +
-                                 "'] has unknown transport '" + transport_str + "', skipping");
-                        continue;
-                    }
-
-                    if (mcfg.transport == McpTransport::Stdio) {
-                        if (!sj.contains("command") || !sj["command"].is_string() ||
-                            sj["command"].get<std::string>().empty()) {
-                            LOG_WARN("[config] mcp_servers['" + server_name +
-                                     "'] stdio entry missing required 'command', skipping");
-                            continue;
-                        }
-                        mcfg.command = sj["command"].get<std::string>();
-                        if (sj.contains("args") && sj["args"].is_array()) {
-                            for (const auto& a : sj["args"]) {
-                                if (a.is_string()) mcfg.args.push_back(a.get<std::string>());
-                            }
-                        }
-                        if (sj.contains("env") && sj["env"].is_object()) {
-                            for (auto eit = sj["env"].begin(); eit != sj["env"].end(); ++eit) {
-                                if (eit.value().is_string()) {
-                                    mcfg.env[eit.key()] = eit.value().get<std::string>();
-                                }
-                            }
-                        }
-                    } else {
-                        if (!sj.contains("url") || !sj["url"].is_string() ||
-                            sj["url"].get<std::string>().empty()) {
-                            LOG_WARN("[config] mcp_servers['" + server_name +
-                                     "'] " + transport_str + " entry missing required 'url', skipping");
-                            continue;
-                        }
-                        mcfg.url = sj["url"].get<std::string>();
-                        if (sj.contains("sse_endpoint") && sj["sse_endpoint"].is_string()) {
-                            mcfg.sse_endpoint = sj["sse_endpoint"].get<std::string>();
-                        }
-                        if (sj.contains("headers") && sj["headers"].is_object()) {
-                            for (auto hit = sj["headers"].begin(); hit != sj["headers"].end(); ++hit) {
-                                if (hit.value().is_string()) {
-                                    mcfg.headers[hit.key()] = hit.value().get<std::string>();
-                                }
-                            }
-                        }
-                        if (sj.contains("auth_token") && sj["auth_token"].is_string()) {
-                            mcfg.auth_token = sj["auth_token"].get<std::string>();
-                        }
-                        if (sj.contains("timeout_seconds") && sj["timeout_seconds"].is_number_integer()) {
-                            int t = sj["timeout_seconds"].get<int>();
-                            if (t > 0) mcfg.timeout_seconds = t;
-                        }
-                    }
-
-                    cfg.mcp_servers[server_name] = std::move(mcfg);
-                }
-            }
+            cfg.mcp_servers = parse_mcp_config(
+                j.value("mcp_servers", nlohmann::json::object()));
         } catch (const nlohmann::json::parse_error& e) {
             throw ConfigLoadFailure(
                 "json_parse",
@@ -2750,52 +2673,14 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
     }
 
     if (!cfg.mcp_servers.empty()) {
-        nlohmann::json mj = nlohmann::json::object();
-        for (const auto& [name, srv] : cfg.mcp_servers) {
-            nlohmann::json sj = nlohmann::json::object();
-            if (srv.transport == McpTransport::Stdio) {
-                // Omit the transport field for stdio so the resulting config
-                // stays readable by older acecode builds.
-                sj["command"] = srv.command;
-                if (!srv.args.empty()) {
-                    sj["args"] = srv.args;
-                }
-                if (!srv.env.empty()) {
-                    nlohmann::json ej = nlohmann::json::object();
-                    for (const auto& [k, v] : srv.env) ej[k] = v;
-                    sj["env"] = ej;
-                }
-            } else {
-                sj["transport"] = (srv.transport == McpTransport::Sse) ? "sse" : "http";
-                sj["url"] = srv.url;
-                if (srv.sse_endpoint != "/sse") {
-                    sj["sse_endpoint"] = srv.sse_endpoint;
-                }
-                if (!srv.headers.empty()) {
-                    nlohmann::json hj = nlohmann::json::object();
-                    for (const auto& [k, v] : srv.headers) hj[k] = v;
-                    sj["headers"] = hj;
-                }
-                if (!srv.auth_token.empty()) {
-                    sj["auth_token"] = srv.auth_token;
-                }
-                if (srv.timeout_seconds != 30) {
-                    sj["timeout_seconds"] = srv.timeout_seconds;
-                }
-            }
-            // 仅在禁用时写出,启用态保持配置稀疏(与其它布尔字段一致)。
-            if (srv.disabled) {
-                sj["disabled"] = true;
-            }
-            mj[name] = sj;
-        }
-        j["mcp_servers"] = mj;
+        j["mcp_servers"] = serialize_mcp_config(cfg.mcp_servers);
     }
 
     return j;
 }
 
 std::string serialize_valid_config(const AppConfig& cfg) {
+    require_valid_mcp_config(serialize_mcp_config(cfg.mcp_servers));
     const auto validation_errors = validate_config(cfg);
     if (!validation_errors.empty()) {
         throw std::runtime_error(
@@ -2827,9 +2712,8 @@ void save_config(const AppConfig& cfg) {
     }
 
     const std::string bytes = serialize_valid_config(cfg);
-    if (!atomic_write_file(config_path, bytes, true)) {
-        throw std::runtime_error("failed to write config file: " + config_path);
-    }
+    write_validated_config_file(
+        config_path, bytes, serialize_mcp_config(cfg.mcp_servers));
     std::string snapshot_error;
     if (!write_last_good_config(config_path, bytes, &snapshot_error)) {
         init_config_recovery_logging();
@@ -2847,10 +2731,8 @@ void save_config(const AppConfig& cfg, const std::string& explicit_path) {
 
     const std::string config_path = path_to_utf8(p);
     const std::string bytes = serialize_valid_config(cfg);
-    if (!atomic_write_file(config_path, bytes, true)) {
-        throw std::runtime_error("failed to write config file: " +
-                                 config_path);
-    }
+    write_validated_config_file(
+        config_path, bytes, serialize_mcp_config(cfg.mcp_servers));
     std::string snapshot_error;
     if (!write_last_good_config(config_path, bytes, &snapshot_error)) {
         init_config_recovery_logging();

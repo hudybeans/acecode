@@ -1,4 +1,6 @@
 #include "mcp_manager.hpp"
+#include "../config/mcp_config.hpp"
+#include "../utils/sha256.hpp"
 
 // cpp-mcp's mcp_logger.h unconditionally defines LOG_DEBUG/LOG_INFO/LOG_ERROR
 // macros that collide with our own acecode logger. Pull in mcp headers first,
@@ -233,6 +235,7 @@ struct McpManager::State {
     mutable std::condition_variable cv;
     std::vector<ServerEntry> servers;
     std::vector<DiscoveredTool> discovered_tools;
+    std::uint64_t generation_counter = 0;
     bool shutdown_done = false;
     StatusCallback status_callback;
 };
@@ -247,6 +250,7 @@ McpManager::~McpManager() {
 }
 
 std::string McpManager::encode_server_id(const std::string& s) {
+    if (s.rfind("project/", 0) == 0) return "p" + sha256_hex(s).substr(0, 16);
     static constexpr char kHex[] = "0123456789abcdef";
     std::string out;
     out.reserve(s.size() * 3);
@@ -282,7 +286,7 @@ McpManager::ServerEntry* McpManager::find_entry_locked(const std::string& name) 
 }
 
 McpManager::ConnectionSnapshot McpManager::snapshot_for_start_locked(ServerEntry& entry) {
-    entry.generation++;
+    entry.generation = ++state_->generation_counter;
     entry.state = McpServerState::Starting;
     entry.error.clear();
     entry.client.reset();
@@ -399,6 +403,10 @@ McpManager::ConnectionResult McpManager::connect_entry(ConnectionSnapshot snapsh
         dt.original_tool_name = t.name;
         dt.qualified_name =
             "mcp_" + encode_server_id(snapshot.server_name) + "_" + t.name;
+        if (dt.qualified_name.size() > 64) {
+            const auto suffix = sha256_hex(dt.qualified_name).substr(0, 16);
+            dt.qualified_name = dt.qualified_name.substr(0, 47) + "_" + suffix;
+        }
         dt.definition.name = dt.qualified_name;
         dt.definition.description = t.description;
         dt.definition.parameters = mcp_to_std(t.parameters_schema);
@@ -457,13 +465,13 @@ void McpManager::publish_connection_result(const std::shared_ptr<State>& state,
                 impl.source_owner = tool.server_name;
                 const std::string server_name = tool.server_name;
                 const std::string tool_name = tool.original_tool_name;
-                impl.execute = [weak_state, server_name, tool_name](
+                impl.execute = [weak_state, server_name, tool_name, generation = result.generation](
                                    const std::string& args_json,
                                    const ToolContext& ctx) {
                     // ctx.abort_flag 指向 AgentLoop::abort_requested_,让用户的
                     // Esc/停止能打断阻塞中的 MCP 调用(invoke 内 100ms 轮询)。
                     return McpManager::invoke(weak_state, server_name, tool_name,
-                                              args_json, ctx.abort_flag);
+                                              args_json, ctx.abort_flag, generation);
                 };
                 if (executor.register_tool(impl)) {
                     state->discovered_tools.push_back(tool);
@@ -505,6 +513,7 @@ void McpManager::start_entry_async(ConnectionSnapshot snapshot, ToolExecutor& ex
 }
 
 bool McpManager::connect_all(const AppConfig& cfg) {
+    require_valid_mcp_config(serialize_mcp_config(cfg.mcp_servers));
     if (cfg.mcp_servers.empty()) {
         LOG_INFO("[mcp] No MCP servers configured, skipping connection phase");
         return false;
@@ -533,6 +542,72 @@ bool McpManager::connect_all(const AppConfig& cfg) {
 
 void McpManager::register_tools(ToolExecutor& executor) {
     start_async(executor);
+}
+
+void McpManager::reconcile_scope(
+    const std::string& scope,
+    const std::map<std::string, McpServerConfig>& servers,
+    ToolExecutor& executor,
+    const std::unordered_set<std::string>& keep_enabled) {
+    require_valid_mcp_config(serialize_mcp_config(servers));
+    const std::string canonical_scope = scope.empty() ? "" : mcp_project_root(scope);
+    std::map<std::string, McpServerConfig> desired;
+    for (const auto& [name, cfg] : servers) {
+        desired.emplace(canonical_scope.empty() ? name
+            : mcp_project_server_id(canonical_scope, name), cfg);
+    }
+    std::vector<ConnectionSnapshot> starts;
+    {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        if (state_->shutdown_done) return;
+        for (auto it = state_->servers.begin(); it != state_->servers.end();) {
+            if (it->scope != canonical_scope) { ++it; continue; }
+            const auto next = desired.find(it->name);
+            if (next != desired.end()) {
+                const bool retained = keep_enabled.count(mcp_server_display_name(it->name)) != 0;
+                auto comparable = it->cfg;
+                if (retained) comparable.disabled = next->second.disabled;
+                if (serialize_mcp_config({{"server", comparable}}) ==
+                    serialize_mcp_config({{"server", next->second}})) {
+                    it->cfg = next->second;
+                    if (retained && it->state == McpServerState::Disabled)
+                        starts.push_back(snapshot_for_start_locked(*it));
+                    desired.erase(next);
+                    ++it;
+                    continue;
+                }
+            }
+            teardown_locked(*it, executor);
+            // Removing and recreating an entry must not reuse its generation.
+            ++state_->generation_counter;
+            it = state_->servers.erase(it);
+        }
+        for (const auto& [id, cfg] : desired) {
+            ServerEntry entry;
+            entry.name = id;
+            entry.scope = canonical_scope;
+            entry.cfg = cfg;
+            entry.command_line = build_locator(cfg);
+            entry.state = cfg.disabled ? McpServerState::Disabled : McpServerState::Failed;
+            state_->servers.push_back(std::move(entry));
+            if (!cfg.disabled || keep_enabled.count(mcp_server_display_name(id)))
+                starts.push_back(snapshot_for_start_locked(state_->servers.back()));
+        }
+        state_->cv.notify_all();
+    }
+    for (auto& snapshot : starts) start_entry_async(std::move(snapshot), executor);
+}
+
+std::string McpManager::server_scope(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    for (const auto& entry : state_->servers) if (entry.name == id) return entry.scope;
+    return {};
+}
+
+std::optional<McpServerConfig> McpManager::server_config(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    for (const auto& entry : state_->servers) if (entry.name == id) return entry.cfg;
+    return std::nullopt;
 }
 
 void McpManager::start_async(ToolExecutor& executor) {
@@ -602,7 +677,7 @@ bool McpManager::disable(const std::string& name, ToolExecutor& executor) {
         if (!entry) return false;
         if (entry->state == McpServerState::Disabled) return false;
         teardown_locked(*entry, executor);
-        entry->generation++;
+        entry->generation = ++state->generation_counter;
         entry->state = McpServerState::Disabled;
         entry->error.clear();
         info = McpServerInfo{
@@ -786,7 +861,8 @@ ToolResult McpManager::invoke(const std::weak_ptr<State>& weak_state,
                               const std::string& server_name,
                               const std::string& tool_name,
                               const std::string& arguments_json,
-                              const std::atomic<bool>* abort_flag) {
+                              const std::atomic<bool>* abort_flag,
+                              std::uint64_t generation) {
     auto state = weak_state.lock();
     if (!state) {
         return ToolResult{"[Error] MCP manager is no longer available", false};
@@ -797,7 +873,7 @@ ToolResult McpManager::invoke(const std::weak_ptr<State>& weak_state,
     {
         std::lock_guard<std::mutex> lk(state->mu);
         for (const auto& s : state->servers) {
-            if (s.name == server_name) {
+            if (s.name == server_name && s.generation == generation) {
                 client = s.client;
                 tag = std::string("[mcp:") + transport_tag(s.cfg.transport) + "] ";
                 break;

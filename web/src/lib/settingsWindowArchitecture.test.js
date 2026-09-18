@@ -111,7 +111,7 @@ run('MCP editor saves on blur and flushes before runtime actions', () => {
   const mcp = between(settings, 'function SectionMCP()', 'function SectionConnectors()');
 
   assert.match(mcp, /onBlur=\{\(\) => \{ void save\(\); \}\}/);
-  assert.match(mcp, /await api\.putMcp\(parsed\);/);
+  assert.match(mcp, /await api\.putMcp\(parsed, workspace\);/);
   assert.equal((mcp.match(/if \(!await save\(\)\) return;/g) || []).length, 2);
   assert.doesNotMatch(mcp, /onClick=\{save\}/);
 });
