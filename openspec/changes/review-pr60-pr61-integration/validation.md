@@ -39,4 +39,4 @@
 - 干净 Mac 上的交互安装效果需实际打开安装包验收；CI 的签名、公证、包结构及窗口启动检查不等同于该验收。
 - 四份下载归档均通过 ZIP 完整性检查，SHA-256 与 GitHub artifact 的 `digest` 完全相同。直接解读两个 PKG 的 XAR 目录和 Distribution XML，确认分别为 `arm64` / `x86_64`、只允许 `CurrentUserHomeDirectory`、禁止系统及任意卷安装，并声明替换前必须关闭 ACECode。
 - PKG 文件 SHA-256：arm64 为 `5ab5b7ba507c465024b717383e9c2d6148b0d182d2d43cc0c7545659d840be42`；x64 为 `2d3ebda53676f7b6eade62121805958ddf337d8feed598c54e7f4f384dd3c8b4`。成品保存于忽略目录 `build/review-pr60-pr61/artifacts-288133c7/`。
-- 整个打包工作流成功，各平台构建均通过。记录时 Linux 全量 C++ 检查已编译成功，仍在运行 `ctest`。
+- 整个打包工作流成功，各平台构建均通过。源提交的完整检查也全部成功：Web、macOS 原生安装器及 Linux 全量 C++ `ctest` 均通过。
