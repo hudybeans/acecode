@@ -272,9 +272,11 @@ bash tests/scripts/macos_release_scripts_test.sh
 ```
 
 The PR test workflow runs these checks on macOS without signing credentials.
-The first command runs engine fault/rollback and unsafe-lock tests with assertions enabled and
-cross-compiles both UI architectures for macOS 11. The second uses mocked Apple
-tools to test sequencing, architecture rejection, unchanged payloads, rejected
+The first command runs engine fault/rollback and unsafe-lock tests with assertions
+enabled and cross-compiles both UI architectures for macOS 11. It also launches
+a test bundle and captures personal/system installation windows without
+installing an application. The second uses mocked Apple tools to test sequencing,
+architecture rejection, unchanged payloads, rejected
 notarization, release DMG naming/count, and updater asset selection. These do
 not replace live release signing, notarization, or clean-machine smoke tests.
 

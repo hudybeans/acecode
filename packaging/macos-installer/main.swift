@@ -264,6 +264,8 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+// Initialize AppKit and its window-server connection before creating NSWindow.
+let application = NSApplication.shared
 let delegate = InstallerUI()
-NSApplication.shared.delegate = delegate
-NSApplication.shared.run()
+application.delegate = delegate
+application.run()
