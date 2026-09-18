@@ -136,6 +136,7 @@ jobs:
             cmake_extra_args: -DACECODE_BUILD_DESKTOP=ON
           - id: macos-x64
             os: macos-15
+            installer_arch: x64
             triplet: x64-osx
             executable: acecode
             archive_extension: tar.gz
@@ -143,11 +144,12 @@ jobs:
             cmake_extra_args: -DCMAKE_OSX_ARCHITECTURES=x86_64 -DACECODE_BUILD_DESKTOP=ON
           - id: macos-arm64
             os: macos-15
+            installer_arch: arm64
             triplet: arm64-osx
             executable: acecode
             archive_extension: tar.gz
             build_desktop: true
-            cmake_extra_args: -DACECODE_BUILD_DESKTOP=ON
+            cmake_extra_args: -DCMAKE_OSX_ARCHITECTURES=arm64 -DACECODE_BUILD_DESKTOP=ON
 
     steps:
       - name: Checkout
@@ -508,6 +510,31 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: scripts/macos_notarize_app.sh --app "build/ACECode.app"
 
+      - name: Test macOS installer integration
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash tests/scripts/macos_installer_test.sh
+          python3 tests/scripts/macos_installer_release_test.py
+
+      - name: Build signed and notarized macOS installer DMG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.enabled == 'true'
+        id: macos-dmg
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          dmg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.dmg"
+          bash scripts/macos_create_installer_dmg.sh \
+            --app "build/ACECode.app" \
+            --output "$dmg_path" \
+            --arch "${{ matrix.installer_arch }}" \
+            --identity "${{ steps.macos-keychain.outputs.identity }}" \
+            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
+          echo "path=$dmg_path" >> "$GITHUB_OUTPUT"
+
       - name: Create macOS self-update archive
         if: runner.os == 'macOS'
         id: macos-update
@@ -779,6 +806,14 @@ jobs:
         with:
           name: acecode-${{ matrix.id }}-update
           path: ${{ steps.linux-update.outputs.path }}
+          if-no-files-found: error
+
+      - name: Upload macOS installer DMG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: acecode-${{ matrix.id }}-dmg
+          path: ${{ steps.macos-dmg.outputs.path }}
           if-no-files-found: error
 
       - name: Upload macOS PKG
@@ -1156,6 +1191,9 @@ jobs:
       - build-linux-old-package
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout release asset selector
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1167,11 +1205,22 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          unexpected_dmg="$(find artifacts -type f -name '*.dmg' -print -quit)"
-          if [ -n "$unexpected_dmg" ]; then
-            echo "::error::DMG artifacts are no longer permitted in tagged releases: $unexpected_dmg"
+          release_version="${GITHUB_REF_NAME#v}"
+          # Only exact update ZIPs may be selected for updater publication.
+          python3 scripts/select_macos_update_assets.py artifacts "$release_version"
+          dmg_count="$(find artifacts -type f -iname '*.dmg' | wc -l | tr -d '[:space:]')"
+          if [ "$dmg_count" -ne 2 ]; then
+            echo "::error::Tagged releases require exactly two signed macOS installer DMGs; found $dmg_count"
             exit 1
           fi
+          for arch in x64 arm64; do
+            expected_dmg="ACECode-${release_version}-macos-${arch}.dmg"
+            matching_count="$(find artifacts -type f -name "$expected_dmg" | wc -l | tr -d '[:space:]')"
+            if [ "$matching_count" -ne 1 ]; then
+              echo "::error::Expected exactly one $expected_dmg; found $matching_count"
+              exit 1
+            fi
+          done
 
           unsigned_pkg="$(find artifacts -type f -name '*-unsigned.pkg' -print -quit)"
           if [ -n "$unsigned_pkg" ]; then
@@ -1204,7 +1253,7 @@ jobs:
             echo "::notice::No macOS PKGs were produced; publishing the remaining trusted assets"
           fi
 
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' \) -print0 |
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.dmg' \) -print0 |
             while IFS= read -r -d '' file; do
               cp "$file" "release-assets/$(basename "$file")"
             done

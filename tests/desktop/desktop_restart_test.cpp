@@ -53,6 +53,16 @@ TEST(DesktopRestart, RejectsEmptyAndMissingTargets) {
     EXPECT_NE(missing.error.find("does not exist"), std::string::npos);
 }
 
+#ifdef __APPLE__
+TEST(DesktopRestart, CapturesCanonicalExecutablePath) {
+    const auto executable = acecode::desktop::current_desktop_executable_path();
+    ASSERT_FALSE(executable.empty());
+    EXPECT_TRUE(executable.is_absolute());
+    EXPECT_EQ(executable, fs::canonical(executable));
+    EXPECT_TRUE(validate_desktop_restart_target(executable).ok);
+}
+#endif
+
 TEST(DesktopRestart, RejectsDirectoryTarget) {
     TempDir temp;
     auto result = validate_desktop_restart_target(temp.path());
