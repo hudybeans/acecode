@@ -355,15 +355,20 @@ bool is_hidden_goal_context_message(const ChatMessage& msg) {
            msg.metadata.value("hidden_goal_context", false);
 }
 
+bool is_transcript_bookkeeping(const ChatMessage& message) {
+    return message.is_meta || is_file_checkpoint_message(message) ||
+           is_compact_checkpoint_message(message) ||
+           is_turn_timing_message(message) || is_turn_net_diff_message(message) ||
+           web::is_hidden_goal_context_message(message);
+}
+
 const ChatMessage* trailing_transcript_message(
-    const std::vector<ChatMessage>& messages) {
+    const std::vector<ChatMessage>& messages, bool user_only = false) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
         // Match the transcript's invisible bookkeeping records. Never skip a
-        // visible assistant/tool/system/error, even when its content is empty.
-        if (it->is_meta || is_file_checkpoint_message(*it) ||
-            is_compact_checkpoint_message(*it) ||
-            is_turn_timing_message(*it) || is_turn_net_diff_message(*it) ||
-            web::is_hidden_goal_context_message(*it)) continue;
+        // visible non-user unless an explicit user-abort marker allows retry.
+        if (is_transcript_bookkeeping(*it)) continue;
+        if (user_only && it->role != "user") continue;
         return &*it;
     }
     return nullptr;
@@ -498,7 +503,11 @@ void AgentLoop::set_session_manager(SessionManager* sm) {
             const auto metadata = payload.value("metadata", nlohmann::json::object());
             if (!payload.value("is_meta", false) &&
                 !(metadata.is_object() && metadata.value("hidden_goal_context", false))) {
-                live_transcript_tail_blocked_ = payload.value("role", std::string{}) != "user";
+                const auto role = payload.value("role", std::string{});
+                const bool user_abort = role == "system" && metadata.is_object() &&
+                    metadata.value("transcript_only", false) &&
+                    metadata.value("user_aborted", false);
+                live_transcript_tail_blocked_ = role != "user" && !user_abort;
             }
             break;
         }
@@ -1022,7 +1031,7 @@ void AgentLoop::worker_main() {
                 if (!task.retry_user_message_id.empty()) {
                     const auto message = retryable_user_message(task.retry_user_message_id);
                     if (!message) {
-                        throw std::runtime_error("transcript no longer ends with the expected user message");
+                        throw std::runtime_error("user message is no longer eligible for retry");
                     }
                     UserInput input;
                     input.text = message->content;
@@ -1279,15 +1288,24 @@ void AgentLoop::submit(const UserInput& input) {
 std::optional<ChatMessage> AgentLoop::retryable_user_message(
     const std::string& expected_user_message_id) const {
     if (expected_user_message_id.empty() || live_transcript_tail_blocked_.load()) return std::nullopt;
-    const auto* message = trailing_transcript_message(messages_);
-    if (!message || message->role != "user" ||
-        message->uuid != expected_user_message_id) return std::nullopt;
+    const auto* model_tail = trailing_transcript_message(messages_);
+    if (!model_tail || (model_tail->role != "user" &&
+        model_tail->role != "assistant" && model_tail->role != "tool")) return std::nullopt;
+    bool user_aborted = false;
     if (session_manager_) {
         const auto persisted = session_manager_->load_active_messages();
         const auto* tail = trailing_transcript_message(persisted);
+        user_aborted = tail && tail->role == "system" && tail->metadata.is_object() &&
+            tail->metadata.value("transcript_only", false) &&
+            tail->metadata.value("user_aborted", false) &&
+            tail->metadata.value("retry_user_message_id", std::string{}) == expected_user_message_id;
+        if (user_aborted) tail = trailing_transcript_message(persisted, true);
         if (!tail || tail->role != "user" ||
             tail->uuid != expected_user_message_id) return std::nullopt;
     }
+    const auto* message = trailing_transcript_message(messages_, user_aborted);
+    if (!message || message->role != "user" ||
+        message->uuid != expected_user_message_id) return std::nullopt;
     return *message;
 }
 
@@ -1301,7 +1319,7 @@ bool AgentLoop::retry_last_user_message(
             return false;
         }
         if (!retryable_user_message(expected_user_message_id)) {
-            error = "transcript does not end with the expected user message";
+            error = "user message is not eligible for retry";
             return false;
         }
         WorkerTask task;
@@ -2557,17 +2575,6 @@ void AgentLoop::begin_active_turn(const std::string& turn_id) {
     active_turn_accepting_ = !turn_id.empty();
 }
 
-std::string AgentLoop::abort_notice_text() const {
-    return turn_interrupt_requested_.load() ? "[Interjected]" : "[Interrupted]";
-}
-
-nlohmann::json AgentLoop::abort_notice_metadata() const {
-    if (!turn_interrupt_requested_.load()) return nlohmann::json{};
-    return nlohmann::json{
-        {"turn_interrupt", true},
-    };
-}
-
 void AgentLoop::append_interrupted_turn_context(const std::string& turn_id) {
     ChatMessage marker;
     marker.role = "user";
@@ -2772,6 +2779,13 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         if (!user_msg.metadata.is_object()) user_msg.metadata = nlohmann::json::object();
         user_msg.metadata["hidden_goal_context"] = true;
     }
+    append_user_turn_message(info, hidden_goal_context);
+    start_user_turn(info);
+    return info;
+}
+
+void AgentLoop::append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context) {
+    auto& user_msg = info.user_msg;
     ensure_user_message_identity(user_msg);
     info.active_turn_id = user_msg.uuid;
     info.visible_timed_turn =
@@ -2788,7 +2802,7 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
     }
     if (!hidden_goal_context) {
         nlohmann::json msg_event = {
-            {"role", "user"}, {"content", model_user_message},
+            {"role", "user"}, {"content", user_msg.content},
             {"is_tool", false}, {"id", user_msg.uuid},
         };
         if (!user_msg.content_parts.is_null() && user_msg.content_parts.is_array() &&
@@ -2800,15 +2814,29 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         }
         events_.emit(SessionEventKind::Message, msg_event);
     }
-
-    start_user_turn(info);
-    return info;
 }
 
 AgentLoop::UserTurnInfo AgentLoop::prepare_retry_user_turn(const ChatMessage& message) {
     UserTurnInfo info;
     info.user_msg = message;
     info.turn_started_at_ms = now_epoch_ms();
+    const auto* tail = trailing_transcript_message(messages_);
+    if (tail && tail->role != "user") {
+        // An aborted turn may already contain assistant/tool output. Preserve
+        // it and append the original input with a fresh identity, without
+        // expanding skills or attachments for a second time.
+        info.user_msg.uuid.clear();
+        info.user_msg.timestamp.clear();
+        if (info.user_msg.metadata.is_object()) {
+            for (const auto* key : {"client_message_id", "turn_steer", "turn_id",
+                                    "turn_interrupt", "interrupted_turn_id"}) {
+                info.user_msg.metadata.erase(key);
+            }
+        }
+        append_user_turn_message(info, false);
+        start_user_turn(info);
+        return info;
+    }
     info.active_turn_id = message.uuid;
     info.visible_timed_turn = true;
     info.turn_user_uuid = message.uuid;
@@ -3708,8 +3736,6 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                 emit_pa_rescue_wait_progress(
                     error, plan, attempt, max_attempts, true);
                 if (!wait_for_pa_rescue_delay(plan.wait_ms)) {
-                    dispatch_message("system", abort_notice_text(), false,
-                                     abort_notice_metadata());
                     return HandleErrorResult::Break;
                 }
                 emit_pa_rescue_wait_progress(
@@ -5630,8 +5656,6 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
         if (abort_requested_) {
             LOG_WARN("Abort requested, breaking loop");
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
             break;
         }
 
@@ -5692,8 +5716,22 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         TokenUsage step_usage = provider_result.accumulated.usage;
 
         if (abort_requested_) {
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
+            const auto& output = provider_result.accumulated;
+            if (!output.content.empty() ||
+                (output.content_parts.is_array() && !output.content_parts.empty())) {
+                // Keep already displayed output across history reloads. An
+                // interrupted response (especially partial tool calls) is not
+                // a completed provider message, so it remains transcript-only.
+                ChatMessage partial;
+                partial.role = "assistant";
+                partial.content = output.content;
+                partial.content_parts = output.content_parts;
+                partial.reasoning_content = output.reasoning_content;
+                partial.metadata = {{"transcript_only", true}, {"interrupted_output", true}};
+                if (session_manager_) session_manager_->on_message(partial);
+                dispatch_message(partial.role, partial.content, false,
+                                 partial.metadata, partial.content_parts);
+            }
             record_model_response(
                 current_model_step, provider_result, step_usage, "aborted");
             emit_model_step_finish(current_model_step, "aborted", step_usage);
@@ -5950,6 +5988,20 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         append_turn_timing_record(
             turn_info.turn_user_uuid, turn_info.turn_started_at_ms, now_epoch_ms(),
             turn_timing_status);
+    }
+
+    if (abort_requested_) {
+        if (interrupted_for_new_turn) {
+            dispatch_message("system", "[Interjected]", false, {{"turn_interrupt", true}});
+        } else {
+            const auto* user = trailing_transcript_message(messages_, true);
+            // Persist the completed stop, including its exact retry target.
+            // This notice stays out of the provider's message history.
+            emit_transcript_system_message("[Interrupted]", {
+                {"user_aborted", true},
+                {"retry_user_message_id", user ? user->uuid : std::string{}},
+            });
+        }
     }
 
     if (callbacks_.on_turn_finished) {

@@ -82,7 +82,7 @@ run('Appearance settings separate color cards from the dark-mode toggle', () => 
   assert.match(settings, /<ThemeCards options=\{COLOR_THEME_OPTIONS\} selected=\{colorTheme\}/);
   assert.match(settings, /onSelect=\{setColorTheme\} downloads=\{themeDownloads\}/);
   assert.match(settings, /!isInstalledColorTheme\(colorTheme\)/);
-  assert.match(settings, /<div className="text-\[13px\] font-medium">暗黑模式<\/div>/);
+  assert.match(settings, /<div className="text-\[13px\] font-normal">暗黑模式<\/div>/);
   assert.match(
     settings,
     /<Toggle\s+on=\{theme === 'dark'\}\s+onChange=\{\(enabled\) => setTheme\(enabled \? 'dark' : 'light'\)\}/,

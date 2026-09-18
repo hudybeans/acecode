@@ -7813,6 +7813,42 @@ TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRejectsNonBoolean) {
     EXPECT_TRUE(fx.cfg.web_ui.sidebar_session_time);
 }
 
+// 消息折叠偏好独立更新，后续外观修改必须保留关闭值；无效值整笔拒绝。
+TEST(WebServerHttp, UiPreferencesMessageAutoCollapseRoundTrips) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/ui-preferences")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    EXPECT_EQ(json::parse(cpr::Get(url).text)["message_auto_collapse"], true);
+    auto disabled = cpr::Put(url, headers, cpr::Body{R"({"message_auto_collapse":false})"});
+    ASSERT_EQ(disabled.status_code, 200) << disabled.text;
+    EXPECT_EQ(json::parse(disabled.text)["message_auto_collapse"], false);
+    EXPECT_FALSE(fx.cfg.web_ui.message_auto_collapse);
+    auto other = cpr::Put(url, headers, cpr::Body{R"({"font_size":"large"})"});
+    ASSERT_EQ(other.status_code, 200) << other.text;
+    EXPECT_EQ(json::parse(other.text)["message_auto_collapse"], false);
+    const auto saved = acecode::load_config_from_path((fx.tmp_dir / "config.json").u8string());
+    EXPECT_FALSE(saved.web_ui.message_auto_collapse);
+    EXPECT_EQ(saved.web_ui.font_size, "large");
+    auto invalid = cpr::Put(url, headers,
+        cpr::Body{R"({"message_auto_collapse":"true","font_size":"small"})"});
+    EXPECT_EQ(invalid.status_code, 400) << invalid.text;
+    EXPECT_FALSE(fx.cfg.web_ui.message_auto_collapse);
+    EXPECT_EQ(fx.cfg.web_ui.font_size, "large");
+    auto enabled = cpr::Put(url, headers, cpr::Body{R"({"message_auto_collapse":true})"});
+    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+    EXPECT_TRUE(fx.cfg.web_ui.message_auto_collapse);
+}
+
+TEST(WebServerHttp, UiPreferencesMessageAutoCollapseRollsBackOnSaveFailure) {
+    WebServerFixture fx;
+    std::filesystem::create_directories(fx.tmp_dir / "config.json");
+    auto response = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"message_auto_collapse":false})"});
+    EXPECT_EQ(response.status_code, 500) << response.text;
+    EXPECT_TRUE(fx.cfg.web_ui.message_auto_collapse);
+}
+
 TEST(WebServerHttp, PutUiPreferencesPartialUpdatePreservesOtherAppearanceFields) {
     WebServerFixture fx;
     fx.server->with_app_config_lock([&] {

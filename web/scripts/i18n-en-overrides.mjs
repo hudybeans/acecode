@@ -1,6 +1,15 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '展开命令详情': 'Expand command details',
+  '收起命令详情': 'Collapse command details',
+  '命令未记录': 'Command not recorded',
+  '执行失败': 'Execution failed',
+  '消息自动折叠': 'Automatically collapse messages',
+  '会话 conversation messages auto collapse fold expand tools': 'conversation messages auto collapse fold expand tools',
+  '关闭后展开所有消息，仅保留工具调用的折叠': 'When off, expand all messages and keep only tool calls collapsible',
+  '{{p0}} 个文件有未保存的修改。是否保存后继续？': '{{p0}} file(s) have unsaved changes. Save before continuing?',
+  '保存': 'Save',
   '调整 {{p0}} 的顺序': 'Reorder {{p0}}',
   '拖动排序，也可按上下方向键': 'Drag to reorder, or use the up and down arrow keys',
   '模型列表已发生变化，请刷新后重新排序': 'The model list has changed. Refresh it and reorder again.',
@@ -28,6 +37,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '{{p0}} – {{p1}} 使用了 {{p2}} 个 Token': '{{p0}} – {{p1}}: {{p2}} tokens used',
   '{{p0}} – {{p1}} 累计使用了 {{p2}} 个 Token': '{{p0}} – {{p1}}: {{p2}} tokens used in total',
   '会话续接建议': 'Conversation continuation suggestion',
+  '{{p0}}秒后关闭': 'Closes in {{p0}} s',
   '后台任务建议': 'Suggested task',
   '任务建议': 'Task suggestions',
   '在新会话中继续': 'Continue in a new conversation',

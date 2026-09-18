@@ -30,7 +30,7 @@ run('Desktop injects stable appearance before WebUI modules execute', () => {
   const navigation = desktop.indexOf('host.navigate(url);');
   assert.ok(injection >= 0);
   assert.ok(navigation > injection);
-  for (const field of ['desktop_cfg.web_ui.theme', 'desktop_cfg.web_ui.color_theme', 'desktop_cfg.web_ui.font_size']) {
+  for (const field of ['desktop_cfg.web_ui.theme', 'desktop_cfg.web_ui.color_theme', 'desktop_cfg.web_ui.font_size', 'desktop_cfg.web_ui.message_auto_collapse']) {
     assert.ok(desktop.includes(field), `bootstrap missing ${field}`);
   }
 });

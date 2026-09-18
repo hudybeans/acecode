@@ -9,6 +9,7 @@ Side findings currently interrupt the main conversation or remain unactionable p
 - Offer a continuation after three successful summary compactions by default, with a configurable threshold and once-per-session dismissal.
 - Continue in a fresh conversation using bounded handoff context, a real source-session reference, the actual working directory, and inherited execution configuration.
 - Persist acceptance phases and the target session identity so retries do not create duplicate tasks. Keep old conversations available and link both directions.
+- 待处理的两类建议卡片显示 30 秒自动关闭倒计时；文案位于底部进度条左上方，使用“xx秒后关闭”，进度条以细线和微光端点表现剩余时间。
 
 ## Capabilities
 

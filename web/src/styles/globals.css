@@ -2001,11 +2001,11 @@ body {
   text-decoration-skip-ink: none;
 }
 .ace-settings-group { margin-bottom: 24px; }
-.ace-settings-group h3 { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
+.ace-settings-group > h3 { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
 .ace-settings-group > p { font-size: 12px; color: var(--ace-fg-mute); margin-bottom: 8px; }
 .ace-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-block: 13px; }
 .ace-settings-row + .ace-settings-row { border-top: 1px solid var(--ace-settings-divider); }
-.ace-settings-label { flex: 0 0 135px; font-size: 13px; font-weight: 500; }
+.ace-settings-label { flex: 0 0 135px; font-size: 13px; font-weight: 400; color: var(--ace-fg); }
 .ace-settings-label small { display: block; margin-top: 3px; color: var(--ace-fg-mute); font-size: 11px; font-weight: 400; }
 .ace-settings-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
 .ace-settings-value :is(input, select), .ace-settings-pending input {
@@ -2800,7 +2800,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ace-theme-card-download-cover { transition: none; }
 }
-.ace-theme-card-name { font-size: 14px; font-weight: 600; margin-top: 4px; }
+.ace-theme-card-name { font-size: 14px; font-weight: 400; margin-top: 4px; }
 .ace-local-theme .ace-theme-card-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ace-local-theme .ace-theme-card-choice { padding: 10px 16px 34px; }
 .ace-local-theme .ace-theme-card-swatches { min-height: 30px; }

@@ -1227,7 +1227,8 @@ those messages does not depend on the source session's attachment storage.
 
 ### `POST /api/sessions/:id/messages/retry`
 
-Retries the exact trailing user message in an idle live session. Body:
+Retries the trailing user message, or the last user message of a manually
+stopped turn, in an idle live session. Body:
 
 ```json
 {"expected_user_message_id":"persisted-user-message-id"}
@@ -1237,10 +1238,25 @@ The request accepts only this field. The backend verifies the full visible
 transcript and model history end with that user message, with no active or
 queued work. It checks again when the worker starts. Hidden bookkeeping
 records do not count as transcript messages; assistant (including empty
-messages), tool, system and error messages prevent retry.
+messages), tool, system and error messages prevent ordinary retry.
 
-The original message, attachments and context are reused without appending
-another user record. Returns `202 {"queued":true,"user_message_id":"..."}`;
+A completed manual stop persists a transcript-only system message with
+`metadata.user_aborted: true` and `metadata.retry_user_message_id`. If that
+marker is the final visible transcript entry, the backend may retry its
+specified last user message even after partial assistant output or tool
+results. A stop request alone, an interjection, or plain interruption text
+does not grant this exception. Later visible events invalidate it.
+Already streamed text is saved as an assistant message with
+`metadata.transcript_only: true` and `metadata.interrupted_output: true`, so
+history reloads retain it without sending incomplete output/tool calls back
+to the provider.
+
+The original message, attachments and context are reused. If model history
+still ends with that user, no user record is appended. If an aborted turn
+already has assistant/tool records, they are preserved and the original
+structured user content is appended with a new identity, without expanding
+skills again or creating adjacent user messages. The stop marker is never
+sent to the model. Returns `202 {"queued":true,"user_message_id":"..."}`;
 malformed requests return `400`, and unavailable sessions, stale message IDs
 or active/queued work return `409`. This endpoint does not create or resume a
 session, expand commands, or accept new input.
@@ -2947,7 +2963,9 @@ Returns:
   "show_acecode_avatar": false,
   "theme": "system",
   "color_theme": "blue",
-  "font_size": "medium"
+  "font_size": "medium",
+  "sidebar_session_time": true,
+  "message_auto_collapse": true
 }
 ```
 
@@ -2956,6 +2974,11 @@ Returns:
 are stored in `~/.acecode/config.json`, so Desktop restores them even when its
 managed daemon uses a different loopback port. The avatar preference is kept
 for compatibility and is always normalized to `false`.
+
+`message_auto_collapse` is a boolean, defaulting to `true` for new and legacy
+configurations. When `false`, main and subagent conversations display messages
+without activity/turn folding; individual tool calls remain collapsible.
+The preference is persisted and included in the Desktop appearance bootstrap.
 
 ### `PUT /api/config/ui-preferences`
 

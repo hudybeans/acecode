@@ -3,6 +3,7 @@ import {
   DEFAULT_FONT_SIZE,
   DEFAULT_UI_PREFS,
   effectiveFontSize,
+  effectiveMessageAutoCollapse,
   effectiveSidePanelListCollapsed,
   effectiveShowAceCodeAvatar,
   rightPanelHidden,
@@ -20,6 +21,14 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('消息折叠偏好兼容旧缓存，只有显式 false 关闭，非法缓存被拒绝', () => {
+  assert.equal(DEFAULT_UI_PREFS.messageAutoCollapse, true);
+  assert.equal(effectiveMessageAutoCollapse({}), true);
+  assert.equal(effectiveMessageAutoCollapse({ messageAutoCollapse: false }), false);
+  assert.equal(validateUiPrefs({ ...DEFAULT_UI_PREFS, messageAutoCollapse: false }), true);
+  assert.equal(validateUiPrefs({ ...DEFAULT_UI_PREFS, messageAutoCollapse: 'false' }), false);
+});
 
 run('DEFAULT_UI_PREFS keeps ACECode avatar hidden by default', () => {
   assert.equal(DEFAULT_UI_PREFS.showAceCodeAvatar, false);

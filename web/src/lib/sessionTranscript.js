@@ -368,11 +368,23 @@ function isAbortLikeReason(reason) {
   return /abort|cancel|interrupt|terminat|用户.*终止|已终止|取消|中断/i.test(String(reason || ''));
 }
 
+function isUserAbortMessage(message) {
+  return message?.role === 'system' && message.metadata?.transcript_only === true &&
+    message.metadata?.user_aborted === true;
+}
+
 function appendTerminationNotice(next, msg, payload = {}) {
   const text = terminationNoticeText(payload);
   const last = next.items[next.items.length - 1];
   if (last?.kind === 'termination_notice') {
-    if (last.content === text) return;
+    if (last.content === text) {
+      if (payload.metadata?.user_aborted === true) {
+        next.items = [...next.items.slice(0, -1), {
+          ...last, messageId: payload.id || '', metadata: payload.metadata,
+        }];
+      }
+      return;
+    }
     if (last.source === 'user' && payload.source !== 'user' && isAbortLikeReason(payload.reason || payload.message)) {
       return;
     }
@@ -383,6 +395,7 @@ function appendTerminationNotice(next, msg, payload = {}) {
       kind: 'termination_notice',
       id: allocateItemId(next),
       source: payload.source || 'server',
+      ...(payload.metadata ? { metadata: payload.metadata, messageId: payload.id || '' } : {}),
       content: text,
       ts: eventTs(msg),
     },
@@ -690,6 +703,13 @@ function genericHistoryMessageItem(next, m, extra = {}) {
 function historyItemFromMessage(next, m, messageOrdinal = null) {
   const metadata = m?.metadata && typeof m.metadata === 'object' ? m.metadata : null;
   const ts = transcriptTimestampMs(m) || Date.now();
+  if (isUserAbortMessage(m)) {
+    return {
+      kind: 'termination_notice', id: allocateItemId(next),
+      source: 'user', content: terminationNoticeText({ source: 'user' }),
+      metadata, messageId: m.id || '', ts,
+    };
+  }
   if ((m?.role || '') === 'tool' && metadata) {
     const summary = normalizePersistedToolSummary(metadata);
     const hunks = normalizePersistedToolHunks(metadata);
@@ -1146,6 +1166,7 @@ export function createTranscriptState(overrides = {}) {
   return {
     items: [],
     busy: false,
+    abortPending: false,
     activeTurnId: '',
     turns: 0,
     title: '',
@@ -1291,6 +1312,35 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'message': {
       const role = p.role || 'system';
+      if (role === 'assistant' && p.metadata?.transcript_only === true &&
+          p.metadata?.interrupted_output === true) {
+        // A local stop can split one stream into drafts on both sides of its
+        // optimistic notice. Replace that trailing span with the persisted
+        // partial response; the confirmed stop notice follows it.
+        let keep = next.items.length;
+        while (keep > 0) {
+          const item = next.items[keep - 1];
+          const draft = item.kind === 'msg' && item.role === 'assistant' &&
+            item.streamDraft && !item.messageId;
+          const localStop = item.kind === 'termination_notice' && item.source === 'user' &&
+            item.metadata?.user_aborted !== true;
+          if (!draft && !localStop) break;
+          keep -= 1;
+        }
+        if (keep < next.items.length) {
+          next.items = next.items.slice(0, keep);
+          next.streamingId = null;
+        }
+      }
+      if (isUserAbortMessage(p)) {
+        if (msg.replayed && p.id && next.items.some((item) => (
+          item.kind === 'termination_notice' && item.messageId === p.id &&
+          item.metadata?.retry_user_message_id === p.metadata.retry_user_message_id
+        ))) break;
+        finalizeStreaming(next);
+        appendTerminationNotice(next, msg, { ...p, source: 'user' });
+        break;
+      }
       const turnNetDiff = normalizeTurnNetDiffRecord(p);
       if (turnNetDiff) {
         next.turnNetDiffs.set(turnNetDiff.userMessageUuid, turnNetDiff);
@@ -1584,6 +1634,7 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = !!p.busy;
+      next.abortPending = false;
       next.activeTurnId = next.busy ? String(p.turn_id || '') : '';
       next.status = next.busy ? 'running' : 'idle';
       if (next.busy && !wasBusy) {
@@ -1617,6 +1668,7 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;
@@ -1634,6 +1686,7 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'error':
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'error';
       next.error = p.reason || '';
@@ -1647,6 +1700,7 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     case 'turn_aborted':
       next.busy = false;
+      next.abortPending = true;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;

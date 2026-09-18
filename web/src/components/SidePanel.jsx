@@ -617,10 +617,10 @@ export function SidePanel({
     setActiveTab('changes');
   }, [selectedChangeFile, selectedChangeFileRevision]);
 
-  const onPickFile = useCallback((entry) => {
+  const onPickFile = useCallback(async (entry) => {
     if (!filesEnabled) return;
+    if (await onOpenFilePreview?.(entry.path) === false) return;
     setSelectedPath(entry.path);
-    onOpenFilePreview?.(entry.path);
   }, [filesEnabled, onOpenFilePreview]);
 
   useEffect(() => {
@@ -632,8 +632,7 @@ export function SidePanel({
 
       if (effect.type === SIDE_PANEL_CONTEXT_EFFECTS.OPEN_FILE_PREVIEW) {
         detail.handled = true;
-        setSelectedPath(effect.normalizedFilePath);
-        onOpenFilePreview?.(effect.normalizedFilePath);
+        void onPickFile({ path: effect.normalizedFilePath });
       } else if (effect.type === SIDE_PANEL_CONTEXT_EFFECTS.LOCATE_IN_FILE_TREE) {
         detail.handled = true;
         const plan = fileTreeLocatePlan(effect.normalizedFilePath, cwd);
@@ -652,7 +651,7 @@ export function SidePanel({
     };
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
-  }, [cwd, filesEnabled, onOpenFilePreview, refreshFileTree, setExpandedDirs]);
+  }, [cwd, filesEnabled, onPickFile, refreshFileTree, setExpandedDirs]);
 
   return (
     // 宽度由父级 wrapper(.ace-side-panel-shell)控制,这里 100% 占满。width prop

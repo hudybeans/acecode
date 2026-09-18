@@ -2287,6 +2287,13 @@ void WebServer::Impl::register_ui_preferences() {
                                     "font_size must be small, medium, or large");
                 }
             }
+            if (body.contains("message_auto_collapse")) {
+                has_supported_field = true;
+                if (!body["message_auto_collapse"].is_boolean()) {
+                    return json_err(400, "BAD_REQUEST",
+                                    "message_auto_collapse must be a boolean");
+                }
+            }
             if (body.contains("sidebar_session_time")) {
                 has_supported_field = true;
                 if (!body["sidebar_session_time"].is_boolean()) {
@@ -2314,6 +2321,10 @@ void WebServer::Impl::register_ui_preferences() {
             }
             const auto before = deps.app_config->web_ui;
             deps.app_config->web_ui.show_acecode_avatar = false;
+            if (body.contains("message_auto_collapse")) {
+                deps.app_config->web_ui.message_auto_collapse =
+                    body["message_auto_collapse"].get<bool>();
+            }
             if (body.contains("theme")) {
                 deps.app_config->web_ui.theme =
                     body["theme"].get<std::string>();

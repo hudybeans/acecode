@@ -72,13 +72,13 @@
   padding: 0;
   color: var(--ace-fg-mute);
   font-size: 14px;
+  font-weight: 400;
   line-height: 20px;
   white-space: nowrap;
 }
 
 .ace-usage-modes button[aria-pressed="true"] {
   color: var(--ace-fg);
-  font-weight: 500;
 }
 
 .ace-usage-modes button:hover {

@@ -289,6 +289,164 @@ TEST(AgentLoopUserMessageRetry, RejectsActiveOrQueuedControlWork) {
     EXPECT_EQ(h.provider().turn_count(), 0);
 }
 
+TEST(AgentLoopUserMessageRetry, RetriesConfirmedUserAbortWithoutDuplicatingUser) {
+    TurnSteeringHarness h("retry-user-abort");
+    h.provider().set_latency_ms(200);
+    h.provider().push_text("cancelled response");
+    h.provider().push_text("retried response");
+    h.loop().submit("original request");
+    const auto id = h.wait_for_active_turn();
+    ASSERT_TRUE(h.wait_for_provider_turns(1));
+    h.loop().abort();
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+
+    const auto stopped = h.session_manager().load_active_messages();
+    ASSERT_FALSE(stopped.empty());
+    EXPECT_EQ(stopped.back().metadata.value("retry_user_message_id", ""), id);
+    EXPECT_TRUE(stopped.back().metadata.value("user_aborted", false));
+    EXPECT_TRUE(stopped.back().metadata.value("transcript_only", false));
+    std::string error;
+    EXPECT_FALSE(h.loop().retry_last_user_message("stale-id", error));
+    ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+    EXPECT_FALSE(h.loop().retry_last_user_message(id, error));
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+    EXPECT_EQ(request_user_texts(h.provider().messages_for_turn(1)),
+              std::vector<std::string>{"original request"});
+    const auto persisted = h.session_manager().load_active_messages();
+    EXPECT_EQ(std::count_if(persisted.begin(), persisted.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 1);
+    EXPECT_FALSE(h.loop().retry_last_user_message(id, error));
+}
+
+TEST(AgentLoopUserMessageRetry, RetriesAbortAfterPartialTextOrReasoning) {
+    for (const auto kind : {acecode::SessionEventKind::Token,
+                            acecode::SessionEventKind::Reasoning}) {
+        TurnSteeringHarness h("retry-partial-abort");
+        acecode::StreamEvent partial;
+        partial.type = kind == acecode::SessionEventKind::Token
+            ? acecode::StreamEventType::Delta : acecode::StreamEventType::ReasoningDelta;
+        partial.content = "partial output";
+        h.provider().push_events({partial});
+        h.provider().push_text("retried response");
+        const auto sub = h.loop().events().subscribe([&](const auto& event) {
+            if (event.kind == kind) h.loop().abort();
+        });
+        h.loop().submit("original request");
+        ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+        h.loop().events().unsubscribe(sub);
+        const auto stopped = h.session_manager().load_active_messages();
+        ASSERT_FALSE(stopped.empty());
+        if (kind == acecode::SessionEventKind::Token) {
+            const auto partial_message = std::find_if(stopped.begin(), stopped.end(), [](const auto& message) {
+                return message.role == "assistant" && message.content == "partial output";
+            });
+            ASSERT_NE(partial_message, stopped.end());
+            EXPECT_TRUE(partial_message->metadata.value("transcript_only", false));
+            EXPECT_TRUE(partial_message->metadata.value("interrupted_output", false));
+        }
+        const auto id = stopped.back().metadata.value("retry_user_message_id", "");
+        ASSERT_FALSE(id.empty());
+        std::string error;
+        ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+        ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+        EXPECT_EQ(request_user_texts(h.provider().messages_for_turn(1)),
+                  std::vector<std::string>{"original request"});
+    }
+}
+
+TEST(AgentLoopUserMessageRetry, PreservesToolResultsAndAppendsOriginalStructuredInputAfterAbort) {
+    TurnSteeringHarness h("retry-tools-abort");
+    // Even an unavailable tool produces an assistant call and paired result.
+    h.provider().push_tool_call("unavailable_tool", "{}", "retry-tool-call");
+    h.provider().push_text("retried response");
+    const auto sub = h.loop().events().subscribe([&](const auto& event) {
+        if (event.kind == acecode::SessionEventKind::ModelStepFinish) h.loop().abort();
+    });
+    acecode::UserInput input;
+    input.text = "original with context";
+    input.display_text = "original visible text";
+    input.content_parts = nlohmann::json::array({
+        {{"type", "text"}, {"text", input.text}},
+        {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AAAA"}}}},
+    });
+    input.metadata = {{"client_message_id", "original-client"}};
+    h.loop().submit(input);
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+    h.loop().events().unsubscribe(sub);
+    const auto stopped = h.session_manager().load_active_messages();
+    const auto id = stopped.back().metadata.value("retry_user_message_id", "");
+    ASSERT_FALSE(id.empty());
+    std::string error;
+    ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+    const auto request = h.provider().messages_for_turn(1);
+    ASSERT_GE(request.size(), 4u);
+    const auto& retried = request.back();
+    EXPECT_EQ(retried.role, "user");
+    EXPECT_NE(retried.uuid, id);
+    EXPECT_EQ(retried.content, input.text);
+    EXPECT_EQ(retried.content_parts, input.content_parts);
+    EXPECT_EQ(retried.metadata.value("display_text", ""), input.display_text);
+    EXPECT_FALSE(retried.metadata.contains("client_message_id"));
+    EXPECT_EQ(request[request.size() - 2].role, "tool");
+    EXPECT_EQ(request[request.size() - 2].tool_call_id, "retry-tool-call");
+    EXPECT_EQ(request_user_texts(request), (std::vector<std::string>{input.text, input.text}));
+    for (std::size_t i = 1; i < request.size(); ++i) {
+        EXPECT_FALSE(request[i - 1].role == "user" && request[i].role == "user");
+        EXPECT_NE(request[i].content, "[Interrupted]");
+    }
+    const auto persisted = h.session_manager().load_active_messages();
+    EXPECT_EQ(std::count_if(persisted.begin(), persisted.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 2);
+}
+
+TEST(AgentLoopUserMessageRetry, RestoresExplicitAbortButRejectsPlainNoticesAndSupersededStops) {
+    for (const auto& mode : {"restored", "plain", "interjected", "stale", "newer-message", "live-error", "invalid-model-tail"}) {
+        SCOPED_TRACE(mode);
+        TurnSteeringHarness h(std::string("retry-abort-") + mode);
+        acecode::ChatMessage user;
+        user.role = "user";
+        user.uuid = "restored-user";
+        user.content = "original";
+        acecode::ChatMessage assistant;
+        assistant.role = std::string(mode) == "invalid-model-tail" ? "system" : "assistant";
+        assistant.content = "existing partial reply";
+        for (const auto& message : {user, assistant}) {
+            h.loop().push_message(message);
+            h.session_manager().on_message(message);
+        }
+        acecode::ChatMessage marker;
+        marker.role = "system";
+        marker.content = "[Interrupted]";
+        marker.metadata = {{"transcript_only", true}};
+        const std::string variant = mode;
+        if (variant != "plain" && variant != "interjected") {
+            marker.metadata["user_aborted"] = true;
+            marker.metadata["retry_user_message_id"] = variant == "stale" ? "older-user" : user.uuid;
+        }
+        if (variant == "interjected") marker.metadata["turn_interrupt"] = true;
+        h.session_manager().on_message(marker);
+        if (variant == "newer-message") h.loop().emit_transcript_system_message("later notice");
+        if (variant == "live-error") {
+            h.loop().events().emit(acecode::SessionEventKind::Error, {{"reason", "later error"}});
+        }
+        h.provider().push_text("retried response");
+        std::string error;
+        const bool accepted = h.loop().retry_last_user_message(user.uuid, error);
+        EXPECT_EQ(accepted, variant == "restored") << error;
+        if (accepted) {
+            ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+            const auto request = h.provider().messages_for_turn(0);
+            ASSERT_GE(request.size(), 3u);
+            EXPECT_EQ(request[request.size() - 2].content, assistant.content);
+            EXPECT_EQ(request.back().content, user.content);
+            EXPECT_NE(request.back().uuid, user.uuid);
+        }
+    }
+}
+
 TEST(AgentLoopTurnSteering, RejectsInvalidIdleAndMismatchedRequests) {
     TurnSteeringHarness h("reject");
 

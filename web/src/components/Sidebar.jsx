@@ -1796,6 +1796,7 @@ export function Sidebar({
   activeId,
   activeRef,
   onSelect,
+  onBeforeNavigate,
   onActiveRemoteControlBoundChange,
   onSessionLoadStateChange,
   sessionLoadResetSequence = 0,
@@ -3034,6 +3035,7 @@ export function Sidebar({
   };
 
   const onActivate = useCallback(async (ws) => {
+    if (onBeforeNavigate && !await onBeforeNavigate({ home: true, workspaceHash: ws.hash || '', cwd: ws.cwd || '' })) return;
     cancelSessionSelection();
     workspaceCollapseAllRef.current = false;
     const workspaceHash = ws.hash || '';
@@ -3067,7 +3069,7 @@ export function Sidebar({
         refresh(ws.hash).catch(() => {});
       }
     } catch (e) { toast({ kind: 'err', text: '切换异常:' + (e.message || '') }); }
-  }, [cancelSessionSelection, onOpenHome, refresh, setSessionWorkspaceLoading, updateExpanded]);
+  }, [cancelSessionSelection, onBeforeNavigate, onOpenHome, refresh, setSessionWorkspaceLoading, updateExpanded]);
 
   useEffect(() => {
     const requestId = Number(workspaceActivationRequest?.requestId || 0);
@@ -3289,6 +3291,7 @@ export function Sidebar({
     const loadKey = sidebarSessionLoadKey(target);
     const revealKey = sidebarRevealTargetKey(target);
     if (!loadKey || !revealKey) return;
+    if (onBeforeNavigate && !await onBeforeNavigate(target)) return;
 
     const sequence = ++sessionSelectionSequenceRef.current;
     const intent = {
@@ -3411,10 +3414,11 @@ export function Sidebar({
     }
   };
 
-  const openNewTaskInWorkspace = useCallback((ws) => {
-    cancelSessionSelection();
+  const openNewTaskInWorkspace = useCallback(async (ws) => {
     const workspaceHash = ws?.hash || '';
     if (!workspaceHash) return;
+    if (onBeforeNavigate && !await onBeforeNavigate({ home: true, workspaceHash, cwd: ws.cwd || '' })) return;
+    cancelSessionSelection();
     workspaceCollapseAllRef.current = false;
     const wasCollapsed = !expandedRef.current.has(workspaceHash);
     userCollapsedWorkspacesRef.current.delete(workspaceHash);
@@ -3431,7 +3435,7 @@ export function Sidebar({
       active: item.hash === workspaceHash,
     })));
     onOpenHome?.(ws, { composerFeedback: true });
-  }, [cancelSessionSelection, onOpenHome, updateExpanded]);
+  }, [cancelSessionSelection, onBeforeNavigate, onOpenHome, updateExpanded]);
 
   const onAddWorkspace = async () => {
     try {

@@ -2,6 +2,7 @@
 
 #include "permissions.hpp"
 #include "config_recovery.hpp"
+#include "config_mutation.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
 #include "../themes/theme_id.hpp"
@@ -755,7 +756,17 @@ static void sanitize_disabled_model_providers(AppConfig& cfg) {
 AppConfig load_config() {
     const std::string config_path =
         path_to_utf8(path_from_utf8(get_acecode_dir()) / "config.json");
-    return load_config_from_path(config_path, true);
+    AppConfig cfg = load_config_from_path(config_path, true);
+    if (!cfg.sandbox_disable_migration_completed) {
+        const auto migration = disable_sandbox_once(config_path);
+        if (!migration.ok) {
+            throw std::runtime_error(
+                "failed to persist one-time sandbox migration: " + migration.error);
+        }
+        // Reapply runtime-only environment overrides after the locked disk update.
+        cfg = load_config_from_path(config_path, true);
+    }
+    return cfg;
 }
 
 static AppConfig load_config_from_path_once(
@@ -863,6 +874,12 @@ static AppConfig load_config_from_path_once(
                 j["default_permission_mode"].is_string()) {
                 cfg.default_permission_mode = normalize_permission_mode_name(
                     j["default_permission_mode"].get<std::string>());
+            }
+            if (j.contains("migrations") && j["migrations"].is_object()) {
+                const auto& migrations = j["migrations"];
+                cfg.sandbox_disable_migration_completed =
+                    migrations.contains("disable_sandbox_once") &&
+                    migrations["disable_sandbox_once"] == true;
             }
             // 沙盒段(openspec add-auto-mode-sandbox)。缺省 → enabled、不放行
             // 网络、无额外可写根。非法条目静默跳过,不阻塞启动。
@@ -1062,6 +1079,14 @@ static AppConfig load_config_from_path_once(
                                 uij["font_size"].get<std::string>();
                         } else {
                             LOG_WARN("[config] invalid 'web_ui.font_size', using 'medium'");
+                        }
+                    }
+                    if (uij.contains("message_auto_collapse")) {
+                        if (uij["message_auto_collapse"].is_boolean()) {
+                            cfg.web_ui.message_auto_collapse =
+                                uij["message_auto_collapse"].get<bool>();
+                        } else {
+                            LOG_WARN("[config] invalid 'web_ui.message_auto_collapse', using true");
                         }
                     }
                     if (uij.contains("sidebar_session_time")) {
@@ -2271,6 +2296,9 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             normalize_permission_mode_name(cfg.default_permission_mode);
     }
 
+    if (cfg.sandbox_disable_migration_completed) {
+        j["migrations"]["disable_sandbox_once"] = true;
+    }
     {
         SandboxConfig sandbox_d;
         nlohmann::json sbj = nlohmann::json::object();
@@ -2352,6 +2380,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             web_uij["font_size"] = cfg.web_ui.font_size;
         if (cfg.web_ui.sidebar_session_time != web_ui_d.sidebar_session_time)
             web_uij["sidebar_session_time"] = cfg.web_ui.sidebar_session_time;
+        if (cfg.web_ui.message_auto_collapse != web_ui_d.message_auto_collapse)
+            web_uij["message_auto_collapse"] = cfg.web_ui.message_auto_collapse;
         if (!web_uij.empty()) j["web_ui"] = std::move(web_uij);
 
         MemoryConfig mem_d;

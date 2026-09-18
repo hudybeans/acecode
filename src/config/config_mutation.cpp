@@ -1,9 +1,13 @@
 #include "config_mutation.hpp"
 
+#include "config_recovery.hpp"
+#include "../utils/atomic_file.hpp"
+#include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
 
 #include <cerrno>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <system_error>
@@ -183,6 +187,66 @@ ConfigMutationResult mutate_config(
         result.error = e.what();
         return result;
     }
+}
+
+ConfigMutationResult disable_sandbox_once(const std::string& explicit_path) {
+    ConfigMutationResult result;
+    try {
+        std::lock_guard<std::mutex> process_lock(g_config_mutation_mutex);
+        const std::string config_path = resolved_config_path(explicit_path);
+        ConfigFileLock file_lock(config_path);
+        AppConfig latest = load_config_from_path(config_path, false);
+        if (!latest.sandbox_disable_migration_completed) {
+            // Patch only these two fields after validation. Do not serialize
+            // AppConfig here: that would drop unrecognized user config fields.
+            nlohmann::json document;
+            {
+                std::ifstream input(path_from_utf8(config_path), std::ios::binary);
+                if (!input.is_open()) {
+                    throw std::runtime_error("failed to read config for sandbox migration");
+                }
+                input >> document;
+                if (input.bad()) {
+                    throw std::runtime_error("failed to read config for sandbox migration");
+                }
+            } // Close the read handle before replacing the file on Windows.
+            if (!document.is_object()) {
+                throw std::runtime_error("config for sandbox migration is not an object");
+            }
+            if (!document.contains("sandbox") || !document["sandbox"].is_object()) {
+                document["sandbox"] = nlohmann::json::object();
+            }
+            if (!document.contains("migrations") || !document["migrations"].is_object()) {
+                document["migrations"] = nlohmann::json::object();
+            }
+            document["sandbox"]["enabled"] = false;
+            document["migrations"]["disable_sandbox_once"] = true;
+            const std::string bytes = document.dump(2) + "\n";
+            if (!atomic_write_file(config_path, bytes, true)) {
+                throw std::runtime_error("failed to write config for sandbox migration");
+            }
+            latest.sandbox.enabled = false;
+            latest.sandbox_disable_migration_completed = true;
+            result.changed = true;
+            std::string snapshot_error;
+            if (!write_last_good_config(config_path, bytes, &snapshot_error)) {
+                Logger::instance().init_with_rotation_if_disabled(
+                    get_logs_dir(), "config", /*mirror_stderr=*/false);
+                LOG_ERROR("[config_recovery] sandbox migration saved but failed to "
+                          "advance last-good snapshot");
+            }
+        }
+        result.ok = true;
+        result.config = std::move(latest);
+    } catch (const nlohmann::json::exception&) {
+        // JSON parser diagnostics may contain credential-bearing input bytes.
+        result.error_kind = ConfigMutationErrorKind::Persistence;
+        result.error = "failed to parse config for sandbox migration";
+    } catch (const std::exception& e) {
+        result.error_kind = ConfigMutationErrorKind::Persistence;
+        result.error = e.what();
+    }
+    return result;
 }
 
 } // namespace acecode

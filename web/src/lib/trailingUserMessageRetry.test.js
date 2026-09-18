@@ -24,6 +24,7 @@ assert.equal(retryId(loaded(...history, { role: 'assistant', content: '', tool_c
 for (const blocker of [
   { loadState: 'loading' }, { loadState: 'error' }, { busy: true },
   { status: 'running' }, { streamingId: 0 }, { disabled: true },
+  { abortPending: true },
 ]) assert.equal(retryId({ ...loaded(user), ...blocker }), '');
 assert.equal(trailingUserMessageRetryId(loaded(user)), '');
 for (const extra of [{ queued: {} }, { streaming: true }, { messageId: '' }]) {
@@ -38,6 +39,74 @@ for (const event of [
   const next = reduceTranscriptEvent(loaded(user), event).state;
   assert.equal(retryId(next), '', `${event.type} must invalidate the previous tail`);
 }
+
+const stopped = {
+  role: 'system', content: '[Interrupted]', id: 'stop-1',
+  metadata: { transcript_only: true, user_aborted: true, retry_user_message_id: 'user-1' },
+};
+for (const output of [[], [{ role: 'assistant', content: 'partial reply' }], [
+  { role: 'assistant', content: '', tool_calls: [
+    { id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{}' } },
+  ] },
+  { role: 'tool', content: 'tool result', tool_call_id: 'call-1' },
+]]) {
+  const restored = loaded(user, ...output, stopped);
+  assert.equal(retryId(restored), 'user-1', 'a persisted stop restores retry after output');
+  assert.equal(retryId({ ...restored, abortPending: true }), '');
+  for (const role of ['assistant', 'tool', 'system', 'error']) {
+    assert.equal(retryId(loaded(user, ...output, stopped, { role, content: 'later' })), '');
+  }
+}
+assert.equal(retryId(loaded(user, { ...stopped, metadata: undefined })), '');
+assert.equal(retryId(loaded(user, { ...stopped, metadata: { turn_interrupt: true } })), '');
+assert.equal(retryId(loaded(user, { ...stopped, metadata: { ...stopped.metadata, retry_user_message_id: 'stale' } })), '');
+assert.equal(retryId(loaded(user, { ...user, id: 'user-2' }, stopped)), '');
+const completedAfterStop = loaded(user, stopped, { role: 'assistant', content: 'completed retry' });
+const oldStopReplay = reduceTranscriptEvent(completedAfterStop, {
+  type: 'message', payload: stopped, replayed: true,
+}).state;
+assert.equal(oldStopReplay.items.length, completedAfterStop.items.length);
+assert.equal(retryId(oldStopReplay), '', 'an old stop replay must not grant a completed turn another retry');
+const partial = {
+  id: 'partial-1', role: 'assistant', content: 'partial reply',
+  metadata: { transcript_only: true, interrupted_output: true },
+};
+const restoredWithReplay = loadTranscriptHistory(createTranscriptState(), {
+  messages: [user, partial, stopped], busy: false,
+  events: [
+    { type: 'busy_changed', payload: { busy: true }, seq: 1 },
+    { type: 'token', payload: { text: 'partial reply' }, seq: 2 },
+    { type: 'message', payload: partial, seq: 3 },
+    { type: 'message', payload: stopped, seq: 4 },
+    { type: 'done', payload: { outcome: 'aborted' }, seq: 5 },
+  ],
+}).state;
+assert.equal(retryId(restoredWithReplay), 'user-1');
+assert.deepEqual(restoredWithReplay.items.map((item) => item.content), [
+  'original', 'partial reply', '用户已终止本轮任务',
+]);
+
+let abortState = loaded(user);
+const applyAbortEvent = (type, payload = {}) => {
+  abortState = reduceTranscriptEvent(abortState, { type, payload }).state;
+};
+applyAbortEvent('busy_changed', { busy: true, turn_id: 'user-1' });
+applyAbortEvent('token', { text: 'partial re' });
+applyAbortEvent('turn_aborted');
+assert.equal(retryId(abortState), '', 'a local stop must wait for the daemon');
+applyAbortEvent('token', { text: 'ply' });
+applyAbortEvent('message', partial);
+applyAbortEvent('message', stopped);
+assert.equal(retryId(abortState), '', 'the stop notice alone does not finish the worker');
+assert.equal(abortState.items.filter((item) => item.kind === 'termination_notice').length, 1);
+applyAbortEvent('busy_changed', { busy: false, outcome: 'aborted' });
+applyAbortEvent('done', { outcome: 'aborted' });
+assert.equal(retryId(abortState), 'user-1');
+assert.deepEqual(abortState.items.map((item) => item.content), [
+  'original', 'partial reply', '用户已终止本轮任务',
+]);
+applyAbortEvent('error', { reason: 'later error' });
+assert.equal(retryId(abortState), '', 'a later failure invalidates the stop');
 
 // The two UI actions must share a gate, and the send path must inspect the
 // latest complete store rather than composer history or a rendered window.

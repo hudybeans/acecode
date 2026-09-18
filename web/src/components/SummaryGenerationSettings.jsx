@@ -43,7 +43,7 @@ export function SummaryGenerationSettings({ onCheckUpdates, onModelProfileUpdate
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <div className="text-[13px] font-medium">摘要生成</div>
+            <div className="text-[13px] font-normal">摘要生成</div>
             <span className="ace-help-tip" tabIndex={0} aria-label="摘要生成帮助" aria-describedby="summary-generation-help">
               <VsIcon name="help" size={14} />
               <span id="summary-generation-help" role="tooltip" className="ace-help-tip-bubble">

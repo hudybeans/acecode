@@ -36,6 +36,7 @@ import {
   navigationHistoryFromHash,
   normalizeHistory,
   pushNavigation,
+  sameNavigationRef,
   stripNavigationHistoryHash,
 } from './lib/navigationHistory.js';
 import {
@@ -68,6 +69,7 @@ import {
 import {
   DEFAULT_UI_PREFS,
   effectiveFontSize,
+  effectiveMessageAutoCollapse,
   effectiveSidebarSessionTime,
   effectiveSidePanelListCollapsed,
   rightPanelHidden,
@@ -123,6 +125,7 @@ import {
   validateLayoutWidths,
 } from './lib/singleLayout.js';
 import { initInactiveSelection } from './lib/inactiveSelection.js';
+import { runAfterFileApproval } from './lib/unsavedFileGuard.js';
 import {
   desktopOpenSessionUrl,
   openSessionTargetFromSearch,
@@ -282,6 +285,7 @@ export function App() {
     ...DEFAULT_UI_PREFS,
     fontSize: initialAppearance.fontSize,
     sidebarSessionTime: initialAppearance.sidebarSessionTime,
+    messageAutoCollapse: initialAppearance.messageAutoCollapse,
   }), [initialAppearance]);
   const [uiPrefs, setUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
@@ -289,6 +293,11 @@ export function App() {
   useLayoutEffect(() => {
     setUiPrefs((prev) => prev.sidePanelCollapsed ? prev : { ...prev, sidePanelCollapsed: true });
   }, [setUiPrefs]);
+  useLayoutEffect(() => {
+    if (bootstrapAppearance) {
+      setUiPrefs({ messageAutoCollapse: bootstrapAppearance.messageAutoCollapse });
+    }
+  }, [bootstrapAppearance, setUiPrefs]);
   const [consoleDock, setConsoleDock] = usePreference(
     CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock);
   const [recentExpertIds, setRecentExpertIds] = usePreference(
@@ -315,12 +324,14 @@ export function App() {
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);
   const sidebarSessionTime = effectiveSidebarSessionTime(uiPrefs);
+  const messageAutoCollapse = effectiveMessageAutoCollapse(uiPrefs);
   const applyAppearance = useCallback((next) => {
     setTheme(next.theme);
     setColorTheme(next.colorTheme);
     setUiPrefs({
       fontSize: next.fontSize,
       sidebarSessionTime: next.sidebarSessionTime,
+      messageAutoCollapse: next.messageAutoCollapse,
     });
   }, [setColorTheme, setTheme, setUiPrefs]);
   const appearanceControllerRef = useRef(null);
@@ -331,6 +342,7 @@ export function App() {
         colorTheme,
         fontSize,
         sidebarSessionTime,
+        messageAutoCollapse: bootstrapAppearance?.messageAutoCollapse ?? messageAutoCollapse,
       },
       apply: applyAppearance,
       save: (payload) => api.setUiPreferences(payload),
@@ -507,28 +519,46 @@ export function App() {
     setSidebarSessionLoadResetSequence((sequence) => sequence + 1);
   }, []);
 
+  const previewLeaveGuardRef = useRef(null);
+  const registerPreviewLeaveGuard = useCallback((guard) => {
+    previewLeaveGuardRef.current = guard;
+    return () => {
+      if (previewLeaveGuardRef.current === guard) previewLeaveGuardRef.current = null;
+    };
+  }, []);
+  const requestPreviewLeave = useCallback((nextRef) => {
+    if (nextRef && sameNavigationRef(activeRefRef.current, nextRef)) return true;
+    return previewLeaveGuardRef.current?.() ?? true;
+  }, []);
+
   const replaceActiveRef = useCallback((nextRefOrUpdater) => {
-    resetSidebarSessionLoading();
     const current = activeRefRef.current;
     const next = typeof nextRefOrUpdater === 'function'
       ? nextRefOrUpdater(current)
       : nextRefOrUpdater;
-    activeRefRef.current = next;
-    setActiveRef(next);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(next), () => {
+      resetSidebarSessionLoading();
+      activeRefRef.current = next;
+      setActiveRef(next);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const navigateToRef = useCallback((nextRefOrUpdater, options = {}) => {
-    if (!options.preserveSidebarSessionLoading) resetSidebarSessionLoading();
     const current = activeRefRef.current;
     const next = typeof nextRefOrUpdater === 'function'
       ? nextRefOrUpdater(current)
       : nextRefOrUpdater;
-    const nextHistory = pushNavigation(navHistoryRef.current, current, next);
-    navHistoryRef.current = nextHistory;
-    activeRefRef.current = next;
-    setNavHistory(nextHistory);
-    setActiveRef(next);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(next), () => {
+      if (!options.preserveSidebarSessionLoading) resetSidebarSessionLoading();
+      const nextHistory = pushNavigation(navHistoryRef.current, current, next);
+      navHistoryRef.current = nextHistory;
+      activeRefRef.current = next;
+      setNavHistory(nextHistory);
+      setActiveRef(next);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const syncActiveRemoteControlBound = useCallback((detail = {}) => {
     const sessionId = String(detail.sessionId || detail.session_id || '').trim();
@@ -565,13 +595,16 @@ export function App() {
   }, [syncActiveRemoteControlBound]);
 
   const replaceNavigationState = useCallback((nextRef, nextHistory) => {
-    resetSidebarSessionLoading();
-    const normalized = normalizeHistory(nextHistory);
-    navHistoryRef.current = normalized;
-    activeRefRef.current = nextRef;
-    setNavHistory(normalized);
-    setActiveRef(nextRef);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(nextRef), () => {
+      resetSidebarSessionLoading();
+      const normalized = normalizeHistory(nextHistory);
+      navHistoryRef.current = normalized;
+      activeRefRef.current = nextRef;
+      setNavHistory(normalized);
+      setActiveRef(nextRef);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const finishSessionNavigation = useCallback((navigationId) => {
     const timer = sessionNavigationTimersRef.current.get(navigationId);
@@ -619,6 +652,7 @@ export function App() {
   const resumeAndOpenSession = useCallback(async (target, options = {}) => {
     const sessionId = sessionJumpId(target);
     if (!sessionId) return false;
+    if (!await requestPreviewLeave(target)) return false;
     resetSidebarSessionLoading();
     const navigationId = beginSessionNavigation();
     const navigationIsPending = () =>
@@ -717,14 +751,14 @@ export function App() {
     navigateToRef,
     replaceActiveRef,
     replaceNavigationState,
+    requestPreviewLeave,
     resetSidebarSessionLoading,
   ]);
 
   const openHistoryDestination = useCallback((result) => {
     if (!result?.activeRef) return Promise.resolve(false);
     if (!sessionJumpId(result.activeRef)) {
-      replaceNavigationState(result.activeRef, result.history);
-      return Promise.resolve(true);
+      return Promise.resolve(replaceNavigationState(result.activeRef, result.history));
     }
     return resumeAndOpenSession(result.activeRef, {
       forceResume: true,
@@ -1308,8 +1342,11 @@ export function App() {
   }, [probe]);
 
   const toggleSidePanel = useCallback(() => {
-    setUiPrefs((prev) => toggleRightPanel(prev, previewPanelVisible));
-  }, [previewPanelVisible, setUiPrefs]);
+    const approval = rightPanelHidden(uiPrefs, previewPanelVisible) ? true : requestPreviewLeave();
+    return runAfterFileApproval(approval, () => {
+      setUiPrefs((prev) => toggleRightPanel(prev, previewPanelVisible));
+    });
+  }, [previewPanelVisible, requestPreviewLeave, setUiPrefs, uiPrefs]);
 
   const toggleSidePanelList = useCallback(() => {
     setUiPrefs((prev) => ({
@@ -1707,6 +1744,7 @@ export function App() {
   }, [abortGuidedTour, guidedTourHasActiveSession, guidedTourPreparing, guidedTourRun]);
 
   const createDesktopTraySession = useCallback(async () => {
+    if (!await requestPreviewLeave()) return;
     try {
       const next = await createNewSessionForActiveWorkspace(api, activeRefRef.current, health);
       void refreshWorkspaceGitInfo(createApi(next), next).catch(() => {});
@@ -1728,7 +1766,7 @@ export function App() {
     } catch (e) {
       toast({ kind: 'err', text: '新建会话失败:' + (e.message || '') });
     }
-  }, [health, navigateToRef]);
+  }, [health, navigateToRef, requestPreviewLeave]);
 
   const handleSubagentTasksChange = useCallback((info) => {
     const parentId = info?.parentId || '';
@@ -2062,6 +2100,7 @@ export function App() {
           activeId={activeId}
           activeRef={activeRef}
           onSelect={navigateToRef}
+          onBeforeNavigate={requestPreviewLeave}
           onActiveRemoteControlBoundChange={syncActiveRemoteControlBound}
           onSessionLoadStateChange={setSidebarSessionLoadState}
           sessionLoadResetSequence={sidebarSessionLoadResetSequence}
@@ -2116,6 +2155,7 @@ export function App() {
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}
                 modelProfileRevision={modelProfileRevision}
                 onSessionPromoted={navigateToRef}
+                onRegisterPreviewLeaveGuard={registerPreviewLeaveGuard}
                 onSessionExpertChanged={replaceActiveSessionExpert}
                 onHomeWorkspaceChange={replaceHomeWorkspace}
                 onCommandWorkspaceChange={setCommandWorkspaceHash}
@@ -2141,6 +2181,7 @@ export function App() {
                 sidePanelMaximized={sidePanelMaximized}
                 onToggleSidePanelMaximized={toggleSidePanelMaximized}
                 showAceCodeAvatar={showAceCodeAvatar}
+                messageAutoCollapse={messageAutoCollapse}
                 permissionRequests={visiblePermissionEntries}
                 onPermissionDecision={handlePermissionDecision}
                 questionRequest={visibleQuestionReq}
@@ -2207,6 +2248,8 @@ export function App() {
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
             sidebarSessionTime={sidebarSessionTime}
             onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}
+            messageAutoCollapse={messageAutoCollapse}
+            onMessageAutoCollapseChange={(next) => changeAppearance({ messageAutoCollapse: next })}
           />
         )}
         <ThemeDownloadFailureDialog failure={themeDownloads.failure} onClose={() => themeDownloads.controller.dismissFailure()} />

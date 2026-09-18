@@ -184,6 +184,8 @@ struct WebUiPreferencesConfig {
     // Sidebar session rows show a relative timestamp. Product default is on;
     // turning it off leaves the time visible only in the row hover card.
     bool sidebar_session_time = true;
+    // Collapse conversation activity; false keeps only individual tools foldable.
+    bool message_auto_collapse = true;
 };
 
 struct ModelsDevConfig {
@@ -531,6 +533,8 @@ struct AppConfig {
     // Canonical values: default | auto | plan | yolo (accept-edits is read as auto).
     std::string default_permission_mode = "default";
     SandboxConfig sandbox;                       // bash 沙盒(openspec add-auto-mode-sandbox)
+    // Fixed one-time startup migration; keep separate from editable sandbox settings.
+    bool sandbox_disable_migration_completed = false;
     std::map<std::string, McpServerConfig> mcp_servers; // MCP stdio servers (optional)
     SkillsConfig skills;                         // skill system configuration (optional)
     MemoryConfig memory;                         // persistent user memory settings

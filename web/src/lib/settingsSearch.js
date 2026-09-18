@@ -18,6 +18,7 @@ export function settingsSearchEntries() {
     ['appearance', '暗黑模式', 'dark light mode'],
     ['appearance', '字体大小', 'font size'],
     ['appearance', '显示任务时间', 'sidebar task time timestamp'],
+    ['appearance', '消息自动折叠', '会话 conversation messages auto collapse fold expand tools'],
     ['config', '升级服务 URL', 'upgrade update service url'],
     ['config', 'Python 工具', 'python uv ruff mypy path directory'],
     ['config', 'Node.js 工具', 'node nodejs npm pnpm tsx path directory'],

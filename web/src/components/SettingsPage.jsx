@@ -148,6 +148,8 @@ export function SettingsPage({
   onFontSizeChange = () => {},
   sidebarSessionTime = true,
   onSidebarSessionTimeChange = () => {},
+  messageAutoCollapse = true,
+  onMessageAutoCollapseChange = () => {},
 }) {
   const {
     theme,
@@ -284,7 +286,7 @@ export function SettingsPage({
                 <div
                   id={headingId}
                   className={clsx(
-                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
+                    'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
                     groupIndex === 0 ? 'pt-0' : 'pt-2',
                   )}
                 >
@@ -303,7 +305,7 @@ export function SettingsPage({
                       className={clsx(
                         'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
                         active
-                          ? 'text-fg font-semibold'
+                          ? 'text-fg font-normal'
                           : 'text-fg-2',
                       )}
                     >
@@ -365,6 +367,8 @@ export function SettingsPage({
               onFontSizeChange={onFontSizeChange}
               sidebarSessionTime={sidebarSessionTime}
               onSidebarSessionTimeChange={onSidebarSessionTimeChange}
+              messageAutoCollapse={messageAutoCollapse}
+              onMessageAutoCollapseChange={onMessageAutoCollapseChange}
             />
           )}
           {activeNavKey === 'config' && <SettingsConfigSection />}
@@ -841,7 +845,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <label htmlFor="settings-ui-locale" className="text-[13px] font-medium">
+          <label htmlFor="settings-ui-locale" className="text-[13px] font-normal">
             {t('locale.label')}
           </label>
         </div>
@@ -878,7 +882,7 @@ function SectionGeneral({
                 active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
               )}
             >
-              <div className="text-[13px] font-semibold">{opt.label}</div>
+              <div className="text-[13px] font-normal">{opt.label}</div>
               <div className="text-[11px] text-fg-mute mt-1">{opt.desc}</div>
               {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
             </button>
@@ -907,7 +911,7 @@ function SectionGeneral({
         )}
       >
         <div>
-          <div className="text-[13px] font-medium">打开任务完成通知</div>
+          <div className="text-[13px] font-normal">打开任务完成通知</div>
           <div className="text-[11px] text-fg-mute mt-0.5">仅在 ACECode 窗口失去焦点且主任务完成时发送系统通知</div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
@@ -922,7 +926,7 @@ function SectionGeneral({
       {macAuthorizationAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">macOS 系统通知权限</div>
+            <div className="text-[13px] font-normal">macOS 系统通知权限</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               {notificationAuthorization.description}
             </div>
@@ -979,13 +983,13 @@ function SectionGeneral({
         <>
           <div className="flex items-center justify-between gap-4 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
             <div>
-              <div className="text-[13px] font-medium">新手指引</div>
+              <div className="text-[13px] font-normal">新手指引</div>
               <div className="text-[11px] text-fg-mute mt-0.5">从添加项目、开始新对话到模型设置</div>
             </div>
             <button
               type="button"
               onClick={onReplayGuidedTour}
-              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-semibold hover:opacity-90 transition"
+              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition"
             >
               重新查看新手指引
             </button>
@@ -1013,7 +1017,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">{p.label}</div>
+            <div className="text-[13px] font-normal">{p.label}</div>
             <div className="text-[11px] text-fg-mute mt-0.5">{p.hint}</div>
           </div>
           <div onClick={(e) => e.stopPropagation()}>
@@ -1030,7 +1034,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">默认打开目标</div>
+          <div className="text-[13px] font-normal">默认打开目标</div>
           <div className="text-[11px] text-fg-mute mt-0.5">默认打开文件和文件夹的位置</div>
         </div>
         <select
@@ -1045,7 +1049,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">最大轮次</div>
+          <div className="text-[13px] font-normal">最大轮次</div>
           <div className="text-[11px] text-fg-mute mt-0.5">单次 agent loop 的最大迭代数</div>
         </div>
         <input
@@ -1057,7 +1061,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">后台进程状态</div>
+          <div className="text-[13px] font-normal">后台进程状态</div>
           <div className="text-[11px] text-fg-mute mt-0.5">{health?.cwd || '—'}</div>
         </div>
         <span className="flex items-center gap-1.5 text-[12px] text-ok">
@@ -1068,7 +1072,7 @@ function SectionGeneral({
       {closeBehaviorAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">关闭窗口时</div>
+            <div className="text-[13px] font-normal">关闭窗口时</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               点击窗口右上角关闭按钮时执行的操作
             </div>
@@ -1111,7 +1115,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">
+            <div className="text-[13px] font-normal">
               退出 ACECode 后继续运行后台进程
             </div>
             <div className="text-[11px] text-fg-mute mt-0.5">
@@ -1136,7 +1140,7 @@ function SectionGeneral({
       >
         <div className="flex items-center justify-between gap-4">
           <div>
-            <div className="text-[13px] font-medium">远程 Web 模式</div>
+            <div className="text-[13px] font-normal">远程 Web 模式</div>
             <div className="text-[11px] text-fg-mute mt-0.5 max-w-lg">
               开启后会启动独立的反向代理进程，daemon 仍仅监听 127.0.0.1
             </div>
@@ -1212,7 +1216,7 @@ function SectionGeneral({
                   <button
                     type="button"
                     onClick={copyRemoteWebConnection}
-                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-medium hover:bg-surface-hi transition"
+                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-normal hover:bg-surface-hi transition"
                   >
                     复制连接
                   </button>
@@ -1250,6 +1254,8 @@ function SectionAppearance({
   onFontSizeChange,
   sidebarSessionTime,
   onSidebarSessionTimeChange,
+  messageAutoCollapse,
+  onMessageAutoCollapseChange,
 }) {
   return (
     <>
@@ -1265,7 +1271,7 @@ function SectionAppearance({
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">暗黑模式</div>
+          <div className="text-[13px] font-normal">暗黑模式</div>
           <div className="text-[11px] text-fg-mute mt-0.5">使用深色背景，关闭后使用浅色背景</div>
         </div>
         <Toggle
@@ -1287,7 +1293,7 @@ function SectionAppearance({
               aria-pressed={active}
               onClick={() => onFontSizeChange(opt.key)}
               className={clsx(
-                'h-8 rounded-md text-[13px] font-medium transition',
+                'h-8 rounded-md text-[13px] font-normal transition',
                 active
                   ? 'bg-accent text-white shadow-sm'
                   : 'text-fg-2 hover:bg-surface-hi hover:text-fg',
@@ -1302,12 +1308,25 @@ function SectionAppearance({
       <div className="text-[14px] font-semibold mb-1">侧边栏</div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[13px] font-normal">显示任务时间</div>
           <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
         </div>
         <Toggle
           on={sidebarSessionTime}
           onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
+      </div>
+      <div className="h-px bg-border my-5" />
+      <h3 className="text-[14px] font-semibold mb-1">会话</h3>
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div className="min-w-0">
+          <div id="message-auto-collapse-label" className="text-[13px] font-normal text-fg">消息自动折叠</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">关闭后展开所有消息，仅保留工具调用的折叠</div>
+        </div>
+        <Toggle
+          on={messageAutoCollapse}
+          onChange={onMessageAutoCollapseChange}
+          ariaLabel="消息自动折叠"
         />
       </div>
     </>
@@ -1342,7 +1361,7 @@ function SectionAbout({ health }) {
       {/* 程序版本 */}
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">当前版本</div>
+          <div className="text-[13px] font-normal">当前版本</div>
           <div className="text-[11px] text-fg-mute mt-0.5">ACECode 桌面 / TUI / Daemon 同版本号</div>
         </div>
         <span className="text-[12px] text-fg-2">{programVersionLabel}</span>
@@ -1350,7 +1369,7 @@ function SectionAbout({ health }) {
 
       <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div className="min-w-0">
-          <div className="text-[13px] font-medium">Web 核心</div>
+          <div className="text-[13px] font-normal">Web 核心</div>
           <div className="text-[11px] text-fg-mute mt-0.5">当前桌面 WebView / 浏览器渲染核心</div>
         </div>
         <div className="min-w-0 max-w-[62%] text-right">
@@ -1501,7 +1520,7 @@ function SkillCard({ skill, busyName, onToggle }) {
           <VsIcon name="lightbulb" size={18} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block break-words text-[13px] font-semibold leading-5 text-fg">{skill.name}</span>
+          <span className="block break-words text-[13px] font-normal leading-5 text-fg">{skill.name}</span>
           <span className="mt-0.5 block text-[10px] text-fg-mute">
             {skill.source === 'project' ? '工作区' : '全局'}
           </span>
@@ -1567,7 +1586,7 @@ function WorkspaceSkillGroup({
         <VsIcon name={expanded ? 'expandDown' : 'expandRight'} size={12} className="shrink-0 text-fg-mute" />
         <VsIcon name="folder" size={15} className="shrink-0 text-fg-2" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium truncate">{ws.name}</div>
+          <div className="text-[13px] font-normal truncate">{ws.name}</div>
           <div className="text-[11px] text-fg-mute truncate">{ws.cwd}</div>
         </div>
         <span className="text-[11px] text-fg-mute tabular-nums shrink-0">
@@ -2088,7 +2107,7 @@ function SectionMCP() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
+                    <div className="text-[13px] font-normal text-fg truncate">
                       {server.name}
                     </div>
                     <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-fg-mute shrink-0">
@@ -2210,7 +2229,7 @@ function SectionConnectors() {
         </div>
       ) : connectors.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">暂无已配置插件</div>
+          <div className="text-[14px] font-normal text-fg mb-1">暂无已配置插件</div>
           <div className="text-[12px] text-fg-mute">没有可显示的插件。</div>
         </div>
       ) : (
@@ -2226,7 +2245,7 @@ function SectionConnectors() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
+                    <div className="text-[13px] font-normal text-fg truncate">
                       {connector.name || '未命名插件'}
                     </div>
                     <span
@@ -2277,7 +2296,7 @@ function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
           <VsIcon name="globe" size={20} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium">Agent 浏览器</div>
+          <div className="text-[13px] font-normal">Agent 浏览器</div>
           <div className="text-[11px] text-fg-mute mt-0.5">
             这是一个内嵌浏览器。
           </div>
@@ -2407,7 +2426,7 @@ function SectionHooks() {
         </div>
       ) : snapshot.isEmpty ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">{empty.title}</div>
+          <div className="text-[14px] font-normal text-fg mb-1">{empty.title}</div>
           <div className="text-[12px] text-fg-mute">{empty.body}</div>
         </div>
       ) : (
@@ -2427,7 +2446,7 @@ function SectionHooks() {
 
       {!loading && snapshot.diagnostics.length > 0 && (
         <div className="mt-4 rounded-md border border-border bg-surface px-3.5 py-3">
-          <div className="text-[12px] font-semibold text-fg-2 mb-2">发现诊断</div>
+          <div className="text-[12px] font-normal text-fg-2 mb-2">发现诊断</div>
           <div className="space-y-1">
             {snapshot.diagnostics.slice(0, 8).map((diag, index) => (
               <div key={`${diag.code}-${index}`} className="text-[11px] text-fg-mute">
@@ -2460,7 +2479,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="text-[13px] font-semibold text-fg truncate">{hook.eventName || 'Hook'}</div>
+            <div className="text-[13px] font-normal text-fg truncate">{hook.eventName || 'Hook'}</div>
             <HookBadge hook={hook} />
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-mute">
@@ -2501,7 +2520,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
               type="button"
               onClick={onTrust}
               disabled={busyTrust || busyDisable || busyEnable}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-medium hover:opacity-90 transition disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition disabled:opacity-50"
             >
               {busyTrust ? <span className="ace-spinner" /> : <VsIcon name="check" size={12} />}
               信任
@@ -2955,7 +2974,7 @@ function SectionArchived() {
                         className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
                       />
                       <div className="min-w-0 flex-1 basis-32">
-                        <div className="text-[13px] font-medium truncate" title={title}>{title}</div>
+                        <div className="text-[13px] font-normal truncate" title={title}>{title}</div>
                         <div className="text-[11px] text-fg-mute mt-0.5 truncate">
                           {relativeTime(item.updated_at || item.created_at)}
                         </div>
@@ -3135,7 +3154,7 @@ function SectionUsage() {
             {tokenDetails.map(([label, value]) => (
               <div key={label} className="px-3 py-2.5 rounded-md bg-surface border border-border">
                 <div className="text-[11px] text-fg-mute mb-1">{label}</div>
-                <div className="text-[14px] font-semibold">{formatUsageTokens(value)}</div>
+                <div className="text-[14px] font-normal">{formatUsageTokens(value)}</div>
               </div>
             ))}
           </div>
@@ -3161,11 +3180,11 @@ function SectionUsage() {
                   <div className="flex items-center justify-between mb-2 gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
-                      <span className="text-[13px] font-semibold truncate">{m.label}</span>
+                      <span className="text-[13px] font-normal truncate">{m.label}</span>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
                       <span className="text-[12px] text-fg-mute">{formatCount(m.records, 'records')}</span>
-                      <span className="text-[13px] font-semibold">{formatUsageTokens(total)}</span>
+                      <span className="text-[13px] font-normal">{formatUsageTokens(total)}</span>
                     </div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden mb-1.5">
@@ -3200,10 +3219,10 @@ function SectionUsage() {
                 >
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div className="min-w-0">
-                      <div className="text-[13px] font-medium truncate">{w.workspaceName || 'workspace'}</div>
+                      <div className="text-[13px] font-normal truncate">{w.workspaceName || 'workspace'}</div>
                       <div className="text-[11px] text-fg-mute truncate">{w.cwd}</div>
                     </div>
-                    <div className="text-[13px] font-semibold shrink-0">{formatUsageTokens(total)}</div>
+                    <div className="text-[13px] font-normal shrink-0">{formatUsageTokens(total)}</div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden">
                     <div className="h-full bg-accent" style={{ width: `${width}%`, minWidth: total > 0 ? 6 : 0, opacity: 0.85 }} />

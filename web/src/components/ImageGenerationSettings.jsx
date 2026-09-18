@@ -73,7 +73,7 @@ export function ImageGenerationSettings({ onCheckUpdates }) {
           <VsIcon name="Image" size={20} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium">图像生成</div>
+          <div className="text-[13px] font-normal">图像生成</div>
           <div className="text-[11px] text-fg-mute mt-0.5">根据描述生成图片，或编辑已有图片</div>
         </div>
         <Toggle on={!!draft?.enabled}
