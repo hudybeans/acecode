@@ -3719,16 +3719,18 @@ packages also verify the installed backend before reporting success; a failed
 post-copy verification rolls back the installation. Version mismatch, timeout,
 invalid output and unsuccessful probe exit fail the job with an actionable error.
 
-On macOS, a daemon running from either the current-user
-`~/Applications/ACECode.app/Contents/MacOS/acecode-daemon` location or the
-supported system `/Applications/ACECode.app/Contents/MacOS/acecode-daemon`
-location installs a complete
+On macOS, a daemon running from `ACECode.app/Contents/MacOS/acecode-daemon`
+installs a complete
 `ACECode.app` update ZIP rather than copying files into `Contents/MacOS`. Before
-replacement, the daemon requires one of those exact non-symlinked install paths,
-a writable containing directory, a strict nested Apple signature, bundle
+replacement, the daemon requires an absolute, canonical, real `ACECode.app`
+with a real, writable containing directory, a strict nested Apple signature, bundle
 identifier `dev.acecode.desktop`, the selected manifest version, and the same
-Developer Team ID as the installed app. An app running from any other location
-fails the job without mutating that bundle.
+Developer Team ID and designated signing requirement as the installed app.
+Custom folders are supported as well as `~/Applications` and `/Applications`;
+App Translocation, symlinked paths, and apps nested in another `.app` are rejected.
+Read-only or otherwise unwritable locations require moving the app to a writable
+folder or installing manually; the updater does not elevate privileges. This does
+not change the separate personal-install destination policy.
 
 ### `GET /api/update/job`
 
@@ -3774,7 +3776,10 @@ Choosing restart later leaves the current process running. Normal browser and
 Edge-app compatibility clients do not own the desktop lifecycle, so they show
 manual full-exit-and-relaunch guidance instead of an automatic restart action.
 For a successful macOS bundle update, `backup_dir` identifies the retained
-`.ACECode.previous.app` beside the running installation.
+`.ACECode-<UUID>.previous.app` beside the running installation. Existing backups
+are not deleted or overwritten; retained backups require manual cleanup when no
+longer needed. The updater lock is opened without following symlinks and must be
+a regular, singly linked file owned by the current user.
 
 ### `GET /api/mcp`
 

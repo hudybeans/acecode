@@ -8,6 +8,23 @@ on:
       - master
 
 jobs:
+  macos-installer-tests:
+    name: macos-installer-tests
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test native installer and both UI architectures
+        run: bash tests/scripts/macos_installer_test.sh
+
+      - name: Test offline macOS release scripts
+        run: |
+          python3 tests/scripts/macos_installer_release_test.py
+          python3 tests/scripts/macos_portable_package_test.py
+          bash tests/scripts/macos_release_scripts_test.sh
+
   web-tests:
     name: web-tests (linux-x64)
     runs-on: ubuntu-22.04

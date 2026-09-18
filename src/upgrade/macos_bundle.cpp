@@ -1,5 +1,7 @@
 #include "macos_bundle.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -30,6 +32,27 @@ bool is_complete_bundle_layout(const fs::path& bundle) {
 }
 
 } // namespace
+
+bool macos_app_install_path_is_safe(const fs::path& bundle, std::string* error) {
+    auto reject = [&]() {
+        if (error) *error = "macOS self-update requires an absolute real ACECode.app "
+            "with a real parent, outside App Translocation and other app bundles";
+        return false;
+    };
+    if (!bundle.is_absolute() || bundle != bundle.lexically_normal() ||
+        bundle.filename() != "ACECode.app") return reject();
+    for (const auto& component : bundle.parent_path()) {
+        std::string name = component.string();
+        std::transform(name.begin(), name.end(), name.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (name == "apptranslocation" ||
+            fs::path(name).extension() == ".app") return reject();
+    }
+    std::error_code ec;
+    if (!is_real_directory(bundle) || !is_real_directory(bundle.parent_path()) ||
+        fs::canonical(bundle, ec) != bundle || ec) return reject();
+    return true;
+}
 
 std::optional<fs::path> macos_app_bundle_from_executable(
     const fs::path& executable) {

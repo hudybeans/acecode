@@ -4,7 +4,7 @@
 #include "macos_app_installer.hpp"
 #include "diagnostics.hpp"
 
-#include "desktop/user_install_policy.hpp"
+#include "macos_bundle.hpp"
 
 #include <cerrno>
 #include <cctype>
@@ -16,6 +16,7 @@
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -24,7 +25,6 @@ namespace acecode::upgrade {
 namespace {
 
 constexpr const char* kBundleIdentifier = "dev.acecode.desktop";
-constexpr const char* kPreviousBundleName = ".ACECode.previous.app";
 constexpr const char* kUpdateLockName = ".ACECode.update.lock";
 
 void set_error(std::string* error, const std::string& message) {
@@ -74,128 +74,14 @@ fs::path filesystem_path(NSURL* url) {
     return value ? fs::path(value) : fs::path{};
 }
 
-bool resource_flag(NSURL* url,
-                   NSURLResourceKey key,
-                   bool* value,
-                   std::string* error) {
-    NSError* native_error = nil;
-    id resource_value = nil;
-    if (![url getResourceValue:&resource_value forKey:key error:&native_error]) {
-        set_error(error, ns_error_text(native_error));
-        return false;
-    }
-    if (![resource_value isKindOfClass:[NSNumber class]]) {
-        set_error(error, "unexpected macOS filesystem metadata");
-        return false;
-    }
-    *value = [(NSNumber*)resource_value boolValue] == YES;
-    return true;
-}
-
 bool validate_safe_install_path(const fs::path& installed_bundle,
                                 std::string* error) {
-    const char* home_bytes = [NSHomeDirectory() fileSystemRepresentation];
-    if (!home_bytes) {
-        set_error(error, "current user's home directory is unavailable");
-        return false;
-    }
-    const auto user_paths =
-        desktop::macos_user_install_paths(fs::path(home_bytes));
-    const auto system_paths = desktop::macos_system_install_paths();
-    const fs::path normalized_bundle = installed_bundle.lexically_normal();
-
-    fs::path applications_path;
-    desktop::MacosInstallLocation expected_location =
-        desktop::MacosInstallLocation::unsupported;
-    if (!user_paths.home.empty() &&
-        normalized_bundle == user_paths.destination) {
-        applications_path = user_paths.applications;
-        expected_location =
-            desktop::MacosInstallLocation::user_applications;
-    } else if (normalized_bundle == system_paths.destination) {
-        applications_path = system_paths.applications;
-        expected_location =
-            desktop::MacosInstallLocation::system_applications;
-    } else {
-        set_error(error,
-                  "macOS self-update requires ~/Applications/ACECode.app or "
-                  "/Applications/ACECode.app; "
-                  "reinstall ACECode with the signed PKG first");
-        return false;
-    }
-
-    NSURL* home_url = file_url(user_paths.home, YES);
-    NSURL* applications_url = file_url(applications_path, YES);
-    NSURL* installed_url = file_url(normalized_bundle, YES);
-    if (!home_url || !applications_url || !installed_url) {
-        set_error(error, "the macOS installation path cannot be represented safely");
-        return false;
-    }
-
-    NSFileManager* file_manager = [NSFileManager defaultManager];
-    BOOL is_directory = NO;
-    if (![file_manager fileExistsAtPath:[applications_url path]
-                            isDirectory:&is_directory] || is_directory == NO) {
-        set_error(error, applications_path.string() +
-                             " is missing or is not a directory");
-        return false;
-    }
-    bool is_symlink = false;
-    if (!resource_flag(applications_url, NSURLIsSymbolicLinkKey,
-                       &is_symlink, error) || is_symlink) {
-        if (is_symlink) {
-            set_error(error, applications_path.string() +
-                                 " must not be a symbolic link");
-        }
-        return false;
-    }
-
-    is_directory = NO;
-    if (![file_manager fileExistsAtPath:[installed_url path]
-                            isDirectory:&is_directory] || is_directory == NO) {
-        set_error(error, "the installed ACECode.app bundle is missing");
-        return false;
-    }
-    is_symlink = false;
-    if (!resource_flag(installed_url, NSURLIsSymbolicLinkKey,
-                       &is_symlink, error) || is_symlink) {
-        if (is_symlink) {
-            set_error(error, "the installed ACECode.app must not be a symbolic link");
-        }
-        return false;
-    }
-
-    NSURL* resolved_home = [home_url URLByResolvingSymlinksInPath];
-    NSURL* resolved_applications = [applications_url URLByResolvingSymlinksInPath];
-    NSURL* resolved_destination =
-        [resolved_applications URLByAppendingPathComponent:@"ACECode.app"
-                                               isDirectory:YES];
-    const auto resolved_location =
-        desktop::macos_self_update_install_location(
-            filesystem_path(resolved_home),
-            filesystem_path(resolved_applications),
-            filesystem_path(resolved_destination));
-    if (resolved_location != expected_location ||
-        filesystem_path([installed_url URLByResolvingSymlinksInPath]) !=
-            filesystem_path(resolved_destination)) {
-        set_error(error,
-                  "the resolved ACECode.app path is outside the supported installation locations");
-        return false;
-    }
-
-    const fs::path resolved_applications_path =
-        filesystem_path(resolved_applications);
-    if (::access(resolved_applications_path.c_str(), W_OK | X_OK) != 0) {
-        if (expected_location ==
-            desktop::MacosInstallLocation::system_applications) {
-            set_error(error,
-                      "ACECode cannot modify /Applications. Install the update "
-                      "manually with the signed ACECode PKG");
-        } else {
-            set_error(error,
-                      "ACECode cannot modify ~/Applications: " +
-                          std::string(std::strerror(errno)));
-        }
+    if (!macos_app_install_path_is_safe(installed_bundle, error)) return false;
+    const fs::path parent = installed_bundle.parent_path();
+    if (::access(parent.c_str(), W_OK | X_OK) != 0) {
+        set_error(error, "ACECode cannot modify " + parent.string() + ": " +
+                         std::strerror(errno) +
+                         "; move ACECode.app to a writable folder or install manually");
         return false;
     }
     return true;
@@ -430,10 +316,18 @@ public:
     }
 
     bool acquire(const fs::path& path, std::string* error) {
-        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
         if (fd_ < 0) {
             set_error(error, "cannot open the macOS update lock: " +
                              std::string(std::strerror(errno)));
+            return false;
+        }
+        struct stat status{};
+        if (::fstat(fd_, &status) != 0 || !S_ISREG(status.st_mode) ||
+            status.st_uid != ::geteuid() || status.st_nlink != 1) {
+            set_error(error, "the macOS update lock must be a real, singly linked file owned by the current user");
+            (void)::close(fd_);
+            fd_ = -1;
             return false;
         }
         if (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
@@ -514,6 +408,7 @@ bool install_macos_app_update(const fs::path& installed_bundle,
         UpdateLock lock;
         record("macos_lock", {{"path", (applications_dir / kUpdateLockName).u8string()}});
         if (!lock.acquire(applications_dir / kUpdateLockName, error)) return false;
+        if (!validate_safe_install_path(installed_bundle, error)) return false;
 
         NSFileManager* file_manager = [NSFileManager defaultManager];
         NSURL* installed_url = file_url(installed_bundle, YES);
@@ -521,7 +416,9 @@ bool install_macos_app_update(const fs::path& installed_bundle,
         const fs::path temporary_path = applications_dir /
             (".ACECode-" + std::string([[[NSUUID UUID] UUIDString] UTF8String]) +
              ".updating.app");
-        const fs::path previous_path = applications_dir / kPreviousBundleName;
+        const fs::path previous_path = applications_dir /
+            (".ACECode-" + std::string([[[NSUUID UUID] UUIDString] UTF8String]) +
+             ".previous.app");
         NSURL* temporary_url = file_url(temporary_path, YES);
         NSURL* previous_url = file_url(previous_path, YES);
         if (!installed_url || !candidate_url || !temporary_url || !previous_url) {
@@ -551,13 +448,6 @@ bool install_macos_app_update(const fs::path& installed_bundle,
             return false;
         }
 
-        record("macos_backup_clear", {{"backup", previous_path.u8string()}});
-        if (!remove_if_present(file_manager, previous_url, error)) {
-            std::string ignored;
-            remove_if_present(file_manager, temporary_url, &ignored);
-            record("macos_candidate_cleanup", {{"error", ignored}});
-            return false;
-        }
         record("macos_backup_move", {{"source", installed_bundle.u8string()},
                                     {"destination", previous_path.u8string()}});
         if (!move_item(file_manager, installed_url, previous_url, error)) {
