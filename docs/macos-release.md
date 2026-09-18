@@ -242,7 +242,9 @@ certificate fingerprint, and temporary keychain. It:
 3. Copies the payload with `ditto`, signs only the wrapper with hardened runtime
    and timestamp (never `codesign --deep` signing), and checks payload equality.
 4. Submits the wrapper ZIP, requires `Accepted`, staples and validates the
-   installer, then creates a compressed DMG containing that installer only.
+   installer, then creates a compressed HFS+ DMG containing that installer only.
+   A transient `hdiutil` `Resource busy` error is retried at most twice with
+   separate image paths; other errors stop immediately.
 5. Signs the DMG with the same Application identity, notarizes/staples it,
    validates its signature/ticket and Gatekeeper assessment, and publishes the
    output only after all checks succeed. Rejected submissions fetch the notary
@@ -253,6 +255,9 @@ Both stages reuse `APPLE_ID`, `APPLE_TEAM_ID`, and
 locally. No additional certificate is required. All DMG build/upload steps use
 `macos-release.enabled`; only PKG steps use `pkg_enabled`. Signing-material
 cleanup remains an `always()` step after all packaging operations.
+CI creates, notarizes, validates, and uploads the PKG before building the DMG,
+so a later DMG failure leaves the verified PKG available as a workflow artifact.
+Tagged releases still require the complete successful packaging matrix.
 
 After preparing a trusted payload, an authorized release operator can run:
 

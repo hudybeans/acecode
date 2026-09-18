@@ -38,6 +38,17 @@ elif tool == 'ditto':
     elif source.is_dir(): shutil.copytree(source, target, symlinks=True)
     else: shutil.copy2(source, target)
 elif tool == 'hdiutil':
+    counter = root / 'hdiutil-attempts'
+    attempt = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(attempt))
+    if os.environ.get('HDIUTIL_FATAL'):
+        print('hdiutil: create failed - Permission denied', file=sys.stderr)
+        sys.exit(2)
+    if attempt <= int(os.environ.get('HDIUTIL_BUSY_FAILURES', '0')):
+        pathlib.Path(args[-1]).write_text('partial image')
+        print('hdiutil: create failed - Resource busy', file=sys.stderr)
+        sys.exit(1)
+    assert value('-fs') == 'HFS+'
     image = pathlib.Path(value('-srcfolder'))
     assert [p.name for p in image.iterdir()] == ['ACECode Installer.app']
     pathlib.Path(args[-1]).write_text('dmg')
@@ -127,6 +138,27 @@ class InstallerReleaseTest(unittest.TestCase):
         self.assertTrue(any(c[0] == 'hdiutil' for c in calls))
         self.assertFalse(self.output.exists())
 
+    def test_transient_image_busy_retries_with_fresh_output(self):
+        self.env['HDIUTIL_BUSY_FAILURES'] = '2'
+        calls = self.run_pipeline()
+        images = [c[-1] for c in calls if c[0] == 'hdiutil']
+        self.assertEqual(len(images), 3)
+        self.assertEqual(len(set(images)), 3)
+        self.assertEqual(self.output.read_text(), 'dmg')
+
+    def test_persistent_image_busy_stops_without_publishing(self):
+        self.env['HDIUTIL_BUSY_FAILURES'] = '9'
+        calls = self.run_pipeline(success=False)
+        self.assertEqual(sum(c[0] == 'hdiutil' for c in calls), 3)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(any(c[:3] == ['xcrun', 'notarytool', 'submit'] and c[3].endswith('.dmg') for c in calls))
+
+    def test_image_errors_other_than_busy_are_not_retried(self):
+        self.env['HDIUTIL_FATAL'] = '1'
+        calls = self.run_pipeline(success=False)
+        self.assertEqual(sum(c[0] == 'hdiutil' for c in calls), 1)
+        self.assertFalse(self.output.exists())
+
     def test_cli_validation_without_tools(self):
         for script in ('packaging/macos-installer/build.sh', 'scripts/macos_create_installer_dmg.sh'):
             for args, status in [(['--help'], 0), ([], 2), (['--arch'], 2), (['--unknown'], 2)]:
@@ -146,6 +178,8 @@ class InstallerReleaseTest(unittest.TestCase):
         self.assertIn('--arch "${{ matrix.installer_arch }}"', step)
         self.assertLess(WORKFLOW.index('- name: Notarize and staple macOS app'), WORKFLOW.index('- name: Build signed'))
         self.assertLess(WORKFLOW.index('- name: Build signed'), WORKFLOW.index('- name: Clean up macOS signing material'))
+        self.assertLess(WORKFLOW.index('- name: Notarize and validate macOS PKG'), WORKFLOW.index('- name: Upload macOS PKG'))
+        self.assertLess(WORKFLOW.index('- name: Upload macOS PKG'), WORKFLOW.index('- name: Build signed'))
         self.assertIn('installer_arch: x64', WORKFLOW)
         self.assertIn('installer_arch: arm64', WORKFLOW)
 

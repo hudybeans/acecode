@@ -12,6 +12,7 @@
 - 图形安装器沿用既有更新器锁名与锁安全策略：非阻塞、禁止跟随符号链接，检查普通文件、单硬链接及当前用户属主，保持锁 inode 不删除。
 - 使用真实文件系统故障注入验证互斥、异常锁、复制失败与回滚；在 GitHub macOS runner 运行原生 Swift 测试及双架构 UI 编译。
 - `NSApplication.shared` 必须先于含窗口属性的 UI delegate 构造；原生冒烟测试运行完整应用包并检查个人/系统页面截图，覆盖编译无法发现的启动错误。
+- 真实打包在 `hdiutil create` 遇到 `Resource busy`：明确使用 HFS+，仅对该错误最多尝试三次，每次使用不同的临时输出；其他错误立即失败。可信 PKG 的生成、公证和上传先于 DMG，正式 Release 仍要求整个构建成功。
 - 本次 macOS 自定义目录和双架构 DMG 规范取代 `add-macos-self-update`、`allow-release-without-macos-pkg` 等旧变更里的目录白名单和禁用 DMG 条款；签名、版本、更新 ZIP 校验与可选 PKG 规则继续适用。
 
 ## Risks / Trade-offs

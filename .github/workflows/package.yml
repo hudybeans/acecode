@@ -517,6 +517,36 @@ jobs:
           bash tests/scripts/macos_installer_test.sh
           python3 tests/scripts/macos_installer_release_test.py
 
+      - name: Create current-user macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        id: macos-pkg
+        shell: bash
+        run: |
+          pkg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.pkg"
+          scripts/macos_create_pkg.sh \
+            --app "build/ACECode.app" \
+            --output "$pkg_path" \
+            --installer-identity "${{ steps.macos-keychain.outputs.installer_identity }}" \
+            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
+          echo "path=$pkg_path" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize and validate macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: scripts/macos_notarize_pkg.sh --pkg "${{ steps.macos-pkg.outputs.path }}"
+
+      - name: Upload macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: acecode-${{ matrix.id }}-pkg
+          path: ${{ steps.macos-pkg.outputs.path }}
+          if-no-files-found: error
+
       - name: Build signed and notarized macOS installer DMG
         if: runner.os == 'macOS' && steps.macos-release.outputs.enabled == 'true'
         id: macos-dmg
@@ -647,28 +677,6 @@ jobs:
             --output "$update_path" \
             --expected-version "${{ steps.package-version.outputs.version }}"
           echo "path=$update_path" >> "$GITHUB_OUTPUT"
-
-      - name: Create current-user macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
-        id: macos-pkg
-        shell: bash
-        run: |
-          pkg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.pkg"
-          scripts/macos_create_pkg.sh \
-            --app "build/ACECode.app" \
-            --output "$pkg_path" \
-            --installer-identity "${{ steps.macos-keychain.outputs.installer_identity }}" \
-            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
-          echo "path=$pkg_path" >> "$GITHUB_OUTPUT"
-
-      - name: Notarize and validate macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: scripts/macos_notarize_pkg.sh --pkg "${{ steps.macos-pkg.outputs.path }}"
 
       - name: Clean up macOS signing material
         if: always() && runner.os == 'macOS'
@@ -814,14 +822,6 @@ jobs:
         with:
           name: acecode-${{ matrix.id }}-dmg
           path: ${{ steps.macos-dmg.outputs.path }}
-          if-no-files-found: error
-
-      - name: Upload macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: acecode-${{ matrix.id }}-pkg
-          path: ${{ steps.macos-pkg.outputs.path }}
           if-no-files-found: error
 
       - name: Upload macOS self-update archive

@@ -65,7 +65,25 @@ notarize "$work/installer.zip" "$installer"
 /usr/bin/diff -rq "$app" "$installer/Contents/Resources/ACECode.app"
 xcrun stapler validate "$installer/Contents/Resources/ACECode.app"
 # The image root contains only the installer, not a misleading Applications link.
-/usr/bin/hdiutil create -volname 'ACECode Installer' -srcfolder "$work/image" -format UDZO "$work/release.dmg"
+# DiskImages can transiently fail with EBUSY on hosted macOS runners. Keep each
+# attempt separate, capture logs without a pipe, and retry only that error.
+for attempt in 1 2 3; do
+    attempt_image="$work/release-$attempt.dmg"
+    if /usr/bin/hdiutil create -volname 'ACECode Installer' -srcfolder "$work/image" \
+        -fs HFS+ -format UDZO "$attempt_image" > "$work/hdiutil.log" 2>&1; then
+        cat "$work/hdiutil.log"
+        mv "$attempt_image" "$work/release.dmg"
+        break
+    else
+        status=$?
+        cat "$work/hdiutil.log" >&2
+        if [[ "$attempt" -eq 3 ]] || ! grep -Fq 'Resource busy' "$work/hdiutil.log"; then
+            exit "$status"
+        fi
+        printf 'Disk image creation is busy; retrying (%s/3)\n' "$attempt" >&2
+        sleep "$attempt"
+    fi
+done
 /usr/bin/codesign "${sign_args[@]}" "$work/release.dmg"
 notarize "$work/release.dmg" "$work/release.dmg"
 /usr/bin/codesign --verify --strict "$work/release.dmg"
