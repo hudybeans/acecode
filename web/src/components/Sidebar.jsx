@@ -534,14 +534,14 @@ function CustomSidebarItem({ item, count, onClick }) {
       type="button"
       onClick={onClick}
       data-sidebar-custom-item={item.id}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[5px] px-3 py-[3px] text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
-      <span className="w-6 h-6 flex items-center justify-center shrink-0">
+      <span className="w-6 h-6 flex items-center justify-start shrink-0">
         <CustomSidebarIcon icon={item.icon} />
       </span>
       <span className="flex-1 min-w-0 truncate">{item.label}</span>
       {Number.isFinite(count) && (
-        <span className="text-[11px] text-fg-mute shrink-0 tabular-nums">{count}</span>
+        <span className="ace-sidebar-meta-text w-6 text-right text-[13px] text-fg-mute shrink-0 tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -600,11 +600,11 @@ function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpe
         </span>
         <span className="flex-1 min-w-0 text-left truncate">扩展</span>
         {totalCount != null && (
-          <span className="mr-2 shrink-0 tabular-nums text-fg-mute">{totalCount}</span>
+          <span className="ace-sidebar-meta-text w-6 text-right text-[13px] text-fg-mute shrink-0 tabular-nums">{totalCount}</span>
         )}
       </button>
       {expanded && (
-        <div id={listId} className="ace-sidebar-custom-list ml-6 my-1 border-l border-border pl-1">
+        <div id={listId} className="ace-sidebar-custom-list">
           {SIDEBAR_CUSTOM_ITEMS.map((item) => (
             <CustomSidebarItem
               key={item.id}
@@ -1125,7 +1125,7 @@ function SessionRow({
       data-sidebar-workspace-session-workspace={workspaceReorderable ? workspaceHash || undefined : undefined}
       aria-describedby={hoverCardVisible ? hoverCardId : undefined}
       className={clsx(
-        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 my-px px-2 rounded-md text-[14px] transition',
+        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[13px] mx-1.5 my-px px-2 rounded-md text-[14px] transition',
         pinned && 'ace-sidebar-pinned-session-row',
         workspaceReorderable && 'ace-sidebar-workspace-session-row',
         dragging && 'is-dragging',
@@ -1267,7 +1267,7 @@ function SessionRow({
           </span>
         ) : null}
         {showSessionTime && !editing && !pendingPermission && !pendingQuestion && (
-          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text text-[13px] text-fg-mute shrink-0">
+          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text w-12 whitespace-nowrap text-right text-[13px] text-fg-mute shrink-0 tabular-nums">
             {relativeTime(s.updated_at || s.created_at)}
           </span>
         )}
@@ -1683,7 +1683,7 @@ function WorkspaceGroup({
       {expanded && (
         <div className="mt-px mb-[10px]">
           {sessions.length === 0 ? (
-            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[13px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
               <span aria-hidden="true" />
               <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
             </div>
@@ -1713,7 +1713,7 @@ function WorkspaceGroup({
                 );
               })}
               {projectedSessions.collapsible && (
-                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[13px] mx-1.5 px-2">
                   <span aria-hidden="true" />
                   <button
                     type="button"
@@ -1753,7 +1753,7 @@ function NoWorkspaceSessionGroup({
   return (
     <div className="mt-px mb-[10px]">
       {sessions.length === 0 ? (
-        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[13px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
           <span aria-hidden="true" />
           <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
         </div>
@@ -1775,7 +1775,7 @@ function NoWorkspaceSessionGroup({
             />
           ))}
           {projectedSessions.collapsible && (
-            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[13px] mx-1.5 px-2">
               <span aria-hidden="true" />
               <button
                 type="button"
