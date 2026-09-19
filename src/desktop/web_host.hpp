@@ -11,6 +11,7 @@
 // 所有方法必须在主线程上调(WebHost::run 之前 bind 安全)。
 
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -166,10 +167,20 @@ public:
 
     // 注册「系统文件拖放」handler。Windows 拦截 WebView2 的 file:// 导航、macOS
     // swizzle WKWebView 拖放后,把拖入文件的完整路径回传给这里(Windows 为
-    // file:// URI、macOS 为本地路径,前端纯函数统一归一化);main.cpp 再经 eval
-    // 注入到前端控制台。Linux/WebKitGTK 由前端直接读 text/uri-list,不调本 handler。
-    // 必须在 run() 之前注册(内部据此安装平台拦截)。
-    using FileDropHandler = std::function<void(std::vector<std::string> paths)>;
+    // file:// URI、macOS 为本地路径,前端纯函数统一归一化);macOS 同时附带
+    // WebView bounds 内的归一化释放点。Linux/WebKitGTK 由前端直接读
+    // text/uri-list,不调本 handler。必须在 run() 之前注册。
+    struct FileDropLocation {
+        double x_ratio = 0.0;
+        double y_ratio = 0.0;
+    };
+    struct FileDropContext {
+        std::optional<FileDropLocation> location;
+        bool coordinate_required = false;
+    };
+    using FileDropHandler = std::function<void(
+        std::vector<std::string> paths,
+        FileDropContext context)>;
     void set_file_drop_handler(FileDropHandler handler);
 
     // 注册同步 binding。fn 接到的是 JSON array 字符串(JS 端调时传的实参打包),
