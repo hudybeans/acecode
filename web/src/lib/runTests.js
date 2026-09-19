@@ -297,3 +297,6 @@ await import('./toolRewrites.test.js');
 await import('../i18n/runtime.test.js');
 await import('./uiLocale.test.js');
 await import('./slashCommands.test.js');
+import './composerCommandSync.test.js';
+import './composerDropdownKeyboard.test.js';
+import './composerSelection.test.js';

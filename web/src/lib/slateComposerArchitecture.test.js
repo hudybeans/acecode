@@ -227,7 +227,7 @@ run('image previews retain image rendering, file-link metadata, and existing tra
   assert.match(preview, /removeAttachment\(context\.key\)/);
   assert.match(composer, /data-desktop-attachment-id=\{`composer:\$\{attachmentKey\}`\}/);
   assert.match(composer, /data-desktop-attachment-preview-url=\{element\?\.url \|\| undefined\}/);
-  assert.match(composer, /onClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
+  assert.match(composer, /onDoubleClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
   assert.match(inputBar, /onPreviewAttachment=\{previewComposerAttachment\}/);
   assert.match(inputBar, /onPasteFiles=\{addMediaFiles\}/);
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);

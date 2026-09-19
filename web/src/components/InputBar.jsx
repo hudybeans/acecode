@@ -29,6 +29,7 @@ import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHist
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
 import { composerContentWithoutImages, isComposerThumbnailAttachment, withComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { composerDraftEditFingerprint, removeComposerAttachmentReference } from '../lib/composerDraft.js';
+import { isComposerCompletionSelectionCollapsed } from '../lib/composerDropdownKeyboard.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
 import {
@@ -469,7 +470,8 @@ export const InputBar = forwardRef(function InputBar({
   );
 
   // 触发条件:value 非空、首字符 /、整段无空白
-  const commandQuery = commandQueryAtCursor(value, composerSelection.end);
+  const composerSelectionCollapsed = isComposerCompletionSelectionCollapsed(composerSelection);
+  const commandQuery = composerSelectionCollapsed ? commandQueryAtCursor(value, composerSelection.end) : null;
   const commandItems = commandQuery?.leading ? commands : commands.filter((item) => item.kind === 'skill');
   const showDropdownRaw = !!commandQuery;
   const showDropdown = showDropdownRaw && !dropdownClosed && !composerComposing && commandItems.length > 0;
@@ -537,7 +539,7 @@ export const InputBar = forwardRef(function InputBar({
     const cursor = composerSelection.end;
     const token = pathReferenceTokenAtCursor(value, cursor);
     const signature = pathReferenceSignature(token, cursor, cwd);
-    const unavailable = disabled || !pathReferenceApi || composerComposing || showDropdown || !token;
+    const unavailable = disabled || !pathReferenceApi || composerComposing || !composerSelectionCollapsed || showDropdown || !token;
     if (unavailable || dismissedPathSignatureRef.current === signature) {
       mentionGenerationRef.current += 1;
       setPathMention(null);
@@ -623,6 +625,7 @@ export const InputBar = forwardRef(function InputBar({
     };
   }, [
     composerComposing,
+    composerSelectionCollapsed,
     composerSelection.end,
     currentSessionId,
     cwd,
@@ -668,7 +671,7 @@ export const InputBar = forwardRef(function InputBar({
     restorePathCaret(replacement.cursor);
   }, [pathMention?.token, restorePathCaret, updateValue, value]);
 
-  const activePathDropdown = pathMention;
+  const activePathDropdown = composerSelectionCollapsed ? pathMention : null;
 
   const addMediaFiles = useCallback((files, { requestNativeFocus = true } = {}) => {
     const fileList = Array.from(files || []).filter(Boolean);

@@ -10,6 +10,7 @@ import {
 import {
   createEditor,
   Editor,
+  Point,
   Range,
   Transforms,
 } from 'slate';
@@ -40,8 +41,6 @@ import {
   composerDocumentFromContent,
   composerSkillTag,
   composerDocumentFromText,
-  composerDocumentWithSynchronizedLeadingCommand,
-  composerLeadingCommandSignature,
   composerInlineTagRanges,
   composerPlainTextRangeFromSelection,
   composerSelectionFromPlainTextRange,
@@ -63,6 +62,8 @@ import {
   composerContentClipboardText,
 } from '../lib/composerContent.js';
 import { filesFromTransfer } from '../lib/composerFileTransfer.js';
+import { composerSelectedTag, composerTagSelection } from '../lib/composerSelection.js';
+import { synchronizeComposerLeadingCommand } from '../lib/composerCommandSync.js';
 import {
   RICH_COMPOSER_CONTEXT_PASTE_ACTIONS,
   RICH_COMPOSER_CONTEXT_PASTE_EVENT,
@@ -81,6 +82,14 @@ function withComposerInlineTags(editor) {
   editor.markableVoid = (element) => (
     isComposerInlineTag(element) ? false : markableVoid?.(element) || false
   );
+  for (const method of ['insertText', 'insertFragment', 'insertBreak', 'insertSoftBreak']) {
+    const insert = editor[method];
+    editor[method] = (...args) => {
+      const tag = composerSelectedTag(editor);
+      if (tag) Transforms.select(editor, composerTagSelection(editor, tag[1]));
+      insert(...args);
+    };
+  }
   return editor;
 }
 
@@ -184,10 +193,7 @@ function AttachmentTagElement({
         previewable && 'is-previewable',
       )}
       title={element?.sourcePath || name}
-      onMouseDown={(event) => {
-        if (event.button === 0) event.preventDefault();
-      }}
-      onClick={previewable ? () => onPreviewAttachment?.(element) : undefined}
+      onDoubleClick={previewable ? () => onPreviewAttachment?.(element) : undefined}
       onDragStart={(event) => event.preventDefault()}
     >
       {children}
@@ -363,6 +369,8 @@ function deleteAdjacentTag(editor, direction) {
 function insertPlainText(editor, text) {
   const parts = normalizeComposerPlainText(text).split('\n');
   HistoryEditor.withNewBatch(editor, () => {
+    const tag = composerSelectedTag(editor);
+    if (tag) Transforms.select(editor, composerTagSelection(editor, tag[1]));
     parts.forEach((part, index) => {
       if (index > 0) editor.insertBreak();
       if (part) Transforms.insertText(editor, part);
@@ -371,7 +379,13 @@ function insertPlainText(editor, text) {
 }
 
 function deleteSelectedPlainText(editor) {
-  if (!editor.selection || Range.isCollapsed(editor.selection)) return false;
+  if (!editor.selection) return false;
+  const tag = composerSelectedTag(editor);
+  if (tag) {
+    HistoryEditor.withNewBatch(editor, () => Transforms.removeNodes(editor, { at: tag[1] }));
+    return true;
+  }
+  if (Range.isCollapsed(editor.selection)) return false;
   // Slate ranges distinguish both sides of zero-text attachments. Converting
   // through character offsets here would omit files from mixed selections.
   Transforms.delete(editor);
@@ -381,8 +395,12 @@ function deleteSelectedPlainText(editor) {
 const COMPOSER_CLIPBOARD_TYPE = 'application/x-acecode-composer-content';
 
 function writeSelectedPlainText(event, editor) {
-  if (!editor.selection || Range.isCollapsed(editor.selection)) return false;
-  const content = composerContentFromDocument(Editor.fragment(editor, editor.selection));
+  if (!editor.selection) return false;
+  const tag = composerSelectedTag(editor);
+  if (!tag && Range.isCollapsed(editor.selection)) return false;
+  const content = composerContentFromDocument(tag
+    ? [{ type: 'paragraph', children: [tag[0]] }]
+    : Editor.fragment(editor, editor.selection));
   try {
     event.clipboardData?.setData('text/plain', composerContentClipboardText(content));
     event.clipboardData?.setData(COMPOSER_CLIPBOARD_TYPE, JSON.stringify(content));
@@ -412,7 +430,7 @@ function insertComposerContent(editor, content, commands, attachments) {
     || (part.id && record.id === part.id)
   )))) return false;
   HistoryEditor.withNewBatch(editor, () => {
-    Transforms.insertFragment(editor, composerDocumentFromContent(normalized, commands, attachments));
+    editor.insertFragment(composerDocumentFromContent(normalized, commands, attachments));
   });
   return true;
 }
@@ -513,6 +531,7 @@ function RichComposerShell({
     [],
   );
   const editableRef = useRef(null);
+  const pointerSelectionRef = useRef(null);
   const seenAttachmentKeysRef = useRef(new Set(attachments.map((item, index) => composerAttachmentTag(item, index).attachmentKey)));
   const pendingAttachmentSelectionRef = useRef(null);
   const latestTextRef = useRef(composerTextFromDocument(initialValueRef.current));
@@ -586,7 +605,10 @@ function RichComposerShell({
   }, [clearCompositionSettleTimer, onCompositionEnd]);
 
   const publishSelection = useCallback((selection = editor.selection) => {
-    const next = currentPlainSelection(editor.children, selection);
+    const next = {
+      ...currentPlainSelection(editor.children, selection),
+      collapsed: !selection || (Range.isCollapsed(selection) && !composerSelectedTag(editor)),
+    };
     selectionRef.current = next;
     onSelectionChange?.(next);
   }, [editor, onSelectionChange]);
@@ -797,14 +819,7 @@ function RichComposerShell({
         }
       });
     }
-    const synchronized = composerDocumentWithSynchronizedLeadingCommand(
-      editor.children, composerTextFromDocument(editor.children), commandsRef.current,
-    );
-    if (composerLeadingCommandSignature(synchronized) !== composerLeadingCommandSignature(editor.children)) {
-      replaceEditorDocument(editor, synchronized, {
-        selection: currentPlainSelection(editor.children, editor.selection), clearHistory: false,
-      });
-    }
+    synchronizeComposerLeadingCommand(editor, commandsRef.current);
     latestTextRef.current = composerTextFromDocument(editor.children);
     publishSelection(editor.selection);
   }, [
@@ -819,8 +834,117 @@ function RichComposerShell({
   }, [editor, publishDocument, publishSelection]);
 
   const handleSlateSelectionChange = useCallback((selection) => {
+    const tag = composerSelectedTag(editor);
+    if (tag) {
+      // Native typing does not dispatch beforeinput for a caret inside a
+      // contenteditable=false node. Keep keyboard-selected tags represented
+      // by the same editable boundary range as mouse-selected tags.
+      const range = composerTagSelection(editor, tag[1]);
+      if (!Range.equals(selection, range)) {
+        Transforms.select(editor, range);
+        publishSelection(range);
+        return;
+      }
+    }
     publishSelection(selection);
-  }, [publishSelection]);
+  }, [editor, publishSelection]);
+
+  const handleMouseDown = useCallback((event) => {
+    pointerSelectionRef.current = null;
+    if (disabled || event.button !== 0) return;
+    const pointer = { x: event.clientX, y: event.clientY, selection: editor.selection, active: true };
+    pointerSelectionRef.current = pointer;
+    const target = event.target.closest?.('[data-composer-inline-tag]');
+    if (!target || event.target.closest?.('button')) return;
+    const node = ReactEditor.toSlateNode(editor, target);
+    pointer.tagRange = composerTagSelection(editor, ReactEditor.findPath(editor, node));
+    pointer.shift = event.shiftKey;
+    const range = pointer.tagRange;
+    const anchor = event.shiftKey && pointer.selection ? pointer.selection.anchor : range.anchor;
+    Transforms.select(editor, {
+      anchor,
+      focus: !Point.isAfter(anchor, range.anchor) ? range.focus : range.anchor,
+    });
+    editableRef.current.focus({ preventScroll: true });
+    // Chromium confines a native drag starting inside contenteditable=false
+    // to its label. The composer owns only this gesture; text drags stay native.
+    event.preventDefault();
+  }, [disabled, editor]);
+
+  useEffect(() => {
+    const editable = editableRef.current;
+    if (!editable || disabled) return undefined;
+    const document = editable.ownerDocument;
+    const move = (event) => {
+      const pointer = pointerSelectionRef.current;
+      if (!pointer?.active || !pointer.tagRange || !(event.buttons & 1)) return;
+      if (Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) <= 3) return;
+      pointer.dragged = true;
+      const bounds = editable.getBoundingClientRect();
+      const clientX = Math.max(bounds.left + 1, Math.min(event.clientX, bounds.right - 1));
+      const clientY = Math.max(bounds.top + 1, Math.min(event.clientY, bounds.bottom - 1));
+      if (event.clientY < bounds.top) editable.scrollTop -= bounds.top - event.clientY;
+      if (event.clientY > bounds.bottom) editable.scrollTop += event.clientY - bounds.bottom;
+      const hit = document.elementFromPoint(clientX, clientY);
+      const target = hit?.closest?.('[data-composer-inline-tag]') || hit;
+      if (!target || !editable.contains(target)) return;
+      try {
+        const range = pointer.tagRange;
+        let focus;
+        if (target.matches('[data-composer-inline-tag]')) {
+          const node = ReactEditor.toSlateNode(editor, target);
+          const hitRange = composerTagSelection(editor, ReactEditor.findPath(editor, node));
+          const origin = pointer.shift && pointer.selection ? pointer.selection.anchor : range.anchor;
+          focus = !Point.isAfter(hitRange.anchor, origin) ? hitRange.anchor : hitRange.focus;
+        } else {
+          focus = ReactEditor.findEventRange(editor, { target, clientX, clientY }).focus;
+        }
+        const anchor = pointer.shift && pointer.selection ? pointer.selection.anchor
+          : !Point.isAfter(focus, range.anchor) ? range.focus : range.anchor;
+        Transforms.select(editor, { anchor, focus });
+        event.preventDefault();
+      } catch {
+        // A moving overlay or a draft switch can temporarily remove the hit.
+      }
+    };
+    const up = () => {
+      if (pointerSelectionRef.current) pointerSelectionRef.current.active = false;
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    return () => {
+      pointerSelectionRef.current = null;
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+  }, [disabled, editor, normalizedSyncKey]);
+
+  const handleClick = useCallback((event) => {
+    const pointer = pointerSelectionRef.current;
+    pointerSelectionRef.current = null;
+    if (disabled || event.button !== 0) return;
+    if (pointer?.tagRange) return true;
+    // Slate's default click handler collapses any range ending on a void.
+    // A completed drag must keep its native range, including backward drags.
+    if (pointer && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 3) return true;
+    const target = event.target.closest?.('[data-composer-inline-tag]');
+    if (!target || !editableRef.current?.contains(target) || event.target.closest?.('button')) return;
+    const node = ReactEditor.toSlateNode(editor, target);
+    const path = ReactEditor.findPath(editor, node);
+    const range = composerTagSelection(editor, path);
+    if (event.shiftKey && pointer?.selection) {
+      const anchor = pointer.selection.anchor;
+      Transforms.select(editor, {
+        anchor,
+        focus: !Point.isAfter(anchor, range.anchor) ? range.focus : range.anchor,
+      });
+    } else {
+      Transforms.select(editor, range);
+    }
+    editableRef.current.focus({ preventScroll: true });
+    event.preventDefault();
+    return true;
+  }, [disabled, editor]);
 
   useImperativeHandle(ref, () => ({
     focus() {
@@ -997,7 +1121,6 @@ function RichComposerShell({
     if (
       (event.key === 'Backspace' || event.key === 'Delete')
       && editor.selection
-      && !Range.isCollapsed(editor.selection)
       && deleteSelectedPlainText(editor)
     ) {
       event.preventDefault();
@@ -1202,6 +1325,8 @@ function RichComposerShell({
         renderElement={renderElement}
         renderPlaceholder={renderPlaceholder}
         onKeyDown={handleKeyDown}
+        onMouseDown={handleMouseDown}
+        onClick={handleClick}
         onPaste={handlePaste}
         onDOMBeforeInput={handleDOMBeforeInput}
         onCopy={handleCopy}

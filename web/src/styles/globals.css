@@ -4298,7 +4298,7 @@ a.ace-thread-link:focus-visible {
 }
 .ace-slate-inline-tag {
   max-width: 100%;
-  user-select: none;
+  user-select: text;
   -webkit-user-drag: none;
 }
 .ace-slate-path-tag .ace-cmd-token-name {
@@ -4314,7 +4314,7 @@ a.ace-thread-link:focus-visible {
   opacity: 0.72;
 }
 .ace-slate-attachment-tag.is-previewable {
-  cursor: zoom-in;
+  cursor: text;
 }
 .ace-slate-attachment-name {
   min-width: 0;
