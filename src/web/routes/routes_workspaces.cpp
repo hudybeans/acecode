@@ -80,6 +80,10 @@ void WebServer::Impl::register_workspaces() {
         ([this](const crow::request& req) {
             return cors_preflight(req);
         });
+        CROW_ROUTE(app, "/api/workspaces/order").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req) {
+            return cors_preflight(req);
+        });
         CROW_ROUTE(app, "/api/projects/defaults").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req) {
             return cors_preflight(req);
@@ -147,6 +151,49 @@ void WebServer::Impl::register_workspaces() {
             crow::response r(arr.dump());
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        CROW_ROUTE(app, "/api/workspaces/order").methods(crow::HTTPMethod::PUT)
+        ([this](const crow::request& req) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.workspace_registry) {
+                return respond(503, {{"error", "WORKSPACE_REGISTRY_UNAVAILABLE"},
+                                     {"message", "workspace registry unavailable"}});
+            }
+            std::vector<std::string> hashes;
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.is_object() || !body.contains("hashes") || !body["hashes"].is_array()) {
+                    return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes array required"}});
+                }
+                for (const auto& hash : body["hashes"]) {
+                    if (!hash.is_string()) {
+                        return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes must contain strings"}});
+                    }
+                    hashes.push_back(hash.get<std::string>());
+                }
+            } catch (const std::exception&) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", "invalid workspace order JSON"}});
+            }
+
+            using acecode::desktop::WorkspaceOrderStatus;
+            const auto status = deps.workspace_registry->set_order(projects_dir(), hashes);
+            if (status == WorkspaceOrderStatus::InvalidOrder) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes must be nonempty and unique"}});
+            }
+            if (status == WorkspaceOrderStatus::Conflict) {
+                return respond(409, {{"error", "WORKSPACE_ORDER_CONFLICT"},
+                                     {"message", "workspace list changed; refresh before reordering"}});
+            }
+            if (status == WorkspaceOrderStatus::WriteFailed) {
+                return respond(500, {{"error", "PERSIST_FAILED"}, {"message", "failed to save workspace order"}});
+            }
+            return respond(200, {{"hashes", hashes}});
         });
 
         CROW_ROUTE(app, "/api/workspaces").methods(crow::HTTPMethod::POST)

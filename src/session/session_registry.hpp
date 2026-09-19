@@ -132,6 +132,8 @@ struct SessionRegistryDeps {
     // Shared MCP runtime. Explicit expert MCP selections may start a
     // configured server even when its daemon-global default is disabled.
     McpManager*                      mcp_manager = nullptr;
+    // Headless resolves its project overlay before applying --enable-mcp.
+    bool                             load_project_mcp = true;
     // 全局 PermissionManager(用于派生 per-session perm 的 mode + rules
     // 起始值)。每个 session 自己的 PermissionManager 是独立实例,session_allowed_
     // 不串。
@@ -290,7 +292,8 @@ public:
     // Whether an attached expert in any active session explicitly selects the
     // named MCP server. Used to avoid tearing down shared runtime tools that an
     // expert still needs after the global default is disabled.
-    bool expert_requires_mcp_server(const std::string& name) const;
+    bool expert_requires_mcp_server(const std::string& name,
+                                    const std::string& scope = {}) const;
 
     // 安全中心(openspec add-security-center):设置页改了 config.sandbox / 托管
     // 规则文件之后,把新状态下发到每个活跃会话。经 enqueue_control 与回合串行,

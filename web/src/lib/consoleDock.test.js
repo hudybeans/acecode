@@ -19,6 +19,7 @@ import {
   ptyWsUrl,
   removeTab,
   renameTab,
+  restoreDockTabs,
 } from './consoleDock.js';
 
 function run(name, fn) {
@@ -30,6 +31,24 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('terminal restore filters owners and preserves the selected tab and ordering', () => {
+  let state = addTab(createDockTabs(), { id: 'a2' });
+  state = addTab(state, { id: 'a1' });
+  state = activateTab(state, 'a2');
+  const sessions = [
+    { id: 'a1', owner_id: 'session:a', title: 'one' },
+    { id: 'a2', owner_id: 'session:a', title: 'two' },
+    { id: 'b1', owner_id: 'session:b' },
+    { id: 'legacy' },
+  ];
+  const restored = restoreDockTabs(state, sessions, 'session:a');
+  assert.deepEqual(restored.tabs.map((tab) => tab.id), ['a2', 'a1']);
+  assert.equal(restored.activeId, 'a2');
+  assert.deepEqual(restoreDockTabs(createDockTabs(), sessions, 'session:c'), createDockTabs());
+  assert.equal(addTab(restored, sessions[0]).tabs.length, 2);
+  assert.equal(ptyCreateOptions({ owner: 'draft:new' }).owner_id, 'draft:new');
+});
 
 // 触发场景:连续新建两个 tab。期望:后建者成为激活 tab,顺序保留。
 run('addTab appends and activates the new tab', () => {

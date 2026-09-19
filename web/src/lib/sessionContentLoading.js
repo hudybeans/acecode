@@ -1,3 +1,15 @@
+export function sessionContentLoadingPhase({
+  transcriptLoadState = '',
+  resumePending = false,
+  resumeFailed = false,
+  readOnly = false,
+} = {}) {
+  if (transcriptLoadState === 'error' || (!readOnly && resumeFailed)) return 'error';
+  if (transcriptLoadState === 'loading') return 'transcript';
+  if (!readOnly && resumePending) return 'loading';
+  return '';
+}
+
 function finiteRect(rect) {
   if (!rect || typeof rect !== 'object') return null;
   const left = Number(rect.left);

@@ -57,7 +57,7 @@ test('bound sessions use title icons instead of a persistent row background', ()
     /\.ace-sidebar-session-row\.is-remote-control-bound\s*\{[\s\S]*background-color:[\s\S]*background-image:[\s\S]*box-shadow:/,
   );
   assert.match(chatView, /const remoteControlBound = Boolean\(ref\?\.remote_control_bound \?\? ref\?\.remoteControlBound\);/);
-  assert.match(chatView, /remoteControlBound && \([\s\S]*name="computer"[\s\S]*data-remote-control-session-icon="true"/);
+  assert.match(source('components/SessionTitleBar.jsx'), /remoteControlBound && \([\s\S]*name="computer"[\s\S]*data-remote-control-session-icon="true"/);
   assert.match(
     chatView,
     /notifySessionListChanged\(\{[\s\S]*workspaceHash: noWorkspace \? '' : commandWorkspaceHash,[\s\S]*noWorkspace,/,

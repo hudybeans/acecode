@@ -4,6 +4,7 @@
 #include "permissions.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_storage.hpp"
+#include "session/turn_timing.hpp"
 #include "stub_provider.hpp"
 #include "tool/tool_executor.hpp"
 
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -38,7 +40,7 @@ class TurnSteeringHarness {
 public:
     explicit TurnSteeringHarness(const std::string& hint)
         : cwd_(steering_temp_cwd(hint)) {
-        sm_.start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
+        sm_->start_session(cwd_.string(), "stub", "stub-1", "sid-" + hint);
 
         acecode::AgentCallbacks callbacks;
         callbacks.on_busy_changed = [this](bool busy) {
@@ -53,7 +55,7 @@ public:
         };
         loop_ = std::make_unique<acecode::AgentLoop>(
             accessor, tools_, callbacks, cwd_.string(), permissions_);
-        loop_->set_session_manager(&sm_);
+        loop_->set_session_manager(sm_.get());
         sub_ = loop_->events().subscribe([this](const acecode::SessionEvent& event) {
             std::lock_guard<std::mutex> lk(events_mu_);
             events_.push_back(event);
@@ -63,13 +65,14 @@ public:
     ~TurnSteeringHarness() {
         if (loop_ && sub_ != 0) loop_->events().unsubscribe(sub_);
         loop_.reset();
+        sm_.reset(); // Close SQLite handles before deleting the project on Windows.
         fs::remove_all(cwd_);
         fs::remove_all(acecode::SessionStorage::get_project_dir(cwd_.string()));
     }
 
     acecode::AgentLoop& loop() { return *loop_; }
     acecode_test::StubLlmProvider& provider() { return *provider_; }
-    acecode::SessionManager& session_manager() { return sm_; }
+    acecode::SessionManager& session_manager() { return *sm_; }
 
     std::string wait_for_active_turn(std::chrono::milliseconds timeout = 5s) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -125,7 +128,8 @@ private:
         std::make_shared<acecode_test::StubLlmProvider>();
     acecode::ToolExecutor tools_;
     acecode::PermissionManager permissions_;
-    acecode::SessionManager sm_;
+    std::unique_ptr<acecode::SessionManager> sm_ =
+        std::make_unique<acecode::SessionManager>();
     std::unique_ptr<acecode::AgentLoop> loop_;
     acecode::EventDispatcher::SubscriptionId sub_ = 0;
 
@@ -148,6 +152,302 @@ std::vector<std::string> request_user_texts(
 }
 
 } // namespace
+
+TEST(AgentLoopUserMessageRetry, ReusesStructuredTailWithoutDuplicatingUser) {
+    TurnSteeringHarness h("retry-structured");
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "retry-user-1";
+    user.content = "expanded skill and selection context";
+    user.content_parts = nlohmann::json::array({
+        {{"type", "text"}, {"text", user.content}},
+        {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AAAA"}}}},
+    });
+    user.metadata = {{"display_text", "/skill original"},
+                     {"attachments", nlohmann::json::array({{{"id", "att-1"}}})}};
+    h.loop().push_message(user);
+    h.session_manager().on_message(user);
+    const auto timing = acecode::make_turn_timing_message(
+        {user.uuid, 1, 2, 1, "aborted"}, "2026-09-18T00:00:00Z");
+    h.loop().push_message(timing);
+    h.session_manager().on_message(timing);
+
+    h.provider().push_text("retried response");
+    h.provider().set_latency_ms(100);
+    std::string error;
+    ASSERT_TRUE(h.loop().retry_last_user_message(user.uuid, error)) << error;
+    EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+
+    const auto request = h.provider().messages_for_turn(0);
+    const auto sent = std::find_if(request.begin(), request.end(), [&](const auto& message) {
+        return message.uuid == user.uuid;
+    });
+    ASSERT_NE(sent, request.end());
+    EXPECT_EQ(sent->content, user.content);
+    EXPECT_EQ(sent->content_parts, user.content_parts);
+    EXPECT_EQ(sent->metadata, user.metadata);
+    EXPECT_EQ(request_user_texts(request), std::vector<std::string>{user.content});
+    const auto persisted = h.session_manager().load_active_messages();
+    EXPECT_EQ(std::count_if(persisted.begin(), persisted.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 1);
+    for (const auto& event : h.events()) {
+        EXPECT_FALSE(event.kind == acecode::SessionEventKind::Message &&
+                     event.payload.value("role", std::string{}) == "user");
+    }
+    EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+    EXPECT_EQ(h.provider().turn_count(), 1);
+}
+
+TEST(AgentLoopUserMessageRetry, RejectsEveryVisibleNonUserTailIncludingEmptyAssistant) {
+    for (const auto& role : {"assistant", "tool", "system", "error"}) {
+        SCOPED_TRACE(role);
+        TurnSteeringHarness h(std::string("retry-tail-") + role);
+        acecode::ChatMessage user;
+        user.role = "user";
+        user.uuid = "user-before-tail";
+        user.content = "original";
+        h.loop().push_message(user);
+        h.session_manager().on_message(user);
+        acecode::ChatMessage tail;
+        tail.role = role;
+        // In particular, an empty assistant is still a non-user tail.
+        h.loop().push_message(tail);
+        h.session_manager().on_message(tail);
+        std::string error;
+        EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+        EXPECT_EQ(h.provider().turn_count(), 0);
+    }
+}
+
+TEST(AgentLoopUserMessageRetry, ChecksPersistedTranscriptNotOnlyModelHistory) {
+    TurnSteeringHarness h("retry-persisted-tail");
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "user-before-notice";
+    user.content = "original";
+    h.loop().push_message(user);
+    h.session_manager().on_message(user);
+    h.loop().emit_transcript_system_message("later transcript-only notice");
+    std::string error;
+    EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+    EXPECT_EQ(h.provider().turn_count(), 0);
+}
+
+TEST(AgentLoopUserMessageRetry, RejectsEmptyHistoryAndStaleIdentity) {
+    TurnSteeringHarness h("retry-stale-id");
+    std::string error;
+    EXPECT_FALSE(h.loop().retry_last_user_message("", error));
+    EXPECT_FALSE(h.loop().retry_last_user_message("missing", error));
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "latest-user";
+    user.content = "latest";
+    h.loop().push_message(user);
+    h.session_manager().on_message(user);
+    EXPECT_FALSE(h.loop().retry_last_user_message("older-user", error));
+    EXPECT_EQ(h.provider().turn_count(), 0);
+}
+
+TEST(AgentLoopUserMessageRetry, RejectsVisibleEventsAbsentFromStoredHistory) {
+    for (const auto kind : {acecode::SessionEventKind::Message,
+                            acecode::SessionEventKind::Token,
+                            acecode::SessionEventKind::Reasoning,
+                            acecode::SessionEventKind::ToolStart,
+                            acecode::SessionEventKind::Error}) {
+        TurnSteeringHarness h("retry-live-tail");
+        acecode::ChatMessage user;
+        user.role = "user";
+        user.uuid = "retry-live-user";
+        user.content = "original";
+        h.loop().push_message(user);
+        h.session_manager().on_message(user);
+        h.loop().events().emit(kind, {{"role", "error"}, {"text", "partial"},
+                                     {"content", "error notice"}, {"reason", "failed"}});
+        std::string error;
+        EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+        EXPECT_EQ(h.provider().turn_count(), 0);
+    }
+}
+
+TEST(AgentLoopUserMessageRetry, RejectsActiveOrQueuedControlWork) {
+    TurnSteeringHarness h("retry-control-work");
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "retry-control-user";
+    user.content = "original";
+    h.loop().push_message(user);
+    h.session_manager().on_message(user);
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    h.loop().enqueue_control([gate] {
+        gate.wait_for(2s);
+        return true;
+    });
+    std::string error;
+    EXPECT_FALSE(h.loop().retry_last_user_message(user.uuid, error));
+    release.set_value();
+    EXPECT_EQ(h.provider().turn_count(), 0);
+}
+
+TEST(AgentLoopUserMessageRetry, RetriesConfirmedUserAbortWithoutDuplicatingUser) {
+    TurnSteeringHarness h("retry-user-abort");
+    h.provider().set_latency_ms(200);
+    h.provider().push_text("cancelled response");
+    h.provider().push_text("retried response");
+    h.loop().submit("original request");
+    const auto id = h.wait_for_active_turn();
+    ASSERT_TRUE(h.wait_for_provider_turns(1));
+    h.loop().abort();
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+
+    const auto stopped = h.session_manager().load_active_messages();
+    ASSERT_FALSE(stopped.empty());
+    EXPECT_EQ(stopped.back().metadata.value("retry_user_message_id", ""), id);
+    EXPECT_TRUE(stopped.back().metadata.value("user_aborted", false));
+    EXPECT_TRUE(stopped.back().metadata.value("transcript_only", false));
+    std::string error;
+    EXPECT_FALSE(h.loop().retry_last_user_message("stale-id", error));
+    ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+    EXPECT_FALSE(h.loop().retry_last_user_message(id, error));
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+    EXPECT_EQ(request_user_texts(h.provider().messages_for_turn(1)),
+              std::vector<std::string>{"original request"});
+    const auto persisted = h.session_manager().load_active_messages();
+    EXPECT_EQ(std::count_if(persisted.begin(), persisted.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 1);
+    EXPECT_FALSE(h.loop().retry_last_user_message(id, error));
+}
+
+TEST(AgentLoopUserMessageRetry, RetriesAbortAfterPartialTextOrReasoning) {
+    for (const auto kind : {acecode::SessionEventKind::Token,
+                            acecode::SessionEventKind::Reasoning}) {
+        TurnSteeringHarness h("retry-partial-abort");
+        acecode::StreamEvent partial;
+        partial.type = kind == acecode::SessionEventKind::Token
+            ? acecode::StreamEventType::Delta : acecode::StreamEventType::ReasoningDelta;
+        partial.content = "partial output";
+        h.provider().push_events({partial});
+        h.provider().push_text("retried response");
+        const auto sub = h.loop().events().subscribe([&](const auto& event) {
+            if (event.kind == kind) h.loop().abort();
+        });
+        h.loop().submit("original request");
+        ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+        h.loop().events().unsubscribe(sub);
+        const auto stopped = h.session_manager().load_active_messages();
+        ASSERT_FALSE(stopped.empty());
+        if (kind == acecode::SessionEventKind::Token) {
+            const auto partial_message = std::find_if(stopped.begin(), stopped.end(), [](const auto& message) {
+                return message.role == "assistant" && message.content == "partial output";
+            });
+            ASSERT_NE(partial_message, stopped.end());
+            EXPECT_TRUE(partial_message->metadata.value("transcript_only", false));
+            EXPECT_TRUE(partial_message->metadata.value("interrupted_output", false));
+        }
+        const auto id = stopped.back().metadata.value("retry_user_message_id", "");
+        ASSERT_FALSE(id.empty());
+        std::string error;
+        ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+        ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+        EXPECT_EQ(request_user_texts(h.provider().messages_for_turn(1)),
+                  std::vector<std::string>{"original request"});
+    }
+}
+
+TEST(AgentLoopUserMessageRetry, PreservesToolResultsAndAppendsOriginalStructuredInputAfterAbort) {
+    TurnSteeringHarness h("retry-tools-abort");
+    // Even an unavailable tool produces an assistant call and paired result.
+    h.provider().push_tool_call("unavailable_tool", "{}", "retry-tool-call");
+    h.provider().push_text("retried response");
+    const auto sub = h.loop().events().subscribe([&](const auto& event) {
+        if (event.kind == acecode::SessionEventKind::ModelStepFinish) h.loop().abort();
+    });
+    acecode::UserInput input;
+    input.text = "original with context";
+    input.display_text = "original visible text";
+    input.content_parts = nlohmann::json::array({
+        {{"type", "text"}, {"text", input.text}},
+        {{"type", "image_url"}, {"image_url", {{"url", "data:image/png;base64,AAAA"}}}},
+    });
+    input.metadata = {{"client_message_id", "original-client"}};
+    h.loop().submit(input);
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+    h.loop().events().unsubscribe(sub);
+    const auto stopped = h.session_manager().load_active_messages();
+    const auto id = stopped.back().metadata.value("retry_user_message_id", "");
+    ASSERT_FALSE(id.empty());
+    std::string error;
+    ASSERT_TRUE(h.loop().retry_last_user_message(id, error)) << error;
+    ASSERT_TRUE(h.wait_for_provider_turns_and_idle(2));
+    const auto request = h.provider().messages_for_turn(1);
+    ASSERT_GE(request.size(), 4u);
+    const auto& retried = request.back();
+    EXPECT_EQ(retried.role, "user");
+    EXPECT_NE(retried.uuid, id);
+    EXPECT_EQ(retried.content, input.text);
+    EXPECT_EQ(retried.content_parts, input.content_parts);
+    EXPECT_EQ(retried.metadata.value("display_text", ""), input.display_text);
+    EXPECT_FALSE(retried.metadata.contains("client_message_id"));
+    EXPECT_EQ(request[request.size() - 2].role, "tool");
+    EXPECT_EQ(request[request.size() - 2].tool_call_id, "retry-tool-call");
+    EXPECT_EQ(request_user_texts(request), (std::vector<std::string>{input.text, input.text}));
+    for (std::size_t i = 1; i < request.size(); ++i) {
+        EXPECT_FALSE(request[i - 1].role == "user" && request[i].role == "user");
+        EXPECT_NE(request[i].content, "[Interrupted]");
+    }
+    const auto persisted = h.session_manager().load_active_messages();
+    EXPECT_EQ(std::count_if(persisted.begin(), persisted.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 2);
+}
+
+TEST(AgentLoopUserMessageRetry, RestoresExplicitAbortButRejectsPlainNoticesAndSupersededStops) {
+    for (const auto& mode : {"restored", "plain", "interjected", "stale", "newer-message", "live-error", "invalid-model-tail"}) {
+        SCOPED_TRACE(mode);
+        TurnSteeringHarness h(std::string("retry-abort-") + mode);
+        acecode::ChatMessage user;
+        user.role = "user";
+        user.uuid = "restored-user";
+        user.content = "original";
+        acecode::ChatMessage assistant;
+        assistant.role = std::string(mode) == "invalid-model-tail" ? "system" : "assistant";
+        assistant.content = "existing partial reply";
+        for (const auto& message : {user, assistant}) {
+            h.loop().push_message(message);
+            h.session_manager().on_message(message);
+        }
+        acecode::ChatMessage marker;
+        marker.role = "system";
+        marker.content = "[Interrupted]";
+        marker.metadata = {{"transcript_only", true}};
+        const std::string variant = mode;
+        if (variant != "plain" && variant != "interjected") {
+            marker.metadata["user_aborted"] = true;
+            marker.metadata["retry_user_message_id"] = variant == "stale" ? "older-user" : user.uuid;
+        }
+        if (variant == "interjected") marker.metadata["turn_interrupt"] = true;
+        h.session_manager().on_message(marker);
+        if (variant == "newer-message") h.loop().emit_transcript_system_message("later notice");
+        if (variant == "live-error") {
+            h.loop().events().emit(acecode::SessionEventKind::Error, {{"reason", "later error"}});
+        }
+        h.provider().push_text("retried response");
+        std::string error;
+        const bool accepted = h.loop().retry_last_user_message(user.uuid, error);
+        EXPECT_EQ(accepted, variant == "restored") << error;
+        if (accepted) {
+            ASSERT_TRUE(h.wait_for_provider_turns_and_idle(1));
+            const auto request = h.provider().messages_for_turn(0);
+            ASSERT_GE(request.size(), 3u);
+            EXPECT_EQ(request[request.size() - 2].content, assistant.content);
+            EXPECT_EQ(request.back().content, user.content);
+            EXPECT_NE(request.back().uuid, user.uuid);
+        }
+    }
+}
 
 TEST(AgentLoopTurnSteering, RejectsInvalidIdleAndMismatchedRequests) {
     TurnSteeringHarness h("reject");

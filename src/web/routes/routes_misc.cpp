@@ -613,187 +613,6 @@ void WebServer::Impl::register_feedback() {
         });
     }
 
-void WebServer::Impl::register_mcp() {
-        // GET /api/mcp: 读 config 当前 mcp_servers 段。spec 9.8
-        CROW_ROUTE(app, "/api/mcp").methods(crow::HTTPMethod::GET)
-        ([this](const crow::request& req) {
-            if (auto rej = require_auth(req)) return std::move(*rej);
-            json out = json::object();
-            if (deps.app_config) {
-                std::shared_lock<std::shared_mutex> config_lock(app_config_mu);
-                for (const auto& [name, srv] : deps.app_config->mcp_servers) {
-                    json o;
-                    switch (srv.transport) {
-                        case McpTransport::Stdio: o["transport"] = "stdio"; break;
-                        case McpTransport::Sse:   o["transport"] = "sse";   break;
-                        case McpTransport::Http:  o["transport"] = "http";  break;
-                    }
-                    if (!srv.command.empty()) o["command"] = srv.command;
-                    if (!srv.args.empty())    o["args"]    = srv.args;
-                    if (!srv.env.empty())     o["env"]     = srv.env;
-                    if (!srv.url.empty())     o["url"]     = srv.url;
-                    if (!srv.sse_endpoint.empty()) o["sse_endpoint"] = srv.sse_endpoint;
-                    if (!srv.headers.empty()) o["headers"] = srv.headers;
-                    // auth_token 不回写,避免日志 / 浏览器缓存泄漏
-                    o["timeout_seconds"]      = srv.timeout_seconds;
-                    // 仅禁用时透出,启用态保持字段稀疏(前端 enabled = !disabled)。
-                    if (srv.disabled) o["disabled"] = true;
-                    out[name] = std::move(o);
-                }
-            }
-            crow::response r(out.dump());
-            r.add_header("Content-Type", "application/json");
-            return r;
-        });
-
-        // PUT /api/mcp: 覆盖写 mcp_servers 段(不自动 reload)。spec 9.8
-        CROW_ROUTE(app, "/api/mcp").methods(crow::HTTPMethod::PUT)
-        ([this](const crow::request& req) {
-            if (auto rej = require_auth(req)) return std::move(*rej);
-            if (!deps.app_config) return crow::response(503);
-
-            try {
-                auto j = json::parse(req.body);
-                if (!j.is_object()) {
-                    crow::response r(400);
-                    r.body = R"({"error":"body must be a JSON object"})";
-                    r.add_header("Content-Type", "application/json");
-                    return r;
-                }
-                std::map<std::string, McpServerConfig> new_servers;
-                for (auto it = j.begin(); it != j.end(); ++it) {
-                    McpServerConfig cfg;
-                    const auto& v = it.value();
-                    auto t = v.value("transport", std::string("stdio"));
-                    if (t == "sse")  cfg.transport = McpTransport::Sse;
-                    else if (t == "http") cfg.transport = McpTransport::Http;
-                    else cfg.transport = McpTransport::Stdio;
-                    cfg.command      = v.value("command", std::string{});
-                    if (v.contains("args") && v["args"].is_array())
-                        cfg.args = v["args"].get<std::vector<std::string>>();
-                    if (v.contains("env") && v["env"].is_object())
-                        cfg.env  = v["env"].get<std::map<std::string,std::string>>();
-                    cfg.url          = v.value("url", std::string{});
-                    cfg.sse_endpoint = v.value("sse_endpoint", std::string("/sse"));
-                    if (v.contains("headers") && v["headers"].is_object())
-                        cfg.headers = v["headers"].get<std::map<std::string,std::string>>();
-                    cfg.auth_token   = v.value("auth_token", std::string{});
-                    cfg.timeout_seconds = v.value("timeout_seconds", 30);
-                    cfg.disabled     = v.value("disabled", false);
-                    new_servers.emplace(it.key(), std::move(cfg));
-                }
-                std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
-                deps.app_config->mcp_servers = std::move(new_servers);
-                if (!deps.config_path.empty()) {
-                    save_config(*deps.app_config, deps.config_path);
-                } else {
-                    save_config(*deps.app_config);
-                }
-                crow::response r(200);
-                r.body = R"({"saved":true,"reload_required":true})";
-                r.add_header("Content-Type", "application/json");
-                return r;
-            } catch (const std::exception& e) {
-                crow::response r(400);
-                r.body = json{{"error", std::string("bad json: ") + e.what()}}.dump();
-                r.add_header("Content-Type", "application/json");
-                return r;
-            }
-        });
-
-        // POST /api/mcp/reload: spec 9.9。
-        // v1 简化实现: 不真正触发 cpp-mcp 重连(那需要把 mcp client 拉到
-        // WebServerDeps 里,改动面更大)。返回 not_implemented + 提示用户
-        // 重启 daemon,后续 change 再补。
-        CROW_ROUTE(app, "/api/mcp/reload").methods(crow::HTTPMethod::POST)
-        ([this](const crow::request& req) {
-            if (auto rej = require_auth(req)) return std::move(*rej);
-            crow::response r(501);
-            r.body = R"({"error":"mcp reload not implemented in v1; restart daemon to pick up changes"})";
-            r.add_header("Content-Type", "application/json");
-            return r;
-        });
-
-        // POST /api/mcp/toggle body {name, enabled}: 单个 server 的启用开关。
-        // 落盘 config.disabled(重启后仍生效)+ 运行时经 McpManager 免重启热切换
-        // (整个 app 的所有会话共享同一 ToolExecutor,disable 会立刻注销其工具)。
-        CROW_ROUTE(app, "/api/mcp/toggle").methods(crow::HTTPMethod::POST)
-        ([this](const crow::request& req) {
-            if (auto rej = require_auth(req)) return std::move(*rej);
-            if (!deps.app_config) return crow::response(503);
-
-            auto reply = [](int code, const json& body) {
-                crow::response r(code);
-                r.body = body.dump();
-                r.add_header("Content-Type", "application/json");
-                return r;
-            };
-
-            try {
-                auto j = json::parse(req.body);
-                if (!j.is_object() || !j.contains("name") || !j["name"].is_string()) {
-                    return reply(400, json{{"error", "expected {name, enabled}"}});
-                }
-                const std::string name = j["name"].get<std::string>();
-                const bool enabled = j.value("enabled", true);
-
-                bool found = false;
-                std::optional<AppConfig> config_snapshot;
-                {
-                    std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
-                    auto it = deps.app_config->mcp_servers.find(name);
-                    if (it != deps.app_config->mcp_servers.end()) {
-                        found = true;
-                        it->second.disabled = !enabled;
-                        if (!deps.config_path.empty()) {
-                            save_config(*deps.app_config, deps.config_path);
-                        } else {
-                            save_config(*deps.app_config);
-                        }
-                        config_snapshot = *deps.app_config;
-                    }
-                }
-                if (!found) {
-                    return reply(404, json{{"error", "unknown mcp server"}});
-                }
-
-                if (config_snapshot && deps.session_registry) {
-                    deps.session_registry->refresh_mcp_policy(
-                        *config_snapshot);
-                }
-
-                // 运行时热切换:锁外调用,避免持 app_config_mu 期间进 manager 锁。
-                // manager 缺失(测试 fixture)或未登记该 server 时降级为仅落盘,
-                // 前端据 applied=false 提示需重启。
-                bool applied = false;
-                const bool retained_for_expert =
-                    !enabled && deps.session_registry &&
-                    deps.session_registry->expert_requires_mcp_server(name);
-                if (deps.mcp_manager && deps.tools && deps.mcp_manager->has_server(name)) {
-                    if (retained_for_expert) {
-                        // The config is globally disabled and inheriting
-                        // sessions have already been narrowed above, but the
-                        // shared runtime must remain registered for explicit
-                        // expert sessions.
-                        applied = true;
-                    } else {
-                        applied = enabled
-                            ? deps.mcp_manager->enable(name, *deps.tools)
-                            : deps.mcp_manager->disable(name, *deps.tools);
-                    }
-                }
-                return reply(200, json{
-                    {"name", name},
-                    {"enabled", enabled},
-                    {"applied", applied},
-                    {"retained_for_expert", retained_for_expert},
-                });
-            } catch (const std::exception& e) {
-                return reply(400, json{{"error", std::string("bad json: ") + e.what()}});
-            }
-        });
-    }
-
 void WebServer::Impl::register_health() {
         // GET /api/health: spec 9.2
         // Loopback remains token-optional, while remote bootstrap must present
@@ -2287,6 +2106,13 @@ void WebServer::Impl::register_ui_preferences() {
                                     "font_size must be small, medium, or large");
                 }
             }
+            if (body.contains("message_auto_collapse")) {
+                has_supported_field = true;
+                if (!body["message_auto_collapse"].is_boolean()) {
+                    return json_err(400, "BAD_REQUEST",
+                                    "message_auto_collapse must be a boolean");
+                }
+            }
             if (body.contains("sidebar_session_time")) {
                 has_supported_field = true;
                 if (!body["sidebar_session_time"].is_boolean()) {
@@ -2314,6 +2140,10 @@ void WebServer::Impl::register_ui_preferences() {
             }
             const auto before = deps.app_config->web_ui;
             deps.app_config->web_ui.show_acecode_avatar = false;
+            if (body.contains("message_auto_collapse")) {
+                deps.app_config->web_ui.message_auto_collapse =
+                    body["message_auto_collapse"].get<bool>();
+            }
             if (body.contains("theme")) {
                 deps.app_config->web_ui.theme =
                     body["theme"].get<std::string>();

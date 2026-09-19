@@ -3,6 +3,10 @@
 // 未识别码退到原始 message。
 
 const TABLE = {
+  COMPUTER_USE_SETTINGS_UNSUPPORTED: '当前后台服务不支持电脑操控，请更新 ACECode 并重启后重试',
+  COMPUTER_USE_SETTINGS_AUTH_REQUIRED: '后台连接认证已失效，请重新连接 ACECode 后重试',
+  COMPUTER_USE_SETTINGS_UNAVAILABLE: '后台服务暂不可用，请稍后重试',
+  COMPUTER_USE_PLATFORM_UNSUPPORTED: '电脑操控目前仅支持 Windows',
   MODEL_ORDER_CONFLICT: '模型列表已发生变化，请刷新后重新排序',
   IMAGE_SETTINGS_UNSUPPORTED: '当前后台服务不支持图像生成，请更新 ACECode 并重启后重试',
   SUMMARY_SETTINGS_UNSUPPORTED: '当前后台服务不支持摘要生成，请更新 ACECode 并重启后重试',

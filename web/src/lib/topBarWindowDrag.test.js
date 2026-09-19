@@ -27,6 +27,18 @@ for (const selector of ['[data-ace-native-overlay]', '[role="tab"]', '[role="sep
 }
 console.log('[pass] compact title-bar drag keeps the original band and excludes consumed interactions');
 
+for (const height of [45, 60]) {
+  const padded = { ...bounds, top: 10, height };
+  assert.equal(topBarWindowDragAction({ ...event, clientY: 10 + height - .1 }, padded), 'drag');
+  assert.equal(topBarWindowDragAction({ ...event, clientY: 10 + height - .1, detail: 2 }, padded), 'maximize');
+  assert.equal(topBarWindowDragAction({ ...event, clientY: 10 + height }, padded), null);
+  assert.equal(topBarWindowDragAction({ ...event, clientY: 10 + height - .1 }, padded, true), null);
+}
+for (const height of [NaN, Infinity]) {
+  assert.equal(topBarWindowDragAction(event, { ...bounds, height }), null);
+}
+console.log('[pass] taller title bars include their final blank pixel without extending into content');
+
 function overlayTarget({ backdrop = false, selectors = [] } = {}) {
   return {
     matches: (selector) => backdrop && selector === '[data-ace-native-overlay="blocking"]',
@@ -82,8 +94,11 @@ assert.match(topbar, /side="right" size=\{16\} expanded=\{!rightPanelCollapsed\}
 assert.match(icon, /name=\{expanded \? `\$\{name\}Filled` : name\}/);
 for (const side of ['Left', 'Right']) {
   const svg = fs.readFileSync(new URL(`../../public/vs-icons/Panel${side}Filled.svg`, import.meta.url), 'utf8');
-  assert.match(svg, /viewBox="0 0 48 48"/);
-  assert.match(svg, /width="36" height="36"/);
-  assert.match(svg, /<path[^>]+fill="#333"/);
+  const collapsed = fs.readFileSync(new URL(`../../public/vs-icons/Panel${side}.svg`, import.meta.url), 'utf8');
+  assert.match(svg, /viewBox="0 0 20 20"/);
+  assert.match(svg, /stroke-linejoin="round"/);
+  assert.match(svg, /<(?:path|rect)[^>]+fill="currentColor"/);
+  assert.notEqual(svg, collapsed, 'expanded panels need a visible filled-pane distinction');
+  assert.doesNotMatch(svg, /(?:fill|stroke)="(?!none|currentColor)[^"]+"/);
 }
 console.log('[pass] panel toggles use matching filled assets without the blue pressed class');

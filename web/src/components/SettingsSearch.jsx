@@ -6,7 +6,7 @@ export function SettingsSearch({ query, onQuery, results, selected, onSelect, on
   return (
     <div className="ace-settings-search">
       <div className="ace-settings-search-input">
-        <VsIcon name="search" size={17} className="text-fg-mute shrink-0" />
+        <VsIcon name="search" size={18} className="text-fg-mute shrink-0" />
         <input type="search" value={query} placeholder="搜索设置" aria-label="搜索设置"
           aria-controls={query.trim() ? 'settings-search-results' : undefined}
           onChange={(event) => onQuery(event.target.value)}

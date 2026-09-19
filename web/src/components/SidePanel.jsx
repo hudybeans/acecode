@@ -6,9 +6,7 @@
 //   - 文件: lazy 加载文件树,点击文件后通知 ChatView 打开中间预览面板
 // bash/shell 直接改文件但没有结构化 hunks 时不会进入"变更"列表,空态文案会明示。
 //
-// 切 session 时面板内部状态(tab/expanded/cache)**保留** — 同一 daemon
-// 下所有 session 共享同一个 cwd,文件树没必要重新拉一遍。只有 cwd 真变(典型
-// 场景: desktop 切 workspace → daemon 重启)才整面板 reset。
+// tab、展开项、目录缓存与滚动位置按会话保存；同 cwd 的会话也独立恢复。
 //
 // 仅在 single 视图挂载(由 ChatView 的 showSidePanel prop 控制),grid 视图
 // 整面板不渲染。
@@ -17,13 +15,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ApiError, createApi } from '../lib/api.js';
 import { aggregateHunksFromMessages, summarizeChangeGroups } from '../lib/sessionChanges.js';
 import {
-  CHANGE_LIST_VIEW_BY_CWD_STORAGE_KEY,
   CHANGE_LIST_VIEW_FLAT,
   CHANGE_LIST_VIEW_TREE,
   DEFAULT_CHANGE_LIST_VIEW_BY_CWD,
   changeListViewForCwd,
   updateChangeListViewForCwd,
-  validateChangeListViewByCwd,
 } from '../lib/changeFileTree.js';
 import {
   containingWorkspacePath,
@@ -51,12 +47,14 @@ import {
   SIDE_PANEL_CONTEXT_EFFECTS,
   sidePanelContextActionEffect,
 } from '../lib/sidePanelContextActions.js';
-import { FileTypeIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
+import { FileTypeIcon, VsIcon } from './Icon.jsx';
 import { ChangeCompactList } from './ChangeReview.jsx';
 import { GitChangesPanel } from './GitChangesPanel.jsx';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
 import { gitInfoCache } from '../lib/gitInfoCache.js';
-import { usePreference } from '../lib/usePreference.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { useWorkbenchScroll } from '../lib/useWorkbenchScroll.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 
 const TABS = [
   { key: 'changes', label: '变更' },
@@ -108,23 +106,11 @@ function TreeIndent({ depth, activeGuideIndex = -1 }) {
 
 function TreeArrowIcon({ open }) {
   return (
-    <svg
+    <VsIcon
+      name={open ? 'expandDown' : 'expandRight'}
+      size={14}
       className="ace-file-tree-arrow"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d={open ? 'M6 9L12 15L18 9' : 'M9 18L15 12L9 6'}
-        stroke="currentColor"
-        strokeWidth="1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    />
   );
 }
 
@@ -136,16 +122,19 @@ function TreeArrowIcon({ open }) {
 // 不会有任何"清缓存"的并发写者 — 之前父子两边各写一次 treeCache 的 child-first
 // effect 竞争(loadDir('') 守卫读到旧 treeCache 直接 bail,父级 setTreeCache(new Map())
 // 又跑得更晚把刚拉的根清掉)在这个数据结构下不复存在。
-function FileTree({ api, cwd, treeCache, setTreeCache, expandedDirs, setExpandedDirs,
-                    selectedPath, onPickFile, onRefreshTree, refreshToken, reviewStatusByPath }) {
+function FileTree({ owner, api, cwd, treeCache, setTreeCache, expandedDirs, setExpandedDirs,
+                    selectedPath, selectedPathRevision = 0, onPickFile, onRefreshTree, refreshToken, reviewStatusByPath }) {
   const [loading, setLoading] = useState(new Set()); // cwd/path request key 集合
   const [errors, setErrors]   = useState(new Map()); // cwd/path request key → 错误文案
   const treeRef = useRef(null);
+  useWorkbenchScroll(owner, `treeScroll:${cwd}`, treeRef, treeCache.size > 0);
   const treeCacheRef = useRef(treeCache);
   const inFlightRequestsRef = useRef(new Set());
   const mountedRef = useRef(true);
   treeCacheRef.current = treeCache;
   const selectedNormalizedPath = normalizeTreePath(selectedPath);
+  const revealKey = JSON.stringify([selectedNormalizedPath, selectedPathRevision]);
+  const revealedSelectionRef = useRef(sessionWorkbench.get(owner, `treeReveal:${cwd}`, ''));
   const selectedParentPath = selectedNormalizedPath ? treeParentPath(selectedNormalizedPath) : '';
   const selectedParentGuideIndex = selectedParentPath
     ? selectedParentPath.split('/').filter(Boolean).length - 1
@@ -281,11 +270,14 @@ function FileTree({ api, cwd, treeCache, setTreeCache, expandedDirs, setExpanded
 
   useLayoutEffect(() => {
     if (!selectedNormalizedPath) return;
+    if (revealedSelectionRef.current === revealKey) return;
     const tree = treeRef.current;
     if (!tree) return;
     const row = Array.from(tree.querySelectorAll('[data-desktop-file-path]'))
       .find((node) => normalizeTreePath(node.getAttribute('data-desktop-file-path')) === selectedNormalizedPath);
     if (!row) return;
+    revealedSelectionRef.current = revealKey;
+    sessionWorkbench.set(owner, `treeReveal:${cwd}`, revealKey);
     const treeRect = tree.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
     const margin = 8;
@@ -294,7 +286,7 @@ function FileTree({ api, cwd, treeCache, setTreeCache, expandedDirs, setExpanded
     } else if (rowRect.bottom > treeRect.bottom) {
       tree.scrollTop = Math.max(0, tree.scrollTop + rowRect.bottom - treeRect.bottom + margin);
     }
-  }, [selectedNormalizedPath, treeCache, expandedDirs]);
+  }, [selectedNormalizedPath, revealKey, treeCache, expandedDirs, owner, cwd]);
 
   // 递归渲染 — 每个目录的子项展开时插入到该目录节点之后
   const renderEntries = (parentPath, depth) => {
@@ -415,6 +407,7 @@ function FileTree({ api, cwd, treeCache, setTreeCache, expandedDirs, setExpanded
 // 审查 tab — 聚合 messages.hunks
 // ────────────────────────────────────────────────────────────
 function ChangesList({
+  owner,
   messages,
   groups,
   summary,
@@ -429,6 +422,7 @@ function ChangesList({
   const reviewSummary = summary || summarizeChangeGroups(reviewGroups);
   return (
     <ChangeCompactList
+      owner={owner}
       groups={reviewGroups}
       summary={reviewSummary}
       cwd={cwd}
@@ -444,6 +438,7 @@ function ChangesList({
 // 主组件
 // ────────────────────────────────────────────────────────────
 export function SidePanel({
+  owner,
   sessionRef,
   sessionId,
   cwd,
@@ -467,11 +462,9 @@ export function SidePanel({
   selectedGitChangeFile = '',
 }) {
   const api = useMemo(() => createApi(sessionRef || null), [sessionRef?.port, sessionRef?.token, sessionRef?.workspaceHash]);
-  const [activeTab,    setActiveTab]    = useState(filesEnabled ? 'files' : 'changes');
-  const [storedChangeListViewsByCwd, setStoredChangeListViewsByCwd] = usePreference(
-    CHANGE_LIST_VIEW_BY_CWD_STORAGE_KEY,
-    DEFAULT_CHANGE_LIST_VIEW_BY_CWD,
-    validateChangeListViewByCwd,
+  const [activeTab, setActiveTab] = useWorkbenchState(owner, `sidePanelTab:${cwd}`, filesEnabled ? 'files' : 'changes');
+  const [storedChangeListViewsByCwd, setStoredChangeListViewsByCwd] = useWorkbenchState(
+    owner, 'changeListViews', DEFAULT_CHANGE_LIST_VIEW_BY_CWD,
   );
   const defaultChangeListView = filesEnabled
     ? CHANGE_LIST_VIEW_TREE
@@ -486,7 +479,7 @@ export function SidePanel({
       updateChangeListViewForCwd(current, cwd, viewMode)
     ));
   }, [cwd, setStoredChangeListViewsByCwd]);
-  const [selectedPath, setSelectedPath] = useState(null);
+  const [selectedPath, setSelectedPath] = useWorkbenchState(owner, `selectedFile:${cwd}`, null);
   const [fileRefreshToken, setFileRefreshToken] = useState(0);
   // git 仓库检测(redesign-sidepanel-git-changes):is_repo 时「变更」tab
   // 整体切到 git 级视图;非仓库保留会话级 hunks 聚合。按 cwd 拉一次;
@@ -500,7 +493,7 @@ export function SidePanel({
     // 卡片读同一个 cwd,共用一份 30s TTL + 在途去重,避免同一份 git info
     // 被三个组件各打一次(daemon 侧每次 5~7 个 git 子进程)。
     const load = () => {
-      gitInfoCache.get(api, cwd)
+      gitInfoCache.get(api, cwd, owner)
         .then((info) => { if (!cancelled) setGitInfo(info); })
         .catch(() => { if (!cancelled) setGitInfo(null); });
     };
@@ -509,7 +502,7 @@ export function SidePanel({
       const changedCwd = event?.detail?.cwd || '';
       if (changedCwd && changedCwd !== cwd) return;
       // 先失效再读,不依赖与 gitInfoCache 模块级监听器的触发顺序。
-      gitInfoCache.invalidate(api, cwd);
+      gitInfoCache.invalidate(api, cwd, owner);
       load();
     };
     window.addEventListener(GIT_STATE_CHANGED_EVENT, handler);
@@ -517,19 +510,15 @@ export function SidePanel({
       cancelled = true;
       window.removeEventListener(GIT_STATE_CHANGED_EVENT, handler);
     };
-  }, [api, cwd]);
+  }, [api, cwd, owner]);
   const visibleTabs = useMemo(
     () => TABS.filter((tab) => filesEnabled || tab.key !== 'files'),
     [filesEnabled],
   );
 
-  // 按 cwd 隔离的文件树缓存:cwd → Map<path, entries[]>。每个 cwd 一份独立缓存,
-  // 切 cwd 时新 cwd 自动 .get() 取不到,FileTree 守卫不会误命中旧数据,也不需要
-  // 任何"清缓存"动作,从根上消除 child-first effect 竞争(具体细节见 FileTree
-  // 上方注释)。同 cwd 内 tab 切换 / session 切换都能复用,符合"切 session 不
-  // 重复拉同一棵树"的原设计。
-  const [treeCacheByCwd,    setTreeCacheByCwd]    = useState(new Map()); // cwd → Map<path, entries[]>
-  const [expandedDirsByCwd, setExpandedDirsByCwd] = useState(new Map()); // cwd → Set<path>
+  // 每会话独立拥有目录缓存；会话内部再按 cwd 分开，支持 worktree 切换。
+  const [treeCacheByCwd, setTreeCacheByCwd] = useWorkbenchState(owner, 'treeCache', () => new Map());
+  const [expandedDirsByCwd, setExpandedDirsByCwd] = useWorkbenchState(owner, 'expandedDirs', () => new Map());
 
   const cwdKey = cwd || '';
   const treeCache    = treeCacheByCwd.get(cwdKey) || EMPTY_TREE_CACHE;
@@ -554,7 +543,7 @@ export function SidePanel({
       n.set(cwdKey, next);
       return n;
     });
-  }, [cwdKey]);
+  }, [cwdKey, setTreeCacheByCwd]);
   const setExpandedDirs = useCallback((updater) => {
     setExpandedDirsByCwd(prev => {
       const cur = prev.get(cwdKey) || new Set();
@@ -564,7 +553,7 @@ export function SidePanel({
       n.set(cwdKey, next);
       return n;
     });
-  }, [cwdKey]);
+  }, [cwdKey, setExpandedDirsByCwd]);
 
   const refreshFileTree = useCallback(() => {
     if (!filesEnabled || !cwdKey) return;
@@ -575,7 +564,7 @@ export function SidePanel({
     setExpandedDirs((prev) => (prev.size === 0 ? prev : new Set()));
   }, [cwdKey, filesEnabled, setExpandedDirs]);
 
-  const lastFileRefreshKey = useRef('');
+  const lastFileRefreshKey = useRef(fileRefreshKey);
   useEffect(() => {
     if (!filesEnabled && activeTab === 'files') setActiveTab('changes');
   }, [activeTab, filesEnabled]);
@@ -591,23 +580,14 @@ export function SidePanel({
     refreshFileTree();
   }, [fileRefreshKey, refreshFileTree]);
 
-  // cwd 变时 tab 回到「文件」,清选中文件。**不**清 treeCache,
-  // 自然按 cwd-key 隔离即可。
-  const lastCwd = useRef('');
+  const previousReviewRequest = useRef(reviewRequest);
   useEffect(() => {
-    const c = cwd || '';
-    if (c === lastCwd.current) return;
-    lastCwd.current = c;
-    setActiveTab(filesEnabled ? 'files' : 'changes');
-    setSelectedPath(null);
-  }, [cwd, filesEnabled]);
-
-  useEffect(() => {
-    if (!reviewRequest) return;
+    if (!reviewRequest || previousReviewRequest.current === reviewRequest) return;
+    previousReviewRequest.current = reviewRequest;
     setActiveTab('changes');
   }, [reviewRequest]);
 
-  const lastFileLocateToken = useRef(0);
+  const lastFileLocateToken = useRef(fileLocateRequest?.token || 0);
   useEffect(() => {
     const token = Number(fileLocateRequest?.token || 0);
     const path = fileLocateRequest?.path || '';
@@ -624,15 +604,18 @@ export function SidePanel({
     });
   }, [cwd, fileLocateRequest, filesEnabled, setExpandedDirs]);
 
+  const lastSelectedChange = useRef([selectedChangeFile, selectedChangeFileRevision]);
   useEffect(() => {
-    if (!selectedChangeFile) return;
+    const previous = lastSelectedChange.current;
+    lastSelectedChange.current = [selectedChangeFile, selectedChangeFileRevision];
+    if (!selectedChangeFile || (previous[0] === selectedChangeFile && previous[1] === selectedChangeFileRevision)) return;
     setActiveTab('changes');
   }, [selectedChangeFile, selectedChangeFileRevision]);
 
-  const onPickFile = useCallback((entry) => {
+  const onPickFile = useCallback(async (entry) => {
     if (!filesEnabled) return;
+    if (await onOpenFilePreview?.(entry.path) === false) return;
     setSelectedPath(entry.path);
-    onOpenFilePreview?.(entry.path);
   }, [filesEnabled, onOpenFilePreview]);
 
   useEffect(() => {
@@ -644,8 +627,7 @@ export function SidePanel({
 
       if (effect.type === SIDE_PANEL_CONTEXT_EFFECTS.OPEN_FILE_PREVIEW) {
         detail.handled = true;
-        setSelectedPath(effect.normalizedFilePath);
-        onOpenFilePreview?.(effect.normalizedFilePath);
+        void onPickFile({ path: effect.normalizedFilePath });
       } else if (effect.type === SIDE_PANEL_CONTEXT_EFFECTS.LOCATE_IN_FILE_TREE) {
         detail.handled = true;
         const plan = fileTreeLocatePlan(effect.normalizedFilePath, cwd);
@@ -664,7 +646,7 @@ export function SidePanel({
     };
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
-  }, [cwd, filesEnabled, onOpenFilePreview, refreshFileTree, setExpandedDirs]);
+  }, [cwd, filesEnabled, onPickFile, refreshFileTree, setExpandedDirs]);
 
   return (
     // 宽度由父级 wrapper(.ace-side-panel-shell)控制,这里 100% 占满。width prop
@@ -731,12 +713,13 @@ export function SidePanel({
           <button
             type="button"
             onClick={onToggleCollapse}
-            className="ace-side-panel-collapse-btn"
+            className="ace-side-panel-collapse-btn ace-list-panel-toggle"
             title={collapsed ? '展开列表面板' : '收起列表面板'}
             aria-label={collapsed ? '展开列表面板' : '收起列表面板'}
             aria-expanded={!collapsed}
+            aria-pressed={!collapsed}
           >
-            <PanelToggleIcon side="right" size={15} />
+            <VsIcon name="listPanel" size={16} />
           </button>
         )}
       </div>
@@ -744,6 +727,8 @@ export function SidePanel({
       <div className="flex-1 flex flex-col overflow-hidden">
         {filesEnabled && activeTab === 'files' && (
           <FileTree
+            key={cwd}
+            owner={owner}
             api={api}
             cwd={cwd}
             treeCache={treeCache}
@@ -751,6 +736,7 @@ export function SidePanel({
             expandedDirs={expandedDirs}
             setExpandedDirs={setExpandedDirs}
             selectedPath={selectedPath}
+            selectedPathRevision={fileLocateRequest?.token || 0}
             onPickFile={onPickFile}
             onRefreshTree={refreshFileTree}
             refreshToken={fileRefreshToken}
@@ -759,6 +745,8 @@ export function SidePanel({
         )}
         {activeTab === 'changes' && (gitInfo?.is_repo ? (
           <GitChangesPanel
+            key={cwd}
+            owner={owner}
             api={api}
             cwd={cwd}
             gitInfo={gitInfo}
@@ -772,6 +760,7 @@ export function SidePanel({
           />
         ) : (
           <ChangesList
+            owner={owner}
             messages={messages}
             groups={effectiveChangeGroups}
             summary={effectiveChangeSummary}

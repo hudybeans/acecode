@@ -6,7 +6,7 @@ import type {
   ReactNode,
   UIEvent as ReactUIEvent,
 } from 'react'
-import { IconCheckOutline16, IconCopyOutline16 } from './TrajectoryIcons.tsx'
+import { IconCheckOutline16, IconChevronRightOutline14, IconCopyOutline16 } from './TrajectoryIcons.tsx'
 import { Menu } from './Menu.tsx'
 import type { MenuEntry } from './Menu.tsx'
 import css from './JsonTree.module.css'
@@ -336,7 +336,9 @@ function JsonTreeNode({
         onFocus={() => { onClaimTabStop(nodeId) }}
         onClick={toggle}
         onKeyDown={onExpanderKeyDown}
-      />
+      >
+        <IconChevronRightOutline14 size={8} className={css.expanderGlyph} />
+      </span>
       <NodeField field={field} expandable onToggle={toggle} />
       <span className={css.preview}>{previewValue(value, 0)}</span>
       {!lastElement && <span className={css.punctuation}>,</span>}

@@ -8,6 +8,9 @@ param(
     [string]$Repo = (Get-Location).Path,
     [string]$UpdateDir = 'J:\jenkins_green\aupdate',
     [string]$RemoteBaseUrl = 'http://2017studio.imwork.net:82/aupdate/',
+    [string]$GitHubRepo = 'tmoonlight/acecode',
+    [ValidateRange(1, 180)]
+    [int]$GitHubReleaseWaitMinutes = 45,
     [string]$Configuration = 'Release',
     [string]$Target = 'windows-x64',
     [string[]]$StageFiles = @(),
@@ -625,12 +628,17 @@ try {
 
     $exe = Join-Path $buildRoot "$Configuration\acecode.exe"
     $desktopExe = Join-Path $buildRoot "$Configuration\acecode-desktop.exe"
+    $computerUseExe = Join-Path $buildRoot "$Configuration\acecode-computer-use.exe"
     $versionOutput = (& $exe --version).Trim()
     if ($versionOutput -ne "acecode v$Version") {
         throw "Built executable reports '$versionOutput', expected 'acecode v$Version'."
     }
     if (-not (Test-Path -LiteralPath $desktopExe)) {
         throw "Desktop executable missing: $desktopExe. Configure the build with -DACECODE_BUILD_DESKTOP=ON before release packaging."
+    }
+    if (-not (Test-Path -LiteralPath $computerUseExe -PathType Leaf) -or
+        (Get-Item -LiteralPath $computerUseExe).Length -eq 0) {
+        throw "Computer Use runtime missing: $computerUseExe. Rebuild the acecode-computer-use target before release packaging."
     }
 
     if (-not $QuickValidation -and -not $NoCommit) {
@@ -680,8 +688,14 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'share\acecode') | Out-Null
         Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'acecode.exe') -Force
         Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stage 'acecode-desktop.exe') -Force
+        Copy-Item -LiteralPath $computerUseExe -Destination (Join-Path $stage 'acecode-computer-use.exe') -Force
         Copy-Item -LiteralPath (Join-Path $Repo 'assets\models_dev') -Destination (Join-Path $stage 'share\acecode\models_dev') -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $Repo 'assets\seed') -Destination (Join-Path $stage 'share\acecode\seed') -Recurse -Force
+        $channelStage = Join-Path $stage 'channels\whatsapp'
+        New-Item -ItemType Directory -Force -Path $channelStage | Out-Null
+        foreach ($asset in @('bridge.mjs', 'protocol.mjs', 'package.json', 'package-lock.json')) {
+            Copy-Item -LiteralPath (Join-Path $Repo "assets\channels\whatsapp\$asset") -Destination $channelStage -Force
+        }
 
         New-Item -ItemType Directory -Force -Path $UpdateDir | Out-Null
         Ensure-ZipMimeConfig -Directory $UpdateDir
@@ -690,6 +704,11 @@ try {
         Test-ZipEntries -ZipPath $zipPath -RequiredEntries @(
             'acecode.exe',
             'acecode-desktop.exe',
+            'acecode-computer-use.exe',
+            'channels/whatsapp/bridge.mjs',
+            'channels/whatsapp/protocol.mjs',
+            'channels/whatsapp/package.json',
+            'channels/whatsapp/package-lock.json',
             'share/acecode/models_dev/api.json',
             'share/acecode/seed/MANIFEST.json'
         ) -ForbiddenPrefixes @('ace-browser-')
@@ -708,6 +727,21 @@ try {
         Write-Host "SHA256:  $sha"
     }
 
+    if (-not $QuickValidation -and $Push -and -not $NoPublish) {
+        $syncScript = Join-Path $PSScriptRoot 'sync_github_release_to_aupdate.ps1'
+        if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
+            throw "Required GitHub updater mirror helper is missing: $syncScript"
+        }
+        Write-Host '== Waiting for the complete GitHub Release and mirroring all updater platforms =='
+        & $syncScript `
+            -Version $Version `
+            -UpgradeTip $UpgradeTip `
+            -RepoSlug $GitHubRepo `
+            -UpdateDir $UpdateDir `
+            -RemoteBaseUrl $RemoteBaseUrl `
+            -WaitMinutes $GitHubReleaseWaitMinutes
+    }
+
     $head = (& git -C $Repo rev-parse --short HEAD).Trim()
 } finally {
     if ($null -ne $lockStream) {
@@ -720,6 +754,8 @@ try {
 
 if ($QuickValidation) {
     Write-Host "Quick validation package complete: $Version from $head (no commit or tag created)"
+} elseif ($Push -and -not $NoPublish) {
+    Write-Host "Full cross-platform release complete: $tag at $head"
 } else {
-    Write-Host "Release complete: $tag at $head"
+    Write-Host "Local/source release steps complete: $tag at $head"
 }

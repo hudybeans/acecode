@@ -25,6 +25,7 @@ function components(states = {}) {
     useEffect() {}, useMemo: (factory) => factory(),
     useState(initial) { const name = stateNames[stateIndex++]; return [Object.hasOwn(states, name) ? states[name] : initial, () => {}]; },
     Modal: ({ children, layerClassName, labelledBy }) => React.createElement('section', { role: 'dialog', 'data-layer': layerClassName, 'aria-labelledby': labelledBy }, children),
+    VsIcon: ({ name, size, className }) => React.createElement('span', { 'data-icon-name': name, 'aria-hidden': true, className, style: { width: size, height: size } }),
     toast() {},
   });
 }

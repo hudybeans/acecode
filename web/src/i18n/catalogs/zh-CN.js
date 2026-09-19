@@ -43,7 +43,7 @@ export const zhCN = {
       usage: '使用情况',
       skills: '技能',
       mcp: 'MCP 服务器',
-      connectors: '连接器',
+      connectors: '插件',
       models: '模型',
       tools: '工具',
       hooks: '钩子',

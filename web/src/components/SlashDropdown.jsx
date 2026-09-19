@@ -18,6 +18,7 @@ import {
   DROPDOWN_GAP_PX,
 } from '../lib/dropdownPlacement.js';
 import { clsx } from '../lib/format.js';
+import { shouldHandleComposerDropdownKey } from '../lib/composerDropdownKeyboard.js';
 import { VsIcon } from './Icon.jsx';
 
 const VISIBLE_ROWS = 8;
@@ -129,6 +130,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
   // 键盘事件挂在 window 的捕获阶段,确保不被 textarea 默认行为吃掉(尤其是 Enter)。
   // InputBar 通过 prop `onClose` 控制何时取消挂载,这里组件 unmount 自动解绑。
   const onKey = useCallback((event) => {
+    if (!shouldHandleComposerDropdownKey(event)) return;
     const total = ranked.length;
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -235,7 +237,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
           data-scroll-indicator="above"
           className="shrink-0 px-3 py-1 text-[11px] text-fg-mute bg-surface-alt border-b border-border"
         >
-          ↑ {aboveCount} more above
+          <VsIcon name="ArrowUp" size={12} /> {aboveCount} more above
         </div>
       )}
       <div
@@ -284,7 +286,7 @@ export function SlashDropdown({ items, query, onSelect, onClose }) {
           data-scroll-indicator="below"
           className="shrink-0 px-3 py-1 text-[11px] text-fg-mute bg-surface-alt border-t border-border"
         >
-          ↓ {belowCount} more below
+          <VsIcon name="ArrowDown" size={12} /> {belowCount} more below
         </div>
       )}
     </div>

@@ -90,6 +90,17 @@ export const MERMAID_TARGET_SELECTOR = MERMAID_EXPORT_TARGET_SELECTOR;
 
 export const SESSION_PIN_TOGGLE_EVENT = 'acecode:session-pin-toggle';
 export const DESKTOP_CONTEXT_ACTION_EVENT = 'acecode:desktop-context-action';
+export const OPEN_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:open-desktop-context-menu';
+export const CLOSE_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:close-desktop-context-menu';
+
+// Explicit toolbar entry point; native right-click continues through contextmenu.
+export function openDesktopContextMenu(options) {
+  document.dispatchEvent(new CustomEvent(OPEN_DESKTOP_CONTEXT_MENU_EVENT, { detail: options }));
+}
+
+export function closeDesktopContextMenu() {
+  document.dispatchEvent(new Event(CLOSE_DESKTOP_CONTEXT_MENU_EVENT));
+}
 export const CONTEXT_MENU_REOPEN_DELAY_MS = 10;
 
 const EDITABLE_TEXT_INPUT_TYPES = new Set([

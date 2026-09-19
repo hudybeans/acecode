@@ -1,6 +1,7 @@
 #include "agent_loop.hpp"
 #include "agent_loop_doom_guard.hpp"
 #include "agent_loop_shell_guard.hpp"
+#include "computer_use/runtime.hpp"
 #include "sandbox/exec_permission.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
@@ -355,6 +356,25 @@ bool is_hidden_goal_context_message(const ChatMessage& msg) {
            msg.metadata.value("hidden_goal_context", false);
 }
 
+bool is_transcript_bookkeeping(const ChatMessage& message) {
+    return message.is_meta || is_file_checkpoint_message(message) ||
+           is_compact_checkpoint_message(message) ||
+           is_turn_timing_message(message) || is_turn_net_diff_message(message) ||
+           web::is_hidden_goal_context_message(message);
+}
+
+const ChatMessage* trailing_transcript_message(
+    const std::vector<ChatMessage>& messages, bool user_only = false) {
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        // Match the transcript's invisible bookkeeping records. Never skip a
+        // visible non-user unless an explicit user-abort marker allows retry.
+        if (is_transcript_bookkeeping(*it)) continue;
+        if (user_only && it->role != "user") continue;
+        return &*it;
+    }
+    return nullptr;
+}
+
 std::string escape_xml_text(const std::string& input) {
     std::string out;
     out.reserve(input.size());
@@ -477,7 +497,41 @@ void AgentLoop::set_session_manager(SessionManager* sm) {
         events_.set_observer({});
         return;
     }
-    events_.set_observer([sm](const SessionEvent& event) {
+    events_.set_observer([this, sm](const SessionEvent& event) {
+        switch (event.kind) {
+        case SessionEventKind::Message: {
+            const auto& payload = event.payload;
+            const auto metadata = payload.value("metadata", nlohmann::json::object());
+            if (!payload.value("is_meta", false) &&
+                !(metadata.is_object() && metadata.value("hidden_goal_context", false))) {
+                const auto role = payload.value("role", std::string{});
+                const bool user_abort = role == "system" && metadata.is_object() &&
+                    metadata.value("transcript_only", false) &&
+                    metadata.value("user_aborted", false);
+                live_transcript_tail_blocked_ = role != "user" && !user_abort;
+            }
+            break;
+        }
+        case SessionEventKind::Token:
+        case SessionEventKind::Reasoning:
+            if (!event.payload.value("text", std::string{}).empty()) {
+                live_transcript_tail_blocked_ = true;
+            }
+            break;
+        case SessionEventKind::ToolStart:
+        case SessionEventKind::ToolUpdate:
+        case SessionEventKind::ToolEnd:
+        case SessionEventKind::Error:
+            live_transcript_tail_blocked_ = true;
+            break;
+        case SessionEventKind::TranscriptReplace:
+            // A full replacement discards transient output. The canonical
+            // histories are still checked before any retry is accepted.
+            live_transcript_tail_blocked_ = false;
+            break;
+        default:
+            break;
+        }
         if (!should_persist_trajectory_event(event)) return;
         sm->record_trajectory_event(
             to_string(event.kind), event.payload, event.timestamp_ms);
@@ -889,6 +943,7 @@ void AgentLoop::dispatch_session_title_changed_hook(
 
 void AgentLoop::abort() {
     abort_requested_ = true;
+    if (session_manager_) computer_use::release_session(session_manager_->current_session_id());
     wake_active_provider_retry();
 }
 
@@ -975,6 +1030,21 @@ void AgentLoop::worker_main() {
         try {
             switch (task.kind) {
             case WorkerTask::Kind::Chat:
+                if (!task.retry_user_message_id.empty()) {
+                    const auto message = retryable_user_message(task.retry_user_message_id);
+                    if (!message) {
+                        throw std::runtime_error("user message is no longer eligible for retry");
+                    }
+                    UserInput input;
+                    input.text = message->content;
+                    input.content_parts = message->content_parts;
+                    input.metadata = message->metadata;
+                    if (message->metadata.is_object()) {
+                        input.display_text = message->metadata.value("display_text", std::string{});
+                    }
+                    run_agent_with_input(input, false, &*message);
+                    break;
+                }
                 if (task.input.empty() && !task.payload.empty()) {
                     task.input.text = std::move(task.payload);
                     task.input.display_text = std::move(task.display_text);
@@ -1215,6 +1285,54 @@ void AgentLoop::submit(const UserInput& input) {
         task_queue_.push(std::move(task));
     }
     queue_cv_.notify_one();
+}
+
+std::optional<ChatMessage> AgentLoop::retryable_user_message(
+    const std::string& expected_user_message_id) const {
+    if (expected_user_message_id.empty() || live_transcript_tail_blocked_.load()) return std::nullopt;
+    const auto* model_tail = trailing_transcript_message(messages_);
+    if (!model_tail || (model_tail->role != "user" &&
+        model_tail->role != "assistant" && model_tail->role != "tool")) return std::nullopt;
+    bool user_aborted = false;
+    if (session_manager_) {
+        const auto persisted = session_manager_->load_active_messages();
+        const auto* tail = trailing_transcript_message(persisted);
+        user_aborted = tail && tail->role == "system" && tail->metadata.is_object() &&
+            tail->metadata.value("transcript_only", false) &&
+            tail->metadata.value("user_aborted", false) &&
+            tail->metadata.value("retry_user_message_id", std::string{}) == expected_user_message_id;
+        if (user_aborted) tail = trailing_transcript_message(persisted, true);
+        if (!tail || tail->role != "user" ||
+            tail->uuid != expected_user_message_id) return std::nullopt;
+    }
+    const auto* message = trailing_transcript_message(messages_, user_aborted);
+    if (!message || message->role != "user" ||
+        message->uuid != expected_user_message_id) return std::nullopt;
+    return *message;
+}
+
+bool AgentLoop::retry_last_user_message(
+    const std::string& expected_user_message_id, std::string& error) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mu_);
+        if (shutdown_requested_ || worker_task_active_ || busy_.load() ||
+            !priority_task_queue_.empty() || !task_queue_.empty()) {
+            error = "session has active or queued work";
+            return false;
+        }
+        if (!retryable_user_message(expected_user_message_id)) {
+            error = "user message is not eligible for retry";
+            return false;
+        }
+        WorkerTask task;
+        task.kind = WorkerTask::Kind::Chat;
+        task.retry_user_message_id = expected_user_message_id;
+        task_queue_.push(std::move(task));
+        abort_requested_ = false;
+    }
+    error.clear();
+    queue_cv_.notify_one();
+    return true;
 }
 
 ControlEnqueueReceipt AgentLoop::enqueue_control(
@@ -2459,17 +2577,6 @@ void AgentLoop::begin_active_turn(const std::string& turn_id) {
     active_turn_accepting_ = !turn_id.empty();
 }
 
-std::string AgentLoop::abort_notice_text() const {
-    return turn_interrupt_requested_.load() ? "[Interjected]" : "[Interrupted]";
-}
-
-nlohmann::json AgentLoop::abort_notice_metadata() const {
-    if (!turn_interrupt_requested_.load()) return nlohmann::json{};
-    return nlohmann::json{
-        {"turn_interrupt", true},
-    };
-}
-
 void AgentLoop::append_interrupted_turn_context(const std::string& turn_id) {
     ChatMessage marker;
     marker.role = "user";
@@ -2674,6 +2781,13 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         if (!user_msg.metadata.is_object()) user_msg.metadata = nlohmann::json::object();
         user_msg.metadata["hidden_goal_context"] = true;
     }
+    append_user_turn_message(info, hidden_goal_context);
+    start_user_turn(info);
+    return info;
+}
+
+void AgentLoop::append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context) {
+    auto& user_msg = info.user_msg;
     ensure_user_message_identity(user_msg);
     info.active_turn_id = user_msg.uuid;
     info.visible_timed_turn =
@@ -2684,21 +2798,13 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
     messages_.push_back(user_msg);
     if (session_manager_) {
         session_manager_->on_message(user_msg);
-        if (info.visible_timed_turn) {
-            session_manager_->record_trajectory_event(
-                "turn_start",
-                {{"turn_id", info.active_turn_id},
-                 {"user_message_id", user_msg.uuid},
-                 {"started_at_ms", info.turn_started_at_ms}},
-                info.turn_started_at_ms);
-        }
         if (!hidden_goal_context) {
             session_manager_->begin_user_turn_checkpoint(user_msg.uuid);
         }
     }
     if (!hidden_goal_context) {
         nlohmann::json msg_event = {
-            {"role", "user"}, {"content", model_user_message},
+            {"role", "user"}, {"content", user_msg.content},
             {"is_tool", false}, {"id", user_msg.uuid},
         };
         if (!user_msg.content_parts.is_null() && user_msg.content_parts.is_array() &&
@@ -2710,8 +2816,48 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         }
         events_.emit(SessionEventKind::Message, msg_event);
     }
+}
 
+AgentLoop::UserTurnInfo AgentLoop::prepare_retry_user_turn(const ChatMessage& message) {
+    UserTurnInfo info;
+    info.user_msg = message;
+    info.turn_started_at_ms = now_epoch_ms();
+    const auto* tail = trailing_transcript_message(messages_);
+    if (tail && tail->role != "user") {
+        // An aborted turn may already contain assistant/tool output. Preserve
+        // it and append the original input with a fresh identity, without
+        // expanding skills or attachments for a second time.
+        info.user_msg.uuid.clear();
+        info.user_msg.timestamp.clear();
+        if (info.user_msg.metadata.is_object()) {
+            for (const auto* key : {"client_message_id", "turn_steer", "turn_id",
+                                    "turn_interrupt", "interrupted_turn_id"}) {
+                info.user_msg.metadata.erase(key);
+            }
+        }
+        append_user_turn_message(info, false);
+        start_user_turn(info);
+        return info;
+    }
+    info.active_turn_id = message.uuid;
+    info.visible_timed_turn = true;
+    info.turn_user_uuid = message.uuid;
+    // Preserve the original checkpoint and message. Re-expansion or a second
+    // on_message call would change the input or create adjacent user records.
+    start_user_turn(info);
+    return info;
+}
+
+void AgentLoop::start_user_turn(const UserTurnInfo& info) {
     if (session_manager_) {
+        if (info.visible_timed_turn) {
+            session_manager_->record_trajectory_event(
+                "turn_start",
+                {{"turn_id", info.active_turn_id},
+                 {"user_message_id", info.turn_user_uuid},
+                 {"started_at_ms", info.turn_started_at_ms}},
+                info.turn_started_at_ms);
+        }
         session_manager_->record_trajectory_event(
             "busy_changed",
             {{"busy", true}, {"turn_id", info.active_turn_id}});
@@ -2724,8 +2870,6 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         {"busy", true},
         {"turn_id", info.active_turn_id},
     });
-
-    return info;
 }
 
 AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
@@ -3594,8 +3738,6 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                 emit_pa_rescue_wait_progress(
                     error, plan, attempt, max_attempts, true);
                 if (!wait_for_pa_rescue_delay(plan.wait_ms)) {
-                    dispatch_message("system", abort_notice_text(), false,
-                                     abort_notice_metadata());
                     return HandleErrorResult::Break;
                 }
                 emit_pa_rescue_wait_progress(
@@ -3834,7 +3976,7 @@ bool AgentLoop::execute_tool_calls(
         const auto& tc = accumulated.tool_calls[i];
         bool ro = tools_.is_read_only(tc.function_name);
         ToolCallEntry entry{i, &tc, ro};
-        if (ro) {
+        if (tools_.can_execute_in_parallel(tc.function_name)) {
             read_entries.push_back(entry);
         } else {
             write_entries.push_back(entry);
@@ -4636,12 +4778,14 @@ bool AgentLoop::execute_tool_calls(
                 bool auto_allow = true;
                 for (const auto& rule_path : rule_paths) {
                     if (!permissions_.should_auto_allow(
-                            effective_tc.function_name, false, rule_path, ctx_command)) {
+                            effective_tc.function_name,
+                            tools_.is_read_only(effective_tc.function_name), rule_path, ctx_command)) {
                         auto_allow = false;
                     }
                 }
                 if (permissions_.mode() == PermissionMode::Plan) {
-                    auto_allow = targets_active_plan_file || effective_tc.function_name == "TodoWrite";
+                    auto_allow = tools_.is_read_only(effective_tc.function_name) ||
+                        targets_active_plan_file || effective_tc.function_name == "TodoWrite";
                 }
                 if (effective_tc.function_name == "ExitPlanMode" &&
                     permissions_.mode() != PermissionMode::Plan) {
@@ -5211,7 +5355,14 @@ bool AgentLoop::execute_tool_calls(
 }
 
 void AgentLoop::run_agent_with_input(const UserInput& input,
-                                      bool hidden_goal_context) {
+                                      bool hidden_goal_context,
+                                      const ChatMessage* retry_message) {
+    // Capture the owner before callbacks can switch/delete the active session.
+    // RAII also releases on exceptions and early hook returns.
+    struct DesktopTurnLease {
+        std::string owner;
+        ~DesktopTurnLease() { computer_use::release_session(owner); }
+    } desktop_turn_lease{session_manager_ ? session_manager_->current_session_id() : std::string{}};
     {
         std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
         sandbox_prompt_snapshot_.reset();
@@ -5277,12 +5428,15 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     // already-recorded history. Persisting first would put the new request into
     // the summary and append the checkpoint after the input, breaking replay.
     bool preturn_compaction_failed = false;
-    if (active_estimate_exceeds_auto_threshold(&input)) {
+    if (!retry_message && active_estimate_exceeds_auto_threshold(&input)) {
         preturn_compaction_failed = !maybe_run_auto_compact();
     }
 
     // Phase 1: Build and persist user message after the pre-turn compact attempt.
-    auto turn_info = prepare_user_turn(input, hidden_goal_context);
+    auto turn_info = retry_message
+        ? prepare_retry_user_turn(*retry_message)
+        : prepare_user_turn(input, hidden_goal_context);
+    if (session_manager_) desktop_turn_lease.owner = session_manager_->current_session_id();
     std::string turn_timing_status = "completed";
     if (preturn_compaction_failed) {
         turn_timing_status = "error";
@@ -5513,8 +5667,6 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
         if (abort_requested_) {
             LOG_WARN("Abort requested, breaking loop");
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
             break;
         }
 
@@ -5575,8 +5727,22 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         TokenUsage step_usage = provider_result.accumulated.usage;
 
         if (abort_requested_) {
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
+            const auto& output = provider_result.accumulated;
+            if (!output.content.empty() ||
+                (output.content_parts.is_array() && !output.content_parts.empty())) {
+                // Keep already displayed output across history reloads. An
+                // interrupted response (especially partial tool calls) is not
+                // a completed provider message, so it remains transcript-only.
+                ChatMessage partial;
+                partial.role = "assistant";
+                partial.content = output.content;
+                partial.content_parts = output.content_parts;
+                partial.reasoning_content = output.reasoning_content;
+                partial.metadata = {{"transcript_only", true}, {"interrupted_output", true}};
+                if (session_manager_) session_manager_->on_message(partial);
+                dispatch_message(partial.role, partial.content, false,
+                                 partial.metadata, partial.content_parts);
+            }
             record_model_response(
                 current_model_step, provider_result, step_usage, "aborted");
             emit_model_step_finish(current_model_step, "aborted", step_usage);
@@ -5835,6 +6001,21 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             turn_timing_status);
     }
 
+    if (abort_requested_) {
+        if (interrupted_for_new_turn) {
+            dispatch_message("system", "[Interjected]", false, {{"turn_interrupt", true}});
+        } else {
+            const auto* user = trailing_transcript_message(messages_, true);
+            // Persist the completed stop, including its exact retry target.
+            // This notice stays out of the provider's message history.
+            emit_transcript_system_message("[Interrupted]", {
+                {"user_aborted", true},
+                {"retry_user_message_id", user ? user->uuid : std::string{}},
+            });
+        }
+    }
+
+    computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);
     }

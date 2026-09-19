@@ -279,6 +279,304 @@ run('live catch-up replay 丢弃已持久化 message 前的旧 token', () => {
   assert.equal(replayed.lastSeq, 3);
 });
 
+// daemon 真实事件序:token… → usage(chat_stream 一返回就 emit)→ assistant message
+//(execute_tool_calls / 文本回合收尾才发)。回放整个事件环时,usage 夹在两者之间。
+function usageEvent(seq) {
+  return {
+    type: 'usage',
+    payload: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, has_data: true },
+    seq,
+    replayed: true,
+  };
+}
+
+run('live catch-up replay:token 与已持久化 message 之间夹着 usage 也不把上一轮正文复制一份', () => {
+  // 回归 bug(desktop 反馈):用户答完问题 / 发出新一轮消息后,AI 上一轮回答过的整段
+  // 正文在用户消息后面又出现一次,切走再切回来才消失。
+  // 触发场景:切进正在运行的会话 → REST 历史已含上一轮 [U1, A1, U2],busy 触发
+  // since=1 全量回放;环里 A1 的 token 后面先是 usage 再是 A1 的 message 事件。
+  // 旧实现遇到 usage 就把攒着的 token flush 成新草稿,紧接着那条按 id 判重的 message
+  // 事件又走「草稿定稿」分支,把草稿变成 A1 的第二份。
+  // 期望:token 一直攒到 message 事件,判重命中即整体丢弃;A1 只出现一次,
+  // 且当前回合真正未落盘的流式草稿 A2 仍被重建出来。
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      { id: 'a1', role: 'assistant', content: 'A1 long answer', ts: 2 },
+      { id: 'u2', role: 'user', content: 'my answer', ts: 3 },
+    ],
+    busy: true,
+  }).state;
+
+  const replayed = applyTranscriptReplayEvents(loaded, [
+    { type: 'busy_changed', payload: { busy: true }, seq: 1, replayed: true },
+    { type: 'message', payload: { id: 'u1', role: 'user', content: 'hello' }, seq: 2, replayed: true },
+    { type: 'model_step_start', payload: { step_index: 1 }, seq: 3, replayed: true },
+    { type: 'token', payload: { text: 'A1 long' }, seq: 4, replayed: true },
+    { type: 'token', payload: { text: ' answer' }, seq: 5, replayed: true },
+    usageEvent(6),
+    { type: 'message', payload: { id: 'a1', role: 'assistant', content: 'A1 long answer' }, seq: 7, replayed: true },
+    { type: 'model_step_finish', payload: { step_index: 1, reason: 'stop' }, seq: 8, replayed: true },
+    { type: 'busy_changed', payload: { busy: false }, seq: 9, replayed: true },
+    { type: 'done', payload: {}, seq: 10, replayed: true },
+    { type: 'busy_changed', payload: { busy: true }, seq: 11, replayed: true },
+    { type: 'message', payload: { id: 'u2', role: 'user', content: 'my answer' }, seq: 12, replayed: true },
+    { type: 'model_step_start', payload: { step_index: 1 }, seq: 13, replayed: true },
+    { type: 'token', payload: { text: 'A2 partial' }, seq: 14, replayed: true },
+  ]).state;
+
+  assert.deepEqual(
+    replayed.items.map((item) => `${item.role}:${item.content}`),
+    ['user:hello', 'assistant:A1 long answer', 'user:my answer', 'assistant:A2 partial'],
+  );
+  assert.equal(replayed.items.filter((item) => item.messageId === 'a1').length, 1);
+  assert.equal(replayed.items[3].streaming, true);
+  assert.equal(replayed.busy, true);
+  assert.equal(replayed.tokenUsage.totalTokens, 15);
+  assert.equal(replayed.lastSeq, 14);
+});
+
+run('live catch-up replay:工具回合里 token 后面的 tool_planning 进度事件同样不提前 flush', () => {
+  // 触发场景:AskUserQuestion 等工具回合,模型先出正文再出工具调用增量,增量期间
+  // 会 emit agent_progress(tool_planning),然后才是 assistant message → tool_start。
+  // 期望:正文只出现一次,tool 条目仍排在正文之后(tool_start 仍会先 flush 草稿)。
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'let me ask',
+        ts: 2,
+        tool_calls: [persistedToolCall('call-1', 'AskUserQuestion', '{"questions":[]}')],
+      },
+    ],
+    busy: true,
+  }).state;
+
+  const replayed = applyTranscriptReplayEvents(loaded, [
+    { type: 'token', payload: { text: 'let me' }, seq: 2, replayed: true },
+    { type: 'token', payload: { text: ' ask' }, seq: 3, replayed: true },
+    { type: 'agent_progress', payload: { phase: 'tool_planning', label: '正在准备调用 AskUserQuestion' }, seq: 4, replayed: true },
+    usageEvent(5),
+    { type: 'message', payload: { id: 'a1', role: 'assistant', content: 'let me ask' }, seq: 6, replayed: true },
+    { type: 'tool_start', payload: { tool: 'AskUserQuestion', tool_call_id: 'call-1', args: {} }, seq: 7, replayed: true },
+    { type: 'question_request', payload: { request_id: 'q1', questions: [] }, seq: 8, replayed: true },
+  ]).state;
+
+  const assistantItems = replayed.items.filter((item) => item.kind === 'msg' && item.role === 'assistant');
+  assert.equal(assistantItems.length, 1);
+  assert.equal(assistantItems[0].content, 'let me ask');
+  const toolIndex = replayed.items.findIndex((item) => item.kind === 'tool');
+  assert.ok(toolIndex > replayed.items.indexOf(assistantItems[0]));
+  assert.equal(replayed.items[toolIndex].tool.isDone, false);
+});
+
+run('history load 的事件回放:usage 不再把已持久化 message 的 token 提前 flush 成草稿', () => {
+  // 与上面同根:loadTranscriptHistory 的事件循环只按 (role, content) 判重并跳过
+  // message 事件;若 token 已被 usage 提前 flush,跳过后那条草稿永远留在末尾。
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      { id: 'a1', role: 'assistant', content: 'done', ts: 2 },
+    ],
+    events: [
+      { type: 'token', payload: { text: 'do' }, seq: 3, replayed: true },
+      { type: 'token', payload: { text: 'ne' }, seq: 4, replayed: true },
+      usageEvent(5),
+      { type: 'message', payload: { id: 'a1', role: 'assistant', content: 'done' }, seq: 6, replayed: true },
+      { type: 'busy_changed', payload: { busy: false }, seq: 7, replayed: true },
+    ],
+  }).state;
+
+  assert.deepEqual(loaded.items.map((item) => item.content), ['hello', 'done']);
+  assert.equal(loaded.streamingId, null);
+  assert.equal(loaded.tokenUsage.totalTokens, 15);
+  assert.equal(loaded.lastSeq, 7);
+});
+
+run('回放时攒着的 token 仍在 busy_changed / turn_aborted 等收尾事件前 flush 成草稿', () => {
+  // 边界:被中断的回合没有 assistant message 事件,已流出的正文只能靠 token 重建。
+  // 不能因为「不再逢事件就 flush」把这段正文吞掉。
+  const replayed = applyTranscriptReplayEvents(createTranscriptState(), [
+    { type: 'busy_changed', payload: { busy: true }, seq: 1, replayed: true },
+    { type: 'token', payload: { text: 'partial before abort' }, seq: 2, replayed: true },
+    usageEvent(3),
+    { type: 'turn_aborted', payload: { reason: '用户已终止本轮任务' }, seq: 4, replayed: true },
+  ]).state;
+
+  assert.deepEqual(
+    replayed.items.map((item) => `${item.kind}:${item.content}`),
+    ['msg:partial before abort', 'termination_notice:用户已终止本轮任务'],
+  );
+  assert.equal(replayed.items[0].streaming, false);
+  // 推迟应用的 token(seq 2)不能被 usage(seq 3)推高的水位当成过期帧丢掉,
+  // 而 flush 之后水位也不能倒退回 2。
+  assert.equal(replayed.lastSeq, 4);
+});
+
+run('WS 旧游标回放:REST 已含的 assistant 被 replayed token+message 重放时不产生第二份', () => {
+  // 触发场景:切走期间会话跑完一轮,切回来时 REST 历史先到、WS 再按 sessionStorage
+  // 里的旧游标回放那一轮的 token 与 message(逐条走 reduceTranscriptEvent,没有
+  // 批量回放的判重)。旧实现:token 流成新草稿,replayed message 把草稿定稿 → 两份。
+  // 期望:replayed 的 message 命中已有条目时丢弃草稿、原位更新(吸收 metadata)。
+  let state = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      { id: 'a1', role: 'assistant', content: 'A1 long answer', ts: 2 },
+    ],
+    events: [],
+  }).state;
+  assert.equal(state.lastSeq, 0);
+
+  state = reduceMany([
+    { type: 'busy_changed', payload: { busy: true }, seq: 1, replayed: true },
+    { type: 'message', payload: { id: 'u1', role: 'user', content: 'hello' }, seq: 2, replayed: true },
+    { type: 'token', payload: { text: 'A1 long' }, seq: 3, replayed: true },
+    { type: 'token', payload: { text: ' answer' }, seq: 4, replayed: true },
+    usageEvent(5),
+    {
+      type: 'message',
+      payload: { id: 'a1', role: 'assistant', content: 'A1 long answer', metadata: { finish_reason: 'stop' } },
+      seq: 6,
+      replayed: true,
+    },
+    { type: 'busy_changed', payload: { busy: false }, seq: 7, replayed: true },
+    { type: 'done', payload: {}, seq: 8, replayed: true },
+  ], state);
+
+  assert.deepEqual(state.items.map((item) => item.content), ['hello', 'A1 long answer']);
+  assert.equal(state.items[1].messageId, 'a1');
+  assert.deepEqual(state.items[1].metadata, { finish_reason: 'stop' });
+  assert.equal(state.streamingId, null);
+  assert.equal(state.busy, false);
+});
+
+run('live catch-up replay:本回合已落盘的工具结果(含答完的 AskUserQuestion)不再追加第二条工具项', () => {
+  // 触发场景:用户答完 AskUserQuestion 后模型继续工作(仍 busy),此时切走再切回。
+  // REST 历史已含落盘的 tool 结果(带 ask_user_question_result),since=1 回放又送来
+  // 同一 call id 的 tool_start / tool_end。旧实现:tool_start 无条件追加新条目,
+  // 问答卡片出现两张(多工具回合里每个已完成工具都翻倍)。
+  // 期望:回放的 tool_start 绑到已有条目,tool_end 原位更新;工具项只有一条。
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'let me ask',
+        ts: 2,
+        tool_calls: [persistedToolCall('call-1', 'AskUserQuestion', '{"questions":[]}')],
+      },
+      {
+        id: 't1',
+        role: 'tool',
+        tool_call_id: 'call-1',
+        content: 'answered',
+        ts: 3,
+        metadata: {
+          tool_success: true,
+          ask_user_question_result: { items: [{ question: 'q', answer: 'yes' }] },
+        },
+      },
+    ],
+    busy: true,
+  }).state;
+
+  const replayed = applyTranscriptReplayEvents(loaded, [
+    { type: 'token', payload: { text: 'let me ask' }, seq: 2, replayed: true },
+    usageEvent(3),
+    { type: 'message', payload: { id: 'a1', role: 'assistant', content: 'let me ask' }, seq: 4, replayed: true },
+    { type: 'tool_start', payload: { tool: 'AskUserQuestion', tool_call_id: 'call-1', args: {} }, seq: 5, replayed: true },
+    {
+      type: 'tool_end',
+      payload: {
+        tool: 'AskUserQuestion',
+        tool_call_id: 'call-1',
+        success: true,
+        elapsed_seconds: 12,
+        metadata: { ask_user_question_result: { items: [{ question: 'q', answer: 'yes' }] } },
+      },
+      seq: 6,
+      replayed: true,
+    },
+    { type: 'token', payload: { text: 'B partial' }, seq: 7, replayed: true },
+  ]).state;
+
+  const toolItems = replayed.items.filter((item) => item.kind === 'tool');
+  assert.equal(toolItems.length, 1);
+  assert.equal(toolItems[0].messageId, 't1');
+  assert.equal(toolItems[0].tool.isDone, true);
+  assert.equal(toolItems[0].tool.elapsed, 12);
+  assert.deepEqual(toolItems[0].tool.askUserQuestionResult, {
+    items: [{ question: 'q', answer: 'yes', multiSelect: false }],
+  });
+  assert.equal(replayed.toolMap.size, 0);
+  const projected = projectLoadedItems(replayed.items);
+  assert.equal(projected.filter((item) => item.kind === 'tool').length, 1);
+  assert.deepEqual(
+    replayed.items.filter((item) => item.kind === 'msg' && item.role === 'assistant').map((item) => item.content),
+    ['let me ask', 'B partial'],
+  );
+});
+
+run('实时帧里复用旧 call id 的 tool_start 仍是新调用,照常追加条目', () => {
+  // 有的 provider 跨回合复用 call id(call_0 …);工具去重只认 replayed 帧,
+  // 否则第二轮的同 id 调用会被误绑到上一轮已完成的条目上。
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      { id: 'a1', role: 'assistant', content: '', ts: 2, tool_calls: [persistedToolCall('call_0', 'bash', '{}')] },
+      {
+        id: 't1',
+        role: 'tool',
+        tool_call_id: 'call_0',
+        content: 'ok',
+        ts: 3,
+        metadata: { tool_success: true, tool_summary: { verb: 'ran', object: 'ls', icon: '', metrics: [] } },
+      },
+      { id: 'u2', role: 'user', content: 'again', ts: 4 },
+    ],
+    events: [],
+  }).state;
+
+  const state = reduceMany([
+    { type: 'busy_changed', payload: { busy: true }, seq: 1 },
+    { type: 'tool_start', payload: { tool: 'bash', tool_call_id: 'call_0', args: { command: 'pwd' } }, seq: 2 },
+  ], loaded);
+
+  const toolItems = state.items.filter((item) => item.kind === 'tool');
+  assert.equal(toolItems.length, 2);
+  assert.equal(toolItems[1].tool.isDone, false);
+  assert.equal(state.toolMap.get('call_0'), toolItems[1].id);
+});
+
+run('实时回合里模型说出与旧消息一字不差的新回复(内容哈希 id 相同)仍照常展示两条', () => {
+  // 判重只对 replayed 帧生效的原因:assistant 消息 id = sha1(role + content),
+  // 实时回合里「好的。」这种重复回复 id 也会撞上旧消息,但那是真的新回复。
+  let state = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', ts: 1 },
+      { id: 'same', role: 'assistant', content: '好的。', ts: 2 },
+      { id: 'u2', role: 'user', content: 'again', ts: 3 },
+    ],
+    events: [],
+  }).state;
+
+  state = reduceMany([
+    { type: 'busy_changed', payload: { busy: true }, seq: 1 },
+    { type: 'token', payload: { text: '好的。' }, seq: 2 },
+    { type: 'message', payload: { id: 'same', role: 'assistant', content: '好的。' }, seq: 3 },
+  ], state);
+
+  assert.deepEqual(
+    state.items.map((item) => `${item.role}:${item.content}`),
+    ['user:hello', 'assistant:好的。', 'user:again', 'assistant:好的。'],
+  );
+  assert.equal(state.items[3].messageId, 'same');
+  assert.equal(state.items[3].streaming, false);
+});
+
 run('home auto_start 竞争:快照已含的 user 消息再经 WS 事件到达不重复(按 id 幂等)', () => {
   // 回归 bug(dedupe-message-events-by-id):主页发起首条消息时,daemon 的
   // GET /messages 先收集事件回放、后读消息快照,而回合线程先 append 消息
@@ -2181,6 +2479,42 @@ run('防回退: 更旧的 REST 快照不得截断实时已累积的 assistant �
   const merged = preserveLiveAssistantTailOnLoad(loaded, live);
   assert.equal(lastAssistantText(merged), '我发现了根本差异：A 与 B 不同', '应保留更完整的实时文本');
   assert.ok((merged.lastSeq || 0) >= 12, 'lastSeq 不得回退到快照的低水位');
+});
+
+run('防回退: 推入实时草稿后 streamingId 跟着走,后续 token 不另起一条气泡', () => {
+  // 触发场景:切进正在流式输出的会话,REST 快照只到用户消息(assistant 尚未落盘),
+  // WS 在快照返回前已收到一截草稿。旧实现把草稿推进快照末尾却不接管 streamingId,
+  // 之后到达的 token 又新开一条草稿 → 同一段正文显示成「前半截 + 后半截」,
+  // 最终 message 事件只替换后者,前半截永久留下。
+  const live = createTranscriptState({
+    lastSeq: 12,
+    streamingId: 7,
+    items: [
+      { kind: 'msg', id: 7, role: 'assistant', content: '正在分析问题', streaming: true, streamDraft: true },
+    ],
+    nextItemId: 8,
+  });
+  const loaded = createTranscriptState({
+    lastSeq: 0,
+    items: [
+      { kind: 'msg', id: 1, role: 'user', content: '问题', messageId: 'u1' },
+      { kind: 'msg', id: 2, role: 'assistant', content: '', messageId: 'a0' },
+      { kind: 'msg', id: 3, role: 'user', content: '继续', messageId: 'u2' },
+    ],
+    nextItemId: 4,
+  });
+  let state = preserveLiveAssistantTailOnLoad(loaded, live);
+  assert.equal(state.streamingId, 4);
+  state = reduceMany([
+    { type: 'token', payload: { text: ',稍等' }, seq: 13 },
+    { type: 'message', payload: { id: 'a1', role: 'assistant', content: '正在分析问题,稍等' }, seq: 14 },
+  ], state);
+  assert.deepEqual(
+    state.items.map((item) => `${item.role}:${item.content}`),
+    ['user:问题', 'assistant:', 'user:继续', 'assistant:正在分析问题,稍等'],
+  );
+  assert.equal(state.items[3].messageId, 'a1');
+  assert.equal(state.streamingId, null);
 });
 
 run('防回退: 更旧的 REST 快照不得清除实时 busy、activity 和 active turn', () => {

@@ -18,7 +18,8 @@ import {
   buildChangeRow,
   buildSummaryLabel,
 } from '../lib/gitChanges.js';
-import { changesCache } from '../lib/gitChangesCache.js';
+import { sessionChangesCache } from '../lib/gitChangesCache.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
 import { clsx } from '../lib/format.js';
 import { AnchoredMenu } from './AnchoredMenu.jsx';
@@ -26,6 +27,7 @@ import { ChangeFileList } from './ChangeFileList.jsx';
 import { VsIcon } from './Icon.jsx';
 
 export function GitChangesPanel({
+  owner,
   api,
   cwd,
   gitInfo,
@@ -41,7 +43,8 @@ export function GitChangesPanel({
     () => buildBaseCandidates(gitInfo),
     [gitInfo],
   );
-  const [base, setBase] = useState(initial);
+  const changesCache = useMemo(() => sessionChangesCache(owner), [owner]);
+  const [base, setBase] = useWorkbenchState(owner, `gitBase:${cwd}`, initial);
   const [baseOpen, setBaseOpen] = useState(false);
   const baseAnchorRef = useRef(null);
   const [list, setList] = useState(null);
@@ -55,9 +58,6 @@ export function GitChangesPanel({
   listRef.current = list;
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-
-  // cwd / gitInfo 变化时重置基线选择。
-  useEffect(() => { setBase(initial); }, [cwd, initial]);
 
   const fetchList = useCallback((force = false) => {
     const targetCwd = cwdRef.current;
@@ -85,7 +85,7 @@ export function GitChangesPanel({
         setError(e?.status === 504 ? 'timeout' : (e?.body?.error || e?.message || 'error'));
       })
       .finally(() => setLoading(false));
-  }, [api]);
+  }, [api, changesCache]);
 
   // 可见 + (基线 / cwd 变化) → 拉取(缓存命中则零请求)。
   useEffect(() => {
@@ -144,7 +144,7 @@ export function GitChangesPanel({
           <span className="text-fg-mute font-normal min-w-0 basis-[72px] truncate max-w-[72px]" title={list?.branch || gitInfo.branch}>
             {list?.branch || gitInfo.branch}
           </span>
-          <span className="text-fg-mute opacity-60 shrink-0" aria-hidden="true">→</span>
+          <VsIcon name="arrowRight" size={12} className="text-fg-mute opacity-60 shrink-0" />
           <div className="flex min-w-12">
             <button
               ref={baseAnchorRef}
@@ -234,6 +234,8 @@ export function GitChangesPanel({
         </div>
       ) : (
         <ChangeFileList
+          owner={owner}
+          viewKey={`git:${base}`}
           rows={rows}
           viewMode={viewMode}
           cwd={cwd}

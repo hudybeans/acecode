@@ -20,6 +20,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { flushSync } from 'react-dom';
+import { appendComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { createApi } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -45,11 +46,13 @@ import { SideChatWindow } from './SideChatWindow.jsx';
 import { createSideChatController } from '../lib/sideChatController.js';
 import '../styles/side-chat.css';
 import { GitSessionPill } from './GitSessionPill.jsx';
+import { SessionTitleBar } from './SessionTitleBar.jsx';
 import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
+import { sessionContentLoadingPhase } from '../lib/sessionContentLoading.js';
 import { SidePanel } from './SidePanel.jsx';
 import { SubagentPanel } from './SubagentPanel.jsx';
 import { TranscriptItems } from './TranscriptItems.jsx';
@@ -93,6 +96,7 @@ import {
 } from '../lib/chatInputQueue.js';
 import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from '../lib/stickyUserContext.js';
 import { loadTranscriptHistory, useSessionTranscript } from '../lib/sessionTranscript.js';
+import { trailingUserMessageRetryId } from '../lib/trailingUserMessageRetry.js';
 import { createSingleWriterStore } from '../lib/singleWriterStore.js';
 import { projectCollapsedTranscriptItems } from '../lib/transcriptProjection.js';
 import {
@@ -112,7 +116,7 @@ import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
 import { homeComposerDraft, homeComposerDraftText } from '../lib/homeComposerDrafts.js';
 import {
-  composerContentAttachments, composerContentSignature,
+  composerContentAttachments, composerContentFromText, composerContentSignature,
   normalizeComposerContent, reconcileComposerContentAttachments,
 } from '../lib/composerContent.js';
 import {
@@ -169,7 +173,7 @@ import {
 import { composerReasoningOptions } from '../lib/modelReasoning.js';
 import { normalizePermissionMode, permissionModeOption } from '../lib/permissionMode.js';
 import { ATTACHMENT_HARD_LIMIT_BYTES, normalizeImageFile } from '../lib/imageNormalize.js';
-import { PanelToggleIcon, VsIcon } from './Icon.jsx';
+import { VsIcon } from './Icon.jsx';
 import { commandWorkspaceHashForInput } from '../lib/slashCommandWorkspace.js';
 import { consoleCwdForContext } from '../lib/consoleDock.js';
 import {
@@ -204,6 +208,7 @@ import {
   closePreviewTabsToRight,
   closeVisiblePreviewTabs,
   defaultBrowserTabTitle,
+  discardFileTabDraft,
   openFileTab,
   openBrowserTab,
   openGitChangesTab,
@@ -211,7 +216,6 @@ import {
   previewFileLocation,
   previewScopeKey,
   previewTabContext,
-  previewTabsWithUnsavedDrafts,
   refreshPreviewTab,
   reorderPreviewTab,
   sessionWorkingCwd,
@@ -229,6 +233,10 @@ import {
   editableFileError,
   saveEditableFileDraftBatch,
 } from '../lib/editableFileDraft.js';
+import { createUnsavedFileGuard, runAfterFileApproval } from '../lib/unsavedFileGuard.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { transferPreviewTabs } from '../lib/previewTabs.js';
 import {
   AGENT_BROWSER_STATE_EVENT,
   agentBrowserActivityFromItems,
@@ -261,6 +269,8 @@ import {
   scrollTopForPreservedActivityAnchor,
 } from '../lib/activityExpansionAnchor.js';
 import {
+  closeDesktopContextMenu,
+  openDesktopContextMenu,
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
 } from '../lib/desktopContextMenu.js';
@@ -546,9 +556,10 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
+export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, onRegisterPreviewLeaveGuard, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, messageAutoCollapse = true, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
+  const workbenchOwner = sessionWorkbench.ownerFor(ref);
   const sessionRuntimeUnavailable = ref?.resumePending === true || ref?.resumeFailed === true;
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
   const stagedExpertDraft = expertDispatchDraftFromRef(ref);
@@ -597,6 +608,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     status: transcriptStatus,
     loadState: transcriptLoadState,
     streamingId,
+    abortPending,
     trajectoryPartial,
     tokenUsage,
     goal,
@@ -786,11 +798,18 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const [modelRefreshing, setModelRefreshing] = useState(false);
   const [permissionMode, setPermissionMode] = useState('default');
   const [permissionSwitching, setPermissionSwitching] = useState(false);
-  const [reviewRequest, setReviewRequest] = useState(0);
-  const [fileLocateRequest, setFileLocateRequest] = useState({ path: '', token: 0 });
-  const [previewTabState, setPreviewTabState] = useState({});
+  const [reviewRequest, setReviewRequest] = useWorkbenchState(workbenchOwner, 'reviewRequest', 0);
+  const [fileLocateRequest, setFileLocateRequest] = useWorkbenchState(workbenchOwner, 'fileLocate', () => ({ path: '', token: 0 }));
+  const [previewTabState, setPreviewTabState] = useWorkbenchState(workbenchOwner, 'previews', () => ({}));
+  const getPreviewTabState = useCallback(() => sessionWorkbench.get(workbenchOwner, 'previews', () => ({})), [workbenchOwner]);
+  const previewContextRef = useRef(null);
+  const previewLeaveRequestRef = useRef(() => true);
   const [previewCloseConfirm, setPreviewCloseConfirm] = useState(null);
-  const [previewPanelHidden, setPreviewPanelHidden] = useState(false);
+  const previewFileGuardRef = useRef(null);
+  if (!previewFileGuardRef.current) {
+    previewFileGuardRef.current = createUnsavedFileGuard(setPreviewCloseConfirm);
+  }
+  const [previewPanelHidden, setPreviewPanelHidden] = useWorkbenchState(workbenchOwner, 'previewHidden', false);
   const [dismissedDockSignatures, setDismissedDockSignatures] = usePreference(
     CHANGE_DOCK_DISMISSALS_STORAGE_KEY,
     {},
@@ -864,7 +883,10 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const [selectionPreview, setSelectionPreview] = useState(null);
   const [selectionAction, setSelectionAction] = useState(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const retrySubmissionRef = useRef(null);
+  useEffect(() => () => { retrySubmissionRef.current = null; }, [sid, api]);
   const [draftReadyKey, setDraftReadyKey] = useState('');
+  const [acceptedHomeSubmission, setAcceptedHomeSubmission] = useState(null);
   const draftEditVersionRef = useRef(0);
   const draftSessionKeyRef = useRef('');
   const draftLastSavedRef = useRef({ key: '', text: '' });
@@ -981,11 +1003,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const composerHistory = useMemo(() => composerHistoryEntries.map((entry) => entry.text), [composerHistoryEntries]);
   const renderedItems = useMemo(
     () => projectCollapsedTranscriptItems(rawItems, {
+      messageAutoCollapse,
       deferTrailingToolSummary: busy,
       ensureLiveActivity: busy,
       liveTurnId: currentTurnActivityId(rawItems, activeTurnId, sid),
     }),
-    [rawItems, busy, activeTurnId, sid],
+    [rawItems, busy, activeTurnId, sid, messageAutoCollapse],
   );
   // 尾部窗口(渐进虚拟化,见 lib/transcriptWindow.js):大会话初始只渲染
   // 最近的一段投影行,DOM 行数从数百降到 ≤ INITIAL_TAIL_ITEMS。窗口状态
@@ -1253,9 +1276,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   useEffect(() => { sidRef.current = sid; }, [sid]);
   useEffect(() => { draftSessionKeyRef.current = draftSessionKey; }, [draftSessionKey]);
   useEffect(() => {
-    setPreviewPanelHidden(false);
-    setPreviewCloseConfirm(null);
-  }, [sid]);
+    previewFileGuardRef.current.cancelPending();
+  }, [workbenchOwner]);
+  useEffect(() => () => previewFileGuardRef.current.cancelPending(), []);
 
   const handleComposerChange = useCallback((next, content = null) => {
     const normalized = normalizeComposerContent(content);
@@ -1329,6 +1352,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     title = '',
   } = {}) => {
     if (homeSubmitting || reasoningSwitching) return null;
+    const sourcePreviewContext = previewContextRef.current;
+    if (!await previewLeaveRequestRef.current()) return null;
     const target = selectedHomeWorkspace || fallbackWorkspaceOption(ref, health);
     const targetHash = target?.hash || '';
     const targetNoWorkspace = !!target?.noWorkspace;
@@ -1384,6 +1409,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       if (pendingFirstUserMessage) {
         setPendingNewSessionFirstUserMessage(pendingFirstUserMessage);
       }
+      const nextOwner = sessionWorkbench.ownerFor(next);
+      if (health?.console?.available) await api.transferPtyOwner(workbenchOwner, nextOwner);
+      sessionWorkbench.transfer(workbenchOwner, nextOwner, (record) => ({
+        ...record,
+        previews: sourcePreviewContext ? transferPreviewTabs(record.previews || {}, sourcePreviewContext, {
+          ...sourcePreviewContext, sessionId: id,
+        }) : {},
+      }));
       onSessionPromoted?.(next);
       notifySessionListChanged({
         reason: 'session-created',
@@ -1401,7 +1434,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     } finally {
       setHomeSubmitting(false);
     }
-  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
+  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace, workbenchOwner]);
 
   const stageMediaFiles = useCallback((reservedFiles) => {
     const stagedItems = [];
@@ -1431,9 +1464,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
     if (stagedItems.length > 0) {
       setComposerAttachments((items) => [...items, ...stagedItems]);
+      composerAttachmentsRef.current = [...composerAttachmentsRef.current, ...stagedItems];
+      const current = composerContentRef.current || composerContentFromText(composerValueRef.current);
+      const next = appendComposerImageAttachments(current, stagedItems);
+      if (composerContentSignature(next) !== composerContentSignature(current)) {
+        handleComposerChange(composerValueRef.current, next);
+      }
     }
     return stagedItems;
-  }, []);
+  }, [handleComposerChange]);
 
   const persistMediaFilesToSession = useCallback(async (targetSid, reservedFiles) => {
     const persistOne = async (reserved) => {
@@ -1871,6 +1910,19 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   // Home edits update App's draft store without triggering restoration again.
   // Only session/workspace changes should reset or load the scoped draft.
   }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, restoreComposerDraft, sid]);
+
+  useEffect(() => {
+    if (!acceptedHomeSubmission || acceptedHomeSubmission.sessionId !== sid
+      || draftReadyKey !== draftSessionKey) return;
+    // A fast first-send receipt can precede React's session promotion. Wait for
+    // the destination draft, then clear only the text/references we submitted.
+    const cleared = clearCurrentSessionDraft({
+      expectedText: acceptedHomeSubmission.text,
+      expectedContent: acceptedHomeSubmission.content,
+    });
+    if (cleared && acceptedHomeSubmission.clearExtras) clearComposerExtras();
+    setAcceptedHomeSubmission((current) => current === acceptedHomeSubmission ? null : current);
+  }, [acceptedHomeSubmission, clearComposerExtras, clearCurrentSessionDraft, draftReadyKey, draftSessionKey, sid]);
 
   useEffect(() => {
     const targetSid = sid;
@@ -2856,6 +2908,12 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     })
   ), [api, commandWorkspaceHash, ref?.noWorkspace, ref?.no_workspace, selectedHomeWorkspace?.noWorkspace, sid]);
 
+  const retryUserMessageId = trailingUserMessageRetryId({
+    sessionId: sid, items, loadState: transcriptLoadState, busy,
+    status: transcriptStatus, streamingId, abortPending,
+    disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+  });
+
   const sendInputOrBuiltin = useCallback((targetSid, payload) => {
     const text = payloadText(payload);
     const hasExtras = payloadHasExtras(payload);
@@ -2907,7 +2965,32 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     const submittedComposerContent = composerContentRef.current;
     const hasExtras = payloadHasExtras(payload) || hasPendingAttachments;
     const hasSwarmMode = payload.swarm_mode === true;
-    if (!payload.text.trim() && !hasExtras) return;
+    if (!payload.text.trim() && !hasExtras) {
+      if (!retryUserMessageId || composerSubmitting || retrySubmissionRef.current) return;
+      const latest = transcript.getState();
+      const latestRetryId = trailingUserMessageRetryId({
+        ...latest, sessionId: sid, loadState: transcriptLoadState,
+        disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+      });
+      if (latestRetryId !== retryUserMessageId) return;
+      const request = { sessionId: sid };
+      retrySubmissionRef.current = request;
+      setComposerSubmitting(true);
+      setTailFollowFromAction({ type: 'new_turn' });
+      dockAutoDismissRef.current();
+      api.retryLastUserMessage(sid, latestRetryId)
+        .catch((error) => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          toast({ kind: 'err', text: '发送失败:' + (error.message || '') });
+        })
+        .finally(() => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          retrySubmissionRef.current = null;
+          setComposerSubmitting(false);
+          restoreChatInputFocusSoon(false);
+        });
+      return;
+    }
     const route = inputRouteForText(payload.text);
     if (route.kind === 'desktop_feedback') {
       if (!sid) {
@@ -3107,14 +3190,13 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             }
           }
           if (payload.text.trim()) recordInputHistory(payload.text);
-          const stillSubmittedDraft = sidRef.current === id
-            && composerDraftEditFingerprint(composerValueRef.current, composerContentRef.current)
-              === composerDraftEditFingerprint(submittedComposerText, submittedComposerContent);
-          if (!isBuiltin && stillSubmittedDraft && (hasExtras || hasSwarmMode)) clearComposerExtras();
-          if (!isBuiltin && explicitHomeSend && stillSubmittedDraft) {
-            draftEditVersionRef.current += 1;
-            composerDirtyRef.current = false;
-            setComposerValue('');
+          if (!isBuiltin && explicitHomeSend) {
+            setAcceptedHomeSubmission({
+              sessionId: id,
+              text: submittedComposerText,
+              content: submittedComposerContent,
+              clearExtras: hasExtras || hasSwarmMode,
+            });
           }
           onHomeComposerDraftAccepted?.(
             submittedHomeDraftWorkspaceHash,
@@ -3193,7 +3275,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -3790,6 +3872,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }
     return pathBaseName(ref?.cwd || health?.cwd || '') || '当前项目';
   }, [health?.cwd, homeWorkspaces, ref?.cwd, ref?.workspaceName, ref?.workspace_name, sessionWorkspaceHash]);
+  useEffect(() => () => closeDesktopContextMenu(), [sid]);
   const sessionPath = ref?.sessionPath || ref?.session_path || '';
   const sessionPinned = !!(ref?.pinned || ref?.isPinned || ref?.is_pinned);
   const openSessionContextMenu = useCallback((event) => {
@@ -3798,15 +3881,28 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     event.stopPropagation();
     const button = event.currentTarget;
     const rect = button.getBoundingClientRect();
-    const target = sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
-    target.dispatchEvent(new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: Math.min(window.innerWidth - 8, rect.right - 4),
-      clientY: Math.min(window.innerHeight - 8, rect.bottom + 4),
-    }));
-  }, [sessionWorkspaceHash, sid]);
+    const target = readOnlyExternalSession ? button : sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
+    openDesktopContextMenu({
+      target,
+      trigger: button,
+      x: rect.right,
+      y: rect.bottom + 4,
+      leadingItems: [
+        ...(!readOnlyExternalSession ? [{
+          id: 'side_chat', label: '侧边聊天', icon: 'chat', group: 'session-view',
+          onSelect: () => {
+            openSideQuestionComposer();
+            setSideChatAnchor({ left: rect.left, top: rect.top });
+          },
+        }] : []),
+        ...(onFindInConversation ? [{
+          id: 'find_conversation', label: '查找', icon: 'search', group: 'session-view',
+          onSelect: onFindInConversation,
+        }] : []),
+      ],
+      includeContextActions: !readOnlyExternalSession,
+    });
+  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation]);
 
   const modelListEmptyLoaded = modelListLoaded && modelOptions.length === 0;
   const noModelLabel = '未配置模型';
@@ -4487,9 +4583,10 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     [ref?.workspaceHash, sessionWorktree?.path, sid, sidePanelCwd, sidePanelFilesEnabled],
   );
   const previewContext = useMemo(
-    () => previewTabContext({ scopeKey: previewScope, sessionId: sid }),
-    [previewScope, sid],
+    () => previewTabContext({ scopeKey: previewScope, sessionId: sid || workbenchOwner }),
+    [previewScope, sid, workbenchOwner],
   );
+  previewContextRef.current = previewContext;
   const previewTabs = useMemo(
     () => visiblePreviewTabs(previewTabState, previewContext),
     [previewContext, previewTabState],
@@ -4498,12 +4595,67 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     () => activePreviewTab(previewTabState, previewContext),
     [previewContext, previewTabState],
   );
+  const requestPreviewApproval = useCallback((getTabs, kind = 'switch') => (
+    previewFileGuardRef.current.request({
+      kind,
+      getTabs,
+      discard: (tabs) => {
+        setPreviewTabState((state) => tabs.reduce((next, tab) => discardFileTabDraft(next, {
+          ...previewContext, tabKey: tab.key,
+        }), state));
+      },
+      save: async (tabs) => {
+        const updateDraft = (tab, patch) => setPreviewTabState((state) => updateFileTabDraft(state, {
+          ...previewContext, tabKey: tab.key, patch,
+        }));
+        const result = await saveEditableFileDraftBatch(api, {
+          tabs,
+          fallbackCwd: sidePanelCwd,
+          onSaving: (tab) => updateDraft(tab, { saving: true, error: '' }),
+          onSaved: (tab, saved) => updateDraft(tab, saved.patch),
+        });
+        if (!result.ok) {
+          const message = editableFileError(result.error, '保存失败');
+          updateDraft(result.tab, {
+            saving: false,
+            externalChanged: editableFileConflict(result.error),
+            error: message,
+          });
+          throw new Error(`${result.tab.title || result.tab.path}：${message}`);
+        }
+      },
+    })
+  ), [api, previewContext, setPreviewTabState, sidePanelCwd]);
+  const requestPreviewLeave = useCallback(() => requestPreviewApproval(
+    () => visiblePreviewTabs(getPreviewTabState(), previewContext),
+  ), [getPreviewTabState, previewContext, requestPreviewApproval]);
+  previewLeaveRequestRef.current = requestPreviewLeave;
+  useLayoutEffect(() => onRegisterPreviewLeaveGuard?.(requestPreviewLeave), [
+    onRegisterPreviewLeaveGuard, requestPreviewLeave,
+  ]);
+  const requestActiveFileLeave = useCallback(() => {
+    const key = activePreviewTab(getPreviewTabState(), previewContext)?.key;
+    return requestPreviewApproval(() => visiblePreviewTabs(getPreviewTabState(), previewContext)
+      .filter((tab) => tab.key === key));
+  }, [getPreviewTabState, previewContext, requestPreviewApproval]);
+  const selectPreview = useCallback((producer, afterSelect) => {
+    if (previewFileGuardRef.current.isPending()) return false;
+    const state = getPreviewTabState();
+    const current = activePreviewTab(state, previewContext);
+    const next = activePreviewTab(producer(state), previewContext);
+    const approval = current?.key === next?.key ? true : requestActiveFileLeave();
+    return runAfterFileApproval(approval, () => {
+      setPreviewTabState(producer);
+      afterSelect?.();
+      return true;
+    });
+  }, [getPreviewTabState, previewContext, requestActiveFileLeave, setPreviewTabState]);
   const previewTabsOpen = previewTabs.length > 0;
   // 总开关必须连最大化详情一起隐藏;恢复时仍保留最大化偏好与原页签。
   const previewPanelVisible = previewTabsOpen && !sidePanelCollapsed && !previewPanelHidden;
   const previewPanelMaximized = sidePanelMaximized && previewPanelVisible;
   const previewCloseConfirmMessage = previewCloseConfirm
-    ? `${previewCloseConfirm.dirtyCount} 个文件含有未保存的修改。请选择保存后关闭或不保存直接关闭；取消会保留所有页签。`
+    ? `${previewCloseConfirm.dirtyCount} 个文件有未保存的修改。是否保存后继续？`
     : '';
   const selectedChangeFile = activePreview?.type === PREVIEW_TAB_TYPES.SESSION_CHANGES
     ? activePreview.expandedFile || ''
@@ -4559,27 +4711,22 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     onPreviewPanelVisibleChange?.(previewPanelVisible);
   }, [onPreviewPanelVisibleChange, previewPanelVisible]);
 
-  useEffect(() => {
-    if (previewCloseConfirm && previewTabs.length === 0) {
-      setPreviewCloseConfirm(null);
-    }
-  }, [previewCloseConfirm, previewTabs.length]);
-
   // line 由聊天正文的文件链接(foo.cpp:42)带入,预览打开后滚动到该行并高亮;
   // 文件树等其它入口不带 line,走原「只打开」语义。
   const openFilePreview = useCallback((path, line = null) => {
     const location = previewFileLocation({ cwd: sidePanelCwd, path });
     if (!previewScope || !location.cwd || !location.path) return;
     // 侧栏折叠时开预览 tab 也不会显示(previewPanelVisible 依赖非折叠),先展开。
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openFileTab(prev, {
+    return selectPreview((prev) => openFileTab(prev, {
       ...previewContext,
       cwd: location.cwd,
       path: location.path,
       line,
-    }));
-  }, [previewContext, previewScope, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [previewContext, previewScope, selectPreview, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
 
   // transcript 里本地文件链接的兜底入口。assistant 气泡在 Message.jsx 里自带
   // 拦截,但同一片区域还有别的 markdown 渲染位置没有各自的拦截器
@@ -4612,28 +4759,32 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
   const showBrowserPage = useCallback((pageId, title, favicon) => {
     if (!sid || !pageId) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openBrowserTab(prev, {
+    return selectPreview((prev) => openBrowserTab(prev, {
       scopeKey: previewScope,
       sessionId: sid,
       pageId,
       title,
       favicon,
-    }));
-  }, [onToggleSidePanel, previewScope, sid, sidePanelCollapsed]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+      void selectAgentBrowserPage(pageId);
+    });
+  }, [onToggleSidePanel, previewScope, selectPreview, sid, sidePanelCollapsed]);
 
   const openBrowserPreview = useCallback(async () => {
     if (!sid || !hasNativeAgentBrowser()) return;
+    if (!await requestActiveFileLeave()) return;
     if (sidePanelCollapsed) onToggleSidePanel?.();
     const created = await createAgentBrowserPage(agentBrowserOwnerForSession(ref));
     if (created?.ok === false || !created?.page_id) return;
+    if (sidRef.current !== sid) return;
     showBrowserPage(
       created.page_id,
       created.title || defaultBrowserTabTitle(),
       created.favicon,
     );
-  }, [onToggleSidePanel, ref, showBrowserPage, sid, sidePanelCollapsed]);
+  }, [onToggleSidePanel, ref, requestActiveFileLeave, showBrowserPage, sid, sidePanelCollapsed]);
 
   // 切会话时向 Desktop 对账一次 native 页面池;事件流已经在 App 级持续镜像。
   useEffect(() => {
@@ -4663,6 +4814,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const revealedBrowserPagesRef = useRef(new Map());
   useEffect(() => {
     if (!sid) return;
+    const restoredPages = visiblePreviewTabs(getPreviewTabState(), previewContext)
+      .filter((tab) => tab.type === PREVIEW_TAB_TYPES.BROWSER).map((tab) => tab.pageId);
     setPreviewTabState((prev) => syncBrowserTabsForSession(prev, {
       scopeKey: previewScope,
       sessionId: sid,
@@ -4670,7 +4823,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     }));
     let revealed = revealedBrowserPagesRef.current.get(sid);
     if (!revealed) {
-      revealed = new Set();
+      revealed = new Set(restoredPages);
       revealedBrowserPagesRef.current.set(sid, revealed);
     }
     for (const page of sessionBrowserPages) {
@@ -4683,7 +4836,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         revealed.delete(pageId);
       }
     }
-  }, [previewScope, sessionBrowserPages, showBrowserPage, sid]);
+  }, [getPreviewTabState, previewContext, previewScope, sessionBrowserPages, showBrowserPage, sid]);
 
   // Agent 切换默认目标页(browser_open / 显式选页)且有浏览器工具正在执行时,把
   // 那一页的页签激活到前台;目标不属于本会话(显式操作别的会话的页)则不动。
@@ -4698,17 +4851,14 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
     agentBrowserTargetRef.current = scoped;
     if (!sessionBrowserPages.some((page) => page.pageId === agentBrowserActivePageId)) return;
     showBrowserPage(agentBrowserActivePageId);
-    void selectAgentBrowserPage(agentBrowserActivePageId);
   }, [agentBrowserActivePageId, sessionBrowserPages, showBrowserPage, sid]);
 
   const openSessionChangePreview = useCallback((filePath, turnUserMessageId = '') => {
     if (!sid || !filePath) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
     const turnChangeSet = turnUserMessageId
       ? turnChangeSets.find((set) => set.userMessageId === turnUserMessageId)
       : null;
-    setPreviewTabState((prev) => openSessionChangesTab(prev, {
+    return selectPreview((prev) => openSessionChangesTab(prev, {
       scopeKey: previewScope,
       sessionId: sid,
       expandedFile: filePath,
@@ -4716,24 +4866,28 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
         ? (turnChangeSet?.summary?.fileCount || 0)
         : changeSummary.fileCount,
       turnUserMessageId,
-    }));
-  }, [changeSummary.fileCount, onToggleSidePanel, previewScope, sid, sidePanelCollapsed, turnChangeSets]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [changeSummary.fileCount, onToggleSidePanel, previewScope, selectPreview, sid, sidePanelCollapsed, turnChangeSets]);
 
   // git 变更点击文件 → 在中间详情栏开/聚焦「变更」页签(复刻会话级变更旧行为)。
   // gitBase 只有从 SidePanel 导航列表点击时才带;详情栏内点文件不带,由
   // openGitChangesTab 保留页签原 base。
   const openGitChangePreview = useCallback((filePath, gitBase, gitFileCount) => {
     if (!previewContext.sessionId || !filePath) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openGitChangesTab(prev, {
+    return selectPreview((prev) => openGitChangesTab(prev, {
       ...previewContext,
       cwd: sidePanelCwd,
       base: gitBase,
       expandedFile: filePath,
       fileCount: gitFileCount,
-    }));
-  }, [onToggleSidePanel, previewContext, sidePanelCollapsed, sidePanelCwd]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [onToggleSidePanel, previewContext, selectPreview, sidePanelCollapsed, sidePanelCwd]);
 
   // SidePanel 切基线时,若「变更」页签已打开则同步其 base(详情栏跟着换比较对象)。
   const updateGitChangeBase = useCallback((gitBase) => {
@@ -4743,14 +4897,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
   const activatePreview = useCallback((tabKey) => {
     const tab = previewTabs.find((candidate) => candidate.key === tabKey);
-    if (tab?.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
-      void selectAgentBrowserPage(tab.pageId);
-    }
-    setPreviewTabState((prev) => activatePreviewTab(prev, {
+    return selectPreview((prev) => activatePreviewTab(prev, {
       ...previewContext,
       tabKey,
-    }));
-  }, [previewContext, previewTabs]);
+    }), () => {
+      if (tab?.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
+        void selectAgentBrowserPage(tab.pageId);
+      }
+    });
+  }, [previewContext, previewTabs, selectPreview]);
 
   const refreshPreview = useCallback((tabKey) => {
     setPreviewTabState((prev) => refreshPreviewTab(prev, {
@@ -4761,11 +4916,11 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
   const updateFilePreviewDraft = useCallback((tabKey, patch) => {
     setPreviewTabState((prev) => updateFileTabDraft(prev, {
-      scopeKey: previewScope,
+      ...previewContext,
       tabKey,
       patch,
     }));
-  }, [previewScope]);
+  }, [previewContext, setPreviewTabState]);
 
   useEffect(() => {
     const transition = nextAutoPreviewRefresh(previewAutoRefreshRef.current, {
@@ -4791,10 +4946,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
 
   const performPreviewClose = useCallback((kind, tabKey = '') => {
     const affected = previewTabsForCloseAction(kind, tabKey);
-    if (affected.length === 0) {
-      setPreviewCloseConfirm(null);
-      return;
-    }
+    if (affected.length === 0) return;
     affected.forEach((tab) => {
       if (tab.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
         void closeAgentBrowserPage(tab.pageId);
@@ -4807,7 +4959,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       if (kind === 'right') return closePreviewTabsToRight(prev, options);
       return closeVisiblePreviewTabs(prev, options);
     });
-    setPreviewCloseConfirm(null);
     if (affected.length >= previewTabs.length && sidePanelMaximized) {
       onToggleSidePanelMaximized?.();
     }
@@ -4822,67 +4973,18 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const requestPreviewClose = useCallback((kind, tabKey = '') => {
     const affected = previewTabsForCloseAction(kind, tabKey);
     if (affected.length === 0) return;
-    const dirty = previewTabsWithUnsavedDrafts(affected);
-    if (dirty.length > 0) {
-      setPreviewCloseConfirm({
-        kind,
-        tabKey,
-        affectedCount: affected.length,
-        dirtyCount: dirty.length,
-        saving: false,
-        error: '',
-      });
-      return;
-    }
-    performPreviewClose(kind, tabKey);
-  }, [performPreviewClose, previewTabsForCloseAction]);
-
-  const saveAndClosePreviews = useCallback(async () => {
-    const pending = previewCloseConfirm;
-    if (!pending || pending.saving) return;
-    const affected = previewTabsForCloseAction(pending.kind, pending.tabKey);
-    const dirtyTabs = previewTabsWithUnsavedDrafts(affected);
-    if (dirtyTabs.length === 0) {
-      performPreviewClose(pending.kind, pending.tabKey);
-      return;
-    }
-
-    setPreviewCloseConfirm((current) => (current ? {
-      ...current,
-      saving: true,
-      error: '',
-    } : current));
-
-    const saveResult = await saveEditableFileDraftBatch(api, {
-      tabs: dirtyTabs,
-      fallbackCwd: sidePanelCwd,
-      onSaving: (tab) => updateFilePreviewDraft(tab.key, { saving: true, error: '' }),
-      onSaved: (tab, saved) => updateFilePreviewDraft(tab.key, saved.patch),
-    });
-    if (!saveResult.ok) {
-      const message = editableFileError(saveResult.error, '保存失败');
-      updateFilePreviewDraft(saveResult.tab.key, {
-        saving: false,
-        externalChanged: editableFileConflict(saveResult.error),
-        error: message,
-      });
-      setPreviewCloseConfirm((current) => (current ? {
-        ...current,
-        saving: false,
-        error: `${saveResult.tab.title || saveResult.tab.path}：${message}`,
-      } : current));
-      toast({ kind: 'err', text: message });
-      return;
-    }
-
-    performPreviewClose(pending.kind, pending.tabKey);
+    const keys = new Set(affected.map((tab) => tab.key));
+    return runAfterFileApproval(requestPreviewApproval(
+      () => visiblePreviewTabs(getPreviewTabState(), previewContext)
+        .filter((tab) => keys.has(tab.key)),
+      'close',
+    ), () => performPreviewClose(kind, tabKey));
   }, [
-    api,
+    getPreviewTabState,
     performPreviewClose,
-    previewCloseConfirm,
+    previewContext,
     previewTabsForCloseAction,
-    sidePanelCwd,
-    updateFilePreviewDraft,
+    requestPreviewApproval,
   ]);
 
   const closePreview = useCallback((tabKey) => {
@@ -4902,8 +5004,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   }, [requestPreviewClose]);
 
   const hidePreviewPanel = useCallback(() => {
-    setPreviewPanelHidden(true);
-  }, []);
+    return runAfterFileApproval(requestActiveFileLeave(), () => setPreviewPanelHidden(true));
+  }, [requestActiveFileLeave]);
 
   const reorderPreview = useCallback((sourceKey, targetKey, placement) => {
     setPreviewTabState((prev) => reorderPreviewTab(prev, {
@@ -5081,7 +5183,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               )}
             </div>
             <GitSessionPill
-              key={`home-${homeWorkspaceHash}`}
+              key={workbenchOwner}
+              owner={workbenchOwner}
               api={api}
               cwd={selectedHomeWorkspace?.cwd || ''}
               variant="hero"
@@ -5133,11 +5236,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
   const sidePanelShellStyle = {
     width: sidePanelNavigationCollapsed ? 0 : Math.max(0, effectiveSidePanelWidth),
   };
-  const sidePanelRestoreAction = sidePanelCollapsed && onToggleSidePanel
-    ? { onClick: onToggleSidePanel, label: '展开整个右侧面板' }
-    : sidePanelListCollapsed && !previewPanelVisible && onToggleSidePanelList
-      ? { onClick: onToggleSidePanelList, label: '展开列表面板' }
-      : null;
 
   return (
     <div ref={layoutRef} className="flex-1 flex min-w-0 ace-chat-layout">
@@ -5171,51 +5269,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           onOpenSession={onSessionPromoted}
         />
       )}
-      <div className="h-9 px-3 flex items-center justify-between bg-surface shrink-0 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="flex min-w-0 items-center gap-1.5">
-            {remoteControlBound && (
-              <VsIcon
-                name="computer"
-                size={14}
-                className="text-accent"
-                alt={tr('remoteControl.connectedSession')}
-                data-remote-control-session-icon="true"
-              />
-            )}
-            <span className="text-[13px] font-semibold text-fg truncate">{title}</span>
-          </span>
-          <span
-            className="px-2.5 py-0.5 rounded-full text-[10px] font-medium border whitespace-nowrap bg-surface-hi text-fg-mute border-transparent max-w-[180px] truncate"
-            title={workspaceLabel}
-            data-session-workspace-label="true"
-          >
-            {workspaceLabel}
-          </span>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {sid && !readOnlyExternalSession && (
-            <button
-              type="button"
-              onClick={(event) => {
-                const { left, top } = event.currentTarget.getBoundingClientRect();
-                openSideQuestionComposer();
-                setSideChatAnchor({ left, top });
-              }}
-              className={clsx(
-                'w-6 h-6 rounded-md flex items-center justify-center shrink-0 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25',
-                sideChatState.open
-                  ? 'bg-accent-bg text-accent hover:bg-accent-bg'
-                  : 'text-fg-mute hover:bg-surface-hi hover:text-fg',
-              )}
-              title="侧边聊天"
-              aria-label="侧边聊天"
-              aria-expanded={sideChatState.open}
-              aria-haspopup="dialog"
-            >
-              <VsIcon name="chat" size={14} />
-            </button>
-          )}
+      <SessionTitleBar titleTarget={titleTarget} actionsTarget={actionsTarget}
+        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}>
           {sid && (
             <button
               type="button"
@@ -5230,18 +5285,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               aria-label={trajectoryOpen ? 'Conversation' : 'Trajectory'}
               aria-pressed={trajectoryOpen}
             >
-              <VsIcon name="trajectory" size={14} />
-            </button>
-          )}
-          {sid && onFindInConversation && (
-            <button
-              type="button"
-              onClick={onFindInConversation}
-              className="w-6 h-6 rounded-md text-fg-mute flex items-center justify-center shrink-0 transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
-              title="搜索当前对话内容 (Ctrl+F)"
-              aria-label="搜索当前对话内容"
-            >
-              <VsIcon name="search" size={14} />
+              <VsIcon name="trajectory" size={16} />
             </button>
           )}
           {sid && (
@@ -5250,34 +5294,6 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               cwd={sidePanelCwd}
               refreshKey={`${turns}:${busy ? 1 : 0}`}
             />
-          )}
-          {sid && !readOnlyExternalSession && (
-            <button
-              type="button"
-              data-desktop-session-id={sid || undefined}
-              data-desktop-session-workspace={sessionWorkspaceHash || undefined}
-              data-desktop-session-path={sessionPath || undefined}
-              data-desktop-session-pinned={sessionPinned ? 'true' : 'false'}
-              data-desktop-session-title={title || undefined}
-              data-desktop-session-archive="true"
-              onClick={openSessionContextMenu}
-              className="w-7 h-7 rounded-md bg-surface-hi/0 text-fg-mute flex items-center justify-center transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
-              title="会话菜单"
-              aria-label="会话菜单"
-            >
-              <VsIcon name="ellipsis" size={15} />
-            </button>
-          )}
-          {sidePanelMounted && sidePanelRestoreAction && (
-            <button
-              type="button"
-              onClick={sidePanelRestoreAction.onClick}
-              className="ace-side-panel-expand-fab"
-              title={sidePanelRestoreAction.label}
-              aria-label={sidePanelRestoreAction.label}
-            >
-              <PanelToggleIcon side="right" size={15} />
-            </button>
           )}
           {sid && (subagentTasks.tasks.length > 0 || subagentPanelOpen) && (
             <button
@@ -5300,8 +5316,25 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
               )}
             </button>
           )}
-        </div>
-      </div>
+          {sid && (
+            <button
+              type="button"
+              data-desktop-session-id={readOnlyExternalSession ? undefined : sid || undefined}
+              data-desktop-session-workspace={sessionWorkspaceHash || undefined}
+              data-desktop-session-path={sessionPath || undefined}
+              data-desktop-session-pinned={sessionPinned ? 'true' : 'false'}
+              data-desktop-session-title={title || undefined}
+              data-desktop-session-archive="true"
+              onClick={openSessionContextMenu}
+              className="w-7 h-7 rounded-md bg-surface-hi/0 text-fg-mute flex items-center justify-center transition hover:bg-surface-hi hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+              title="会话菜单"
+              aria-label="会话菜单"
+              aria-haspopup="menu"
+            >
+              <VsIcon name="ellipsisVertical" size={16} />
+            </button>
+          )}
+      </SessionTitleBar>
 
       <div
         ref={subagentSplitRef}
@@ -5342,6 +5375,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           )}
           <TranscriptItems
             items={windowedItems}
+            messageAutoCollapse={messageAutoCollapse}
             assistantRunDirectives={assistantRunDirectives}
             expandedActivityKeys={expandedActivityKeys}
             collapsedMediaKeys={collapsedMediaKeys}
@@ -5466,6 +5500,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           />
         )}
         <SubagentPanel
+          messageAutoCollapse={messageAutoCollapse}
           open={subagentPanelOpen}
           width={renderedSubagentPanelWidth}
           focus={subagentFocus}
@@ -5563,6 +5598,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
             submitting={composerSubmitting || reasoningSwitching}
+            canRetryLastUserMessage={!!retryUserMessageId}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{
@@ -5585,6 +5621,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             }}
           />
           <GitSessionPill
+            owner={workbenchOwner}
             key={`session-${sid}`}
             api={api}
             cwd={sidePanelCwd}
@@ -5597,15 +5634,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           />
           </>
           )}
-          <SessionContentLoading
-            phase={ref?.resumeFailed ? 'error' : (ref?.resumePending ? 'loading' : '')}
-          />
         </div>
       )}
       <SessionContentLoading
-        phase={transcriptLoadState === 'loading'
-          ? 'transcript'
-          : (transcriptLoadState === 'error' ? 'error' : '')}
+        phase={sessionContentLoadingPhase({
+          transcriptLoadState,
+          resumePending: ref?.resumePending,
+          resumeFailed: ref?.resumeFailed,
+          readOnly: readOnlyExternalSession,
+        })}
       />
       <ChatFileDropOverlay active={chatFileDropActive} />
       </div>
@@ -5630,12 +5667,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
           style={previewShellStyle}
         >
           <PreviewDetailsPanel
+            key={workbenchOwner}
+            owner={workbenchOwner}
             api={api}
             cwd={sidePanelCwd}
             tabs={previewTabs}
             activeTab={activePreview}
             changeGroups={changeGroups}
             changeSummary={changeSummary}
+            sessionChangesReady={transcriptLoadState === 'loaded'}
             turnChangeSets={turnChangeSets}
             maximized={previewPanelMaximized}
             busy={busy}
@@ -5666,14 +5706,15 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
       )}
       {previewCloseConfirm && (
         <Modal
-          onClose={() => {
-            if (!previewCloseConfirm.saving) setPreviewCloseConfirm(null);
-          }}
+          onClose={() => previewFileGuardRef.current.choose('cancel')}
+          dismissOnBackdrop={false}
+          dismissOnEscape={!previewCloseConfirm.saving}
+          labelledBy="unsaved-file-dialog-title"
           width={440}
         >
           {() => (
             <div className="p-4">
-              <div className="text-[14px] font-semibold mb-2">保存文件后关闭？</div>
+              <div id="unsaved-file-dialog-title" className="text-[14px] font-semibold mb-2">有未保存的修改</div>
               <div className="text-[12.5px] text-fg-mute leading-relaxed mb-4">
                 {previewCloseConfirmMessage}
               </div>
@@ -5687,7 +5728,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   type="button"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-border hover:bg-surface-hi transition-colors disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={() => setPreviewCloseConfirm(null)}
+                  onClick={() => previewFileGuardRef.current.choose('cancel')}
                 >
                   取消
                 </button>
@@ -5695,10 +5736,7 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   type="button"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-border hover:bg-surface-hi transition-colors disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={() => performPreviewClose(
-                    previewCloseConfirm.kind,
-                    previewCloseConfirm.tabKey,
-                  )}
+                  onClick={() => previewFileGuardRef.current.choose('discard')}
                 >
                   不保存
                 </button>
@@ -5707,9 +5745,9 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
                   data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg bg-accent text-white hover:opacity-90 transition-opacity disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={saveAndClosePreviews}
+                  onClick={() => previewFileGuardRef.current.choose('save')}
                 >
-                  {previewCloseConfirm.saving ? '保存中...' : '保存并关闭'}
+                  {previewCloseConfirm.saving ? '保存中...' : '保存'}
                 </button>
               </div>
             </div>
@@ -5756,6 +5794,8 @@ export function ChatView({ children, sessionRef, sessionId, homeLogoEffectEnable
             style={sidePanelShellStyle}
           >
             <SidePanel
+              key={workbenchOwner}
+              owner={workbenchOwner}
               sessionRef={ref}
               sessionId={sid}
               cwd={sidePanelCwd}

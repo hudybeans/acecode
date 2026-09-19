@@ -50,7 +50,8 @@ run('composer command tag reuses the sent-message badge without a visible slash'
   const styles = source('styles/globals.css');
 
   assert.match(composer, /replace\(\/\^\\\/\+\/, ''\)/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-cmd-token"/);
   assert.match(composer, /<CommandGlyph[^>]*className="ace-cmd-token-glyph"/s);
   assert.match(composer, /className="ace-cmd-token-name">\{displayName\}/);
   assert.match(message, /className="ace-cmd-token"/);
@@ -61,16 +62,16 @@ run('composer command tag reuses the sent-message badge without a visible slash'
 run('path tags keep canonical text while using the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="path"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-path-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-path-tag"/);
   assert.match(composer, /element\?\.directory\s+\? <VsIcon name="folder"/s);
-  assert.match(composer, /<FileTypeIcon path=\{path\} size=\{12\}/);
+  assert.match(composer, /<FileTypeIcon path=\{path\} size="1em"/);
 });
 
 run('session tags keep stable identity while reusing the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="session"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-session-tag"/);
-  assert.match(composer, /<VsIcon name="newSession" size=\{12\}/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-session-tag"/);
+  assert.match(composer, /<VsIcon name="newSession" size="1em"/);
 });
 
 run('atomic deletion is routed through the plain-text tag range helper', () => {
@@ -85,7 +86,7 @@ run('atomic deletion is routed through the plain-text tag range helper', () => {
 run('imperative focus retries after an external Slate document replacement', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /const focusEditor = \(\) =>/);
-  assert.match(composer, /try \{\s*focusEditor\(\);\s*\} catch \{/s);
+  assert.match(composer, /try \{\s*if \(focusEditor\(\)\) return;\s*\} catch \{/s);
   assert.match(composer, /window\.requestAnimationFrame\(\(\) => \{\s*try \{ focusEditor\(\); \} catch \{\}/s);
 });
 
@@ -184,7 +185,7 @@ run('composer document replacement never removes the last root before inserting 
   assert.match(replacement, /return replaced/);
 });
 
-run('attachment registry feeds Slate while active references determine image previews and send gating', () => {
+run('file resources feed Slate while active references determine image previews and send gating', () => {
   const inputBar = source('components/InputBar.jsx');
   const composer = source('components/RichComposer.jsx');
   const imagePreviewIndex = inputBar.indexOf('data-composer-image-preview="true"');
@@ -193,10 +194,10 @@ run('attachment registry feeds Slate while active references determine image pre
   assert.ok(imagePreviewIndex >= 0 && imagePreviewIndex < editorIndex);
   assert.ok(footerIndex > editorIndex);
   assert.match(inputBar, /composerContentAttachments\(composerContent, attachmentItems\)/);
-  assert.match(inputBar, /activeAttachmentItems\.filter\(isComposerImageAttachment\)/);
+  assert.match(inputBar, /activeAttachmentItems\.filter\(isComposerThumbnailAttachment\)/);
   assert.match(inputBar, /const hasExtras = activeAttachmentItems\.length > 0/);
-  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{attachmentItems\}/);
-  assert.match(inputBar.slice(editorIndex, footerIndex), /composerContent=\{composerContent\}/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /attachments=\{editorAttachmentItems\}/);
+  assert.match(inputBar.slice(editorIndex, footerIndex), /composerContent=\{editorContent\}/);
   assert.match(composer, /data-composer-inline-tag="attachment"/);
   assert.match(composer, /seenAttachmentKeysRef/);
   assert.match(composer, /Transforms\.setNodes\(editor, metadata, \{ at: path \}\)/);
@@ -227,7 +228,7 @@ run('image previews retain image rendering, file-link metadata, and existing tra
   assert.match(preview, /removeAttachment\(context\.key\)/);
   assert.match(composer, /data-desktop-attachment-id=\{`composer:\$\{attachmentKey\}`\}/);
   assert.match(composer, /data-desktop-attachment-preview-url=\{element\?\.url \|\| undefined\}/);
-  assert.match(composer, /onClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
+  assert.match(composer, /onDoubleClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
   assert.match(inputBar, /onPreviewAttachment=\{previewComposerAttachment\}/);
   assert.match(inputBar, /onPasteFiles=\{addMediaFiles\}/);
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);
@@ -265,7 +266,7 @@ run('rich context paste mutates Slate state while send gating reads the controll
   assert.match(composer, /INSERT_TEXT[\s\S]*applyPlainTextPaste\(detail\.text, detail\.selection\)/);
   assert.match(composer, /const applyPlainTextPaste = useCallback\([\s\S]*ensureLegalEditorDocument\(editor\)[\s\S]*Transforms\.select[\s\S]*insertPlainText\(editor, normalizedText\)/);
   assert.doesNotMatch(composer, /execCommand/);
-  assert.match(inputBar, /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting \}\)/);
+  assert.match(inputBar, /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage \}\)/);
   assert.match(inputBar, /<RichComposer[\s\S]*onChange=\{handleComposerChange\}/);
   assert.match(chatView, /const handleComposerChange = useCallback\(\(next, content[^)]*\) => \{[\s\S]*setComposerValue\(next, normalized\)/);
 });

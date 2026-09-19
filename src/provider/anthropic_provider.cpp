@@ -1,4 +1,5 @@
 #include "anthropic_provider.hpp"
+#include "openai_provider.hpp"
 #include "stream_diagnostic_capture.hpp"
 
 #include "config/request_headers.hpp"
@@ -117,7 +118,7 @@ std::string textual_content_parts(const ChatMessage& msg) {
                 ? file_attachment_reference_text(*record)
                 : std::string{"[Attached file unavailable: invalid metadata]"});
         } else if (type == "image") {
-            append("[Image attachment omitted: Anthropic image blocks are not supported by this provider yet]");
+            append("[Image attachment omitted outside a user or tool message]");
         } else if (!part.is_null()) {
             append(part.dump());
         }
@@ -131,6 +132,55 @@ std::string textual_content_parts(const ChatMessage& msg) {
 nlohmann::json anthropic_content_blocks_for_text(const std::string& text) {
     nlohmann::json blocks = nlohmann::json::array();
     append_text_block(blocks, text);
+    return blocks;
+}
+
+nlohmann::json anthropic_content_for_message(
+    const ChatMessage& msg, bool model_has_vision, bool any_vision_model_available) {
+    const bool has_image = msg.content_parts.is_array() &&
+        std::any_of(msg.content_parts.begin(), msg.content_parts.end(), [](const auto& part) {
+            return part.is_object() && part.value("type", std::string{}) == "image";
+        });
+    if (!has_image) return textual_content_parts(msg);
+
+    // Reuse the attachment loader, size checks, normalization and capability
+    // fallback shared by OpenAI/Copilot. Only translate the resulting wire
+    // image shape; never place encoded bytes in a text block.
+    const auto content = openai_content_for_message(
+        msg, model_has_vision, any_vision_model_available);
+    if (!content.is_array()) return content;
+    nlohmann::json blocks = nlohmann::json::array();
+    for (const auto& part : content) {
+        if (part.value("type", std::string{}) == "text") {
+            append_text_block(blocks, part.value("text", std::string{}));
+            continue;
+        }
+        if (part.value("type", std::string{}) != "image_url") continue;
+        const auto url = part["image_url"].value("url", std::string{});
+        const auto separator = url.find(";base64,");
+        if (url.rfind("data:", 0) != 0 || separator == std::string::npos) {
+            append_text_block(blocks, "[Attached image unavailable: invalid image encoding]");
+            continue;
+        }
+        const auto mime = url.substr(5, separator - 5);
+        const auto data = url.substr(separator + 8);
+        if (mime != "image/png" && mime != "image/jpeg" &&
+            mime != "image/gif" && mime != "image/webp") {
+            append_text_block(blocks, "[Attached image unavailable: unsupported image format]");
+            continue;
+        }
+        // Keep requests compatible with endpoints that enforce the lower
+        // Anthropic image limit. Reject rather than resize here: screenshot
+        // coordinates must retain the geometry returned by the tool.
+        if (data.empty() || data.size() > 5u * 1024u * 1024u) {
+            append_text_block(blocks, "[Attached image unavailable: encoded image exceeds the provider size limit or is empty]");
+            continue;
+        }
+        blocks.push_back(nlohmann::json{
+            {"type", "image"},
+            {"source", {{"type", "base64"}, {"media_type", mime}, {"data", data}}},
+        });
+    }
     return blocks;
 }
 
@@ -538,16 +588,37 @@ nlohmann::json AnthropicProvider::build_request_body(
                 });
                 continue;
             }
-            nlohmann::json blocks = nlohmann::json::array();
-            blocks.push_back(nlohmann::json{
+            nlohmann::json result{
                 {"type", "tool_result"},
                 {"tool_use_id", msg.tool_call_id},
-                {"content", textual_content_parts(msg)},
-            });
-            anthropic_messages.push_back(nlohmann::json{
-                {"role", "user"},
-                {"content", std::move(blocks)},
-            });
+                {"content", anthropic_content_for_message(
+                    msg, model_has_vision_, any_vision_model_available_)},
+            };
+            if (msg.metadata.is_object() &&
+                msg.metadata.contains("tool_success") &&
+                msg.metadata["tool_success"].is_boolean() &&
+                !msg.metadata["tool_success"].get<bool>()) {
+                result["is_error"] = true;
+            }
+            // Put every sibling result in one user message. Image/text parts
+            // remain nested inside their result, so they cannot interrupt the
+            // pairing of a parallel tool_use batch.
+            const bool append_to_batch = !anthropic_messages.empty() &&
+                anthropic_messages.back().value("role", std::string{}) == "user" &&
+                !anthropic_messages.back()["content"].empty() &&
+                std::all_of(anthropic_messages.back()["content"].begin(),
+                            anthropic_messages.back()["content"].end(),
+                            [](const auto& block) {
+                                return block.value("type", std::string{}) == "tool_result";
+                            });
+            if (append_to_batch) {
+                anthropic_messages.back()["content"].push_back(std::move(result));
+            } else {
+                anthropic_messages.push_back(nlohmann::json{
+                    {"role", "user"},
+                    {"content", nlohmann::json::array({std::move(result)})},
+                });
+            }
             continue;
         }
 
@@ -563,8 +634,15 @@ nlohmann::json AnthropicProvider::build_request_body(
         if (preserved_blocks.has_value()) {
             blocks = *preserved_blocks;
         } else {
-            const std::string text = textual_content_parts(msg);
-            append_text_block(blocks, text);
+            const auto content = msg.role == "user"
+                ? anthropic_content_for_message(
+                    msg, model_has_vision_, any_vision_model_available_)
+                : nlohmann::json(textual_content_parts(msg));
+            if (content.is_array()) {
+                blocks = content;
+            } else {
+                append_text_block(blocks, content.get<std::string>());
+            }
             if (msg.role == "assistant" && !msg.reasoning_content.empty()) {
                 append_text_block(
                     blocks, "[Previous reasoning]\n" + msg.reasoning_content);

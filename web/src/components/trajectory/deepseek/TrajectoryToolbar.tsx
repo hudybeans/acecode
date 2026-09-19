@@ -1,5 +1,6 @@
 /** Trajectory toolbar: timeline and ledger fold controls. */
 
+import { VsIcon } from '../../Icon.jsx'
 import { IconSearchOutline16 } from './TrajectoryIcons.tsx'
 import css from './TrajectoryToolbar.module.css'
 
@@ -55,15 +56,7 @@ export function TrajectoryToolbar({
             title={actualDuration ? 'Use equal-width operations' : 'Use actual duration'}
             onClick={() => { onActualDurationChange(!actualDuration) }}
           >
-            <svg
-              className={css.toggleIcon}
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle cx="8" cy="8" r="5.25" />
-              <path d="M8 4.75V8l2.25 1.5" />
-            </svg>
+            <VsIcon name="Clock" className={css.toggleIcon} size={12} />
             Duration
           </button>
           <button

@@ -113,12 +113,12 @@ run('InputBar 把 submitting 只接到提交动作上', () => {
   assert.match(inputBar, /disabled, submitting = false,/);
   assert.match(
     inputBar,
-    /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting \}\)/,
+    /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage \}\)/,
   );
   // 回车提交也要挡重复提交,否则去掉 disabled 后连点两次会发两条。
   assert.match(
     inputBar,
-    /if \(\(!v && !hasExtras\) \|\| disabled \|\| submitting\) return;/,
+    /if \(!actionState\.canSubmit\) return;/,
   );
   // RichComposer(Slate readOnly 的唯一来源)只能吃 disabled,不能吃 submitting。
   const composerProps = inputBar.match(/<RichComposer[\s\S]*?\/>/)?.[0] || '';

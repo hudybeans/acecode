@@ -89,7 +89,7 @@ export function ModelProbeDialog({
               type="button"
               onClick={onRefresh}
               disabled={status === 'loading'}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2.5 text-[10px] font-medium text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2.5 text-[10px] font-normal text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
             >
               <RefreshIcon size={11} className={status === 'loading' ? 'animate-spin' : ''} />
               重新探测
@@ -176,7 +176,7 @@ export function ModelProbeDialog({
                     className="h-[17px] w-[17px] shrink-0 accent-accent"
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[11px] font-medium text-fg">
+                    <span className="block truncate text-[11px] font-normal text-fg">
                       {model.name || model.id}
                     </span>
                     <span className="block truncate text-[10px] text-fg-mute">{model.id}</span>
@@ -201,7 +201,7 @@ export function ModelProbeDialog({
             data-ace-dialog-primary="true"
             onClick={confirmSelection}
             disabled={status !== 'ready' || selectedModelIds.length === 0}
-            className="h-8 rounded-md bg-accent px-4 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-md bg-accent px-4 text-[11px] font-normal text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
           >
             添加所选模型
           </button>

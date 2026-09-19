@@ -168,13 +168,13 @@ run('file-tree Add to conversation inserts a path without reading file contents'
   assert.doesNotMatch(fileContextFlow, /无法引用二进制文件|文件过大，无法引用/);
 });
 
-run('drop overlay uses a themed blur fallback and Slate tags own their gutter', () => {
+run('drop overlay uses a themed blur fallback and Slate tags keep symmetric spacing', () => {
   const styles = source('styles/globals.css');
 
   assert.match(styles, /\.ace-chat-file-drop-overlay\s*\{[\s\S]*pointer-events:\s*none;[\s\S]*background:\s*rgba\(var\(--ace-bg-rgb\), 0\.7\);/);
   assert.match(styles, /@supports \(\(-webkit-backdrop-filter:[\s\S]*\.ace-chat-file-drop-overlay\s*\{[\s\S]*backdrop-filter:\s*blur\(2\.5px\) saturate\(0\.72\);/);
   assert.match(styles, /\.ace-chat-file-drop-prompt\s*\{[\s\S]*background:\s*rgba\(var\(--ace-surface-rgb\), 0\.94\);/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*\.ace-chat-file-drop-overlay\s*\{\s*animation:\s*none;/);
-  assert.match(styles, /\.ace-cmd-token\.ace-slate-inline-tag\s*\{\s*margin:\s*1px 5px 1px 0;/);
+  assert.match(styles, /\.ace-slate-inline-tag > \.ace-cmd-token\s*\{[^}]*margin:\s*1px 0;[^}]*padding:\s*0 5px;/);
   assert.match(styles, /\.ace-cmd-token\s*\{[\s\S]*margin-right:\s*1px;/);
 });

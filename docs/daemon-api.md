@@ -239,6 +239,7 @@ update their transcript presentation.
 | POST | `/api/history` | append input history |
 | GET | `/api/workspaces` | list registered workspaces |
 | POST | `/api/workspaces` | register cwd as workspace |
+| PUT | `/api/workspaces/order` | persist visible workspace order |
 | POST | `/api/workspaces/pick-folder` | desktop native folder picker |
 | GET | `/api/projects/defaults` | new-project default parent directory |
 | POST | `/api/projects` | create and register a new project directory |
@@ -349,7 +350,7 @@ update their transcript presentation.
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
 | GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
-| POST | `/api/themes/first-run` | durably claim the one-time National Day startup attempt |
+| POST | `/api/themes/first-run` | legacy compatibility: durably claim the one-time National Day startup attempt |
 | POST | `/api/themes/import/preview` | validate a raw theme ZIP and return a read-only preview |
 | POST | `/api/themes/import?sha256=<digest>` | import the same previewed ZIP after confirmation |
 | GET | `/api/themes/job` | current theme download progress |
@@ -368,6 +369,8 @@ update their transcript presentation.
 | PUT | `/api/config/custom-instructions` | write custom instructions |
 | GET | `/api/config/connectors` | read connector settings |
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
+| GET | `/api/config/computer-use` | read computer control availability and pointer appearance |
+| PUT | `/api/config/computer-use` | partially update the switch or pointer appearance |
 | GET | `/api/config/summary-generation` | read summary-model override and available models |
 | PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
@@ -405,8 +408,10 @@ update their transcript presentation.
 | GET | `/api/update/jobs/:id` | poll one WebUI update job |
 | POST | `/api/update/jobs/:id/cancel` | cancel one WebUI update job before installation |
 | GET | `/api/mcp` | read MCP config |
-| PUT | `/api/mcp` | write MCP config |
-| POST | `/api/mcp/reload` | currently returns 501 |
+| GET | `/api/mcp/schema` | read MCP configuration JSON schemas |
+| PUT | `/api/mcp` | validate, persist, and apply MCP config |
+| POST | `/api/mcp/toggle` | validate and persist one server's enabled state |
+| POST | `/api/mcp/reload` | validate/recover persisted config and apply it |
 | GET | `/api/feedback/desktop/recent-sessions` | list sessions for feedback attachment |
 | POST | `/api/feedback/desktop` | package and upload desktop feedback |
 | GET | `/api/pty/shells` | list console shell choices |
@@ -523,6 +528,29 @@ disabled, the write is silently ignored.
 
 Returns `Workspace[]`. The registry is scanned before listing. If no registry
 is available, the compatibility workspace may be returned.
+
+When a workspace order has been saved, visible workspaces follow that order;
+new workspaces are appended. Hidden workspaces retain their saved positions
+without appearing in this response. The same order is used by the Desktop
+workspace bridge and survives daemon restarts and loopback port changes.
+
+### `PUT /api/workspaces/order`
+
+Body and successful response:
+
+```json
+{"hashes":["workspace-hash-b","workspace-hash-a"]}
+```
+
+The request must contain every currently visible workspace hash exactly once.
+The registry atomically saves the order in `projects/workspace_order.json`;
+existing workspace markers and sessions are unchanged. Hidden hashes keep
+their saved slots when visible workspaces are reordered. Errors:
+
+- `400` malformed JSON, missing/non-array `hashes`, non-string, empty or duplicate hashes
+- `409` `WORKSPACE_ORDER_CONFLICT` for unknown/hidden hashes or an incomplete visible list
+- `500` save failure; the previously confirmed order remains intact
+- `503` workspace registry unavailable
 
 ### `POST /api/workspaces`
 
@@ -931,16 +959,32 @@ storage directly; they do not call the daemon HTTP API:
 |---|---|
 | `create_thread` | create a background thread and queue its initial prompt |
 | `fork_thread` | fork completed persisted history into a new thread |
-| `list_threads` | return pinned threads plus a bounded recent list |
-| `read_thread` | read bounded, cursor-paginated turns |
+| `list_threads` | globally list pinned threads plus cursor-paginated recent threads |
+| `read_thread` | read bounded, cursor-paginated turns from any workspace |
 | `send_message_to_thread` | queue a follow-up prompt |
-| `wait_threads` | wait for up to eight targets using event cursors |
+| `wait_threads` | wait for up to eight targets across workspaces using event cursors |
 | `set_thread_title` | rename a thread |
 | `set_thread_pinned` | update the existing pinned-session state |
 | `set_thread_archived` | archive or unarchive a thread |
 | `delete_thread` | permanently delete a thread and all descendants |
 | `repair_thread` | append a deterministic repair checkpoint to another thread |
 | `create_workspace` | register an existing absolute directory as a visible workspace |
+
+`list_threads`, `read_thread`, and `wait_threads` discover sessions across the
+entire ACECode data directory, including hidden/unregistered workspaces and
+workspace-free sessions. A caller cwd is not required. List rows include
+`workspaceHash` (the storage project hash, also for workspace-free sessions),
+`cwd`, `noWorkspace`, `workspaceName`, and `workspaceVisible` as metadata.
+Child sessions retain `parentThreadId`. The list excludes archived sessions
+unless `includeArchived:true`; explicit reads can access archived sessions.
+All non-archived pins are returned in `pinnedThreads`, ordered by project hash
+and then that project's persisted pin order. Only `threads` is subject to
+`limit` (default 20, maximum 50). Pass `nextCursor` back as `cursor` to read
+the next page; it is an offset into the current ordering, not a frozen snapshot.
+`errors` reports incomplete project scans. `read_thread` and each `wait_threads`
+target accept optional `workspaceHash` from the list for direct lookup and
+disambiguation when the same `threadId` exists in multiple projects.
+Creation and mutation tools retain their existing calling-workspace semantics.
 
 `delete_thread` also removes search-index and pin records. It may target its
 calling thread, including a cascade whose tree contains the caller. In that
@@ -1208,6 +1252,42 @@ into the new session with new IDs, and saves the restored structured draft.
 Structured attachment references in the retained history are also copied and
 remapped, including their provider content parts and preview records; recalling
 those messages does not depend on the source session's attachment storage.
+
+### `POST /api/sessions/:id/messages/retry`
+
+Retries the trailing user message, or the last user message of a manually
+stopped turn, in an idle live session. Body:
+
+```json
+{"expected_user_message_id":"persisted-user-message-id"}
+```
+
+The request accepts only this field. The backend verifies the full visible
+transcript and model history end with that user message, with no active or
+queued work. It checks again when the worker starts. Hidden bookkeeping
+records do not count as transcript messages; assistant (including empty
+messages), tool, system and error messages prevent ordinary retry.
+
+A completed manual stop persists a transcript-only system message with
+`metadata.user_aborted: true` and `metadata.retry_user_message_id`. If that
+marker is the final visible transcript entry, the backend may retry its
+specified last user message even after partial assistant output or tool
+results. A stop request alone, an interjection, or plain interruption text
+does not grant this exception. Later visible events invalidate it.
+Already streamed text is saved as an assistant message with
+`metadata.transcript_only: true` and `metadata.interrupted_output: true`, so
+history reloads retain it without sending incomplete output/tool calls back
+to the provider.
+
+The original message, attachments and context are reused. If model history
+still ends with that user, no user record is appended. If an aborted turn
+already has assistant/tool records, they are preserved and the original
+structured user content is appended with a new identity, without expanding
+skills again or creating adjacent user messages. The stop marker is never
+sent to the model. Returns `202 {"queued":true,"user_message_id":"..."}`;
+malformed requests return `400`, and unavailable sessions, stale message IDs
+or active/queued work return `409`. This endpoint does not create or resume a
+session, expand commands, or accept new input.
 
 ### `POST /api/sessions/:id/messages`
 
@@ -2911,7 +2991,9 @@ Returns:
   "show_acecode_avatar": false,
   "theme": "system",
   "color_theme": "blue",
-  "font_size": "medium"
+  "font_size": "medium",
+  "sidebar_session_time": true,
+  "message_auto_collapse": true
 }
 ```
 
@@ -2920,6 +3002,11 @@ Returns:
 are stored in `~/.acecode/config.json`, so Desktop restores them even when its
 managed daemon uses a different loopback port. The avatar preference is kept
 for compatibility and is always normalized to `false`.
+
+`message_auto_collapse` is a boolean, defaulting to `true` for new and legacy
+configurations. When `false`, main and subagent conversations display messages
+without activity/turn folding; individual tool calls remain collapsible.
+The preference is persisted and included in the Desktop appearance bootstrap.
 
 ### `PUT /api/config/ui-preferences`
 
@@ -3048,9 +3135,13 @@ migration. It atomically creates `themes/.national-day-2026-attempted` and retur
 `{"id":"national-day-2026","claimed":true}` only to the first claimant; later
 requests return `claimed:false`. It neither downloads nor changes appearance.
 The marker persists across failures, process restarts and application upgrades.
-After restoring canonical appearance preferences, the first Web/Desktop client
-automatically installs the National Day package using the same exact integrity
-metadata with `automatic:true`, or reuses a valid installation. Automatic jobs
+当前 Web/Desktop 客户端恢复外观后不再调用此接口，也不自动下载或应用国庆节主题。
+新配置使用蓝色和跟随系统的明暗模式，已有配置保留已保存的主题。接口继续保留，
+兼容旧版客户端；以下自动任务行为仅适用于仍调用此接口的旧版启动流程。
+
+After restoring canonical appearance preferences, a legacy Web/Desktop client
+can automatically install the National Day package using the same exact integrity
+metadata with `automatic:true`, or reuse a valid installation. Automatic jobs
 retain that flag so every observing client suppresses their failure notifications.
 Application follows successful resource preparation. A later explicit theme
 choice wins, and persistence failures silently roll back the original appearance.
@@ -3334,6 +3425,33 @@ summary model gives `configured: false` and title generation skips that attempt
 without substituting another model. Disabling retains `model_name` and restores
 the previous title-resolution behavior, including the legacy override. This
 setting does not change the conversation model or disable automatic titles.
+
+### Computer use settings
+
+`GET /api/config/computer-use` returns `enabled` (default `false`),
+`supported` (currently Windows only), `platform` (`windows`, `macos`,
+or `linux`), `pointer_style` (`ace` by default, or `plain`), and `pointer_color`
+(default `#2563eb`). `PUT` accepts any subset of boolean `enabled`,
+`pointer_style`, and `pointer_color`; omitted fields keep their current values.
+Colors must be six-digit `#RRGGBB` and are normalized to lowercase. Both
+endpoints require authentication and return the persisted settings.
+Malformed JSON returns `400 BAD_JSON`, invalid fields return `400 BAD_REQUEST`,
+and enabling on another platform returns `400 COMPUTER_USE_PLATFORM_UNSUPPORTED`.
+Persistence errors return `500 PERSIST_FAILED` without changing the live switch.
+Pointer appearance can be saved while the tool is disabled and never enables it
+implicitly. The WebUI synchronizes the current theme accent color outside the
+settings panel too. Changes apply on the helper's next request without ending
+its session lease or invalidating an existing observation.
+
+Enabling registers the `computer_*` tools for subsequent model requests;
+disabling unregisters them and terminates the active desktop helper. An
+in-flight handler also checks the live gate, so stale calls cannot bypass a
+disabled setting. The UI reconciles uncertain save outcomes with a fresh GET.
+Window observations and PNG attachment metadata include a `cursor` object:
+`visible`, and when visible, `source` (`agent` or `system`), `x`, `y`,
+`hotspot_x`, `hotspot_y`, `width`, and `height`. All dimensions use that
+screenshot's pixels, including when the native window image was resized.
+See [Computer Use](computer-use.md) for native capabilities and platform limits.
 
 ### Image generation settings
 
@@ -3683,16 +3801,18 @@ packages also verify the installed backend before reporting success; a failed
 post-copy verification rolls back the installation. Version mismatch, timeout,
 invalid output and unsuccessful probe exit fail the job with an actionable error.
 
-On macOS, a daemon running from either the current-user
-`~/Applications/ACECode.app/Contents/MacOS/acecode-daemon` location or the
-supported system `/Applications/ACECode.app/Contents/MacOS/acecode-daemon`
-location installs a complete
+On macOS, a daemon running from `ACECode.app/Contents/MacOS/acecode-daemon`
+installs a complete
 `ACECode.app` update ZIP rather than copying files into `Contents/MacOS`. Before
-replacement, the daemon requires one of those exact non-symlinked install paths,
-a writable containing directory, a strict nested Apple signature, bundle
+replacement, the daemon requires an absolute, canonical, real `ACECode.app`
+with a real, writable containing directory, a strict nested Apple signature, bundle
 identifier `dev.acecode.desktop`, the selected manifest version, and the same
-Developer Team ID as the installed app. An app running from any other location
-fails the job without mutating that bundle.
+Developer Team ID and designated signing requirement as the installed app.
+Custom folders are supported as well as `~/Applications` and `/Applications`;
+App Translocation, symlinked paths, and apps nested in another `.app` are rejected.
+Read-only or otherwise unwritable locations require moving the app to a writable
+folder or installing manually; the updater does not elevate privileges. This does
+not change the separate personal-install destination policy.
 
 ### `GET /api/update/job`
 
@@ -3738,11 +3858,19 @@ Choosing restart later leaves the current process running. Normal browser and
 Edge-app compatibility clients do not own the desktop lifecycle, so they show
 manual full-exit-and-relaunch guidance instead of an automatic restart action.
 For a successful macOS bundle update, `backup_dir` identifies the retained
-`.ACECode.previous.app` beside the running installation.
+`.ACECode-<UUID>.previous.app` beside the running installation. Existing backups
+are not deleted or overwritten; retained backups require manual cleanup when no
+longer needed. The updater lock is opened without following symlinks and must be
+a regular, singly linked file owned by the current user.
 
 ### `GET /api/mcp`
 
-Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
+Reads global `mcp_servers` by default. Add `?workspace=<registered-workspace-hash>`
+to read only that project's `.acecode/mcp.json` entries. The same optional query
+applies to PUT, toggle, and reload. Unknown workspaces return `404`; filesystem
+paths are not accepted as workspace identifiers. `auth_token` is not returned.
+All MCP endpoints require the server's normal authentication and return
+`Cache-Control: no-store`.
 
 ```json
 {
@@ -3761,18 +3889,69 @@ Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
 
 ### `PUT /api/mcp`
 
-Overwrites `mcp_servers`. Body is an object keyed by server name. Success:
+Replaces the selected scope's server map. The body is an object keyed by server
+name, without a `mcp_servers` wrapper. Project files on disk use the wrapper;
+project definitions override matching global names only in that project,
+including disabled definitions. An empty project map removes those overrides.
+
+The raw body must pass the ACECode configuration JSON Schema before any
+persistence, in-memory publication, or runtime update. Omitted `auth_token`
+fields preserve previously saved tokens for the same server; an explicit empty
+string clears a token. Successful writes reconcile the runtime when available:
 
 ```json
-{"saved":true,"reload_required":true}
+{"saved":true,"reload_required":false,"applied":true}
 ```
+
+Without a runtime, saving still succeeds with `applied:false` and
+`reload_required:true`. Persistence failures return `500` without publishing the
+candidate to application configuration. Invalid JSON or schema violations
+return `400` with the complete schema and JSON Pointer diagnostics:
+
+```json
+{
+  "error": "MCP_CONFIG_INVALID",
+  "message": "MCP configuration failed schema validation",
+  "errors": [{"path": "/example/command", "message": "must be string"}],
+  "schema": {"$schema": "http://json-schema.org/draft-07/schema#", "title": "ACECode MCP server configuration"},
+  "specification_url": "https://modelcontextprotocol.io/specification/2026-07-28/schema"
+}
+```
+
+The schema above is abbreviated for documentation; responses include all
+validation rules. Diagnostics do not echo rejected configuration values.
+
+### `GET /api/mcp/schema`
+
+Returns `schema` (the server map accepted by PUT) and `document_schema` (the
+project file wrapper). These are ACECode client configuration schemas; the
+linked MCP specification describes protocol messages. Validation works offline.
+
+### `POST /api/mcp/toggle`
+
+Body: `{"name":"example","enabled":false}`. Both fields are required with
+their declared types. The complete resulting scope is validated and saved
+before updating runtime state. Unknown names return `404`. Success:
+
+```json
+{"name":"example","enabled":false,"applied":true,"retained_for_expert":false}
+```
+
+An explicitly selected expert may retain its server connection after disabling
+the default. Retention is scoped to the exact global/project owner.
 
 ### `POST /api/mcp/reload`
 
-Currently returns `501`:
+Re-reads the selected persisted configuration, validates it, and reconciles its
+runtime registrations and session capability policies. Invalid external edits
+restore the validated `<config-file>.mcp-last-good` snapshot and archive the
+invalid input. Global recovery replaces only `mcp_servers`; project recovery
+affects only that project file. If no valid snapshot exists, returns the schema
+error and starts no servers from the invalid configuration. Returns `503` when
+no runtime is available. Success:
 
 ```json
-{"error":"mcp reload not implemented in v1; restart daemon to pick up changes"}
+{"reloaded":true}
 ```
 
 ### `GET /api/feedback/desktop/recent-sessions?limit=N`
@@ -3966,17 +4145,22 @@ return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
 Body:
 
 ```json
-{"cwd":"C:/repo","title":"Terminal","shell":"powershell"}
+{"cwd":"C:/repo","title":"Terminal","shell":"powershell","owner_id":"session:abc"}
 ```
 
 `shell` is a shell id from `/api/pty/shells`. The daemon enforces a 16-session
 limit and returns `429` when exceeded.
+
+`owner_id` identifies the conversation (`session:<id>`) or temporary new-chat
+state (`draft:<id>`), independently of `cwd`. It is limited to 512 bytes.
+Omitting it preserves the legacy unowned terminal behavior.
 
 Session info:
 
 ```json
 {
   "id": "pty-1",
+  "owner_id": "session:abc",
   "title": "Terminal 1",
   "shell": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
   "cwd": "C:/repo",
@@ -3991,11 +4175,28 @@ Session info:
 
 ### `GET /api/pty`
 
+Optional `owner_id` query parameter filters by owner. Omitted means all terminals;
+an explicit empty value selects legacy unowned terminals. The WebUI always sends
+the current owner and never attaches legacy terminals to an arbitrary conversation.
+
 Returns:
 
 ```json
 {"backend":"conpty","sessions":[]}
 ```
+
+### `POST /api/pty/transfer-owner`
+
+```json
+{"from_owner":"draft:unique-id","to_owner":"session:new-session-id"}
+```
+
+Moves a new-chat draft's terminals to the newly created conversation without
+restarting processes, clearing buffers or disconnecting subscribers. Late creates
+with the old draft owner follow the transfer. Identical retries return `204`;
+invalid owner prefixes, an already occupied target or a conflicting prior transfer
+return `409`. A malformed body returns `400`. Existing conversation-to-conversation
+transfers are rejected. Uses the same loopback/auth checks as all PTY endpoints.
 
 ### `DELETE /api/pty/:id`
 

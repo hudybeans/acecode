@@ -122,8 +122,7 @@ run('activity chevrons sit beside content, reveal on hover, and stay visible for
   assert.notEqual(chevronIndex, -1);
   assert.ok(chevronIndex < spacerIndex);
   assert.ok(spacerIndex < trailingIndex);
-  assert.match(activityLine, /d="M4 6L8 10L12 6"/);
-  assert.match(activityLine, /strokeWidth="1\.2"/);
+  assert.match(activityLine, /<VsIcon\s+name="expandDown"\s+size=\{16\}/);
   assert.match(activityLine, /rotate\(\$\{expanded \? 0 : -90\}deg\)/);
   assert.doesNotMatch(activityLine, /name=\{expanded \? 'expandDown' : 'expandRight'\}/);
   assert.match(styles, /\.ace-activity-line-chevron\s*\{[\s\S]*?opacity:\s*0;/);
@@ -131,7 +130,7 @@ run('activity chevrons sit beside content, reveal on hover, and stay visible for
   assert.match(styles, /\.ace-activity-line-processed \.ace-activity-line-chevron\s*\{\s*opacity:\s*1;/);
   assert.match(
     styles,
-    /\.ace-activity-line-chevron svg\s*\{[\s\S]*?transition:\s*transform 150ms cubic-bezier\(\.2, 0, 0, 1\);/,
+    /\.ace-activity-line-chevron > \.ace-icon\s*\{[\s\S]*?transition:\s*transform 150ms cubic-bezier\(\.2, 0, 0, 1\);/,
   );
 });
 
@@ -161,7 +160,7 @@ run('expanded activity details quickly draw downward and release clipping after 
   assert.match(revealStyles, /animation:\s*ace-activity-details-reveal 150ms cubic-bezier\(\.2, 0, 0, 1\) both;/);
   assert.match(revealStyles, /\.ace-activity-details-reveal\.is-settled\s*\{\s*overflow:\s*visible;\s*animation:\s*none;/);
   assert.match(revealStyles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?animation:\s*none;/);
-  assert.match(revealStyles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.ace-activity-line-chevron svg\s*\{\s*transition:\s*none;/);
+  assert.match(revealStyles, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.ace-activity-line-chevron > \.ace-icon\s*\{\s*transition:\s*none;/);
   assert.match(renderer, /\{expanded && \(\s*<ActivityDetailsReveal>/);
   assert.match(renderer, /<TranscriptItems[\s\S]*?nested/);
 });

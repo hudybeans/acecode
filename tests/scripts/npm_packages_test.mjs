@@ -32,6 +32,7 @@ function fixture(t) {
     const dir = path.join(input, `acecode-${platform}`);
     resources(dir);
     write(dir, platform.startsWith('windows') ? 'acecode.exe' : 'acecode');
+    if (platform.startsWith('windows')) write(dir, 'acecode-computer-use.exe', 'computer-use-runtime');
     if (platform.startsWith('macos')) {
       write(dir, 'ACECode.app/Contents/MacOS/ACECode');
       resources(path.join(dir, 'ACECode.app/Contents/Resources'));
@@ -54,6 +55,12 @@ test('all six npm platforms preserve bridge assets and exclude runtime state', (
   assert.equal(result.status, 0, result.stderr);
   for (const platform of platforms) {
     const npmPlatform = platform.replace('windows-', 'win32-').replace('macos-', 'darwin-');
+    const helper = path.join(output, 'platform', npmPlatform, 'acecode-computer-use.exe');
+    if (platform.startsWith('windows')) {
+      assert.equal(fs.readFileSync(helper, 'utf8'), 'computer-use-runtime');
+    } else {
+      assert.equal(fs.existsSync(helper), false);
+    }
     const channel = path.join(output, 'platform', npmPlatform, 'channels/whatsapp');
     assert.deepEqual(fs.readdirSync(channel).sort(), [...assets].sort());
     for (const file of assets) assert.equal(fs.readFileSync(path.join(channel, file), 'utf8'), `channel:${file}`);
@@ -68,6 +75,22 @@ test('missing lockfile rejects a platform package before publication', (t) => {
   const result = run();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /linux-arm64.*missing WhatsApp bridge asset: package-lock.json/);
+});
+
+test('missing Windows Computer Use runtime rejects npm packaging', (t) => {
+  const { input, run } = fixture(t);
+  fs.unlinkSync(path.join(input, 'acecode-windows-arm64/acecode-computer-use.exe'));
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /windows-arm64.*acecode-computer-use\.exe/);
+});
+
+test('empty Windows Computer Use runtime rejects npm packaging', (t) => {
+  const { input, run } = fixture(t);
+  write(input, 'acecode-windows-x64/acecode-computer-use.exe', '');
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /windows-x64.*Computer Use runtime/);
 });
 
 test('macOS app bundle must also contain its bridge', (t) => {

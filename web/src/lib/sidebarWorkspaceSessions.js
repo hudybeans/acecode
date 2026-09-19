@@ -52,9 +52,10 @@ export function normalizeWorkspaceSessionListResponse(data) {
   return { sessions, total, totalExact, hasMore };
 }
 
-export function sidebarWorkspaceSessionListQuery({ full = false } = {}) {
+export function sidebarWorkspaceSessionListQuery({ full = false, pinnedIds = [] } = {}) {
   if (full) return {};
-  return { limit: SIDEBAR_SESSION_COLLAPSE_LIMIT };
+  // 服务端分页包含置顶项，多取这些名额，确保普通会话首批仍可显示五条。
+  return { limit: SIDEBAR_SESSION_COLLAPSE_LIMIT + normalizePinnedIds(pinnedIds).length };
 }
 
 // 已缓存的会话或已经完成过一次加载的空工作区都不应在后台刷新时重新显示
@@ -109,7 +110,19 @@ export function retainUnrefreshedSidebarSessions(
     }
   }
 
-  return reconcileSidebarSessions(previous, [...incoming, ...retained]);
+  let baseline = previous;
+  if (options.appendNewSessions === true) {
+    // 首次补齐的旧历史追加到已显示列表后，避免被当作新会话前置。
+    baseline = [...previous];
+    const baselineKeys = new Set(previous.map(sessionKey).filter(Boolean));
+    for (const session of incoming) {
+      const key = sessionKey(session);
+      if (!key || baselineKeys.has(key)) continue;
+      baselineKeys.add(key);
+      baseline.push(session);
+    }
+  }
+  return reconcileSidebarSessions(baseline, [...incoming, ...retained]);
 }
 
 export function workspaceHasCachedSidebarSessions(sessions = [], workspaceHash = '') {

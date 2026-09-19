@@ -29,7 +29,7 @@ test('sidebar restores one default-collapsed extension section with settled coun
   assert.match(sidebar, /api\.listExperts\(workspaceHash \|\| '__local__'\)/);
   assert.match(sidebar, /api\.listModels\(\)/);
   assert.match(sidebar, /const totalCount = sidebarCustomTotalCount\(counts\)/);
-  assert.match(sidebar, /<VsIcon name="extension" size=\{16\} \/>/);
+  assert.match(sidebar, /<VsIcon name="extension" size=\{18\} \/>/);
   assert.match(sidebar, />扩展<\/span>/);
   assert.match(sidebar, /data-sidebar-custom-section="true"/);
 });
@@ -82,12 +82,13 @@ test('extension disclosure supports accessible buttons and a stable hover icon s
   assert.match(css, /\.ace-sidebar-fixed-nav\s*\{\s*max-height: 55%;/);
 });
 
-test('compact title bar keeps its click targets while the footer owns the anchored menu', () => {
+test('padded title bar keeps its click targets while the footer owns the anchored menu', () => {
   const topbar = source('components/TopBar.jsx');
   const menu = source('components/SidebarQuickMenu.jsx');
   const css = source('styles/globals.css');
-  assert.match(css, /--ace-topbar-height: 30px;/);
-  assert.match(css, /--ace-topbar-control-size: calc\(var\(--ace-topbar-height\) - 6px\);/);
+  assert.match(css, /--ace-topbar-height: 41px;/);
+  assert.match(css, /--ace-topbar-control-size: 24px;/);
+  assert.match(css, /\.ace-topbar\s*\{[^}]*padding-top: 5px;\s*padding-bottom: 6px;/);
   assert.match(css, /\.ace-topbar-action\s*\{\s*width: var\(--ace-topbar-control-size\);\s*height: var\(--ace-topbar-control-size\);/);
   assert.match(css, /\.ace-topbar \.ace-window-control\s*\{[^}]*height: var\(--ace-topbar-control-size\);/);
   assert.doesNotMatch(topbar, /topbar-quick-actions-menu|aria-haspopup="menu"/);

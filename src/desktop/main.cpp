@@ -2217,6 +2217,7 @@ int main(int argc, char** argv) {
         {"color_theme", desktop_cfg.web_ui.color_theme},
         {"font_size", desktop_cfg.web_ui.font_size},
         {"sidebar_session_time", desktop_cfg.web_ui.sidebar_session_time},
+        {"message_auto_collapse", desktop_cfg.web_ui.message_auto_collapse},
     }.dump();
     const std::string startup_bootstrap = startup_timeline.snapshot_json();
     host.init_script(acecode::desktop::locale_bootstrap_script(

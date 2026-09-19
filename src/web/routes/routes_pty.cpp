@@ -40,6 +40,7 @@ static json pty_info_json(const PtySessionInfo& info) {
         {"title", info.title},
         {"shell", info.shell},
         {"cwd", info.cwd},
+        {"owner_id", info.owner_id},
         {"status", info.status},
         {"pid", info.pid},
         {"backend", pty_backend_kind_name(info.backend)},
@@ -129,23 +130,25 @@ void WebServer::Impl::register_pty() {
             return with_cors(req, std::move(r));
         });
 
-        // POST /api/pty {cwd?, title?, shell?} → 201 session info
+        // POST /api/pty {cwd?, title?, shell?, owner_id?} → 201 session info
         // shell = shell id(powershell/git-bash/cmd/...);省略 → 默认。id 不可用
         // (git-bash 需指定路径)→ 400 {error, shell, needs_path}。
         CROW_ROUTE(app, "/api/pty").methods(crow::HTTPMethod::POST)
         ([this](const crow::request& req) {
             if (auto rej = require_pty_access(req)) return std::move(*rej);
-            std::string cwd_override, title, shell_id;
+            std::string cwd_override, title, shell_id, owner_id;
             if (!req.body.empty()) {
                 try {
                     auto body = json::parse(req.body);
                     cwd_override = body.value("cwd", "");
                     title = body.value("title", "");
                     shell_id = body.value("shell", "");
+                    owner_id = body.value("owner_id", "");
                 } catch (...) {
                     return with_cors(req, crow::response(400, "bad json"));
                 }
             }
+            if (owner_id.size() > 512) return with_cors(req, crow::response(400, "owner_id too long"));
             std::string shell_override;
             if (!shell_id.empty()) {
                 ConsoleConfig console;
@@ -167,7 +170,7 @@ void WebServer::Impl::register_pty() {
                 return with_cors(req, crow::response(400, "no usable terminal; check Settings > Configuration"));
             }
             std::string error;
-            auto info = deps.pty_registry->create(cwd_override, title, shell_override, error);
+            auto info = deps.pty_registry->create(cwd_override, title, shell_override, error, owner_id);
             if (!info) {
                 int code = error.find("limit") != std::string::npos ? 429 : 500;
                 crow::response r(code);
@@ -185,7 +188,9 @@ void WebServer::Impl::register_pty() {
         ([this](const crow::request& req) {
             if (auto rej = require_pty_access(req)) return std::move(*rej);
             json arr = json::array();
-            for (const auto& info : deps.pty_registry->list()) {
+            const char* owner = req.url_params.get("owner_id");
+            const auto filter = owner ? std::optional<std::string>(owner) : std::nullopt;
+            for (const auto& info : deps.pty_registry->list(filter)) {
                 arr.push_back(pty_info_json(info));
             }
             json out{{"backend", pty_backend_kind_name(deps.pty_registry->backend())},
@@ -193,6 +198,23 @@ void WebServer::Impl::register_pty() {
             crow::response r(out.dump());
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        CROW_ROUTE(app, "/api/pty/transfer-owner").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req) {
+            if (auto rej = require_pty_access(req)) return std::move(*rej);
+            std::string from, to;
+            try {
+                const auto body = json::parse(req.body);
+                from = body.at("from_owner").get<std::string>();
+                to = body.at("to_owner").get<std::string>();
+            } catch (...) {
+                return with_cors(req, crow::response(400, "bad json"));
+            }
+            if (!deps.pty_registry->transfer_owner(from, to)) {
+                return with_cors(req, crow::response(409, "owner transfer conflict"));
+            }
+            return with_cors(req, crow::response(204));
         });
 
         // DELETE /api/pty/<id> → 204 / 404

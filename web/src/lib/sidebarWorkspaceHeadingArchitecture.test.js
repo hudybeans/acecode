@@ -77,7 +77,7 @@ test('reopening a collapsed workspace always restores the compact five-row sessi
   const toggleEnd = sidebar.indexOf('\n  const onActivate', toggleStart);
   const activateStart = sidebar.indexOf('const onActivate = useCallback(async (ws) => {');
   const activateEnd = sidebar.indexOf('\n  useEffect(() => {\n    const requestId = Number(workspaceActivationRequest', activateStart);
-  const collapseStart = sidebar.indexOf('if (collapsing) {\n      sessionListDisclosureCompactRef.current.add(hash);');
+  const collapseStart = sidebar.indexOf('sessionListDisclosureCompactRef.current.add(hash);\n    if (collapsing) {');
   assert.ok(toggleStart >= 0 && toggleEnd > toggleStart);
   assert.ok(activateStart >= 0 && activateEnd > activateStart);
   assert.ok(collapseStart >= 0);
@@ -101,9 +101,37 @@ test('reopening a collapsed workspace always restores the compact five-row sessi
   );
   assert.match(
     sidebar,
-    /if \(collapsing\) \{\s*sessionListDisclosureCompactRef\.current\.add\(hash\);/,
+    /sessionListDisclosureCompactRef\.current\.add\(hash\);\s*if \(collapsing\) \{/,
   );
   assert.match(sidebar, /loadWorkspaceSessions\(hash, \{\s*full: true,/);
+});
+
+test('workspace folder clicks only disclose and headings have no selected styling', () => {
+  const sidebar = source('components/Sidebar.jsx');
+  const rowStart = sidebar.indexOf('data-desktop-open-in-explorer-kind="workspace"');
+  const rowEnd = sidebar.indexOf('data-sidebar-workspace-actions="true"', rowStart);
+  assert.ok(rowStart >= 0 && rowEnd > rowStart);
+  const row = sidebar.slice(rowStart, rowEnd);
+  assert.match(row, /onClick=\{\(\) => onToggle\(ws\.hash\)\}/);
+  assert.match(row, /aria-expanded=\{expanded\}/);
+  assert.doesNotMatch(row, /onActivate\(|onNewSession\(|bg-accent-bg|aria-selected|aria-current/);
+  assert.match(sidebar, /onClick=\{\(e\) => \{ e\.stopPropagation\(\); onNewSession\(ws\); \}\}/);
+});
+
+test('manual session batches survive late data and count only non-pinned rows at the end', () => {
+  const sidebar = source('components/Sidebar.jsx');
+  const toggleStart = sidebar.indexOf('const toggleSessionListExpanded = useCallback(');
+  const toggleEnd = sidebar.indexOf('\n  useEffect(', toggleStart);
+  const toggle = sidebar.slice(toggleStart, toggleEnd);
+  assert.match(toggle, /const collapsing = action === 'collapse'/);
+  assert.doesNotMatch(toggle, /\.then\(/);
+  assert.match(sidebar, /sessionListTotal=\{sessionFullyLoadedWorkspaces\.has\(ws\.hash\) \? items\.length : sessionListTotals\.get\(ws\.hash\)\}/);
+  const controls = [...sidebar.matchAll(/<button\s+type="button"\s+onClick=\{\(\) => onToggleSessionList\?\.[\s\S]*?<\/button>/g)];
+  assert.equal(controls.length, 2);
+  for (const [control] of controls) {
+    assert.match(control, /hover:text-fg/);
+    assert.doesNotMatch(control, /hover:bg-|bg-accent/);
+  }
 });
 
 test('created sessions are explicitly promoted before active-row reveal', () => {
@@ -134,17 +162,16 @@ test('workspace rows expose a shared menu button followed by the new-task shortc
   assert.ok(menuIndex >= 0 && newTaskIndex > menuIndex);
   assert.equal((actions.match(/<button\b/g) || []).length, 2);
   assert.match(actions, /onClick=\{openWorkspaceContextMenu\}/);
-  assert.match(actions, /<VsIcon name="workspaceMenu" size=\{16\}/);
-  assert.match(actions, /<VsIcon name="newSession" size=\{16\}/);
+  assert.match(actions, /<VsIcon name="workspaceMenu" size=\{18\}/);
+  assert.match(actions, /<VsIcon name="newSession" size=\{18\}/);
   assert.doesNotMatch(actions, /<VsIcon name="(?:edit|close)"/);
 
   assert.match(icons, /workspaceMenu: 'WorkspaceMenu'/);
-  assert.match(workspaceMenuSvg, /viewBox="0 0 16 16"/);
-  assert.match(workspaceMenuSvg, /transform="matrix\(1 0 0 1 2 7\)"/);
-  assert.match(workspaceMenuSvg, /d="M0 1[^"]*M5 1[^"]*M10 1/);
+  assert.match(workspaceMenuSvg, /viewBox="0 0 20 20"/);
+  assert.equal((workspaceMenuSvg.match(/<circle\b/g) || []).length, 3);
+  assert.match(workspaceMenuSvg, /stroke="currentColor"/);
   assert.doesNotMatch(workspaceMenuSvg, /<(?:rect|polygon)\b|rotate\(/);
-  assert.match(iconGenerator, /WorkspaceMenu: 'MoreThree'/);
-  assert.match(iconGenerator, /WorkspaceMenu: `<svg[^`]*M0 1[^`]*M5 1[^`]*M10 1/);
+  assert.match(iconGenerator, /interfaceIcons\.js/);
 
   assert.match(
     workspaceGroup,

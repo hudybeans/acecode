@@ -43,13 +43,15 @@ ACECode 只使用两套字体栈,统一由 `web/src/styles/globals.css` 的 Tail
 
 ## 2. Section 标题
 
+设置界面只允许两级标题使用加粗字重：页面主标题（如“配置”）和一级分组标题（如“升级服务”）。字段名、选项、卡片名称、导航文字、列表项和更深层标题一律使用 `font-normal`（400），不要使用 `font-medium`、`font-semibold` 或 `font-bold`。需要强调时使用 `text-fg`，说明文字使用 `text-fg-mute`；选中状态也不增加字重。独立弹窗的主标题可保留加粗，弹窗内部仍遵守同一层级规则。
+
 每个 section 顶上一行 H2,然后空 5(`mb-5`)。
 
 ```jsx
 <h2 className="text-xl font-bold mb-5">常规</h2>
 ```
 
-## 3. 子分组(同 section 里的子小标题 + 描述)
+## 3. 一级分组(同 section 里的分组标题 + 描述)
 
 主标题 + 灰色描述,主标题 → 描述 → 内容 之间是 `mb-1` / `mb-3`:
 
@@ -66,14 +68,14 @@ ACECode 只使用两套字体栈,统一由 `web/src/styles/globals.css` 的 Tail
 ```jsx
 <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
   <div>
-    <div className="text-[13px] font-medium">最大轮次</div>
+    <div className="text-[13px] font-normal text-fg">最大轮次</div>
     <div className="text-[11px] text-fg-mute mt-0.5">单次 agent loop 的最大迭代数</div>
   </div>
   {/* 右侧:Toggle / 小 input / status pill / 下拉 / 按钮 */}
 </div>
 ```
 
-- 左侧主标 13px medium、副描述 11px fg-mute、行间 `mt-0.5`
+- 左侧主标 13px normal + fg、副描述 11px fg-mute、行间 `mt-0.5`
 - 卡片间隙 `mb-2`,padding `px-3.5 py-2.5`
 - 圆角 `rounded-md`,描边 `border-border`,底色 `bg-surface`
 
@@ -116,7 +118,7 @@ ACECode 只使用两套字体栈,统一由 `web/src/styles/globals.css` 的 Tail
         <div className="flex gap-1 mb-2">
           <span className="w-6 h-6 rounded border border-border" style={{ background: '#xxx' }} />
         </div>
-        <div className="text-[13px] font-semibold">{opt.label}</div>
+        <div className="text-[13px] font-normal text-fg">{opt.label}</div>
         {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
       </button>
     );
@@ -251,8 +253,9 @@ section 内不同子分组之间:
 写新 settings section / 类似管理面板时:
 
 - [ ] H2 用 `text-xl font-bold mb-5`
-- [ ] 子分组主标 `text-[14px] font-semibold mb-1` + 描述 `text-[12px] text-fg-mute mb-3`
-- [ ] 配置项用 § 4 行卡片(左 13px medium / 11px fg-mute,右 toggle/input/pill)
+- [ ] 一级分组标题 `text-[14px] font-semibold mb-1` + 描述 `text-[12px] text-fg-mute mb-3`
+- [ ] 仅主标题、一级标题可加粗；字段、卡片、选项、导航及更深层标题均为 400，强调使用文字颜色
+- [ ] 配置项用 § 4 行卡片(左 13px normal + fg / 11px fg-mute,右 toggle/input/pill)
 - [ ] 多选一用 § 4.1 row-radio,多选卡用 § 5 grid
 - [ ] input 走 § 6.0 / § 6.1 模板
 - [ ] 状态指示走 § 8 绿点

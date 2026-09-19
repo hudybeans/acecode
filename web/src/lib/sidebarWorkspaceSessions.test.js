@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { filterPinnedSessions } from './pinnedSessions.js';
 import {
   SIDEBAR_SESSION_COLLAPSE_LIMIT,
   sidebarSessionProjection,
@@ -159,6 +160,85 @@ test('retainUnrefreshedSidebarSessions can refresh the no-workspace list', () =>
   assert.deepEqual(result.map((session) => session.id), ['new-task', 'w1-session']);
 });
 
+test('first full history load appends older sessions after the visible first five', () => {
+  const incoming = Array.from({ length: 18 }, (_, index) => ({
+    id: String(index + 1),
+    workspace_hash: 'w1',
+    updated_at: `2026-09-${String(20 - index).padStart(2, '0')}T00:00:00Z`,
+    message_count: 2,
+  }));
+  const previous = incoming.slice(0, 5);
+  const result = retainUnrefreshedSidebarSessions(previous, incoming, {
+    refreshedWorkspaceHashes: ['w1'],
+    appendNewSessions: true,
+  });
+  assert.deepEqual(result.map((session) => session.id), incoming.map((session) => session.id));
+  assert.deepEqual(sidebarSessionProjection(result, 10).visibleSessions.map((session) => session.id),
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+  assert.equal(previous.length, 5);
+});
+
+test('first full history load preserves manual ordering and unrelated workspace rows', () => {
+  const incoming = Array.from({ length: 8 }, (_, index) => ({
+    id: String(index + 1),
+    workspace_hash: 'w1',
+  }));
+  const previous = [incoming[2], incoming[0], incoming[4], incoming[1], incoming[3], {
+    id: 'other-workspace',
+    workspace_hash: 'w2',
+  }];
+  const result = retainUnrefreshedSidebarSessions(previous, incoming, {
+    refreshedWorkspaceHashes: ['w1'],
+    appendNewSessions: true,
+  });
+  assert.deepEqual(result.map((session) => session.id),
+    ['3', '1', '5', '2', '4', 'other-workspace', '6', '7', '8']);
+});
+
+test('history completion still promotes known sessions whose content counters change', () => {
+  const previous = [
+    { id: 'a', workspace_hash: 'w1', message_count: 1 },
+    { id: 'b', workspace_hash: 'w1', message_count: 1 },
+  ];
+  const incoming = [
+    previous[0],
+    { ...previous[1], message_count: 2 },
+    { id: 'older', workspace_hash: 'w1', message_count: 8 },
+  ];
+  const result = retainUnrefreshedSidebarSessions(previous, incoming, {
+    refreshedWorkspaceHashes: ['w1'],
+    appendNewSessions: true,
+  });
+  assert.deepEqual(result.map((session) => session.id), ['b', 'a', 'older']);
+  assert.equal(result[0].message_count, 2);
+});
+
+test('ordinary refresh continues to promote previously unknown sessions', () => {
+  const previous = [{ id: 'known', workspace_hash: 'w1' }];
+  const incoming = [...previous, { id: 'new', workspace_hash: 'w1' }];
+  for (const appendNewSessions of [undefined, false]) {
+    const result = retainUnrefreshedSidebarSessions(previous, incoming, {
+      refreshedWorkspaceHashes: ['w1'],
+      appendNewSessions,
+    });
+    assert.deepEqual(result.map((session) => session.id), ['new', 'known']);
+  }
+});
+
+test('compact workspace requests leave five ordinary rows after pinned sessions are filtered', () => {
+  const sessions = Array.from({ length: 18 }, (_, index) => ({
+    id: `s${index}`,
+    workspace_hash: 'w1',
+  }));
+  const pinnedIds = ['s0', 's1', 's1', ''];
+  const query = sidebarWorkspaceSessionListQuery({ pinnedIds });
+  assert.deepEqual(query, { limit: 7 });
+  const page = sessions.slice(0, query.limit);
+  const ordinary = filterPinnedSessions(page, new Map([['w1', pinnedIds]]));
+  assert.equal(sidebarSessionProjection(ordinary).visibleSessions.length, 5);
+  assert.deepEqual(sidebarWorkspaceSessionListQuery({ full: true, pinnedIds }), {});
+});
+
 test('workspaceHasCachedSidebarSessions only matches that workspace', () => {
   const sessions = [
     { id: 'a', workspace_hash: 'w1' },
@@ -171,7 +251,7 @@ test('workspaceHasCachedSidebarSessions only matches that workspace', () => {
 
 test('sidebarSessionProjection uses reported total when the compact page is shorter', () => {
   const sessions = Array.from({ length: 5 }, (_, index) => ({ id: String(index) }));
-  const result = sidebarSessionProjection(sessions, false, SIDEBAR_SESSION_COLLAPSE_LIMIT, 12);
+  const result = sidebarSessionProjection(sessions, SIDEBAR_SESSION_COLLAPSE_LIMIT, SIDEBAR_SESSION_COLLAPSE_LIMIT, 12);
   assert.equal(result.collapsible, true);
   assert.equal(result.action, 'expand');
   assert.equal(result.hiddenCount, 7);

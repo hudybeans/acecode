@@ -259,7 +259,10 @@ def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
             ]))
     print("Would stage package files and run structural/runtime checks.")
     if "tui" in targets or platform != "darwin":
-        for component in ("models_dev_registry", "default_seed_bundle"):
+        components = ["models_dev_registry", "default_seed_bundle"]
+        if platform == "windows":
+            components.append("computer_use_runtime")
+        for component in components:
             print("  " + " ".join([
                 cmake_command, "--install", str(build_dir), "--config", "MinSizeRel",
                 "--prefix", str(staging), "--component", component,
@@ -341,7 +344,10 @@ def stage(report: Report, repo: Path, build_dir: Path, staging: Path,
             report.add("stage desktop binary", "pass", str(desktop_src))
 
     if "tui" in targets or platform != "darwin":
-        for component in ("models_dev_registry", "default_seed_bundle"):
+        components = ["models_dev_registry", "default_seed_bundle"]
+        if platform == "windows":
+            components.append("computer_use_runtime")
+        for component in components:
             if not run_tool(report, f"cmake install {component}",
                             [cmake, "--install", str(build_dir),
                              "--config", "MinSizeRel", "--prefix", str(staging),
@@ -352,6 +358,12 @@ def stage(report: Report, repo: Path, build_dir: Path, staging: Path,
 
 def structural_checks(report: Report, repo: Path, staging: Path,
                       platform: str, targets: list[str]) -> None:
+    if platform == "windows":
+        helper = staging / "acecode-computer-use.exe"
+        if helper.is_file() and helper.stat().st_size > 0:
+            report.add("computer use runtime adjacency", "pass")
+        else:
+            report.add("computer use runtime adjacency", "fail", f"missing or empty {helper}")
     if "tui" in targets or platform != "darwin":
         check_models_dev(report, "models_dev registry (staged share/)",
                          staging / "share" / "acecode" / "models_dev",

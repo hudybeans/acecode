@@ -37,7 +37,7 @@ test('sidebar custom settings keep the restored order and default collapsed stat
     { id: 'models', label: '模型', icon: 'brain', settingsSection: 'models' },
     { id: 'mcp', label: 'MCP 服务器', icon: 'mcp', settingsSection: 'mcp' },
     { id: 'skills', label: '技能', icon: 'lightbulb', settingsSection: 'skills' },
-    { id: 'experts', label: '专家组件', icon: 'brain', action: 'experts' },
+    { id: 'experts', label: '专家组件', icon: 'expert', action: 'experts' },
   ]);
   assert.equal(DEFAULT_SIDEBAR_CUSTOM_EXPANDED, false);
 });
@@ -88,15 +88,9 @@ test('sidebar sections render only when their count is positive', () => {
   assert.equal(sidebarSectionIsVisible(400), true);
 });
 
-test('sidebar disclosure icon preserves the exact confirmed SVG geometry', () => {
+test('sidebar disclosure uses the shared rounded chevron at the existing size', () => {
   assert.deepEqual(SIDEBAR_DISCLOSURE_ICON, {
-    width: 16,
-    height: 16,
-    viewBox: '0 0 16 16',
-    path: 'M4 6L8 10L12 6',
-    stroke: 'currentColor',
-    strokeWidth: 1.2,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
+    name: 'expandDown',
+    size: 18,
   });
 });

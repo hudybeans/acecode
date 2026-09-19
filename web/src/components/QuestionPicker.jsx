@@ -352,24 +352,24 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
       aria-label="AskUserQuestion"
       className={clsx('mb-2 shrink min-h-0 rounded-[14px] border border-border bg-surface ace-shadow-lg outline-none overflow-hidden flex flex-col', className)}
     >
-      <div className="min-h-11 shrink-0 px-4 py-2 border-b border-border bg-surface flex items-center gap-2">
+      <div className="min-h-11 shrink-0 px-3.5 py-2.5 border-b border-border bg-surface flex items-center gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
           {originLabel && (
-            <div className="text-[10px] text-fg-mute mb-0.5 truncate" title={originLabel}>
+            <div className="text-[11px] text-fg-mute mb-0.5 truncate" title={originLabel}>
               {originLabel}
             </div>
           )}
           {!collapsed && (
             <div
-              className="text-[15px] font-semibold text-fg whitespace-pre-wrap break-words"
+              className="text-[14px] font-semibold leading-normal text-fg whitespace-pre-wrap break-words"
               style={READABLE_TEXT_STYLE}
             >
               {question.text}
-              {isMulti && <span className="text-fg-mute text-[13px] font-normal ml-1.5">(可多选)</span>}
+              {isMulti && <span className="text-fg-mute text-[12px] font-normal ml-1.5">(可多选)</span>}
             </div>
           )}
           {collapsed && (
-            <div className="truncate text-[14px] font-medium text-fg-mute">{collapsedHint}</div>
+            <div className="truncate text-[13px] font-medium text-fg-mute">{collapsedHint}</div>
           )}
         </div>
 
@@ -378,14 +378,14 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
             type="button"
             onClick={goPrev}
             disabled={!nav.canGoPrev}
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
+            className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
             title="上一题 (Shift+Tab)"
             aria-label="上一题"
           >
             <VsIcon name="arrowLeft" size={14} />
           </button>
         )}
-        <div className={clsx('shrink-0 text-[13px] font-medium text-fg-mute tabular-nums', collapsed && 'ml-1')}>
+        <div className={clsx('shrink-0 text-[12px] text-fg-mute tabular-nums', collapsed && 'ml-1')}>
           {collapsed ? countdownLabel : countdownLabel}
         </div>
         {!collapsed && (
@@ -393,7 +393,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
             type="button"
             onClick={goNext}
             disabled={nav.isLast}
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
+            className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center text-fg-2 hover:bg-surface-hi disabled:opacity-40 disabled:cursor-not-allowed transition"
             title="下一题 (Tab)"
             aria-label="下一题"
           >
@@ -403,7 +403,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
         <button
           type="button"
           onClick={() => setCollapsed((value) => !value)}
-          className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-fg-2 hover:bg-surface-hi transition"
+          className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center text-fg-2 hover:bg-surface-hi transition"
           title={collapsed ? '展开' : '折叠'}
           aria-label={collapsed ? '展开' : '折叠'}
         >
@@ -413,7 +413,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
 
       {collapsed ? null : (
         <>
-          <div className="px-2 py-2.5 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
+          <div className="px-2 py-2 min-h-0 flex-1 overflow-y-auto ace-scrollbar">
             {question.options.map((opt, index) => {
               const selected = answer.selected?.includes(opt.value);
               const focused = focusIndex === index;
@@ -438,7 +438,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                   }}
                   style={SELECTABLE_OPTION_STYLE}
                   className={clsx(
-                    'group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition',
+                    'group flex items-center gap-3 rounded-md px-3.5 py-3 cursor-pointer transition',
                     selected
                       ? 'bg-accent-bg border border-transparent text-accent'
                       : focused
@@ -451,7 +451,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 >
                   <span
                     className={clsx(
-                      'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                      'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
                       selected
                         ? 'bg-accent text-white border-accent'
                         : 'border-fg-mute text-fg-mute',
@@ -460,20 +460,20 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                     {selected ? (
                       <VsIcon name="check" size={13} mono={false} />
                     ) : (
-                      <span className="text-[11px] font-semibold tabular-nums">{index + 1}</span>
+                      <span className="text-[11px] font-medium tabular-nums">{index + 1}</span>
                     )}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[15px] font-semibold text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
+                    <span className="block text-[13px] font-medium leading-normal text-fg whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
                       {opt.label}
                       {opt.recommended && (
-                        <span className="ml-1.5 align-middle text-[11px] font-medium text-fg-mute border border-border rounded px-1 py-0.5">
+                        <span className="ml-1.5 align-middle text-[11px] font-normal text-fg-mute border border-border rounded px-1 py-0.5">
                           [推荐]
                         </span>
                       )}
                     </span>
                     {opt.description && (
-                      <span className="block mt-0.5 text-[12px] leading-[16px] text-fg-mute whitespace-pre-wrap break-words opacity-80 group-hover:opacity-100 transition" style={READABLE_TEXT_STYLE}>
+                      <span className="block mt-0.5 text-[11px] leading-normal text-fg-mute whitespace-pre-wrap break-words" style={READABLE_TEXT_STYLE}>
                         {opt.description}
                       </span>
                     )}
@@ -483,7 +483,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                       type="button"
                       onClick={(event) => copyOption(index, event)}
                       className={clsx(
-                        'h-6 px-2 rounded-full text-[11px] font-medium border transition flex items-center gap-1',
+                        'h-7 px-2 rounded-md text-[12px] border transition flex items-center gap-1',
                         copied
                           ? 'text-ok border-transparent'
                           : 'text-fg-2 border-border bg-surface hover:bg-surface-hi',
@@ -494,7 +494,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                     <button
                       type="button"
                       onClick={(event) => { event.stopPropagation(); commitEnter(index); }}
-                      className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-fg-mute hover:bg-surface-hi hover:text-fg-2 transition"
+                      className="w-7 h-7 shrink-0 rounded-md flex items-center justify-center text-fg-mute hover:bg-surface-hi hover:text-fg-2 transition"
                       title="选择并进入下一题"
                       aria-label="选择并进入下一题"
                     >
@@ -505,11 +505,11 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
               );
             })}
 
-            <div className="mx-3 mt-1 mb-1 border-t border-border" />
+            <div className="mx-3.5 my-1 border-t border-border" />
 
             <div
               className={clsx(
-                'flex items-center gap-3 rounded-lg px-3 py-2.5 transition',
+                'flex items-center gap-3 rounded-md px-3.5 py-3 transition',
                 customActive
                   ? 'bg-accent-bg border border-transparent'
                   : focusIndex === customIndex
@@ -522,7 +522,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 type="button"
                 onClick={toggleCustom}
                 className={clsx(
-                  'w-6 h-6 shrink-0 rounded-full flex items-center justify-center border transition',
+                  'w-5 h-5 shrink-0 rounded-full flex items-center justify-center border transition',
                   customActive
                     ? 'bg-accent text-white border-accent'
                     : 'border-fg-mute text-fg-mute',
@@ -532,7 +532,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 {customActive ? (
                   <VsIcon name="check" size={13} mono={false} />
                 ) : (
-                  <span className="text-[11px] font-semibold tabular-nums">{customIndex + 1}</span>
+                  <span className="text-[11px] font-medium tabular-nums">{customIndex + 1}</span>
                 )}
               </button>
               <input
@@ -545,22 +545,22 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 placeholder="输入你的答案"
                 maxLength={MAX_CUSTOM_LENGTH}
                 className={clsx(
-                  'min-w-0 flex-1 h-9 bg-transparent text-[14px] outline-none placeholder:text-fg-mute placeholder:text-[13px]',
+                  'min-w-0 flex-1 h-7 bg-transparent text-[13px] leading-normal outline-none placeholder:text-fg-mute',
                   customDraft ? 'text-fg-mute font-normal' : 'text-fg',
                 )}
 
               />
-              <span className="shrink-0 text-[12px] text-fg-mute tabular-nums">
+              <span className="shrink-0 text-[11px] text-fg-mute tabular-nums">
                 {(answer.custom || '').length}/{MAX_CUSTOM_LENGTH}
               </span>
             </div>
           </div>
-          <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+          <div className="shrink-0 flex items-center justify-end gap-2 border-t border-border px-3.5 py-2.5">
 
               <button
                 type="button"
                 onClick={cancel}
-                className="h-8 px-3 rounded-lg text-[13px] font-medium text-fg-2 bg-surface-hi hover:bg-surface-hi/60 transition whitespace-nowrap"
+                className="h-8 px-3 rounded-md border border-border text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt transition whitespace-nowrap"
               >
                 取消
               </button>
@@ -568,10 +568,10 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 <button
                   type="button"
                   onClick={nav.isLast ? submitAll : (nav.currentAnswered ? () => submitCurrent(currentIndex) : undefined)}
-                  className="h-8 px-3 rounded-lg text-[13px] font-medium bg-accent text-white hover:opacity-90 transition flex items-center gap-1.5 whitespace-nowrap"
+                  className="h-8 px-3 rounded-md text-[12px] bg-accent text-white hover:opacity-90 transition flex items-center gap-1.5 whitespace-nowrap"
                 >
                   {primaryBtnLabel}
-                  <span className="text-[10px] font-medium opacity-70 px-1.5 py-0.5 rounded">
+                  <span className="text-[11px] opacity-70 px-1 py-0.5 rounded">
                     {primaryKeyHint}
                   </span>
                 </button>
@@ -579,7 +579,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                 <button
                   type="button"
                   onClick={skipCurrent}
-                  className="h-8 px-3 rounded-lg text-[13px] font-medium text-fg-2 bg-surface-hi hover:bg-surface-hi/60 transition whitespace-nowrap"
+                  className="h-8 px-3 rounded-md border border-border text-[12px] text-fg-2 bg-surface-hi hover:bg-surface-alt transition whitespace-nowrap"
                 >
                   跳过
                 </button>

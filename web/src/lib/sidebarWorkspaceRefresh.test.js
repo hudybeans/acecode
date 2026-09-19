@@ -8,6 +8,7 @@ import * as sidebarSessions from './sidebarSessions.js';
 import * as pinnedSessions from './pinnedSessions.js';
 import * as auxiliaryFetch from './sidebarAuxiliaryFetch.js';
 import { applyStatusUpdate } from './sessionStatus.js';
+import { createWorkspaceFolderOrderController } from './workspaceFolderOrder.js';
 
 // Execute the production callbacks, including the await boundaries and state
 // setters. Testing only the sequence helper cannot expose a check before a later
@@ -42,12 +43,16 @@ function sessions(count, prefix = 'session') {
 
 const compactPage = () => ({ sessions: sessions(5), total: 20, has_more: true });
 
-function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pinned } = {}) {
+function fixture({
+  initialSessions = sessions(5), loaded = true, noWorkspace, pinned, cachedPinnedIds = [],
+  workspaceList, otherWorkspaces = [],
+} = {}) {
   const workspace = { hash: 'w', cwd: '/fixture', active: true };
   const state = {
     sessions: initialSessions,
     loading: new Set(), loaded: new Set(loaded ? ['w'] : []), fullyLoaded: new Set(),
-    totals: new Map(), statuses: new Map(), workspaces: [workspace],
+    totals: new Map(), statuses: new Map(), workspaces: [workspace, ...otherWorkspaces],
+    expandedSessionLists: new Map(),
   };
   const requests = [];
   const context = vm.createContext({
@@ -57,14 +62,14 @@ function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pi
     workspaces: state.workspaces, activeWorkspaceHash: 'w',
     revealTarget: { noWorkspace: false, workspaceHash: 'w' },
     api: {
-      listWorkspaces: async () => [workspace],
+      listWorkspaces: () => workspaceList?.promise || Promise.resolve([workspace, ...otherWorkspaces]),
       listSessions: () => noWorkspace?.promise || Promise.resolve([]),
       listWorkspaceSessions: (hash, query) => {
         const request = { hash, query, ...deferred() };
         requests.push(request);
         return request.promise;
       },
-      getPinnedSessions: () => pinned?.promise || Promise.resolve({ session_ids: [] }),
+      getPinnedSessions: () => pinned?.promise || Promise.resolve({ session_ids: cachedPinnedIds }),
       getNoWorkspacePinnedSessions: async () => ({ session_ids: [] }),
       getPinnedSessionOrder: async () => ({ items: [] }),
     },
@@ -73,8 +78,7 @@ function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pi
     desktopTaskbarBadgeAvailable: () => false,
     connection: { subscribeWorkspaceStatus() {} },
     refreshOpencodeImportPreview: async () => {},
-    syncRetainedSessionIds() {}, cancelSessionSelection() {}, onOpenHome() {},
-    setExpandedSessionLists() {},
+    syncRetainedSessionIds() {}, cancelSessionSelection() {}, onOpenHome() {}, onBeforeNavigate: null,
     setPinnedMap: (value) => { context.pinnedByWorkspaceRef.current = value; },
     setPinnedOrder: (value) => { context.pinnedOrderItemsRef.current = value; },
     updateExpanded: (updater) => { context.expandedRef.current = updater(context.expandedRef.current); },
@@ -91,7 +95,7 @@ function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pi
     workspaceCollapseAllRef: false, userCollapsedWorkspacesRef: new Set(),
     sessionListDisclosureCompactRef: new Set(),
     opencodePreviewProbedRef: new Set(),
-    pinnedByWorkspaceRef: new Map(), pinnedOrderItemsRef: [],
+    pinnedByWorkspaceRef: new Map([['w', cachedPinnedIds]]), pinnedOrderItemsRef: [],
   };
   for (const [name, current] of Object.entries(refs)) context[name] = { current };
   for (const [setter, key, ref] of [
@@ -102,13 +106,24 @@ function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pi
     ['setSessionListTotals', 'totals'],
     ['setStatusBySession', 'statuses'],
     ['setWorkspaces', 'workspaces'],
+    ['setExpandedSessionLists', 'expandedSessionLists'],
   ]) {
     context[setter] = (update) => {
       state[key] = typeof update === 'function' ? update(state[key]) : update;
       if (ref) context[ref].current = state[key];
       if (key === 'workspaces') context.workspaces = state[key];
+      if (key === 'fullyLoaded') context.sessionFullyLoadedWorkspaces = state[key];
+      if (key === 'loaded') context.sessionLoadedWorkspaces = state[key];
     };
   }
+  context.sessionFullyLoadedWorkspaces = state.fullyLoaded;
+  context.sessionLoadedWorkspaces = state.loaded;
+  context.NO_WORKSPACE_SESSION_LIST_KEY = pinnedSessions.NO_WORKSPACE_PIN_SCOPE;
+  context.workspaceOrderControllerRef = { current: createWorkspaceFolderOrderController({
+    getWorkspaces: () => state.workspaces,
+    setWorkspaces: context.setWorkspaces,
+    save: async (hashes) => ({ hashes }),
+  }) };
   for (const name of ['isNoWorkspaceSession', 'normalizeNoWorkspaceSession', 'normalizeWorkspaceSession']) {
     const node = ast.program.body.find((item) => item.type === 'FunctionDeclaration' && item.id.name === name);
     assert.ok(node, `Missing production helper ${name}`);
@@ -116,7 +131,7 @@ function fixture({ initialSessions = sessions(5), loaded = true, noWorkspace, pi
   }
   for (const name of [
     'setSessionWorkspaceLoading', 'setSessionWorkspacesLoaded', 'markWorkspaceSessionsFullyLoaded',
-    'applyWorkspaceSessionList', 'loadWorkspaceSessions', 'refresh', 'onActivate',
+    'applyWorkspaceSessionList', 'loadWorkspaceSessions', 'toggleSessionListExpanded', 'refresh', 'onActivate',
   ]) installCallback(context, name);
   return { context, state, requests, workspace };
 }
@@ -251,6 +266,95 @@ test('visible session requests still start before slow pinned metadata resolves'
   await refresh;
   assert.equal(state.sessions.length, 5);
   assert.equal(state.totals.get('w'), 20);
+});
+
+test('early compact requests include cached pinned slots so five ordinary rows remain', async () => {
+  const { context, state, requests } = fixture({ cachedPinnedIds: ['session-0', 'session-1'] });
+  const refresh = context.refresh();
+  await nextTask();
+  assert.equal(requests[0].query.limit, 7);
+  requests[0].resolve({ sessions: sessions(7), total: 20, has_more: true });
+  await refresh;
+  assert.equal(requests.length, 1);
+  assert.equal(pinnedSessions.filterPinnedSessions(state.sessions, context.pinnedByWorkspaceRef.current).length, 5);
+});
+
+test('new pinned slots trigger a supplemental compact request after the early request', async () => {
+  const pinned = deferred();
+  const { context, state, requests } = fixture({ pinned });
+  const refresh = context.refresh();
+  await nextTask();
+  assert.equal(requests[0].query.limit, 5);
+  requests[0].resolve(compactPage());
+  pinned.resolve({ session_ids: ['session-0', 'session-1'] });
+  await nextTask();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].query.limit, 7);
+  requests[1].resolve({ sessions: sessions(7), total: 20, has_more: true });
+  await refresh;
+  assert.equal(pinnedSessions.filterPinnedSessions(state.sessions, context.pinnedByWorkspaceRef.current).length, 5);
+});
+
+test('a newer full result prevents stale compact pinned supplementation', async () => {
+  const pinned = deferred();
+  const { context, state, requests } = fixture({ pinned });
+  const refresh = context.refresh();
+  await nextTask();
+  requests[0].resolve(compactPage());
+  const full = context.loadWorkspaceSessions('w', { full: true });
+  requests[1].resolve(sessions(20));
+  await full;
+  pinned.resolve({ session_ids: ['session-0', 'session-1'] });
+  await refresh;
+  assert.equal(requests.length, 2, 'do not start a third request for a superseded compact page');
+  assert.equal(state.sessions.length, 20);
+  assert.equal(state.fullyLoaded.has('w'), true);
+});
+
+test('a pending full request is shared even when pinned metadata grows', async () => {
+  const pinned = deferred();
+  const { context, state, requests } = fixture({ pinned });
+  const full = context.loadWorkspaceSessions('w', { full: true });
+  const refresh = context.refresh();
+  await nextTask();
+  pinned.resolve({ session_ids: ['session-0', 'session-1'] });
+  await nextTask();
+  assert.equal(requests.length, 1);
+  requests[0].resolve(sessions(20));
+  await Promise.all([full, refresh]);
+  assert.equal(state.sessions.length, 20);
+  assert.equal(requests.length, 1);
+});
+
+test('first full history load retains manual order and expansion advances in five-row batches', async () => {
+  const initialSessions = sessions(5).reverse();
+  const { context, state, requests } = fixture({ initialSessions });
+  context.toggleSessionListExpanded('w');
+  assert.equal(state.expandedSessionLists.get('w'), 10);
+  assert.equal(requests.length, 1);
+  requests[0].resolve(sessions(20));
+  await nextTask();
+  assert.deepEqual(state.sessions.slice(0, 5).map((item) => item.id), initialSessions.map((item) => item.id));
+  context.toggleSessionListExpanded('w');
+  assert.equal(state.expandedSessionLists.get('w'), 15);
+  assert.equal(requests.length, 1, 'already full history is reused by later expansion batches');
+  context.toggleSessionListExpanded('w', 'collapse');
+  assert.equal(state.expandedSessionLists.has('w'), false);
+});
+
+test('refresh uses the real workspace order controller to preserve a concurrent folder reorder', async () => {
+  const workspaceList = deferred();
+  const other = { hash: 'other', cwd: '/other', active: false };
+  const { context, state, requests, workspace } = fixture({ workspaceList, otherWorkspaces: [other] });
+  const refresh = context.refresh();
+  assert.equal(await context.workspaceOrderControllerRef.current.reorder([other, workspace]), true);
+  workspaceList.resolve([workspace, other]);
+  await nextTask();
+  assert.deepEqual(state.workspaces.map((item) => item.hash), ['other', 'w']);
+  assert.equal(requests.length, 1);
+  requests[0].resolve(compactPage());
+  await refresh;
+  assert.deepEqual(state.workspaces.map((item) => item.hash), ['other', 'w']);
 });
 
 let failures = 0;

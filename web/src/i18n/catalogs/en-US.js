@@ -43,7 +43,7 @@ export const enUS = {
       usage: 'Usage',
       skills: 'Skills',
       mcp: 'MCP servers',
-      connectors: 'Connectors',
+      connectors: 'Plugins',
       models: 'Models',
       tools: 'Tools',
       hooks: 'Hooks',

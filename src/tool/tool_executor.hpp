@@ -261,6 +261,9 @@ struct ToolImpl {
     // Exact owning MCP server ID. Empty for built-ins. This metadata is never
     // inferred from a qualified tool name.
     std::string source_owner;
+    // Observation tools can be read-only for permissions yet depend on the
+    // order of a stateful desktop session. Keep scheduling separate from it.
+    bool requires_serial_execution = false;
 };
 
 struct RegisteredToolInfo {
@@ -334,6 +337,7 @@ public:
 
     // Check if a tool is read-only (auto-approved)
     bool is_read_only(const std::string& name) const;
+    bool can_execute_in_parallel(const std::string& name) const;
 
     // Generate a formatted description of all registered tools for system prompt
     std::string generate_tools_prompt(

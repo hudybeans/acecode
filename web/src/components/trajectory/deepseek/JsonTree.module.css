@@ -188,19 +188,13 @@
   user-select: none;
 }
 
-.expander::before {
-  width: 0;
-  height: 0;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  border-left: 6px solid currentColor;
-  content: '';
-  transform: scale(0.75);
-  transform-origin: 33.333% center;
+.expanderGlyph {
+  flex: none;
+  transform-origin: center;
 }
 
-.collapseIcon::before {
-  transform: rotate(90deg) scale(0.75);
+.collapseIcon .expanderGlyph {
+  transform: rotate(90deg);
 }
 
 .expander:hover {

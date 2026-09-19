@@ -32,7 +32,7 @@ test('settings navigation uses the confirmed Codex-style groups', () => {
       {
         key: 'integrations',
         label: '集成',
-        items: ['技能', 'MCP 服务器', '连接器'],
+        items: ['技能', 'MCP 服务器', '插件'],
       },
       {
         key: 'coding',
@@ -93,7 +93,7 @@ test('SettingsPage renders accessible groups inside the scrollable navigation', 
   assert.match(source, /aria-labelledby=\{headingId\}/);
   assert.match(source, /aria-current=\{active \? 'page' : undefined\}/);
   assert.match(source, /<nav className="[^"]*overflow-y-auto/);
-  assert.match(source, /text-\[11px\] font-medium text-fg-mute/);
+  assert.match(source, /text-\[11px\] font-normal text-fg-mute/);
 });
 
 test('SettingsPage keeps search and labels available with compact content padding', () => {

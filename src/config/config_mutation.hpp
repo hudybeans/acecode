@@ -34,4 +34,8 @@ ConfigMutationResult mutate_config(
     const std::string& explicit_path = {},
     const AppConfig* seed_if_missing = nullptr);
 
+// Startup-only, fixed migration. Reuses the mutation locks and patches the raw
+// JSON so unrelated/unknown fields survive. Later calls preserve user choices.
+ConfigMutationResult disable_sandbox_once(const std::string& explicit_path = {});
+
 } // namespace acecode

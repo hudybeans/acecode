@@ -2,8 +2,7 @@
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
-// 其余 section (MCP / 使用情况) 当前部分为 UI 占位
-// — 状态走本地 useState,提交按钮无网络副作用,待后端接口就绪后接入。
+// MCP 配置按公共/项目范围通过 API 校验、持久化并应用到运行时。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +12,7 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
 import { SettingsSearch } from './SettingsSearch.jsx';
@@ -42,12 +42,13 @@ import {
 import { Modal, Toggle } from './Modal.jsx';
 import { ModelSettingsSection } from './model-settings/ModelSettingsSection.jsx';
 import { ImageGenerationSettings } from './ImageGenerationSettings.jsx';
+import { ComputerUseSettings } from './ComputerUseSettings.jsx';
 import { SummaryGenerationSettings } from './SummaryGenerationSettings.jsx';
 import { ToolRewriteSettings } from './ToolRewriteSettings.jsx';
 import { SecurityCenterSettings } from './SecurityCenterSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
-import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
+import { buildMcpServerList, countEnabledMcp, applyMcpToggle, mcpConfigErrorMessage } from '../lib/mcpServers.js';
 import { normalizeConnectorList, applyConnectorToggle } from '../lib/connectors.js';
 import { PERMISSION_MODES, normalizePermissionMode } from '../lib/permissionMode.js';
 import { sessionDisplayTitle } from '../lib/sessionTitle.js';
@@ -148,6 +149,8 @@ export function SettingsPage({
   onFontSizeChange = () => {},
   sidebarSessionTime = true,
   onSidebarSessionTimeChange = () => {},
+  messageAutoCollapse = true,
+  onMessageAutoCollapseChange = () => {},
 }) {
   const {
     theme,
@@ -284,7 +287,7 @@ export function SettingsPage({
                 <div
                   id={headingId}
                   className={clsx(
-                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
+                    'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
                     groupIndex === 0 ? 'pt-0' : 'pt-2',
                   )}
                 >
@@ -303,11 +306,11 @@ export function SettingsPage({
                       className={clsx(
                         'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
                         active
-                          ? 'text-fg font-semibold'
+                          ? 'text-fg font-normal'
                           : 'text-fg-2',
                       )}
                     >
-                      <VsIcon name={item.icon} size={15} className="shrink-0 opacity-80" />
+                      <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
                       <span className="truncate">{item.label}</span>
                     </button>
                   );
@@ -365,6 +368,8 @@ export function SettingsPage({
               onFontSizeChange={onFontSizeChange}
               sidebarSessionTime={sidebarSessionTime}
               onSidebarSessionTimeChange={onSidebarSessionTimeChange}
+              messageAutoCollapse={messageAutoCollapse}
+              onMessageAutoCollapseChange={onMessageAutoCollapseChange}
             />
           )}
           {activeNavKey === 'config' && <SettingsConfigSection />}
@@ -841,7 +846,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <label htmlFor="settings-ui-locale" className="text-[13px] font-medium">
+          <label htmlFor="settings-ui-locale" className="text-[13px] font-normal">
             {t('locale.label')}
           </label>
         </div>
@@ -878,7 +883,7 @@ function SectionGeneral({
                 active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
               )}
             >
-              <div className="text-[13px] font-semibold">{opt.label}</div>
+              <div className="text-[13px] font-normal">{opt.label}</div>
               <div className="text-[11px] text-fg-mute mt-1">{opt.desc}</div>
               {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
             </button>
@@ -907,7 +912,7 @@ function SectionGeneral({
         )}
       >
         <div>
-          <div className="text-[13px] font-medium">打开任务完成通知</div>
+          <div className="text-[13px] font-normal">打开任务完成通知</div>
           <div className="text-[11px] text-fg-mute mt-0.5">仅在 ACECode 窗口失去焦点且主任务完成时发送系统通知</div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
@@ -922,7 +927,7 @@ function SectionGeneral({
       {macAuthorizationAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">macOS 系统通知权限</div>
+            <div className="text-[13px] font-normal">macOS 系统通知权限</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               {notificationAuthorization.description}
             </div>
@@ -979,13 +984,13 @@ function SectionGeneral({
         <>
           <div className="flex items-center justify-between gap-4 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
             <div>
-              <div className="text-[13px] font-medium">新手指引</div>
+              <div className="text-[13px] font-normal">新手指引</div>
               <div className="text-[11px] text-fg-mute mt-0.5">从添加项目、开始新对话到模型设置</div>
             </div>
             <button
               type="button"
               onClick={onReplayGuidedTour}
-              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-semibold hover:opacity-90 transition"
+              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition"
             >
               重新查看新手指引
             </button>
@@ -1013,7 +1018,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">{p.label}</div>
+            <div className="text-[13px] font-normal">{p.label}</div>
             <div className="text-[11px] text-fg-mute mt-0.5">{p.hint}</div>
           </div>
           <div onClick={(e) => e.stopPropagation()}>
@@ -1030,7 +1035,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">默认打开目标</div>
+          <div className="text-[13px] font-normal">默认打开目标</div>
           <div className="text-[11px] text-fg-mute mt-0.5">默认打开文件和文件夹的位置</div>
         </div>
         <select
@@ -1045,7 +1050,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">最大轮次</div>
+          <div className="text-[13px] font-normal">最大轮次</div>
           <div className="text-[11px] text-fg-mute mt-0.5">单次 agent loop 的最大迭代数</div>
         </div>
         <input
@@ -1057,7 +1062,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">后台进程状态</div>
+          <div className="text-[13px] font-normal">后台进程状态</div>
           <div className="text-[11px] text-fg-mute mt-0.5">{health?.cwd || '—'}</div>
         </div>
         <span className="flex items-center gap-1.5 text-[12px] text-ok">
@@ -1068,7 +1073,7 @@ function SectionGeneral({
       {closeBehaviorAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">关闭窗口时</div>
+            <div className="text-[13px] font-normal">关闭窗口时</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               点击窗口右上角关闭按钮时执行的操作
             </div>
@@ -1111,7 +1116,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">
+            <div className="text-[13px] font-normal">
               退出 ACECode 后继续运行后台进程
             </div>
             <div className="text-[11px] text-fg-mute mt-0.5">
@@ -1136,7 +1141,7 @@ function SectionGeneral({
       >
         <div className="flex items-center justify-between gap-4">
           <div>
-            <div className="text-[13px] font-medium">远程 Web 模式</div>
+            <div className="text-[13px] font-normal">远程 Web 模式</div>
             <div className="text-[11px] text-fg-mute mt-0.5 max-w-lg">
               开启后会启动独立的反向代理进程，daemon 仍仅监听 127.0.0.1
             </div>
@@ -1212,7 +1217,7 @@ function SectionGeneral({
                   <button
                     type="button"
                     onClick={copyRemoteWebConnection}
-                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-medium hover:bg-surface-hi transition"
+                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-normal hover:bg-surface-hi transition"
                   >
                     复制连接
                   </button>
@@ -1250,6 +1255,8 @@ function SectionAppearance({
   onFontSizeChange,
   sidebarSessionTime,
   onSidebarSessionTimeChange,
+  messageAutoCollapse,
+  onMessageAutoCollapseChange,
 }) {
   return (
     <>
@@ -1265,7 +1272,7 @@ function SectionAppearance({
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">暗黑模式</div>
+          <div className="text-[13px] font-normal">暗黑模式</div>
           <div className="text-[11px] text-fg-mute mt-0.5">使用深色背景，关闭后使用浅色背景</div>
         </div>
         <Toggle
@@ -1287,7 +1294,7 @@ function SectionAppearance({
               aria-pressed={active}
               onClick={() => onFontSizeChange(opt.key)}
               className={clsx(
-                'h-8 rounded-md text-[13px] font-medium transition',
+                'h-8 rounded-md text-[13px] font-normal transition',
                 active
                   ? 'bg-accent text-white shadow-sm'
                   : 'text-fg-2 hover:bg-surface-hi hover:text-fg',
@@ -1302,12 +1309,25 @@ function SectionAppearance({
       <div className="text-[14px] font-semibold mb-1">侧边栏</div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[13px] font-normal">显示任务时间</div>
           <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
         </div>
         <Toggle
           on={sidebarSessionTime}
           onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
+      </div>
+      <div className="h-px bg-border my-5" />
+      <h3 className="text-[14px] font-semibold mb-1">会话</h3>
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div className="min-w-0">
+          <div id="message-auto-collapse-label" className="text-[13px] font-normal text-fg">消息自动折叠</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">关闭后展开所有消息，仅保留工具调用的折叠</div>
+        </div>
+        <Toggle
+          on={messageAutoCollapse}
+          onChange={onMessageAutoCollapseChange}
+          ariaLabel="消息自动折叠"
         />
       </div>
     </>
@@ -1342,7 +1362,7 @@ function SectionAbout({ health }) {
       {/* 程序版本 */}
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">当前版本</div>
+          <div className="text-[13px] font-normal">当前版本</div>
           <div className="text-[11px] text-fg-mute mt-0.5">ACECode 桌面 / TUI / Daemon 同版本号</div>
         </div>
         <span className="text-[12px] text-fg-2">{programVersionLabel}</span>
@@ -1350,7 +1370,7 @@ function SectionAbout({ health }) {
 
       <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div className="min-w-0">
-          <div className="text-[13px] font-medium">Web 核心</div>
+          <div className="text-[13px] font-normal">Web 核心</div>
           <div className="text-[11px] text-fg-mute mt-0.5">当前桌面 WebView / 浏览器渲染核心</div>
         </div>
         <div className="min-w-0 max-w-[62%] text-right">
@@ -1501,7 +1521,7 @@ function SkillCard({ skill, busyName, onToggle }) {
           <VsIcon name="lightbulb" size={18} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block break-words text-[13px] font-semibold leading-5 text-fg">{skill.name}</span>
+          <span className="block break-words text-[13px] font-normal leading-5 text-fg">{skill.name}</span>
           <span className="mt-0.5 block text-[10px] text-fg-mute">
             {skill.source === 'project' ? '工作区' : '全局'}
           </span>
@@ -1567,7 +1587,7 @@ function WorkspaceSkillGroup({
         <VsIcon name={expanded ? 'expandDown' : 'expandRight'} size={12} className="shrink-0 text-fg-mute" />
         <VsIcon name="folder" size={15} className="shrink-0 text-fg-2" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium truncate">{ws.name}</div>
+          <div className="text-[13px] font-normal truncate">{ws.name}</div>
           <div className="text-[11px] text-fg-mute truncate">{ws.cwd}</div>
         </div>
         <span className="text-[11px] text-fg-mute tabular-nums shrink-0">
@@ -1828,6 +1848,10 @@ function SectionSkills() {
 }
 
 function SectionMCP() {
+  const [workspace, setWorkspace] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [schema, setSchema] = useState(null);
+  const [configSchema, setConfigSchema] = useState(null);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1854,14 +1878,15 @@ function SectionMCP() {
     setLoading(true);
     setError('');
     try {
-      const cfg = await api.getMcp();
+      const cfg = await api.getMcp(workspace);
       const loadedText = JSON.stringify(cfg || {}, null, 2);
       lastSavedTextRef.current = loadedText;
       setText(loadedText);
       setSaved(false);
     } catch (e) {
-      setError('加载 MCP 失败:' + (e?.message || ''));
-      toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setLoading(false);
     }
@@ -1869,8 +1894,24 @@ function SectionMCP() {
 
   useEffect(() => {
     let cancelled = false;
+    api.listWorkspaces().then((rows) => {
+      if (!cancelled) setWorkspaces(normalizeWorkspaceList(rows));
+    }).catch(() => {});
+    api.getMcpSchema().then((result) => {
+      if (!cancelled) setConfigSchema(result?.schema || null);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    api.getMcp()
+    setText('');
+    setError('');
+    setSchema(null);
+    setSaved(false);
+    lastSavedTextRef.current = '';
+    api.getMcp(workspace)
       .then((cfg) => {
         if (!cancelled) {
           const loadedText = JSON.stringify(cfg || {}, null, 2);
@@ -1880,18 +1921,20 @@ function SectionMCP() {
       })
       .catch((e) => {
         if (!cancelled) {
-          setError('加载 MCP 失败:' + (e?.message || ''));
-          toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+          setSchema(e?.body?.schema || null);
+          setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+          toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
         }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [workspace]);
 
   const onChange = (value) => {
     setText(value);
+    setSchema(null);
     setSaved(false);
     try {
       JSON.parse(value);
@@ -1912,6 +1955,7 @@ function SectionMCP() {
   };
   const save = async (candidate = text) => {
     if (saving || loading) return false;
+    if (candidate === lastSavedTextRef.current) return true;
     let parsed;
     try {
       parsed = JSON.parse(candidate);
@@ -1924,19 +1968,19 @@ function SectionMCP() {
       setError('JSON 必须是对象');
       return false;
     }
-    if (candidate === lastSavedTextRef.current) return true;
-
     setError('');
     setSaving(true);
     setSaved(false);
     try {
-      await api.putMcp(parsed);
+      await api.putMcp(parsed, workspace);
       lastSavedTextRef.current = candidate;
+      setSchema(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
       return true;
     } catch (e) {
-      const msg = '保存失败:' + (e?.message || '');
+      const msg = '保存失败:' + mcpConfigErrorMessage(e);
+      setSchema(e?.body?.schema || null);
       setError(msg);
       toast({ kind: 'err', text: msg });
       return false;
@@ -1947,10 +1991,12 @@ function SectionMCP() {
   const reload = async () => {
     if (!await save()) return;
     try {
-      const result = await api.reloadMcp();
+      const result = await api.reloadMcp(workspace);
       toast({ kind: 'ok', text: 'Reload: ' + JSON.stringify(result) });
-    } catch {
-      toast({ kind: 'err', text: '当前 daemon 需要重启后加载 MCP 配置' });
+    } catch (e) {
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     }
   };
 
@@ -1973,7 +2019,7 @@ function SectionMCP() {
     setSaved(false);
     setTogglingName(name);
     try {
-      const res = await api.toggleMcpServer(name, enabled);
+      const res = await api.toggleMcpServer(name, enabled, workspace);
       if (res && res.applied === false) {
         toast({ kind: 'ok', text: `${name} 已${enabled ? '启用' : '关闭'};重启 daemon 后生效` });
       } else {
@@ -1984,7 +2030,9 @@ function SectionMCP() {
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       setText(prevText);
-      toast({ kind: 'err', text: '切换失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '切换失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setTogglingName('');
     }
@@ -1996,6 +2044,29 @@ function SectionMCP() {
     <>
       <h2 className="text-xl font-bold mb-5">MCP 服务器</h2>
 
+      <label className="flex flex-wrap items-center gap-3 mb-3 text-[13px]">
+        <span>配置范围</span>
+        <select
+          aria-label="MCP 配置范围"
+          value={workspace}
+          disabled={loading || saving || Boolean(togglingName)}
+          onChange={async (event) => {
+            const next = event.target.value;
+            if (next === workspace || !await save()) return;
+            setLoading(true);
+            setWorkspace(next);
+          }}
+          className="min-w-0 max-w-full h-8 px-2 rounded-md border border-border bg-surface-alt text-fg outline-none focus:border-accent"
+        >
+          <option value="">全局（所有项目）</option>
+          {workspaces.map((ws) => <option key={ws.hash} value={ws.hash}>{ws.name || ws.cwd}</option>)}
+        </select>
+      </label>
+      {workspace && (
+        <p className="text-[12px] text-fg-mute mb-3 break-all">
+          项目配置与全局配置叠加，同名服务器以项目配置为准。
+        </p>
+      )}
       <div className="text-[14px] font-semibold mb-1">服务器配置</div>
       <p className="text-[12px] text-fg-mute mb-3">
         直接编辑 JSON 配置 MCP 服务器连接(stdio / sse / http)
@@ -2016,10 +2087,12 @@ function SectionMCP() {
         style={{ minHeight: 380, tabSize: 2 }}
       />
       {error && (
-        <div className="mt-2 text-[12px] text-danger">{error}</div>
+        <div role="alert" className="mt-2 whitespace-pre-wrap break-words text-[12px] text-danger">{error}</div>
       )}
 
-      <div className="flex items-center justify-between gap-3 mt-3">
+      <McpSchemaDetails schema={schema || (error ? configSchema : null)} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
         <div className="min-w-0 text-[12px] text-fg-mute" aria-live="polite">
           {saving ? '保存中...' : (saved ? '已保存' : '')}
         </div>
@@ -2088,7 +2161,7 @@ function SectionMCP() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
+                    <div className="text-[13px] font-normal text-fg truncate">
                       {server.name}
                     </div>
                     <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-fg-mute shrink-0">
@@ -2132,7 +2205,7 @@ function SectionConnectors() {
     } catch (e) {
       const message = e?.message || String(e);
       setError(message);
-      toast({ kind: 'err', text: '加载连接器失败:' + message });
+      toast({ kind: 'err', text: '加载插件失败:' + message });
     } finally {
       setLoading(false);
     }
@@ -2150,7 +2223,7 @@ function SectionConnectors() {
         if (!cancelled) {
           const message = e?.message || String(e);
           setError(message);
-          toast({ kind: 'err', text: '加载连接器失败:' + message });
+          toast({ kind: 'err', text: '加载插件失败:' + message });
         }
       })
       .finally(() => {
@@ -2169,12 +2242,12 @@ function SectionConnectors() {
     try {
       const result = await api.setConnectors({ connectors: next });
       setConnectors(normalizeConnectorList(result));
-      toast({ kind: 'ok', text: enabled ? '连接器已启用' : '连接器已关闭' });
+      toast({ kind: 'ok', text: enabled ? '插件已启用' : '插件已关闭' });
     } catch (e) {
       const message = e?.message || String(e);
       setConnectors(before);
       setError(message);
-      toast({ kind: 'err', text: '连接器保存失败:' + message });
+      toast({ kind: 'err', text: '插件保存失败:' + message });
     } finally {
       setSavingId('');
     }
@@ -2184,14 +2257,14 @@ function SectionConnectors() {
     <>
       <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h2 className="text-xl font-bold mb-2">连接器</h2>
-          <p className="text-[12px] text-fg-mute">config.json 中配置的连接器</p>
+          <h2 className="text-xl font-bold mb-2">插件</h2>
+          <p className="text-[12px] text-fg-mute">config.json 中配置的插件</p>
         </div>
         <button
           type="button"
           onClick={load}
           disabled={loading || !!savingId}
-          title="刷新连接器"
+          title="刷新插件"
           className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-surface text-fg-2 hover:bg-surface-hi transition disabled:opacity-50"
         >
           <RefreshIcon size={15} className={clsx(loading && 'animate-spin')} />
@@ -2210,8 +2283,8 @@ function SectionConnectors() {
         </div>
       ) : connectors.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">暂无已配置连接器</div>
-          <div className="text-[12px] text-fg-mute">没有可显示的连接器。</div>
+          <div className="text-[14px] font-normal text-fg mb-1">暂无已配置插件</div>
+          <div className="text-[12px] text-fg-mute">没有可显示的插件。</div>
         </div>
       ) : (
         <div className="space-y-3 max-w-5xl">
@@ -2226,8 +2299,8 @@ function SectionConnectors() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
-                      {connector.name || '未命名连接器'}
+                    <div className="text-[13px] font-normal text-fg truncate">
+                      {connector.name || '未命名插件'}
                     </div>
                     <span
                       className={clsx(
@@ -2277,7 +2350,7 @@ function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
           <VsIcon name="globe" size={20} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium">Agent 浏览器</div>
+          <div className="text-[13px] font-normal">Agent 浏览器</div>
           <div className="text-[11px] text-fg-mute mt-0.5">
             这是一个内嵌浏览器。
           </div>
@@ -2288,6 +2361,7 @@ function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
       </div>
 
       <ImageGenerationSettings onCheckUpdates={onCheckUpdates} />
+      <ComputerUseSettings onCheckUpdates={onCheckUpdates} />
       <SummaryGenerationSettings onCheckUpdates={onCheckUpdates} onModelProfileUpdated={onModelProfileUpdated} />
 
       <ToolRewriteSettings onCheckUpdates={onCheckUpdates} />
@@ -2407,7 +2481,7 @@ function SectionHooks() {
         </div>
       ) : snapshot.isEmpty ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">{empty.title}</div>
+          <div className="text-[14px] font-normal text-fg mb-1">{empty.title}</div>
           <div className="text-[12px] text-fg-mute">{empty.body}</div>
         </div>
       ) : (
@@ -2427,7 +2501,7 @@ function SectionHooks() {
 
       {!loading && snapshot.diagnostics.length > 0 && (
         <div className="mt-4 rounded-md border border-border bg-surface px-3.5 py-3">
-          <div className="text-[12px] font-semibold text-fg-2 mb-2">发现诊断</div>
+          <div className="text-[12px] font-normal text-fg-2 mb-2">发现诊断</div>
           <div className="space-y-1">
             {snapshot.diagnostics.slice(0, 8).map((diag, index) => (
               <div key={`${diag.code}-${index}`} className="text-[11px] text-fg-mute">
@@ -2460,7 +2534,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="text-[13px] font-semibold text-fg truncate">{hook.eventName || 'Hook'}</div>
+            <div className="text-[13px] font-normal text-fg truncate">{hook.eventName || 'Hook'}</div>
             <HookBadge hook={hook} />
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-mute">
@@ -2501,7 +2575,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
               type="button"
               onClick={onTrust}
               disabled={busyTrust || busyDisable || busyEnable}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-medium hover:opacity-90 transition disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition disabled:opacity-50"
             >
               {busyTrust ? <span className="ace-spinner" /> : <VsIcon name="check" size={12} />}
               信任
@@ -2955,7 +3029,7 @@ function SectionArchived() {
                         className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
                       />
                       <div className="min-w-0 flex-1 basis-32">
-                        <div className="text-[13px] font-medium truncate" title={title}>{title}</div>
+                        <div className="text-[13px] font-normal truncate" title={title}>{title}</div>
                         <div className="text-[11px] text-fg-mute mt-0.5 truncate">
                           {relativeTime(item.updated_at || item.created_at)}
                         </div>
@@ -3096,7 +3170,7 @@ function SectionUsage() {
   ];
 
   return (
-    <>
+    <div className="ace-usage-page">
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-xl font-bold">使用情况</h2>
         <button
@@ -3131,11 +3205,11 @@ function SectionUsage() {
         <UsageEmptyState text={note} />
       ) : (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
+          <div className="ace-usage-token-details grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
             {tokenDetails.map(([label, value]) => (
               <div key={label} className="px-3 py-2.5 rounded-md bg-surface border border-border">
                 <div className="text-[11px] text-fg-mute mb-1">{label}</div>
-                <div className="text-[14px] font-semibold">{formatUsageTokens(value)}</div>
+                <div className="text-[14px] font-normal">{formatUsageTokens(value)}</div>
               </div>
             ))}
           </div>
@@ -3161,11 +3235,11 @@ function SectionUsage() {
                   <div className="flex items-center justify-between mb-2 gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
-                      <span className="text-[13px] font-semibold truncate">{m.label}</span>
+                      <span className="text-[13px] font-normal truncate">{m.label}</span>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
                       <span className="text-[12px] text-fg-mute">{formatCount(m.records, 'records')}</span>
-                      <span className="text-[13px] font-semibold">{formatUsageTokens(total)}</span>
+                      <span className="text-[13px] font-normal">{formatUsageTokens(total)}</span>
                     </div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden mb-1.5">
@@ -3200,10 +3274,10 @@ function SectionUsage() {
                 >
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div className="min-w-0">
-                      <div className="text-[13px] font-medium truncate">{w.workspaceName || 'workspace'}</div>
+                      <div className="text-[13px] font-normal truncate">{w.workspaceName || 'workspace'}</div>
                       <div className="text-[11px] text-fg-mute truncate">{w.cwd}</div>
                     </div>
-                    <div className="text-[13px] font-semibold shrink-0">{formatUsageTokens(total)}</div>
+                    <div className="text-[13px] font-normal shrink-0">{formatUsageTokens(total)}</div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden">
                     <div className="h-full bg-accent" style={{ width: `${width}%`, minWidth: total > 0 ? 6 : 0, opacity: 0.85 }} />
@@ -3218,7 +3292,7 @@ function SectionUsage() {
           </div>
         </>
       ))}
-    </>
+    </div>
   );
 }
 

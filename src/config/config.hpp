@@ -2,6 +2,7 @@
 
 #include "desktop_close_behavior.hpp"
 #include "saved_models.hpp"
+#include "../computer_use/pointer_appearance.hpp"
 #include "../utils/constants.hpp"
 
 #include <cstddef>
@@ -184,6 +185,8 @@ struct WebUiPreferencesConfig {
     // Sidebar session rows show a relative timestamp. Product default is on;
     // turning it off leaves the time visible only in the row hover card.
     bool sidebar_session_time = true;
+    // Collapse conversation activity; false keeps only individual tools foldable.
+    bool message_auto_collapse = true;
 };
 
 struct ModelsDevConfig {
@@ -298,6 +301,13 @@ struct WebSearchConfig {
     std::string rss_base_url = "https://ge.bigjuan.xyz/rss-search";
     int max_results = 5;        // Tool limit cap(min(limit, max_results, 10)).
     int timeout_ms = 8000;      // Per-backend HTTP timeout.
+};
+
+struct ComputerUseConfig {
+    // Desktop control is opt-in, including after loading a legacy config.
+    bool enabled = false;
+    std::string pointer_style = computer_use::pointer_appearance::kDefaultStyle;
+    std::string pointer_color = computer_use::pointer_appearance::kDefaultColor;
 };
 
 // 图像生成工具配置(openspec add-image-generation-tool)。
@@ -531,6 +541,8 @@ struct AppConfig {
     // Canonical values: default | auto | plan | yolo (accept-edits is read as auto).
     std::string default_permission_mode = "default";
     SandboxConfig sandbox;                       // bash 沙盒(openspec add-auto-mode-sandbox)
+    // Fixed one-time startup migration; keep separate from editable sandbox settings.
+    bool sandbox_disable_migration_completed = false;
     std::map<std::string, McpServerConfig> mcp_servers; // MCP stdio servers (optional)
     SkillsConfig skills;                         // skill system configuration (optional)
     MemoryConfig memory;                         // persistent user memory settings
@@ -549,6 +561,7 @@ struct AppConfig {
     LspConfig lsp;                               // LSP 集成(参见 add-lsp-service)
     WorktreeConfig worktree;                     // worktree 隔离(enter_worktree / --worktree)
     ImageGenerationConfig image_generation;      // 图像生成工具(参见 add-image-generation-tool)
+    ComputerUseConfig computer_use;              // Windows desktop control, explicitly enabled
     GitContextConfig git_context;                // git 感知(参见 add-git-context)
     RemoteControlConfig remote_control;          // TUI /remote-control channel 托管
     UpgradeConfig upgrade;                       // explicit self-upgrade command config

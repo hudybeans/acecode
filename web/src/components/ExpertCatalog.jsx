@@ -531,7 +531,7 @@ export function ExpertCatalog({
             </div>
           ) : (
             <div className="mt-4 flex min-h-[230px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface px-6 text-center">
-              <VsIcon name={type === 'team' ? 'extension' : 'brain'} size={26} className="text-fg-mute" />
+              <VsIcon name="expert" size={26} className="text-fg-mute" />
               <p className="mt-3 text-[13px] font-medium text-fg-2">
                 {query || tag !== 'all' ? '没有符合筛选条件的专家组件' : `还没有${type === 'team' ? '专家团' : '专家'}`}
               </p>

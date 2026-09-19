@@ -21,7 +21,7 @@ export function ModelConnectionCard({
     <section aria-labelledby={headingId}>
       <div className="mb-2 flex items-end justify-between gap-3">
         <div>
-          <h3 id={headingId} className="text-[13px] font-semibold text-fg">
+          <h3 id={headingId} className="text-[13px] font-normal text-fg">
             模型连接
           </h3>
           <p className="mt-0.5 text-[11px] leading-5 text-fg-mute">
@@ -41,9 +41,9 @@ export function ModelConnectionCard({
           />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[13px] font-medium text-fg">{title}</span>
+              <span className="text-[13px] font-normal text-fg">{title}</span>
               <span className={clsx(
-                'rounded border px-1.5 py-0.5 text-[10px] font-medium',
+                'rounded border px-1.5 py-0.5 text-[10px] font-normal',
                 authenticated
                   ? 'border-ok-border bg-ok-bg text-ok'
                   : 'border-border bg-surface-alt text-fg-mute',
@@ -61,7 +61,7 @@ export function ModelConnectionCard({
                 type="button"
                 onClick={onLogout}
                 disabled={busy}
-                className="h-8 rounded-md border border-border bg-surface px-3 text-[12px] font-medium text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+                className="h-8 rounded-md border border-border bg-surface px-3 text-[12px] font-normal text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
               >
                 退出连接
               </button>
@@ -70,7 +70,7 @@ export function ModelConnectionCard({
                 type="button"
                 onClick={onConnect}
                 disabled={busy || loading}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-normal text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-50"
               >
                 <VsIcon name="extension" size={13} />
                 {connectLabel}
@@ -85,7 +85,7 @@ export function ModelConnectionCard({
             <button
               type="button"
               onClick={() => onCopyCode?.(flow.user_code)}
-              className="rounded border border-border bg-surface-alt px-2 py-1 text-[12px] font-semibold tracking-wider text-fg transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent"
+              className="rounded border border-border bg-surface-alt px-2 py-1 text-[12px] font-normal tracking-wider text-fg transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent"
               aria-label={`复制 ${title} 验证码 ${flow.user_code || ''}`}
             >
               {flow.user_code || '—'}

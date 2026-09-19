@@ -225,8 +225,8 @@ function AddLoopDialog({ loop = null, template = null, models, defaultModelName,
 
         <div className="sticky bottom-0 h-[52px] px-5 flex items-center gap-3 border-t border-border bg-surface">
           <div className="mr-auto flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-[11px] font-medium text-fg-2">连接器</span>
-            <button type="button" disabled title="连接器暂不可用" className="h-8 min-w-[112px] px-2.5 rounded-md border border-dashed border-border text-left text-[11px] text-fg-mute disabled:cursor-not-allowed">暂无连接器</button>
+            <span className="shrink-0 text-[11px] font-medium text-fg-2">插件</span>
+            <button type="button" disabled title="插件暂不可用" className="h-8 min-w-[112px] px-2.5 rounded-md border border-dashed border-border text-left text-[11px] text-fg-mute disabled:cursor-not-allowed">暂无插件</button>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <button type="button" onClick={onClose} className="h-8 px-4 rounded-md border border-border text-[12px] hover:bg-surface-hi">取消</button>

@@ -36,6 +36,10 @@ Cell intensity SHALL use the current theme accent, empty cells SHALL use neutral
 - **WHEN** the settings content becomes narrower or wider
 - **THEN** the summary remains one row, all twelve month labels remain equally spaced, daily cells remain square, the chart fits the available width without horizontal scrolling, and increasing available width beyond 732 pixels does not enlarge the chart
 
+#### Scenario: 使用情况整页居中
+- **WHEN** 用户查看使用情况页面
+- **THEN** 使用情况整页 SHALL 在设置内容区水平居中，标题与刷新按钮、三项摘要、Token 活动图、六项 Token 统计、模型明细、工作区明细及加载、错误、空数据提示共用最大宽度 732 CSS 像素与一致的左右边界；窄窗口下填满可用宽度且无横向溢出
+
 #### Scenario: Annual request fails
 - **WHEN** the annual request fails while the 30-day summary succeeds
 - **THEN** the summary remains available and the calendar reports the failure rather than displaying zero consumption

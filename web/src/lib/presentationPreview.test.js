@@ -62,6 +62,25 @@ run('presentation frame embeds the renderer and a channel-bound bridge', () => {
   assert.match(html, /#ace-presentation-root section\[hidden\] \{ display: none !important;/);
 });
 
+run('presentation frame applies shared scrollbar styles inside its isolated document', () => {
+  const sharedStyles = '::-webkit-scrollbar { width: 12px; height: 12px; }';
+  const html = presentationFrameDocument('', 'channel-1', sharedStyles);
+  const headStyles = html.match(/<head>[\s\S]*?<style>([\s\S]*?)<\/style>/)?.[1];
+  assert.ok(headStyles?.includes(sharedStyles));
+  assert.match(headStyles, /#ace-presentation-viewport \{[^}]*overflow: auto;/);
+  const component = fs.readFileSync(new URL('../components/PresentationPreview.jsx', import.meta.url), 'utf8');
+  assert.match(component, /import scrollbarStyles from '\.\.\/styles\/scrollbars\.css\?raw'/);
+  assert.match(component, /presentationFrameDocument\(rendererSource, channel, scrollbarStyles\)/);
+});
+
+run('presentation scrollbar styles cannot terminate their containing style element', () => {
+  const styles = '/* </StYlE><script>unexpected()</script></style > */';
+  const html = presentationFrameDocument('', 'channel-1', styles);
+  assert.equal((html.match(/<\/style\s*>/gi) || []).length, 1);
+  assert.ok(html.includes('/* <\\/style><script>unexpected()</script><\\/style > */'));
+  assert.ok(html.indexOf('#ace-presentation-viewport') < html.indexOf('</style>'));
+});
+
 run('presentation messages require the exact frame, source, channel, and status', () => {
   const frameWindow = {};
   const valid = {

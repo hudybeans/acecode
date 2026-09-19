@@ -201,11 +201,11 @@ run('saved model capabilities stay beside the model name as accessible SVG icons
   capabilityTones.forEach((tone) => {
     assert.match(darkTheme, new RegExp(`--ace-capability-${tone}:\\s*#[0-9a-f]{6};`, 'i'));
   });
-  assert.match(globals, /\.model-capability-icon \.ace-icon\.ace-icon-fallback\s*\{[\s\S]*?overflow:\s*hidden;/);
-  assert.match(
-    globals,
-    /\.model-capability-icon \.ace-icon\.ace-icon-fallback\[data-monochrome="true"\] \.ace-icon-fallback-img\s*\{[\s\S]*?filter:\s*drop-shadow\(13px 0 0 currentColor\);[\s\S]*?opacity:\s*1;[\s\S]*?transform:\s*translateX\(-13px\);/,
-  );
+  const sharedIcon = source('components/Icon.jsx');
+  assert.match(sharedIcon, /stroke="currentColor"/);
+  assert.match(sharedIcon, /strokeWidth: iconStrokeWidth\(size, strong\)/);
+  assert.match(globals, /\.ace-icon\.ace-icon-inline\s*\{[\s\S]*?background-color:\s*transparent;[\s\S]*?mask-image:\s*none;/);
+  assert.doesNotMatch(globals, /ace-icon-fallback|drop-shadow\(13px 0 0 currentColor\)/);
 });
 
 run('latest successful provider probe owns the list and search until provider changes', () => {
