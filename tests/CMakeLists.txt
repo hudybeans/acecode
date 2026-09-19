@@ -63,6 +63,26 @@ file(GLOB_RECURSE ACECODE_TEST_SOURCES CONFIGURE_DEPENDS
 
 add_executable(acecode_unit_tests ${ACECODE_TEST_SOURCES})
 
+add_executable(acecode_runtime_log_fixture
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/helpers/runtime_log_fixture.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/append_file.cpp)
+target_include_directories(acecode_runtime_log_fixture PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/ftxui/src)
+if(MSVC)
+    set_target_properties(acecode_runtime_log_fixture PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+elseif(MINGW)
+    target_link_options(acecode_runtime_log_fixture PRIVATE -municode)
+endif()
+add_dependencies(acecode_unit_tests acecode_runtime_log_fixture)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME runtime_log_append
+        COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/runtime_log_append_test.py
+            $<TARGET_FILE:acecode_runtime_log_fixture>)
+    set_tests_properties(runtime_log_append PROPERTIES LABELS "unit" TIMEOUT 120)
+endif()
+
 add_executable(acecode_upgrade_version_fixture
     ${CMAKE_CURRENT_SOURCE_DIR}/upgrade/helpers/version_fixture.cpp)
 if(MSVC)

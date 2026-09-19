@@ -202,6 +202,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/startup_progress.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/strings.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/workspace_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/append_file.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/clipboard.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/cwd_hash.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/encoding.cpp
