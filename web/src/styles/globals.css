@@ -4265,6 +4265,7 @@ a.ace-thread-link:focus-visible {
   --ace-composer-selection-bg: Highlight;
   --ace-composer-selection-fg: HighlightText;
   position: relative;
+  isolation: isolate;
   display: block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -4297,7 +4298,10 @@ a.ace-thread-link:focus-visible {
   margin: 0;
 }
 .ace-slate-inline-tag {
+  position: relative;
+  display: inline-flex;
   max-width: 100%;
+  vertical-align: baseline;
   user-select: text;
   -webkit-user-drag: none;
 }
@@ -4310,10 +4314,10 @@ a.ace-thread-link:focus-visible {
 .ace-slate-attachment-tag {
   max-width: min(320px, calc(100vw - 96px));
 }
-.ace-slate-attachment-tag.is-uploading {
+.ace-slate-attachment-tag.is-uploading > .ace-cmd-token {
   opacity: 0.72;
 }
-.ace-slate-attachment-tag.is-previewable {
+.ace-slate-attachment-tag.is-previewable > .ace-cmd-token {
   cursor: text;
 }
 .ace-slate-attachment-name {
@@ -4325,7 +4329,6 @@ a.ace-thread-link:focus-visible {
 .ace-slate-attachment-remove {
   width: 14px;
   height: 14px;
-  margin-right: -3px;
   padding: 0;
   flex: 0 0 auto;
   display: inline-flex;
@@ -4344,7 +4347,7 @@ a.ace-thread-link:focus-visible {
   opacity: 1;
   outline: none;
 }
-.ace-slate-attachment-tag:focus-within {
+.ace-slate-attachment-tag:focus-within > .ace-cmd-token {
   background: var(--ace-accent-bg);
   border-color: var(--ace-accent);
 }
@@ -4368,8 +4371,16 @@ a.ace-thread-link:focus-visible {
   cursor: default;
   outline: none;
 }
-.ace-cmd-token.ace-slate-inline-tag {
-  margin: 1px 5px 1px 0;
+.ace-slate-inline-tag > .ace-cmd-token {
+  max-width: 100%;
+  margin: 1px 0;
+  padding: 0 5px;
+}
+.ace-slate-inline-tag .ace-file-type-glyph {
+  /* Seti glyph ink fills about half its em square. Scale only the ink so the
+     icon matches the label while its layout box and hit target remain 1em. */
+  transform: scale(2);
+  pointer-events: none;
 }
 .ace-cmd-token-glyph {
   flex: 0 0 auto;
@@ -4385,22 +4396,30 @@ a.ace-thread-link:focus-visible {
   border-color: var(--ace-accent);
 }
 
-/* Inline voids need a whole-tag selection fill; native selection only paints text. */
-.ace-cmd-token.ace-slate-inline-tag[data-composer-selected="true"] {
+/* The rectangular selection sits behind the original rounded badge. Keep this
+   layer in the editor's stacking context, below the tag's own surface/content. */
+.ace-slate-inline-tag[data-composer-selected="true"]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 100%;
+  height: max(1lh, 100%);
+  transform: translateY(-50%);
   background: var(--ace-composer-selection-bg);
-  border-color: var(--ace-composer-selection-bg);
-  color: var(--ace-composer-selection-fg);
-  opacity: 1;
 }
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-name,
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-glyph,
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
-  /* File icons carry inline type colors, which must not obscure selection. */
-  color: inherit !important;
-  opacity: 1;
-}
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
+.ace-slate-inline-tag::selection,
+.ace-slate-inline-tag ::selection {
+  /* Native selection still paints adjacent text; it must not recolor the badge. */
   background: transparent;
+  color: currentColor;
+}
+.ace-slate-inline-tag .ace-file-type-icon::selection,
+.ace-slate-inline-tag .ace-file-type-glyph::selection {
+  color: var(--ace-file-type-color);
 }
 
 /* 描述气泡:portal 到 body + position:fixed,坐标由 JS 计算(锚右对齐徽标右缘)。

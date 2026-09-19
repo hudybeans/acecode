@@ -50,7 +50,8 @@ run('composer command tag reuses the sent-message badge without a visible slash'
   const styles = source('styles/globals.css');
 
   assert.match(composer, /replace\(\/\^\\\/\+\/, ''\)/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-cmd-token"/);
   assert.match(composer, /<CommandGlyph[^>]*className="ace-cmd-token-glyph"/s);
   assert.match(composer, /className="ace-cmd-token-name">\{displayName\}/);
   assert.match(message, /className="ace-cmd-token"/);
@@ -61,16 +62,16 @@ run('composer command tag reuses the sent-message badge without a visible slash'
 run('path tags keep canonical text while using the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="path"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-path-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-path-tag"/);
   assert.match(composer, /element\?\.directory\s+\? <VsIcon name="folder"/s);
-  assert.match(composer, /<FileTypeIcon path=\{path\} size=\{12\}/);
+  assert.match(composer, /<FileTypeIcon path=\{path\} size="1em"/);
 });
 
 run('session tags keep stable identity while reusing the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="session"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-session-tag"/);
-  assert.match(composer, /<VsIcon name="newSession" size=\{12\}/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-session-tag"/);
+  assert.match(composer, /<VsIcon name="newSession" size="1em"/);
 });
 
 run('atomic deletion is routed through the plain-text tag range helper', () => {

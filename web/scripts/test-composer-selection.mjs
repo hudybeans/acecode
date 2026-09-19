@@ -45,7 +45,7 @@ document.documentElement.dataset.theme = params.get('theme') || 'light';
 await i18n.changeLanguage(params.get('locale') || 'zh-CN');
 const commands = [{name:'init', token:'/init', kind:'builtin'}];
 const attachments = [
- {id:'file-1',name:'notes.txt',kind:'file',path:'C:/fixture/notes.txt'},
+ {id:'file-1',name:'notes.txt',kind:'file',path:'C:/fixture/notes.txt',uploading:params.get('upload')==='true'},
  {id:'image-1',name:'picture.png',kind:'image',url:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>'},
 ];
 const text = (text) => ({type:'text',text});
@@ -56,6 +56,7 @@ const sessionToken = formatSessionReferenceToken({session_id:'fixture-session',t
 const fixtures = {
  all:[text('/init ALPHA '),pathTag,text(' BRAVO '),skillTag,text(' CHARLIE '+sessionToken+' DELTA '),attachment('file-1'),text(' ECHO '),attachment('image-1'),text(' FOXTROT')],
  path:[text('ALPHA '),pathTag,text(' BRAVO')],
+ longPath:[text('ALPHA '),{...pathTag,path:'src/'+('long-directory/').repeat(12)+'main.cpp'},text(' BRAVO')],
  skill:[text('ALPHA '),skillTag,text(' BRAVO')],
  session:[text('ALPHA '+sessionToken+' BRAVO')],
  attachment:[text('ALPHA '),attachment('file-1'),text(' BRAVO')],
@@ -78,7 +79,7 @@ function Fixture() {
    <div style={{padding:20,border:'1px solid #999',borderRadius:12}}><RichComposer ref={ref}
     value={value} onChange={setValue} composerContent={content} onComposerContentChange={setContent}
     commands={commands} attachments={attachments} className="ace-rich-composer-input"
-    style={{minHeight:180,fontSize:16,lineHeight:'28px',outline:'none'}} aria-label="Selection fixture"
+    style={{minHeight:180,fontSize:Number(params.get('font')||16),lineHeight:params.get('line')||'28px',outline:'none'}} aria-label="Selection fixture"
     onPreviewAttachment={(item)=>window.previews.push(item.attachmentKey)} /></div>
    <textarea aria-label="External clipboard target" style={{marginTop:30,width:'100%',height:80}} />
  </main>;
@@ -315,6 +316,66 @@ try {
    await drag(await pointAtText('ALPHA',2),await pointAtText('FOXTROT',4));assert.equal((await state()).selected.length,5);
    await page.keyboard.press('Backspace');assert.equal((await state()).value,'/init ALROT');assert.equal(await editor.locator('[data-composer-inline-tag]').count(),1);
    await page.keyboard.press('Control+z');assert.deepEqual((await state()).content,original);
+  } finally {await page.setViewportSize({width:1200,height:760});}
+ });
+ await run('selection adds a rectangle without recoloring or moving tags across themes and font sizes',async()=>{
+  async function badgeStyles(){return editor.evaluate(el=>[...el.querySelectorAll('.ace-slate-inline-tag > .ace-cmd-token')].map(tag=>{
+   const css=getComputedStyle(tag),rect=tag.getBoundingClientRect();
+   return {background:css.backgroundColor,border:css.borderColor,radius:css.borderRadius,opacity:css.opacity,
+    padding:[css.paddingLeft,css.paddingRight],margin:[css.marginLeft,css.marginRight],rect:[rect.x,rect.y,rect.width,rect.height],
+    colors:[...tag.querySelectorAll('.ace-cmd-token-name,.ace-cmd-token-glyph,.ace-file-type-glyph')].map(node=>getComputedStyle(node).color)};
+  }));}
+  try {
+   for(const sample of [
+    {theme:'light',font:13,line:20,width:1200},
+    {theme:'dark',font:14,line:20,width:1200,upload:true},
+    {theme:'light',font:20,line:28,width:390},
+    {theme:'dark',font:16,line:28,width:390},
+   ]){
+    await page.setViewportSize({width:sample.width,height:844});
+    await page.goto('http://127.0.0.1:'+port+'/__composer-selection?fixture=all&'+new URLSearchParams({...sample,line:sample.line+'px'}),{waitUntil:'domcontentloaded',timeout:60000});
+    await editor.waitFor();await page.evaluate(()=>document.fonts.ready);await settle();
+    const point=await pointAtText('ALPHA',2);await page.mouse.click(point.x,point.y);await page.mouse.move(1,1);await settle();
+    const before=await badgeStyles();
+    await page.keyboard.press('Control+a');assert.equal((await state()).selected.length,6);
+    assert.deepEqual(await badgeStyles(),before,'selection must preserve badge surfaces, colors and geometry');
+    const problems=await editor.evaluate(el=>{
+     const failures=[],canvas=document.createElement('canvas').getContext('2d');
+     const background=getComputedStyle(el,'::selection').backgroundColor;
+     for(const tag of el.querySelectorAll('[data-composer-selected="true"]')){
+      const badge=tag.querySelector('.ace-cmd-token'),css=getComputedStyle(badge),rect=badge.getBoundingClientRect();
+      const fill=getComputedStyle(tag,'::before');
+      if(fill.backgroundColor!==background || parseFloat(fill.height)<rect.height || fill.borderRadius!=='0px')failures.push('selection rectangle');
+      if(css.paddingLeft!==css.paddingRight || css.marginLeft!==css.marginRight)failures.push('asymmetric spacing');
+      for(const node of tag.querySelectorAll('.ace-cmd-token-name,.ace-cmd-token-glyph,.ace-file-type-glyph')){
+       if(getComputedStyle(node,'::selection').color!==getComputedStyle(node).color)failures.push('selection recolors '+node.className);
+      }
+      const glyph=tag.querySelector('.ace-cmd-token-glyph'),ink=glyph.querySelector('.ace-file-type-glyph');
+      if(ink){
+       const font=getComputedStyle(ink);canvas.font=font.font;const measure=canvas.measureText(ink.textContent);
+       const scale=new DOMMatrixReadOnly(font.transform).a;
+       if((measure.actualBoundingBoxAscent+measure.actualBoundingBoxDescent)*scale<parseFloat(css.fontSize))failures.push('file glyph smaller than font');
+      }
+     }
+     if(el.scrollWidth>el.clientWidth+1)failures.push('horizontal overflow');
+     return failures;
+    });
+    assert.deepEqual(problems,[],JSON.stringify(sample));
+    await page.keyboard.press('ArrowRight');await settle();assert.deepEqual((await state()).selected,[]);
+    assert.deepEqual(await badgeStyles(),before,'collapsing selection restores only the background');
+    assert(await editor.evaluate(el=>[...el.querySelectorAll('[data-composer-inline-tag]')].every(tag=>getComputedStyle(tag,'::before').content==='none')));
+    await page.keyboard.press('Control+a');assert.equal((await state()).selected.length,6);
+    await page.getByRole('textbox',{name:'External clipboard target'}).click();assert.deepEqual((await state()).selected,[],'blur removes the tag selection layer');
+   }
+  } finally {await page.setViewportSize({width:1200,height:760});}
+ });
+ await run('long path tag stays within the narrow composer and remains selectable',async()=>{
+  try {
+   await page.setViewportSize({width:390,height:844});await reset('longPath');
+   const before=(await state()).content;const point=await pointAtText('ALPHA',2);await page.mouse.click(point.x,point.y);
+   await page.keyboard.press('Control+a');assert.deepEqual((await state()).selected,['path']);
+   assert(await editor.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'long path must not overflow');
+   await page.keyboard.press('Delete');assert.equal((await state()).value,'');await page.keyboard.press('Control+z');assert.deepEqual((await state()).content,before);
   } finally {await page.setViewportSize({width:1200,height:760});}
  });
  if(output){

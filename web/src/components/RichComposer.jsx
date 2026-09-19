@@ -108,13 +108,15 @@ function CommandTagElement({ attributes, children, element, selected }) {
       data-composer-inline-tag={isComposerSkillTag(element) ? 'skill' : 'command'}
       data-composer-selected={selected || undefined}
       data-slash-chip-kind={element?.kind || 'skill'}
-      className="ace-cmd-token ace-slate-inline-tag"
+      className="ace-slate-inline-tag"
       title={commandTagTitle(element)}
       onDragStart={(event) => event.preventDefault()}
     >
       {children}
-      <CommandGlyph kind={element?.kind || 'skill'} size={12} className="ace-cmd-token-glyph" />
-      <span className="ace-cmd-token-name">{displayName}</span>
+      <span className="ace-cmd-token">
+        <CommandGlyph kind={element?.kind || 'skill'} size="1em" className="ace-cmd-token-glyph" />
+        <span className="ace-cmd-token-name">{displayName}</span>
+      </span>
     </span>
   );
 }
@@ -128,15 +130,17 @@ function PathTagElement({ attributes, children, element, selected }) {
       draggable={false}
       data-composer-inline-tag="path"
       data-composer-selected={selected || undefined}
-      className="ace-cmd-token ace-slate-inline-tag ace-slate-path-tag"
+      className="ace-slate-inline-tag ace-slate-path-tag"
       title={element?.token || path}
       onDragStart={(event) => event.preventDefault()}
     >
       {children}
-      {element?.directory
-        ? <VsIcon name="folder" size={12} className="ace-cmd-token-glyph" />
-        : <FileTypeIcon path={path} size={12} className="ace-cmd-token-glyph" />}
-      <span className="ace-cmd-token-name">{path}</span>
+      <span className="ace-cmd-token">
+        {element?.directory
+          ? <VsIcon name="folder" size="1em" className="ace-cmd-token-glyph" />
+          : <FileTypeIcon path={path} size="1em" className="ace-cmd-token-glyph" glyphClassName="ace-file-type-glyph" />}
+        <span className="ace-cmd-token-name">{path}</span>
+      </span>
     </span>
   );
 }
@@ -151,13 +155,15 @@ function SessionTagElement({ attributes, children, element, selected }) {
       draggable={false}
       data-composer-inline-tag="session"
       data-composer-selected={selected || undefined}
-      className="ace-cmd-token ace-slate-inline-tag ace-slate-session-tag"
+      className="ace-slate-inline-tag ace-slate-session-tag"
       title={workspaceName ? `${title} · ${workspaceName}` : title}
       onDragStart={(event) => event.preventDefault()}
     >
       {children}
-      <VsIcon name="newSession" size={12} className="ace-cmd-token-glyph" />
-      <span className="ace-cmd-token-name">{title}</span>
+      <span className="ace-cmd-token">
+        <VsIcon name="newSession" size="1em" className="ace-cmd-token-glyph" />
+        <span className="ace-cmd-token-name">{title}</span>
+      </span>
     </span>
   );
 }
@@ -188,7 +194,7 @@ function AttachmentTagElement({
       data-desktop-attachment-preview-url={element?.url || undefined}
       data-desktop-attachment-mutable="true"
       className={clsx(
-        'group ace-cmd-token ace-slate-inline-tag ace-slate-attachment-tag',
+        'group ace-slate-inline-tag ace-slate-attachment-tag',
         element?.uploading && 'is-uploading',
         previewable && 'is-previewable',
       )}
@@ -197,25 +203,27 @@ function AttachmentTagElement({
       onDragStart={(event) => event.preventDefault()}
     >
       {children}
-      <FileTypeIcon path={name} size={12} className="ace-cmd-token-glyph" />
-      <span className="ace-cmd-token-name ace-slate-attachment-name">{label}</span>
-      <button
-        type="button"
-        contentEditable={false}
-        className="ace-slate-attachment-remove"
-        aria-label="移除附件"
-        onMouseDown={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onRemoveAttachment?.(attachmentKey, element);
-        }}
-      >
-        <VsIcon name="close" size={9} />
-      </button>
+      <span className="ace-cmd-token">
+        <FileTypeIcon path={name} size="1em" className="ace-cmd-token-glyph" glyphClassName="ace-file-type-glyph" />
+        <span className="ace-cmd-token-name ace-slate-attachment-name">{label}</span>
+        <button
+          type="button"
+          contentEditable={false}
+          className="ace-slate-attachment-remove"
+          aria-label="移除附件"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRemoveAttachment?.(attachmentKey, element);
+          }}
+        >
+          <VsIcon name="close" size={9} />
+        </button>
+      </span>
     </span>
   );
 }
