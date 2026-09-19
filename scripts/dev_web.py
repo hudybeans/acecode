@@ -11,6 +11,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from dev_build_artifacts import find_named_artifacts
+
 
 def find_project_root() -> Path:
     current = Path(__file__).resolve().parent
@@ -23,18 +25,7 @@ def find_project_root() -> Path:
 
 def find_executable(build_dir: Path) -> Path | None:
     name = "acecode.exe" if os.name == "nt" else "acecode"
-    candidates = [
-        build_dir / name,
-        build_dir / "Release" / name,
-        build_dir / "Debug" / name,
-        build_dir / "MinSizeRel" / name,
-        build_dir / "RelWithDebInfo" / name,
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    matches = sorted(build_dir.glob(f"**/{name}")) if build_dir.is_dir() else []
+    matches = find_named_artifacts(build_dir, [name])
     return matches[0] if matches else None
 
 

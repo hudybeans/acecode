@@ -8,7 +8,7 @@ Developers currently need to choose and invoke separate Web or Desktop launchers
 
 - Add a cross-platform development-environment launcher that starts the Web daemon, Desktop shell, or terminal UI using existing repository launchers and build outputs.
 - Add dedicated Windows and POSIX entry points for Web, Desktop, and TUI so developers can start the desired target without providing a target argument or using an agent skill.
-- Discover related worktrees through Git and validate a reusable build against the current source revision, platform, architecture, and requested target before using it.
+- Validate reusable builds from the current worktree against its source directory, platform, architecture, and requested target; use related worktrees only for safe cache and frontend-artifact acceleration.
 - Incrementally rebuild every verified build before launch so source changes are incorporated; require confirmation only before configuring a missing or incompatible build.
 - Initialize the Windows Visual Studio C++ developer environment from the direct launchers so incremental builds work from a normal shell or double-clicked batch file.
 - Allow Windows direct launchers to configure a missing target build automatically, so double-clicked entry points do not wait for unavailable confirmation input.

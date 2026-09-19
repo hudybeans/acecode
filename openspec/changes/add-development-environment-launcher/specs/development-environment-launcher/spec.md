@@ -18,11 +18,11 @@ The development-environment launcher SHALL start exactly one selected developmen
 - **THEN** the skill asks whether to run Web, Desktop, or TUI before starting work
 
 ### Requirement: Compatible build reuse
-Before requesting a rebuild, the launcher and skill SHALL search the Git worktrees registered for the current repository for a compatible existing build. A build is reusable only when its configured source worktree is at the current worktree's commit, its executable is runnable on the current platform and architecture, and it contains the executable required by the selected target. A Desktop target additionally requires a Desktop-enabled build and Desktop executable. The launcher and skill SHALL use a verified build directory directly and SHALL NOT copy build executables or their dependencies into the current worktree.
+Before requesting a new configuration, the launcher and skill SHALL search the current worktree for a compatible existing build. A build is reusable only when its configured source directory is the current worktree, its executable is runnable on the current platform and architecture, and it contains the executable required by the selected target. A Desktop target additionally requires a Desktop-enabled build and Desktop executable. Other registered worktrees MAY provide content-addressed compiler cache entries and verified frontend artifacts, but their path-bound build directories and executables SHALL NOT be used for the current worktree.
 
 #### Scenario: Reuse a matching Web build
-- **WHEN** a registered worktree has a matching commit and a compatible `acecode` executable
-- **THEN** the launcher starts the Web target with that build directory
+- **WHEN** the current worktree has a compatible configured `acecode` build
+- **THEN** the launcher incrementally builds and starts the Web target with that build directory
 
 #### Scenario: Reject an incompatible Desktop build
 - **WHEN** a matching build lacks Desktop support or the Desktop executable

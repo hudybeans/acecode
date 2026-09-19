@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("dev_environment", ROOT / "scripts/dev_environment.py")
 dev_environment = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = dev_environment
@@ -41,19 +43,16 @@ class DevEnvironmentTest(unittest.TestCase):
                 candidate = dev_environment.find_compatible_build(root, "web")
             self.assertEqual(candidate.build_dir, plain.resolve())
 
-    def test_candidate_requires_matching_source_commit_and_executable(self):
+    def test_candidate_does_not_reuse_another_worktree_build(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "current"
             other = Path(directory) / "other"
             root.mkdir()
             other.mkdir()
-            build = self.make_build(other)
-            with patch.object(dev_environment, "current_commit", side_effect=lambda path: "same" if path == root or path == other else None), \
-                 patch.object(dev_environment, "registered_worktrees", return_value=[root, other]), \
+            self.make_build(other)
+            with patch.object(dev_environment, "registered_worktrees", return_value=[root, other]), \
                  patch.object(dev_environment, "platform_matches", return_value=True):
-                candidate = dev_environment.find_compatible_build(root, "web")
-            self.assertIsNotNone(candidate)
-            self.assertEqual(candidate.build_dir, build.resolve())
+                self.assertIsNone(dev_environment.find_compatible_build(root, "web"))
 
     def test_registered_worktrees_parses_porcelain_prefix(self):
         root = Path("C:/work")
@@ -89,11 +88,20 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment.sys.stdin, "isatty", return_value=False):
             self.assertIsNone(dev_environment.choose_target(None))
 
-    def test_sccache_discovery_prefers_path_and_has_install_hint(self):
+    def test_sccache_discovery_prefers_usable_path_and_has_install_hint(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="sccache 1.0")
         with patch.object(dev_environment.shutil, "which", return_value="C:/tools/sccache.exe"), \
-             patch.object(Path, "is_file", return_value=True):
+             patch.object(Path, "is_file", return_value=True), \
+             patch.object(dev_environment.subprocess, "run", return_value=completed):
             self.assertEqual(dev_environment.find_sccache(), Path("C:/tools/sccache.exe"))
         self.assertIn("sccache", dev_environment.sccache_install_hint())
+
+    def test_sccache_discovery_rejects_unusable_file(self):
+        completed = subprocess.CompletedProcess([], 1, stdout="")
+        with patch.object(dev_environment, "sccache_candidates", return_value=[Path("C:/broken/sccache.exe")]), \
+             patch.object(Path, "is_file", return_value=True), \
+             patch.object(dev_environment.subprocess, "run", return_value=completed):
+            self.assertIsNone(dev_environment.find_sccache())
 
     def test_cache_state_detects_configuration_transition(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +137,23 @@ class DevEnvironmentTest(unittest.TestCase):
             ],
         )
 
+    def test_existing_build_reconfiguration_targets_candidate_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            build = self.make_build(root)
+            cache = build / "CMakeCache.txt"
+            cache.write_text(
+                cache.read_text(encoding="utf-8")
+                + "CMAKE_TOOLCHAIN_FILE:FILEPATH=C:/vcpkg/toolchain.cmake\n"
+                + "VCPKG_OVERLAY_PORTS:STRING=C:/work/ports\n",
+                encoding="utf-8",
+            )
+            with patch.object(dev_environment.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                self.assertTrue(dev_environment.configure_build(root, "windows-x64-release", build, None))
+            command = run.call_args.args[0]
+            self.assertEqual(command[:5], ["cmake", "-S", str(root), "-B", str(build)])
+            self.assertIn("-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/toolchain.cmake", command)
+
     def test_newest_web_seed_requires_clean_same_commit_and_uses_newest_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "current"
@@ -162,6 +187,24 @@ class DevEnvironmentTest(unittest.TestCase):
                 self.assertTrue(dev_environment.seed_web_assets(root, builder))
             self.assertEqual((root / "web/dist/index.html").read_text(encoding="utf-8"), "output")
 
+    def test_sccache_stats_parses_real_nested_shape(self):
+        payload = {
+            "stats": {
+                "cache_hits": {"counts": {"C/C++": 7}, "adv_counts": {"C/C++": 2}},
+                "cache_misses": {"counts": {"C/C++": 3}, "adv_counts": {}},
+                "cache_errors": {"counts": {"C/C++": 1}, "adv_counts": {}},
+                "cache_read_errors": 2,
+                "cache_write_errors": 1,
+                "dist_errors": 4,
+            }
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+        with patch.object(dev_environment.subprocess, "run", return_value=completed):
+            self.assertEqual(
+                dev_environment.sccache_stats(Path("sccache")),
+                {"hits": 9, "misses": 3, "errors": 8},
+            )
+
     def test_main_refreshes_build_and_web_assets_before_web_start(self):
         candidate = dev_environment.BuildCandidate(
             Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe")
@@ -192,6 +235,7 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment, "parse_args", return_value=args), \
              patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
              patch.object(dev_environment, "find_sccache", return_value=cache), \
+             patch.object(dev_environment, "sccache_disabled_for_build", return_value=False), \
              patch.object(dev_environment, "find_compatible_build", return_value=candidate), \
              patch.object(dev_environment, "cache_state_changed", return_value=False), \
              patch.object(dev_environment, "build_target", side_effect=[False, True]) as build, \

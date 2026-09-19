@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from dev_build_artifacts import find_named_artifacts
+
 TARGETS = ("web", "desktop", "tui")
 CACHE_MARKER = ".acecode-sccache.json"
 
@@ -37,19 +39,7 @@ def native_executable_name(name: str) -> str:
 
 def executable_for(build_dir: Path, target: str) -> Path | None:
     name = native_executable_name("acecode-desktop" if target == "desktop" else "acecode")
-    candidates = [
-        build_dir / name,
-        build_dir / "Release" / name,
-        build_dir / "Debug" / name,
-        build_dir / "RelWithDebInfo" / name,
-        build_dir / "MinSizeRel" / name,
-    ]
-    for path in candidates:
-        if path.is_file():
-            return path
-    if not build_dir.is_dir():
-        return None
-    matches = sorted(path for path in build_dir.rglob(name) if path.is_file())
+    matches = find_named_artifacts(build_dir, [name], "ACECode.app" if target == "desktop" else None)
     return matches[0] if matches else None
 
 
@@ -119,25 +109,19 @@ def platform_matches(build_dir: Path) -> bool:
 
 
 def find_compatible_build(root: Path, target: str, explicit: Path | None = None) -> BuildCandidate | None:
-    commit = current_commit(root)
-    if not commit:
-        return None
-    worktrees = registered_worktrees(root)
-    for worktree in worktrees:
-        if current_commit(worktree) != commit:
+    root = root.resolve()
+    directories = [explicit.resolve()] if explicit else sorted(
+        build_directories(root),
+        key=lambda directory: (configured_for_desktop(directory), str(directory).lower()),
+    )
+    for build_dir in directories:
+        source_dir = cmake_source_dir(build_dir)
+        executable = executable_for(build_dir, target)
+        if source_dir != root or not executable or not platform_matches(build_dir):
             continue
-        directories = [explicit.resolve()] if explicit else sorted(
-            build_directories(worktree),
-            key=lambda directory: (configured_for_desktop(directory), str(directory).lower()),
-        )
-        for build_dir in directories:
-            source_dir = cmake_source_dir(build_dir)
-            executable = executable_for(build_dir, target)
-            if source_dir != worktree.resolve() or not executable or not platform_matches(build_dir):
-                continue
-            if target == "desktop" and not configured_for_desktop(build_dir):
-                continue
-            return BuildCandidate(build_dir.resolve(), source_dir, executable)
+        if target == "desktop" and not configured_for_desktop(build_dir):
+            continue
+        return BuildCandidate(build_dir.resolve(), source_dir, executable)
     return None
 
 
@@ -196,8 +180,21 @@ def sccache_candidates() -> list[Path]:
 
 def find_sccache() -> Path | None:
     for candidate in sccache_candidates():
-        if candidate.is_file():
-            return candidate.resolve()
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        try:
+            result = subprocess.run(
+                [str(resolved), "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return resolved
     return None
 
 
@@ -239,7 +236,25 @@ def sccache_disabled_for_build(build_dir: Path, sccache: Path | None) -> bool:
 
 
 def configure_build(root: Path, preset: str, build_dir: Path, sccache: Path | None) -> bool:
-    command = ["cmake", "--preset", preset, "-DBUILD_TESTING=OFF"]
+    cache = build_dir / "CMakeCache.txt"
+    if cache.is_file():
+        command = [
+            "cmake", "-S", str(root), "-B", str(build_dir),
+            "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=OFF",
+        ]
+        triplet = cmake_cache_value(cache, "VCPKG_TARGET_TRIPLET")
+        toolchain = cmake_cache_value(cache, "CMAKE_TOOLCHAIN_FILE")
+        overlay = cmake_cache_value(cache, "VCPKG_OVERLAY_PORTS")
+        if triplet:
+            command.append(f"-DVCPKG_TARGET_TRIPLET={triplet}")
+        if toolchain:
+            command.append(f"-DCMAKE_TOOLCHAIN_FILE={toolchain}")
+        if overlay:
+            command.append(f"-DVCPKG_OVERLAY_PORTS={overlay}")
+        if configured_for_desktop(build_dir):
+            command.append("-DACECODE_BUILD_DESKTOP=ON")
+    else:
+        command = ["cmake", "--preset", preset, "-DBUILD_TESTING=OFF"]
     if sccache:
         command.extend([
             f"-DCMAKE_C_COMPILER_LAUNCHER={sccache}",
@@ -253,34 +268,35 @@ def configure_build(root: Path, preset: str, build_dir: Path, sccache: Path | No
     return True
 
 
+def _sum_integer_leaves(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, dict):
+        return sum(_sum_integer_leaves(child) for child in value.values())
+    if isinstance(value, list):
+        return sum(_sum_integer_leaves(child) for child in value)
+    return 0
+
+
 def sccache_stats(sccache: Path) -> dict[str, int] | None:
     result = subprocess.run([str(sccache), "--show-stats", "--stats-format=json"], text=True, capture_output=True, check=False)
     if result.returncode != 0:
         return None
     try:
         data = json.loads(result.stdout)
-    except ValueError:
+        stats = data["stats"]
+    except (ValueError, KeyError, TypeError):
         return None
-    flat = json.dumps(data).lower()
-    values = {"hits": 0, "misses": 0, "errors": 0}
-    def collect(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                normalized = key.lower().replace("_", " ")
-                if isinstance(child, int):
-                    if "hit" in normalized:
-                        values["hits"] += child
-                    elif "miss" in normalized:
-                        values["misses"] += child
-                    elif "error" in normalized:
-                        values["errors"] += child
-                else:
-                    collect(child)
-        elif isinstance(value, list):
-            for child in value:
-                collect(child)
-    collect(data)
-    return values if flat else None
+    return {
+        "hits": _sum_integer_leaves(stats.get("cache_hits", {})),
+        "misses": _sum_integer_leaves(stats.get("cache_misses", {})),
+        "errors": sum(
+            _sum_integer_leaves(stats.get(key, 0))
+            for key in ("cache_errors", "cache_read_errors", "cache_write_errors", "dist_errors")
+        ),
+    }
 
 
 def report_sccache_delta(before: dict[str, int] | None, after: dict[str, int] | None) -> None:

@@ -33,7 +33,7 @@ Alternatives considered:
 
 ### Discover builds only from Git worktree registrations
 
-The orchestration layer will use `git worktree list --porcelain` from the current repository. It will inspect each registered worktree's candidate build directories and read `CMakeCache.txt` to confirm the configured source directory. It will compare the candidate source worktree's `HEAD` to the current worktree's `HEAD` and validate platform, generator architecture clues, selected target configuration, and executable presence.
+The orchestration layer will inspect only the current worktree's candidate build directories and read `CMakeCache.txt` to confirm that each build was configured from the current source directory. It validates platform, generator architecture clues, selected target configuration, and executable presence. Registered peer worktrees are used only for safe compiler-cache and frontend-artifact acceleration; their CMake/Ninja directories are never built or launched for the current worktree.
 
 Alternatives considered:
 

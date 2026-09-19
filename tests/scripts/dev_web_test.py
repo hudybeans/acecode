@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("dev_web", ROOT / "scripts/dev_web.py")
 dev_web = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev_web)
