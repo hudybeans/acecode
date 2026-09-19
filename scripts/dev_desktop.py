@@ -191,7 +191,12 @@ def build_web(web_dir: Path, pnpm: str, force: bool = False) -> None:
 
 def find_desktop_builds(build_dir: Path) -> list[Path]:
     """查找 build 根、直接子目录及 preset/config 两层布局的产物。"""
-    return find_named_artifacts(build_dir, ["acecode-desktop.exe", "acecode-desktop"], "ACECode.app")
+    return find_named_artifacts(
+        build_dir,
+        ["acecode-desktop.exe", "acecode-desktop"],
+        "ACECode.app",
+        require_executable=False,
+    )
 
 
 def display_path(path: Path, project_root: Path) -> str:

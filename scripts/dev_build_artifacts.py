@@ -28,7 +28,12 @@ def candidate_build_directories(build_dir: Path, max_depth: int = 2) -> list[Pat
     return directories
 
 
-def find_named_artifacts(build_dir: Path, names: list[str], app_bundle: str | None = None) -> list[Path]:
+def find_named_artifacts(
+    build_dir: Path,
+    names: list[str],
+    app_bundle: str | None = None,
+    require_executable: bool = True,
+) -> list[Path]:
     results: list[Path] = []
     seen: set[Path] = set()
     for directory in candidate_build_directories(build_dir):
@@ -38,7 +43,12 @@ def find_named_artifacts(build_dir: Path, names: list[str], app_bundle: str | No
         for candidate in candidates:
             if not candidate.is_file() and not (app_bundle and candidate.name == app_bundle and candidate.is_dir()):
                 continue
-            if candidate.is_file() and os.name != "nt" and not os.access(candidate, os.X_OK):
+            if (
+                require_executable
+                and candidate.is_file()
+                and os.name != "nt"
+                and not os.access(candidate, os.X_OK)
+            ):
                 continue
             resolved = candidate.resolve()
             if resolved not in seen:
