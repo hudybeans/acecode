@@ -57,7 +57,7 @@ run('ChatView submits feedback directly without agent or session-command paths',
   assert.match(feedbackBlock, /sessionId: sid/);
   assert.match(feedbackBlock, /api\.submitDesktopFeedback\(requestPayload\)/);
   assert.match(feedbackBlock, /recordInputHistory\(route\.display_text\)/);
-  assert.match(feedbackBlock, /clearCurrentSessionDraft\(\)/);
+  assert.match(feedbackBlock, /clearCurrentSessionDraft\(\{ diagnosticSend \}\)/);
   assert.match(feedbackBlock, /setComposerSubmitting\(true\)/);
   assert.match(feedbackBlock, /setComposerSubmitting\(false\)/);
   assert.doesNotMatch(feedbackBlock, /api\.executeCommand/);

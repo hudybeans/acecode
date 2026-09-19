@@ -91,6 +91,7 @@ function fixture(workspaceHash = 'workspace-a') {
     },
   });
   const scope = {
+    composerDiagnostic() {},
     ...refs, api, homeRefFromWorkspace, aiThemeCreationRef, health: {}, homeComposerDraft, composerDraftFingerprint,
     createApi: () => api, refreshWorkspaceGitInfo: async () => {},
     navigateToRef: navigate, replaceActiveRef: navigate,

@@ -48,6 +48,7 @@ async function verifyForkDraftLifecycle(dirty, activateDestination = true) {
   const loaded = [];
   let composer = 'source draft';
   const context = {
+    composerDiagnostic() {},
     sid: 'source', draftSessionKey: 'workspace:source', draftWorkspaceHash: 'workspace',
     ref: { workspaceHash: 'workspace' },
     api: {

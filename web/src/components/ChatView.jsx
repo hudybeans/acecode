@@ -20,6 +20,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { flushSync } from 'react-dom';
+import { createComposerDiagnostic } from '../lib/composerDiagnostic.js';
 import { appendComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { createApi } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
@@ -855,6 +856,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   );
   const [composerAttachments, setComposerAttachments] = useState([]);
   const [composerContent, setComposerContent] = useState(null);
+  const composerDiagnostic = useMemo(() => createComposerDiagnostic('ChatView'), []);
+  const diagnosticSendRef = useRef(0);
+  useEffect(() => {
+    composerDiagnostic('mount');
+    return () => composerDiagnostic('unmount');
+  }, [composerDiagnostic]);
   const composerContentRef = useRef(null);
   const composerAttachmentsRef = useRef([]);
   const setComposerValue = useCallback((text, content = null) => {
@@ -1807,10 +1814,19 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     return save;
   }, [api]);
 
-  const clearCurrentSessionDraft = useCallback(({ expectedText = null, expectedContent = undefined } = {}) => {
+  const clearCurrentSessionDraft = useCallback(({ expectedText = null, expectedContent = undefined, diagnosticSend = 0 } = {}) => {
     const targetSid = sid;
     const targetWorkspaceHash = draftWorkspaceHash;
     const targetKey = draftSessionKey;
+    composerDiagnostic('clear-request', {
+      send: diagnosticSend,
+      hasSession: !!targetSid, hasKey: !!targetKey,
+      sameKey: draftSessionKeyRef.current === targetKey,
+      currentLength: composerValueRef.current.length,
+      expectedLength: expectedText?.length ?? -1,
+      textMatches: expectedText === null || composerValueRef.current === expectedText,
+      contentMatches: expectedContent === undefined || composerDraftEditFingerprint('', composerContentRef.current) === composerDraftEditFingerprint('', expectedContent),
+    });
     if (!targetSid || !targetKey) return false;
     if (draftSessionKeyRef.current !== targetKey) return false;
     // 提交期间编辑区不再只读,所以一次发送的回执可能晚于用户写下的下一条。
@@ -1822,6 +1838,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       setComposerValue('');
     }
     void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, '');
+    composerDiagnostic('clear-applied', { send: diagnosticSend, currentLength: composerValueRef.current.length });
     return true;
   }, [draftSessionKey, draftWorkspaceHash, persistDraftValue, setComposerValue, sid]);
 
@@ -1832,6 +1849,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const targetKey = draftSessionKey;
     const editVersionAtLoad = draftEditVersionRef.current;
     const preserveComposerInput = preserveComposerInputOnSessionChangeRef.current;
+    composerDiagnostic('draft-scope-change', {
+      hasSession: !!targetSid, preserveInput: preserveComposerInput,
+      currentLength: composerValueRef.current.length, editVersion: editVersionAtLoad,
+    });
     preserveComposerInputOnSessionChangeRef.current = false;
     const forkDraft = pendingForkComposerRef.current;
     pendingForkComposerRef.current = null;
@@ -1894,6 +1915,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const cleared = clearCurrentSessionDraft({
       expectedText: acceptedHomeSubmission.text,
       expectedContent: acceptedHomeSubmission.content,
+      diagnosticSend: acceptedHomeSubmission.diagnosticSend,
     });
     if (cleared && acceptedHomeSubmission.clearExtras) clearComposerExtras();
     setAcceptedHomeSubmission((current) => current === acceptedHomeSubmission ? null : current);
@@ -2938,6 +2960,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     // 写下的下一条就不会被这次发送的清理吞掉。
     const submittedComposerText = composerValueRef.current;
     const submittedComposerContent = composerContentRef.current;
+    const diagnosticSend = ++diagnosticSendRef.current;
+    composerDiagnostic('submit', {
+      send: diagnosticSend, hasSession: !!sid, busy: !!busy,
+      submitting: !!composerSubmitting, textLength: submittedComposerText.length,
+      payloadLength: payload.text.length, hasContent: !!submittedComposerContent,
+    });
     const hasExtras = payloadHasExtras(payload) || hasPendingAttachments;
     const hasSwarmMode = payload.swarm_mode === true;
     if (!payload.text.trim() && !hasExtras) {
@@ -2995,7 +3023,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       api.submitDesktopFeedback(requestPayload)
         .then((result) => {
           recordInputHistory(route.display_text);
-          clearCurrentSessionDraft();
+          clearCurrentSessionDraft({ diagnosticSend });
           const packageName = String(result?.package_filename || '').trim();
           toast({
             kind: 'ok',
@@ -3028,7 +3056,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         recordHistory: true,
       });
       if (started) {
-        clearCurrentSessionDraft();
+        clearCurrentSessionDraft({ diagnosticSend });
         clearComposerExtras();
       }
       return;
@@ -3065,7 +3093,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       api.interruptTurn(targetSid, steerPayload)
         .then(() => {
           recordInputHistory(route.display_text);
-          if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
+          if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent, diagnosticSend })) clearComposerExtras();
           toast({ kind: 'ok', text: '插话已提交，正在打断当前回合' });
         })
         .catch((e) => {
@@ -3123,6 +3151,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           if (!id) return;
           sessionCreated = true;
           createdSessionId = id;
+          composerDiagnostic('home-created', { send: diagnosticSend, explicitSend: explicitHomeSend });
           const materializedAttachments = pendingAttachmentFiles.length > 0
             ? await persistMediaFilesToSession(id, pendingAttachmentFiles)
             : [];
@@ -3165,20 +3194,28 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             }
           }
           if (payload.text.trim()) recordInputHistory(payload.text);
+          composerDiagnostic('home-accepted', {
+            send: diagnosticSend, explicitSend: explicitHomeSend,
+            currentLength: composerValueRef.current.length,
+            textMatches: composerValueRef.current === submittedComposerText,
+          });
           if (!isBuiltin && explicitHomeSend) {
             setAcceptedHomeSubmission({
               sessionId: id,
               text: submittedComposerText,
               content: submittedComposerContent,
+              diagnosticSend,
               clearExtras: hasExtras || hasSwarmMode,
             });
           }
           onHomeComposerDraftAccepted?.(
             submittedHomeDraftWorkspaceHash,
             submittedHomeDraftText,
+            diagnosticSend,
           );
         })
         .catch((e) => {
+          composerDiagnostic('home-send-failed', { send: diagnosticSend, sessionCreated });
           if (explicitHomeSend && createdSessionId) {
             setPendingNewSessionFirstUserMessage((pending) => (
               pending?.sessionId === createdSessionId ? null : pending
@@ -3201,7 +3238,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     if (composerSubmitting) return;
     if (busy && !isBuiltin) {
       enqueueInput(payload);
-      clearCurrentSessionDraft();
+      clearCurrentSessionDraft({ diagnosticSend });
       clearComposerExtras();
       restoreChatInputFocusSoon(false);
       return;
@@ -3224,6 +3261,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       : payload;
     sendInputOrBuiltin(targetSid, sessionSendPayload)
       .then((queued) => {
+        composerDiagnostic('session-accepted', {
+          send: diagnosticSend, currentLength: composerValueRef.current.length,
+          textMatches: composerValueRef.current === submittedComposerText,
+        });
         if (sessionWorktreeIntent) {
           setLocalWorktree({
             sid: targetSid,
@@ -3243,9 +3284,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         }
         if (payload.text.trim()) recordInputHistory(payload.text);
         if (!ref?.title) setTranscriptTitle(payload.text || activeAttachments[0]?.name || '附件消息');
-        if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
+        if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent, diagnosticSend })) clearComposerExtras();
       })
       .catch((e) => {
+        composerDiagnostic('session-send-failed', { send: diagnosticSend });
         toast({ kind: 'err', text: '发送失败:' + (e.message || '') });
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })

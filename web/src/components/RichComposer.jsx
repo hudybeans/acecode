@@ -26,6 +26,7 @@ import {
   withHistory,
 } from 'slate-history';
 import { clsx } from '../lib/format.js';
+import { createComposerDiagnostic } from '../lib/composerDiagnostic.js';
 import { isDesktopShell } from '../lib/desktopShellMode.js';
 import {
   clipboardHasTextFormat,
@@ -484,6 +485,11 @@ function RichComposerShell({
   onSelectionChange,
 }, ref) {
   const normalizedValue = normalizeComposerPlainText(value);
+  const diagnostic = useMemo(() => createComposerDiagnostic('RichComposer'), []);
+  useEffect(() => {
+    diagnostic('mount', { initialLength: normalizedValue.length });
+    return () => diagnostic('unmount');
+  }, [diagnostic]);
   const externalContent = normalizeComposerContent(composerContent);
   const hasExternalContent = !!externalContent && composerContentText(externalContent) === normalizedValue;
   const externalSignature = hasExternalContent ? composerContentSignature(externalContent) : normalizedValue;
@@ -563,6 +569,7 @@ function RichComposerShell({
   }, [clearCompositionSettleTimer]);
 
   const handleCompositionStart = useCallback((event) => {
+    diagnostic('composition-start');
     clearCompositionSettleTimer();
     compositionStateRef.current.active = true;
     compositionStateRef.current.settling = false;
@@ -570,6 +577,7 @@ function RichComposerShell({
   }, [clearCompositionSettleTimer, onCompositionStart]);
 
   const handleCompositionEnd = useCallback((event) => {
+    diagnostic('composition-end');
     compositionStateRef.current.active = false;
     compositionStateRef.current.settling = true;
     const handled = onCompositionEnd?.(event);
@@ -745,6 +753,16 @@ function RichComposerShell({
       lastExternalText: lastExternalState.generation === activeSyncGeneration ? lastExternalState.text : '',
       localEchoes,
     });
+    if (currentSignature !== externalSignature || generationChanged) {
+      diagnostic(`sync-${decision.action}`, {
+        currentLength: currentText.length, externalLength: normalizedValue.length,
+        generation: activeSyncGeneration, generationChanged,
+        active: compositionStateRef.current.active,
+        settling: compositionStateRef.current.settling, slateComposing: reactEditorComposing,
+        echoes: localEchoes.length, acknowledged: decision.acknowledgedEchoCount,
+        textMatches: currentText === normalizedValue,
+      });
+    }
     if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.DEFER) return;
     const replacesText = decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.REPLACE;
     if (replacesText) {
@@ -754,6 +772,11 @@ function RichComposerShell({
         ? composerDocumentFromContent(contentPropRef.current, commandsRef.current, attachmentsRef.current)
         : composerDocumentFromText(normalizedValue, commandsRef.current);
       replaceEditorDocument(editor, document, { selectEnd: true, clearHistory: true });
+      diagnostic('replace-result', {
+        currentLength: composerTextFromDocument(editor.children).length,
+        externalLength: normalizedValue.length,
+        textMatches: composerTextFromDocument(editor.children) === normalizedValue,
+      });
       documentSyncGenerationRef.current = activeSyncGeneration;
       if (generationChanged) {
         seenAttachmentKeysRef.current = new Set(attachmentsRef.current.map((item, index) => composerAttachmentTag(item, index).attachmentKey));

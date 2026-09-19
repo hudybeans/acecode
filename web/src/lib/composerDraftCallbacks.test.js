@@ -52,8 +52,10 @@ function content({ id = '', leading = false, repeated = false } = {}) {
 }
 
 function fixture({ activeKey = 'workspace:task-a', current = content(), text = 'before after' } = {}) {
-  const state = { sets: [], saves: [], extraClears: 0, history: [], notifications: [] };
+  const state = { sets: [], saves: [], extraClears: 0, history: [], notifications: [], diagnostics: [] };
   const context = vm.createContext({
+    composerDiagnostic: (event, fields) => state.diagnostics.push({ event, fields }),
+    diagnosticSendRef: { current: 1 }, diagnosticSend: 1,
     composerDraftEditFingerprint,
     sid: 'task-a', draftWorkspaceHash: 'workspace', draftSessionKey: 'workspace:task-a',
     draftSessionKeyRef: { current: activeKey }, composerValueRef: { current: text },
@@ -146,7 +148,10 @@ function homeFixture({ workspace = 'workspace', attachments = false, failSend = 
     },
     submittedHomeDraftWorkspaceHash: workspace,
     submittedHomeDraftText: { text: 'before after', composer_content: submittedContent },
-    onHomeComposerDraftAccepted: () => { state.homeAccepted += 1; },
+    onHomeComposerDraftAccepted: (...args) => {
+      state.homeAccepted += 1;
+      state.homeAcceptedArgs = args;
+    },
     setComposerValue: (value) => {
       state.sets.push(value);
       context.composerValueRef.current = value;
@@ -194,12 +199,16 @@ async function runHome(name, fn) {
 await runHome('home receipt before navigation clears the accepted text once the destination draft is ready', async () => {
   const test = homeFixture();
   await test.accept();
+  test.context.diagnosticSendRef.current = 2;
   test.activate('task-a', false);
   assert.deepEqual(test.state.sets, [], 'a not-yet-ready draft must not be consumed');
   test.ready();
   assert.equal(test.context.composerValueRef.current, '', 'accepted home text must not remain after promotion');
   assert.deepEqual(test.state.saves, [['task-a', 'workspace', 'workspace:task-a', '']]);
   assert.equal(test.state.homeAccepted, 1);
+  assert.equal(test.state.homeAcceptedArgs[2], 1, 'App clearing receives the captured send sequence');
+  const applied = test.state.diagnostics.find((entry) => entry.event === 'clear-applied');
+  assert.equal(applied?.fields.send, 1, 'delayed destination clearing keeps the original send sequence');
   test.render();
   assert.equal(test.state.sets.length, 1, 'acceptance is consumed once');
 });

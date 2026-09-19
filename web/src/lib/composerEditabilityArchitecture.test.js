@@ -153,7 +153,7 @@ run('发送回执不吞掉等待窗口里写下的下一条', () => {
   // 先比对提交那一刻的原文,对不上就整条放弃。
   assert.match(
     chatView,
-    /const clearCurrentSessionDraft = useCallback\(\(\{ expectedText = null, expectedContent = undefined \} = \{\}\) => \{/,
+    /const clearCurrentSessionDraft = useCallback\(\(\{ expectedText = null, expectedContent = undefined, diagnosticSend = 0 \} = \{\}\) => \{/,
   );
   assert.match(
     chatView,
@@ -162,6 +162,6 @@ run('发送回执不吞掉等待窗口里写下的下一条', () => {
   assert.match(chatView, /const submittedComposerText = composerValueRef\.current;/);
   assert.match(
     chatView,
-    /clearCurrentSessionDraft\(\{ expectedText: submittedComposerText, expectedContent: submittedComposerContent \}\)/,
+    /clearCurrentSessionDraft\(\{ expectedText: submittedComposerText, expectedContent: submittedComposerContent, diagnosticSend \}\)/,
   );
 });

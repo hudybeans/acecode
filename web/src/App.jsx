@@ -109,6 +109,7 @@ import {
 } from './lib/consoleDock.js';
 import {
   clearHomeComposerDraftIfMatch,
+  homeComposerDraftText,
   updateHomeComposerDrafts,
 } from './lib/homeComposerDrafts.js';
 import { nextHomeLogoEffectEnabled } from './lib/homeLogoEffectPolicy.js';
@@ -145,6 +146,7 @@ import {
 } from './lib/desktopStartupProgress.js';
 import { installDesktopExternalLinkRouter } from './lib/externalUrl.js';
 import { shouldAutoFocusDesktopComposer } from './lib/composerCaretRestore.js';
+import { createComposerDiagnostic } from './lib/composerDiagnostic.js';
 import { requestDesktopAppExit, showDesktopAboutDialog } from './lib/desktopAppActions.js';
 import {
   normalizeConfigRecoveryNotice,
@@ -309,11 +311,19 @@ export function App() {
       updateHomeComposerDrafts(current, workspaceHash, text)
     ));
   }, []);
-  const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText) => {
-    setHomeComposerDrafts((current) => (
-      clearHomeComposerDraftIfMatch(current, workspaceHash, submittedText)
-    ));
-  }, []);
+  const composerDiagnostic = useMemo(() => createComposerDiagnostic('App'), []);
+  const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText, diagnosticSend = 0) => {
+    setHomeComposerDrafts((current) => {
+      const next = clearHomeComposerDraftIfMatch(current, workspaceHash, submittedText);
+      composerDiagnostic('home-draft-clear-outcome', {
+        send: diagnosticSend,
+        cleared: next !== current,
+        currentLength: homeComposerDraftText(current, workspaceHash).length,
+        nextLength: homeComposerDraftText(next, workspaceHash).length,
+      });
+      return next;
+    });
+  }, [composerDiagnostic]);
   // grid4/grid9 入口暂时隐藏:主界面固定单会话,避免旧 localStorage 把用户卡在未完善视图。
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);

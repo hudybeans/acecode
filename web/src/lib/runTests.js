@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './composerDiagnostic.test.js';
 import './interfaceIcons.test.js';
 import './composerImagePresentation.test.js';
 import './questionPickerLayout.test.js';
