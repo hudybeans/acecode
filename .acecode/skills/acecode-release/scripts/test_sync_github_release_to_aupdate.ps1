@@ -24,6 +24,21 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Text, $encoding)
 }
 
+# Import only the exact production function under test, without starting a
+# release, touching Git, or contacting the public update server.
+function Get-ScriptFunction {
+    param([string]$Path, [string]$Name)
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { throw "Script parse failed: $Path" }
+    $function = $ast.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+    }, $true)
+    if ($null -eq $function) { throw "Missing function ${Name}: $Path" }
+    return [scriptblock]::Create($function.Extent.Text)
+}
+
 function New-TestZip {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -178,6 +193,32 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
 [System.IO.Directory]::CreateDirectory($testRoot) | Out-Null
 
 try {
+    . (Get-ScriptFunction -Path (Join-Path $PSScriptRoot 'publish_acecode_release.ps1') -Name 'Ensure-ZipMimeConfig')
+    . (Get-ScriptFunction -Path $scriptPath -Name 'Test-PublicManifestMatches')
+
+    $freshMime = Join-Path $testRoot 'fresh-mime'
+    [System.IO.Directory]::CreateDirectory($freshMime) | Out-Null
+    Ensure-ZipMimeConfig -Directory $freshMime
+    $freshConfig = [xml][System.IO.File]::ReadAllText((Join-Path $freshMime 'web.config'))
+    foreach ($pair in @(@('.zip', 'application/zip'), @('.pkg', 'application/vnd.apple.installer+xml'))) {
+        $node = $freshConfig.SelectSingleNode("/configuration/system.webServer/staticContent/mimeMap[@fileExtension='$($pair[0])']")
+        Assert-True ($null -ne $node -and $node.GetAttribute('mimeType') -ceq $pair[1]) "Fresh config must serve $($pair[0])."
+    }
+    $legacyMime = Join-Path $testRoot 'legacy-mime'
+    [System.IO.Directory]::CreateDirectory($legacyMime) | Out-Null
+    $legacyConfigPath = Join-Path $legacyMime 'web.config'
+    Write-Utf8NoBom $legacyConfigPath '<configuration><system.webServer><httpProtocol><customHeaders><add name="X-Keep" value="retained" /></customHeaders></httpProtocol><staticContent><mimeMap fileExtension=".zip" mimeType="application/zip" /><mimeMap fileExtension=".pkg" mimeType="wrong/type" /><mimeMap fileExtension=".custom" mimeType="application/custom" /></staticContent></system.webServer></configuration>'
+    Ensure-ZipMimeConfig -Directory $legacyMime
+    Ensure-ZipMimeConfig -Directory $legacyMime
+    $legacyConfig = [xml][System.IO.File]::ReadAllText($legacyConfigPath)
+    Assert-True ($legacyConfig.SelectSingleNode('//add[@name="X-Keep"]').GetAttribute('value') -ceq 'retained') 'MIME repair must preserve unrelated IIS settings.'
+    Assert-True ($legacyConfig.SelectSingleNode('//mimeMap[@fileExtension=".custom"]').GetAttribute('mimeType') -ceq 'application/custom') 'MIME repair must preserve unrelated MIME mappings.'
+    foreach ($pair in @(@('.zip', 'application/zip'), @('.pkg', 'application/vnd.apple.installer+xml'))) {
+        $nodes = @($legacyConfig.SelectNodes("//mimeMap[@fileExtension='$($pair[0])']"))
+        Assert-True ($nodes.Count -eq 1 -and $nodes[0].GetAttribute('mimeType') -ceq $pair[1]) 'MIME repair must be correct and idempotent.'
+        Assert-True (@($legacyConfig.SelectNodes("//remove[@fileExtension='$($pair[0])']")).Count -eq 1) 'MIME repair must override inherited IIS mappings exactly once.'
+    }
+
     $version = '1.2.3'
     $assets = Join-Path $testRoot 'assets'
     $updateDir = Join-Path $testRoot 'aupdate'
@@ -215,6 +256,62 @@ try {
     Assert-True `
         -Condition ((@($release[0].packages.target) -join ',') -eq ($expectedTargets -join ',')) `
         -Message 'Manifest updater targets are incomplete or out of order.'
+
+    $expectedPublic = @{
+        ReleaseVersion = $version
+        ExpectedLatest = [string]$manifest.latest
+        ExpectedPackages = @($release[0].packages)
+        ExpectedNotes = [string]$release[0].notes
+    }
+    Assert-True (Test-PublicManifestMatches -Manifest $manifest @expectedPublic) 'Exact public manifest must pass.'
+    foreach ($field in @('target', 'file', 'sha256', 'size', 'notes', 'duplicate-target')) {
+        $stale = ($manifest | ConvertTo-Json -Depth 20) | ConvertFrom-Json
+        $staleRelease = @($stale.releases | Where-Object { $_.version -eq $version })[0]
+        if ($field -eq 'notes') {
+            $staleRelease.notes = 'Old cached notes.'
+        } elseif ($field -eq 'size') {
+            $staleRelease.packages[0].size = [UInt64]$staleRelease.packages[0].size + 1
+        } elseif ($field -eq 'duplicate-target') {
+            $staleRelease.packages[0].target = $staleRelease.packages[1].target
+        } else {
+            $staleRelease.packages[0].$field = 'stale-' + [string]$staleRelease.packages[0].$field
+        }
+        Assert-True (-not (Test-PublicManifestMatches -Manifest $stale @expectedPublic)) "Public manifest must reject stale $field with the same version and six packages."
+    }
+    $reordered = ($manifest | ConvertTo-Json -Depth 20) | ConvertFrom-Json
+    $reorderedRelease = @($reordered.releases | Where-Object { $_.version -eq $version })[0]
+    [array]::Reverse($reorderedRelease.packages)
+    Assert-True (Test-PublicManifestMatches -Manifest $reordered @expectedPublic) 'Package matching must use target identity, not array order.'
+
+    # Exercise the actual polling function: identical version/count/notes but an
+    # old hash must not finish verification before the next uncached response.
+    & {
+        . (Get-ScriptFunction -Path $scriptPath -Name 'Get-PublicManifest')
+        $script:manifestPollCount = 0
+        $script:manifestPollForeverStale = $false
+        $script:manifestPollFresh = ($manifest | ConvertTo-Json -Depth 20)
+        $cached = $script:manifestPollFresh | ConvertFrom-Json
+        (@($cached.releases | Where-Object { $_.version -eq $version })[0]).packages[0].sha256 = ('0' * 64)
+        $script:manifestPollStale = $cached | ConvertTo-Json -Depth 20
+        function Invoke-WebRequest {
+            param([switch]$UseBasicParsing, [string]$Uri, [int]$TimeoutSec, [string]$OutFile)
+            $script:manifestPollCount++
+            $body = if ($script:manifestPollForeverStale -or $script:manifestPollCount -eq 1) {
+                $script:manifestPollStale
+            } else { $script:manifestPollFresh }
+            Write-Utf8NoBom -Path $OutFile -Text $body
+        }
+        function Start-Sleep { param([int]$Seconds) }
+        $verified = Get-PublicManifest -BaseUrl 'https://example.invalid/' @expectedPublic
+        Assert-True ($script:manifestPollCount -eq 2) 'Polling must wait past the stale hash response.'
+        Assert-True (Test-PublicManifestMatches -Manifest $verified @expectedPublic) 'Polling must return the verified current manifest.'
+        $script:manifestPollCount = 0
+        $script:manifestPollForeverStale = $true
+        $failed = $false
+        try { Get-PublicManifest -BaseUrl 'https://example.invalid/' @expectedPublic | Out-Null }
+        catch { $failed = $_.Exception.Message -like 'Public aceupdate.json verification failed:*' }
+        Assert-True ($failed -and $script:manifestPollCount -eq 10) 'Permanently stale public metadata must fail after the bounded poll.'
+    }
 
     $pairs = @(
         @('acecode-windows-x64.zip', "acecode-$version-windows-x64.zip", 'acecode-windows-x64.zip'),

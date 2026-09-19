@@ -242,24 +242,46 @@ function Ensure-ZipMimeConfig {
     param([Parameter(Mandatory = $true)][string]$Directory)
     $webConfig = Join-Path $Directory 'web.config'
     if (Test-Path -LiteralPath $webConfig) {
-        $text = [System.IO.File]::ReadAllText($webConfig)
-        if ($text -match 'mimeType="application/zip"') {
-            return
-        }
+        $xml = [xml][System.IO.File]::ReadAllText($webConfig)
+    } else {
+        $xml = [xml]'<configuration />'
     }
-
-    $xml = @'
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    <system.webServer>
-        <staticContent>
-            <remove fileExtension=".zip" />
-            <mimeMap fileExtension=".zip" mimeType="application/zip" />
-        </staticContent>
-    </system.webServer>
-</configuration>
-'@
-    Write-Utf8NoBom $webConfig ($xml + [Environment]::NewLine)
+    $configuration = $xml.SelectSingleNode('/configuration')
+    if ($null -eq $configuration) {
+        throw "Update server web.config has no configuration root: $webConfig"
+    }
+    $server = $configuration.SelectSingleNode('system.webServer')
+    if ($null -eq $server) {
+        $server = $xml.CreateElement('system.webServer')
+        [void]$configuration.AppendChild($server)
+    }
+    $content = $server.SelectSingleNode('staticContent')
+    if ($null -eq $content) {
+        $content = $xml.CreateElement('staticContent')
+        [void]$server.AppendChild($content)
+    }
+    # Both formats are required by full GitHub mirroring. Preserve unrelated IIS
+    # settings when repairing the ZIP-only config left by earlier publishers.
+    foreach ($mapping in @(
+            @('.zip', 'application/zip'),
+            @('.pkg', 'application/vnd.apple.installer+xml'))) {
+        foreach ($node in @($content.SelectNodes(
+                "mimeMap[@fileExtension='$($mapping[0])'] | remove[@fileExtension='$($mapping[0])']"))) {
+            [void]$content.RemoveChild($node)
+        }
+        $remove = $xml.CreateElement('remove')
+        $remove.SetAttribute('fileExtension', $mapping[0])
+        [void]$content.AppendChild($remove)
+        $mime = $xml.CreateElement('mimeMap')
+        $mime.SetAttribute('fileExtension', $mapping[0])
+        $mime.SetAttribute('mimeType', $mapping[1])
+        [void]$content.AppendChild($mime)
+    }
+    $settings = New-Object System.Xml.XmlWriterSettings
+    $settings.Encoding = New-Object System.Text.UTF8Encoding($false)
+    $settings.Indent = $true
+    $writer = [System.Xml.XmlWriter]::Create($webConfig, $settings)
+    try { $xml.Save($writer) } finally { $writer.Dispose() }
 }
 
 function Update-Manifest {

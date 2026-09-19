@@ -510,11 +510,44 @@ function Copy-VerifiedAtomic {
     }
 }
 
+function Test-PublicManifestMatches {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ReleaseVersion,
+        [Parameter(Mandatory = $true)][string]$ExpectedLatest,
+        [Parameter(Mandatory = $true)][object[]]$ExpectedPackages,
+        [Parameter(Mandatory = $true)][string]$ExpectedNotes
+    )
+
+    if ($Manifest.schema_version -ne 1 -or
+        ([string]$Manifest.latest) -cne $ExpectedLatest -or
+        $ExpectedPackages.Count -ne 6) { return $false }
+    $release = @($Manifest.releases | Where-Object { ([string]$_.version) -ceq $ReleaseVersion })
+    if ($release.Count -ne 1 -or ([string]$release[0].notes) -cne $ExpectedNotes -or
+        @($release[0].packages).Count -ne $ExpectedPackages.Count) { return $false }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($expected in $ExpectedPackages) {
+        $target = [string]$expected.target
+        if ([string]::IsNullOrWhiteSpace($target) -or -not $seen.Add($target)) { return $false }
+        $actual = @($release[0].packages | Where-Object { ([string]$_.target) -ceq $target })
+        if ($actual.Count -ne 1 -or
+            ([string]$actual[0].file) -cne ([string]$expected.file) -or
+            ([string]$actual[0].sha256) -cne ([string]$expected.sha256)) { return $false }
+        [UInt64]$actualSize = 0
+        if (-not [UInt64]::TryParse([string]$actual[0].size, [ref]$actualSize) -or
+            $actualSize -ne [UInt64]$expected.size) { return $false }
+    }
+    return $true
+}
+
 function Get-PublicManifest {
     param(
         [Parameter(Mandatory = $true)][string]$BaseUrl,
         [Parameter(Mandatory = $true)][string]$ReleaseVersion,
-        [Parameter(Mandatory = $true)][string]$ExpectedLatest
+        [Parameter(Mandatory = $true)][string]$ExpectedLatest,
+        [Parameter(Mandatory = $true)][object[]]$ExpectedPackages,
+        [Parameter(Mandatory = $true)][string]$ExpectedNotes
     )
 
     $base = $BaseUrl.TrimEnd('/') + '/'
@@ -531,11 +564,9 @@ function Get-PublicManifest {
             $manifest = [System.IO.File]::ReadAllText(
                 $download,
                 [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-            $release = @($manifest.releases |
-                Where-Object { $_.version -eq $ReleaseVersion })
-            if ($manifest.latest -eq $ExpectedLatest -and
-                $release.Count -eq 1 -and
-                @($release[0].packages).Count -eq 6) {
+            if (Test-PublicManifestMatches -Manifest $manifest `
+                    -ReleaseVersion $ReleaseVersion -ExpectedLatest $ExpectedLatest `
+                    -ExpectedPackages $ExpectedPackages -ExpectedNotes $ExpectedNotes) {
                 return $manifest
             }
             $lastError = 'public manifest has not reached the expected revision'
@@ -776,12 +807,9 @@ try {
         $publicManifest = Get-PublicManifest `
             -BaseUrl $RemoteBaseUrl `
             -ReleaseVersion $Version `
-            -ExpectedLatest $expectedLatest
-        $publicRelease = @($publicManifest.releases |
-            Where-Object { $_.version -eq $Version })[0]
-        if (([string]$publicRelease.notes) -cne $UpgradeTip) {
-            throw 'Public manifest release notes do not match -UpgradeTip.'
-        }
+            -ExpectedLatest $expectedLatest `
+            -ExpectedPackages $packages `
+            -ExpectedNotes $UpgradeTip
 
         $publicDownloads = Join-Path $workRoot 'public-downloads'
         [System.IO.Directory]::CreateDirectory($publicDownloads) | Out-Null
