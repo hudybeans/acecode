@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ class BuildCandidate:
     build_dir: Path
     source_dir: Path
     executable: Path
+    configuration: str | None = None
 
 
 def project_root() -> Path:
@@ -39,8 +41,29 @@ def native_executable_name(name: str) -> str:
 
 def executable_for(build_dir: Path, target: str) -> Path | None:
     name = native_executable_name("acecode-desktop" if target == "desktop" else "acecode")
-    matches = find_named_artifacts(build_dir, [name], "ACECode.app" if target == "desktop" else None)
-    return matches[0] if matches else None
+    app_bundle = "ACECode.app" if target == "desktop" and sys.platform == "darwin" else None
+    matches = find_named_artifacts(build_dir, [name], app_bundle)
+    for executable in matches:
+        # A nested preset is a different CMake build, even when its binaries
+        # happen to be below this build's directory. Validate it separately.
+        directory = executable.parent
+        while directory != build_dir and not (directory / "CMakeCache.txt").is_file():
+            directory = directory.parent
+        if directory == build_dir:
+            return executable
+    return None
+
+
+def artifact_configuration(build_dir: Path, executable: Path) -> str | None:
+    configurations = cmake_cache_value(build_dir / "CMakeCache.txt", "CMAKE_CONFIGURATION_TYPES")
+    if not configurations:
+        return None
+    relative_parts = executable.relative_to(build_dir).parts[:-1]
+    for configuration in configurations.split(";"):
+        if configuration in relative_parts:
+            return configuration
+    # Shared output directories still require an explicit build configuration.
+    return "Release" if "Release" in configurations.split(";") else configurations.split(";")[0]
 
 
 def cmake_cache_value(cache: Path, key: str) -> str | None:
@@ -101,16 +124,16 @@ def platform_matches(build_dir: Path) -> bool:
     if not triplet:
         return True
     system = platform.system().lower()
-    expected_system = "windows" if system == "windows" else "osx" if system == "darwin" else "linux"
-    machine = platform.machine().lower()
+    expected_systems = ("windows", "mingw") if system == "windows" else ("osx",) if system == "darwin" else ("linux",)
+    machine = native_machine()
     expected_arch = "arm64" if machine in {"arm64", "aarch64"} else "x64" if machine in {"amd64", "x86_64"} else None
     triplet_lower = triplet.lower()
-    return expected_system in triplet_lower and (expected_arch is None or expected_arch in triplet_lower)
+    return any(expected in triplet_lower for expected in expected_systems) and (expected_arch is None or expected_arch in triplet_lower)
 
 
 def find_compatible_build(root: Path, target: str, explicit: Path | None = None) -> BuildCandidate | None:
     root = root.resolve()
-    directories = [explicit.resolve()] if explicit else sorted(
+    directories = [(root / explicit).resolve()] if explicit else sorted(
         build_directories(root),
         key=lambda directory: (configured_for_desktop(directory), str(directory).lower()),
     )
@@ -121,13 +144,13 @@ def find_compatible_build(root: Path, target: str, explicit: Path | None = None)
             continue
         if target == "desktop" and not configured_for_desktop(build_dir):
             continue
-        return BuildCandidate(build_dir.resolve(), source_dir, executable)
+        return BuildCandidate(build_dir.resolve(), source_dir, executable, artifact_configuration(build_dir, executable))
     return None
 
 
 def default_preset(target: str) -> str | None:
     system = platform.system().lower()
-    machine = platform.machine().lower()
+    machine = native_machine()
     arch = "arm64" if machine in {"arm64", "aarch64"} else "x64" if machine in {"amd64", "x86_64"} else None
     if not arch:
         return None
@@ -136,6 +159,48 @@ def default_preset(target: str) -> str | None:
         return None
     suffix = "-desktop-release" if target == "desktop" else "-release"
     return f"{prefix}-{arch}{suffix}"
+
+
+def native_machine() -> str:
+    if platform.system().lower() == "windows":
+        architecture = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE")
+        if architecture:
+            return architecture.lower()
+    return platform.machine().lower()
+
+
+def needs_msvc(candidate: BuildCandidate | None) -> bool:
+    if candidate is None:
+        return True  # The Windows presets use MSVC.
+    cache = candidate.build_dir / "CMakeCache.txt"
+    triplet = (cmake_cache_value(cache, "VCPKG_TARGET_TRIPLET") or "").lower()
+    compiler = (cmake_cache_value(cache, "CMAKE_CXX_COMPILER") or "").lower()
+    return "mingw" not in triplet and not compiler.endswith(("g++.exe", "g++"))
+
+
+def ensure_windows_environment(root: Path, candidate: BuildCandidate | None) -> bool:
+    if os.name != "nt" or not needs_msvc(candidate):
+        return True
+    environment = os.environ.copy()
+    environment["ACECODE_DEV_ENV_SCRIPT"] = str(root / "scripts/dev_windows_env.bat")
+    try:
+        # Expanding the path once, inside quotes, preserves spaces and cmd
+        # metacharacters in the checkout path. Never log the environment dump.
+        result = subprocess.run('"%ACECODE_DEV_ENV_SCRIPT%" --print-env', shell=True,
+                                env=environment, capture_output=True, text=True,
+                                errors="replace", timeout=60, check=False,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"[ERROR] Could not initialize the Visual Studio environment: {error}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(result.stdout.strip() or result.stderr.strip() or "[ERROR] Visual Studio C++ initialization failed.", file=sys.stderr)
+        return False
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key and not key.startswith("="):
+            os.environ[key] = value
+    return True
 
 
 def ask_to_build(preset: str, target: str, assume_yes: bool) -> bool:
@@ -240,7 +305,6 @@ def configure_build(root: Path, preset: str, build_dir: Path, sccache: Path | No
     if cache.is_file():
         command = [
             "cmake", "-S", str(root), "-B", str(build_dir),
-            "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=OFF",
         ]
         triplet = cmake_cache_value(cache, "VCPKG_TARGET_TRIPLET")
         toolchain = cmake_cache_value(cache, "CMAKE_TOOLCHAIN_FILE")
@@ -307,11 +371,14 @@ def report_sccache_delta(before: dict[str, int] | None, after: dict[str, int] | 
     print(f"[INFO] sccache this build: hits={delta['hits']} misses={delta['misses']} errors={delta['errors']}")
 
 
-def build_target(root: Path, build_dir: Path, target: str, sccache: Path | None = None) -> bool:
+def build_target(root: Path, build_dir: Path, target: str, sccache: Path | None = None, configuration: str | None = None) -> bool:
     executable_target = "acecode-desktop" if target == "desktop" else "acecode"
     before = sccache_stats(sccache) if sccache else None
+    command = ["cmake", "--build", str(build_dir), "--target", executable_target]
+    if configuration:
+        command.extend(("--config", configuration))
     result = subprocess.run(
-        ["cmake", "--build", str(build_dir), "--target", executable_target],
+        command,
         cwd=root,
         check=False,
     )
@@ -380,16 +447,16 @@ def seed_web_assets(root: Path, builder) -> bool:
         return False
 
 
-def refresh_web_assets(root: Path) -> bool:
+def refresh_web_assets(root: Path, force: bool = False) -> bool:
     module = load_web_builder(root)
     if module is None:
         print("[ERROR] Cannot load Web asset builder.", file=sys.stderr)
         return False
-    if seed_web_assets(root, module):
+    if not force and seed_web_assets(root, module):
         return True
     try:
         _, pnpm = module.ensure_node_and_pnpm()
-        module.build_web(root / "web", pnpm)
+        module.build_web(root / "web", pnpm, force=force)
     except (OSError, subprocess.SubprocessError, SystemExit):
         return False
     return True
@@ -401,17 +468,59 @@ def worktree_runtime_dir(root: Path) -> Path:
     return root / ".acecode" / "dev-run" / safe
 
 
+def selected_web_runtime_dir(root: Path, extra: list[str]) -> Path:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--run-dir", type=Path)
+    args, _ = parser.parse_known_args(extra)
+    if args.run_dir is None:
+        return worktree_runtime_dir(root)
+    return args.run_dir.resolve() if args.run_dir.is_absolute() else (root / args.run_dir).resolve()
+
+
+def web_runtime_is_available(root: Path, candidate: BuildCandidate | None, extra: list[str]) -> bool:
+    run_dir = selected_web_runtime_dir(root, extra)
+    explicit = any(arg == "--run-dir" or arg.startswith("--run-dir=") for arg in extra)
+    if not explicit and run_dir.parent.is_dir():
+        # A new commit changes the default run-dir name but an older worker
+        # can still hold this build's executable open. Inspect only this
+        # worktree's own launcher directories, without stopping any process.
+        prefix = re.sub(r"[^A-Za-z0-9_.-]", "-", root.name + "-")
+        for previous in sorted(run_dir.parent.iterdir()):
+            if previous.name.startswith(prefix) and (previous / "daemon.pid").exists():
+                run_dir = previous
+                break
+    if not (run_dir / "daemon.pid").exists():
+        return True
+    print(f"[ERROR] Existing Web daemon runtime must be stopped before rebuilding: {run_dir}", file=sys.stderr)
+    if candidate is None:
+        print("[ERROR] No verified executable is available to inspect that runtime; check it manually.", file=sys.stderr)
+        return False
+    command = [str(candidate.executable), "daemon", "status", f"--run-dir={run_dir}"]
+    try:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=10, check=False)
+        if result.returncode == 0:
+            command = [command[0], "daemon", "stop", command[3]]
+            print("[INFO] Stop this verified daemon, then rerun the launcher:", file=sys.stderr)
+        else:
+            print("[ERROR] Runtime identity is unverified; inspect it before stopping or removing anything:", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired):
+        print("[ERROR] Runtime identity check failed; inspect it manually:", file=sys.stderr)
+    formatted = "& " + " ".join("'" + part.replace("'", "''") + "'" for part in command) if os.name == "nt" else shlex.join(command)
+    print(("PowerShell: " if os.name == "nt" else "") + formatted, file=sys.stderr)
+    return False
+
+
 def launch_surface(root: Path, target: str, candidate: BuildCandidate, dry_run: bool, extra: list[str]) -> int:
     if target == "web":
-        run_dir = worktree_runtime_dir(root)
-        command = [sys.executable, str(root / "scripts" / "dev_web.py"), "--build-dir", str(candidate.build_dir), "--run-dir", str(run_dir), *extra]
+        run_dir = selected_web_runtime_dir(root, extra)
+        command = [sys.executable, str(root / "scripts" / "dev_web.py"), "--build-dir", str(candidate.executable.parent), "--run-dir", str(run_dir), *extra]
         print(f"[INFO] Launching Web with build: {candidate.build_dir}")
         print(f"[INFO] Isolated runtime directory: {run_dir}")
     elif target == "desktop":
-        command = [sys.executable, str(root / "scripts" / "dev_desktop.py"), "--build-dir", str(candidate.build_dir), "--no-build", *extra]
+        command = [sys.executable, str(root / "scripts" / "dev_desktop.py"), "--build-dir", str(candidate.executable), "--no-build", *extra]
         print(f"[INFO] Launching Desktop with build: {candidate.build_dir}")
     else:
-        command = tui_command(root, candidate.executable)
+        command = tui_command(root, candidate.executable, extra)
         if command is None:
             print(f"[ERROR] Cannot open a new terminal automatically. Run: {candidate.executable}", file=sys.stderr)
             return 1
@@ -419,27 +528,40 @@ def launch_surface(root: Path, target: str, candidate: BuildCandidate, dry_run: 
     if dry_run:
         print("[INFO] Dry run: " + " ".join(f'"{part}"' if " " in part else part for part in command))
         return 0
-    return subprocess.Popen(command, cwd=root).wait() if target == "web" else (subprocess.Popen(command, cwd=root) and 0)
+    try:
+        if target == "tui" and os.name == "nt":
+            subprocess.Popen(command, cwd=root, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            return 0
+        if target == "tui" and sys.platform != "darwin":
+            subprocess.Popen(command, cwd=root, start_new_session=True)
+            return 0
+        # Surface scripts and osascript finish after creating the UI; waiting
+        # propagates launcher/argument failures without waiting for the GUI.
+        return subprocess.run(command, cwd=root, check=False).returncode
+    except OSError as error:
+        print(f"[ERROR] Could not start {target}: {error}", file=sys.stderr)
+        return 1
 
 
-def tui_command(root: Path, executable: Path) -> list[str] | None:
+def tui_command(root: Path, executable: Path, extra: list[str] | None = None) -> list[str] | None:
+    arguments = [str(executable), *(extra or [])]
     if os.name == "nt":
-        return ["cmd.exe", "/d", "/c", "start", "ACECode TUI", "/d", str(root), str(executable)]
+        return arguments
     if sys.platform == "darwin":
-        return ["open", "-a", "Terminal", str(executable)]
+        shell_command = f"cd {shlex.quote(str(root))} && exec {shlex.join(arguments)}"
+        script = 'tell application "Terminal"\nactivate\ndo script ' + json.dumps(shell_command, ensure_ascii=False) + "\nend tell"
+        return ["osascript", "-e", script]
     for terminal in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm"):
         path = shutil.which(terminal)
         if path:
             if terminal == "gnome-terminal":
-                return [path, "--", str(executable)]
-            if terminal == "konsole":
-                return [path, "-e", str(executable)]
-            return [path, "-e", str(executable)]
+                return [path, "--", *arguments]
+            return [path, "-e", *arguments]
     return None
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start an ACECode development environment")
+    parser = argparse.ArgumentParser(description="Start an ACECode development environment", allow_abbrev=False)
     parser.add_argument("target", nargs="?", choices=TARGETS, help="development surface to start")
     parser.add_argument("--build-dir", type=Path, help="build directory to validate and use")
     parser.add_argument("--yes", action="store_true", help="confirm a required CMake build")
@@ -468,12 +590,27 @@ def main() -> int:
     if not target:
         return 2
     root = project_root()
+    if target == "desktop" and "--list" in args.extra:
+        command = [sys.executable, str(root / "scripts/dev_desktop.py"), *args.extra]
+        if args.build_dir:
+            command.extend(("--build-dir", str(args.build_dir)))
+        if args.dry_run:
+            print("[INFO] Dry run: " + subprocess.list2cmdline(command))
+            return 0
+        return subprocess.run(command, cwd=root, check=False).returncode
     sccache = find_sccache()
     if sccache:
         print(f"[INFO] Using sccache: {sccache}")
     else:
         print(f"[INFO] sccache not found. {sccache_install_hint()}")
     candidate = find_compatible_build(root, target, args.build_dir)
+    if args.build_dir and candidate is None:
+        print(f"[ERROR] --build-dir does not contain a compatible configured {target} build: {(root / args.build_dir).resolve()}", file=sys.stderr)
+        return 1
+    if not args.dry_run and target == "web" and not web_runtime_is_available(root, candidate, args.extra):
+        return 1
+    if not args.dry_run and not ensure_windows_environment(root, candidate):
+        return 1
     sccache_disabled = candidate is not None and sccache_disabled_for_build(candidate.build_dir, sccache)
     if sccache_disabled:
         print("[INFO] sccache is disabled for this build after a prior compiler failure.")
@@ -512,11 +649,11 @@ def main() -> int:
                     return 1
             else:
                 return 1
-    if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache):
+    if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache, candidate.configuration):
         if sccache:
             preset = default_preset(target)
             print("[INFO] sccache build failed; retrying this build without sccache.")
-            if preset and configure_build(root, preset, candidate.build_dir, None) and build_target(root, candidate.build_dir, target, None):
+            if preset and configure_build(root, preset, candidate.build_dir, None) and build_target(root, candidate.build_dir, target, None, candidate.configuration):
                 write_sccache_marker(candidate.build_dir, find_sccache(), enabled=False)
                 sccache = None
             else:
@@ -525,9 +662,11 @@ def main() -> int:
         else:
             print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
             return 1
-    if target in {"web", "desktop"} and not args.dry_run and not refresh_web_assets(root):
-        print("[ERROR] Web asset refresh failed; development environment was not started.", file=sys.stderr)
-        return 1
+    if target in {"web", "desktop"} and not args.dry_run:
+        refreshed = refresh_web_assets(root, force=True) if target == "desktop" and "--rebuild" in args.extra else refresh_web_assets(root)
+        if not refreshed:
+            print("[ERROR] Web asset refresh failed; development environment was not started.", file=sys.stderr)
+            return 1
     return launch_surface(root, target, candidate, args.dry_run, args.extra)
 
 

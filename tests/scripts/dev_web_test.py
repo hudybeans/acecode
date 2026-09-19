@@ -23,9 +23,11 @@ class DevWebTest(unittest.TestCase):
             executable = root / "Release" / name
             executable.parent.mkdir()
             executable.touch()
+            executable.chmod(0o755)
             self.assertEqual(dev_web.find_executable(root), executable)
             direct = root / name
             direct.touch()
+            direct.chmod(0o755)
             self.assertEqual(dev_web.find_executable(root), direct)
 
     def run_launcher(self, exit_code, port):

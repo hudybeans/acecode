@@ -55,7 +55,7 @@ Double-clicked batch files do not provide a reliable input stream for the shared
 
 ### Initialize the Windows C++ toolchain in batch entry points
 
-The three Windows target wrappers will call a shared batch helper before invoking Python. The helper locates `vswhere.exe` from the Visual Studio installer location, asks it for an installation containing the x64 C++ tools component, and calls that installation's `VsDevCmd.bat` with `-arch=amd64 -host_arch=amd64`. It preserves the caller's command context while supplying the standard-library and linker paths that CMake needs. If discovery fails, it reports the Build Tools C++ workload requirement and exits before Python runs.
+Windows 包装脚本先选择 Python，公共启动器识别候选构建后才决定是否需要 MSVC。MinGW 构建直接使用已有编译器；MSVC 路径通过共享 `dev_windows_env.bat` 查询匹配 x64 或 ARM64 的 VS 组件并初始化环境。Python 只在子进程内捕获环境变量，再传递给后续编译，不输出环境内容。帮助、列表和 dry-run 不触发工具链初始化。Windows ARM64 对应的两个默认 configure presets 与 x64 使用相同的基础配置。
 
 Alternatives considered:
 
@@ -72,6 +72,14 @@ Alternatives considered:
 - Always fail: forces developers to reconstruct platform-specific presets manually.
 
 ## Risks / Trade-offs
+
+### 发布审查收敛
+
+- 多配置构建记录实际产物的配置名称，并通过 `cmake --build --config` 编译同一配置；仅修改编译缓存 launcher 时保留已有 `CMAKE_BUILD_TYPE` 和 `BUILD_TESTING`。独立的嵌套 preset 不属于父级 CMake 构建。
+- 公共启动器向 Desktop 传递已验证的具体产物，向 Web 传递该可执行文件所在目录，避免二次发现选到其他配置。`--list` 只列举产物；`--rebuild` 强制刷新前端。
+- Windows TUI 直接创建新控制台进程；macOS 用 Terminal 的 AppleScript 入口执行经过逐参数 shell 引用的 `cd` 和 `exec`，确保工作目录与参数一致。
+- Web 重建前遇到既存 PID 记录时，复用原有 `daemon status` 身份校验并明确失败。此次不引入跨平台进程管理框架，也不调用现有仅按 PID 终止的 `daemon stop`。仅在核验成功后显示停止命令供开发者操作；无法确认身份时只显示检查命令。默认目录检查包含当前工作树旧提交的 runtime，显式目录只检查自身。
+- 回归使用临时目录与替身命令；Windows 另验证真实 VS 环境初始化。macOS/Linux 图形终端和 ARM64 原生编译不在本轮 Windows 主机验证范围内。
 
 - [A valid external build is configured with an unusual directory layout] → inspect standard build directories plus explicit `--build-dir`; require an exact `CMakeCache.txt` source match.
 - [CMake does not expose a fully portable architecture field] → require a runnable platform-native executable and compare configured generator/platform fields when present; reject uncertain configurations.

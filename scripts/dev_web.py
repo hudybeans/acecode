@@ -31,7 +31,8 @@ def find_executable(build_dir: Path) -> Path | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Start ACECode Web UI daemon without starting the Desktop GUI"
+        description="Start ACECode Web UI daemon without starting the Desktop GUI",
+        allow_abbrev=False,
     )
     parser.add_argument("--build-dir", default="build", help="ACECode build directory")
     parser.add_argument("--cwd", default=None, help="Workspace directory served by the daemon")

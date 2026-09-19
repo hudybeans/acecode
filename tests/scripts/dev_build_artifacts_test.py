@@ -23,6 +23,7 @@ class DevBuildArtifactsTest(unittest.TestCase):
             for path in (direct, nested, too_deep):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
+                path.chmod(0o755)
             self.assertEqual(artifacts.find_named_artifacts(build, ["acecode.exe"]), [direct, nested])
 
 

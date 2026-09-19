@@ -18,6 +18,11 @@ spec.loader.exec_module(dev_environment)
 
 
 class DevEnvironmentTest(unittest.TestCase):
+    def setUp(self):
+        environment = patch.object(dev_environment, "ensure_windows_environment", return_value=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def make_build(self, root, desktop=False, name="test"):
         build = root / "build" / name
         build.mkdir(parents=True)
@@ -28,8 +33,10 @@ class DevEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (build / dev_environment.native_executable_name("acecode")).touch()
+        (build / dev_environment.native_executable_name("acecode")).chmod(0o755)
         if desktop:
             (build / dev_environment.native_executable_name("acecode-desktop")).touch()
+            (build / dev_environment.native_executable_name("acecode-desktop")).chmod(0o755)
         return build
 
     def test_web_candidate_prefers_non_desktop_build(self):
@@ -75,8 +82,7 @@ class DevEnvironmentTest(unittest.TestCase):
         executable = Path("C:/work/build/acecode.exe")
         with patch.object(dev_environment.os, "name", "nt"):
             command = dev_environment.tui_command(Path("C:/work"), executable)
-        self.assertEqual(command[:4], ["cmd.exe", "/d", "/c", "start"])
-        self.assertIn(str(executable), command)
+        self.assertEqual(command, [str(executable)])
 
     def test_runtime_directory_is_scoped_to_worktree(self):
         root = Path("C:/worktrees/my project")
@@ -156,9 +162,9 @@ class DevEnvironmentTest(unittest.TestCase):
 
     def test_newest_web_seed_requires_clean_same_commit_and_uses_newest_output(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "current"
-            older = Path(directory) / "older"
-            newer = Path(directory) / "newer"
+            root = Path(directory).resolve() / "current"
+            older = Path(directory).resolve() / "older"
+            newer = Path(directory).resolve() / "newer"
             for worktree in (root, older, newer):
                 (worktree / "web/dist").mkdir(parents=True)
                 (worktree / "web/dist/index.html").write_text("ok", encoding="utf-8")
@@ -219,7 +225,7 @@ class DevEnvironmentTest(unittest.TestCase):
              patch.object(dev_environment, "refresh_web_assets", return_value=True) as refresh, \
              patch.object(dev_environment, "launch_surface", return_value=0) as launch:
             self.assertEqual(dev_environment.main(), 0)
-        build.assert_called_once_with(Path("C:/work"), candidate.build_dir, "web", None)
+        build.assert_called_once_with(Path("C:/work"), candidate.build_dir, "web", None, None)
         refresh.assert_called_once_with(Path("C:/work"))
         launch.assert_called_once_with(Path("C:/work"), "web", candidate, False, [])
 
@@ -243,8 +249,8 @@ class DevEnvironmentTest(unittest.TestCase):
              patch.object(dev_environment, "refresh_web_assets", return_value=True), \
              patch.object(dev_environment, "launch_surface", return_value=0):
             self.assertEqual(dev_environment.main(), 0)
-        self.assertEqual(build.call_args_list[0].args, (Path("C:/work"), candidate.build_dir, "web", cache))
-        self.assertEqual(build.call_args_list[1].args, (Path("C:/work"), candidate.build_dir, "web", None))
+        self.assertEqual(build.call_args_list[0].args, (Path("C:/work"), candidate.build_dir, "web", cache, None))
+        self.assertEqual(build.call_args_list[1].args, (Path("C:/work"), candidate.build_dir, "web", None, None))
         configure.assert_called_once_with(Path("C:/work"), "windows-x64-release", candidate.build_dir, None)
 
     def test_web_launch_forwards_the_build_and_isolated_runtime_directory(self):
