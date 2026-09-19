@@ -52,6 +52,9 @@ import { sessionDisplayTitle, withNewSessionDisplayTitles } from '../lib/session
 import { pushTrayMenu } from '../lib/desktopTrayMenu.js';
 import { desktopTaskbarBadge, desktopTaskbarBadgeAvailable } from '../lib/desktopTaskbarBadge.js';
 import { usePreference } from '../lib/usePreference.js';
+import { createWorkspaceFolderOrderController } from '../lib/workspaceFolderOrder.js';
+import { useWorkspaceFolderReorder } from '../lib/useWorkspaceFolderReorder.js';
+import '../styles/workspaceFolderReorder.css';
 import {
   SESSION_LIST_CHANGED_EVENT,
   normalizeSessionListChangedDetail,
@@ -81,12 +84,14 @@ import {
   remoteControlSurgeTargetKey,
   sessionListNeedsRevealExpansion,
   sessionMatchesRevealTarget,
+  SIDEBAR_SESSION_COLLAPSE_LIMIT,
   shouldRunRemoteControlForcedSurge,
   shouldStartRemoteControlSurge,
   sidebarSessionMarker,
   sidebarRevealTarget,
   sidebarRevealTargetKey,
   sidebarSessionProjection,
+  sidebarSessionRevealLimit,
   sidebarWorkspaceListKeys,
   upsertSidebarSession,
 } from '../lib/sidebarSessions.js';
@@ -121,6 +126,7 @@ import {
 } from '../lib/sessionHoverDetails.js';
 // hover 卡片与 GitSessionPill 共用同一份 git info 缓存(见 gitInfoCache.js)。
 import { gitInfoCache } from '../lib/gitInfoCache.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 import {
   DEFAULT_SIDEBAR_CUSTOM_EXPANDED,
   DEFAULT_SIDEBAR_SECTION_EXPANSION,
@@ -687,9 +693,10 @@ function SessionHoverCard({
 }) {
   const cardRef = useRef(null);
   const baseDetails = sessionHoverDetails(session);
+  const owner = sessionWorkbench.ownerFor(session);
   const cwd = baseDetails?.cwd || '';
   const [gitInfo, setGitInfo] = useState(
-    () => gitInfoCache.peek(api, cwd) ?? null,
+    () => gitInfoCache.peek(api, cwd, owner) ?? null,
   );
   const [position, setPosition] = useState(null);
   const details = sessionHoverDetails(session, gitInfo);
@@ -701,7 +708,7 @@ function SessionHoverCard({
     let requestVersion = 0;
     const load = () => {
       const version = ++requestVersion;
-      gitInfoCache.get(api, cwd)
+      gitInfoCache.get(api, cwd, owner)
         .then((info) => {
           if (!cancelled && version === requestVersion) setGitInfo(info);
         })
@@ -709,11 +716,11 @@ function SessionHoverCard({
           if (!cancelled && version === requestVersion) setGitInfo(null);
         });
     };
-    setGitInfo(gitInfoCache.peek(api, cwd) ?? null);
+    setGitInfo(gitInfoCache.peek(api, cwd, owner) ?? null);
     const handleGitStateChanged = (event) => {
       const changedCwd = String(event?.detail?.cwd || '');
       if (changedCwd && changedCwd !== cwd) return;
-      gitInfoCache.invalidate(api, changedCwd || cwd);
+      gitInfoCache.invalidate(api, changedCwd || cwd, owner);
       setGitInfo(null);
       load();
     };
@@ -725,7 +732,7 @@ function SessionHoverCard({
       requestVersion += 1;
       window.removeEventListener(GIT_STATE_CHANGED_EVENT, handleGitStateChanged);
     };
-  }, [cwd]);
+  }, [cwd, owner]);
 
   useLayoutEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return undefined;
@@ -1512,7 +1519,7 @@ function WorkspaceGroup({
   expanded,
   onToggle,
   sessions,
-  sessionListExpanded,
+  sessionListVisibleLimit,
   sessionListTotal = null,
   onToggleSessionList,
   activeId,
@@ -1528,6 +1535,10 @@ function WorkspaceGroup({
   onRenameSession,
   onWorkspacePointerDown,
   workspaceDragState = null,
+  folderReorderable = false,
+  folderDragState = null,
+  onFolderPointerDown,
+  onFolderKeyDown,
   pendingPermissionSessionIds,
   pendingQuestionSessionIds,
   sessionsLoading = false,
@@ -1541,7 +1552,7 @@ function WorkspaceGroup({
   const hasUnread = workspaceHasUnread(sessions);
   const projectedSessions = sidebarSessionProjection(
     sessions,
-    sessionListExpanded,
+    sessionListVisibleLimit,
     undefined,
     sessionListTotal,
   );
@@ -1620,7 +1631,18 @@ function WorkspaceGroup({
   };
 
   return (
-    <div className={clsx('my-px', ws.active && 'rounded-md')}>
+    <div
+      data-sidebar-workspace-folder-hash={ws.hash}
+      className={clsx('ace-sidebar-workspace-folder-group my-px',
+        folderDragState?.source === ws.hash && 'is-folder-dragging')}
+    >
+      {folderDragState?.target === ws.hash && (
+        <div
+          className="ace-sidebar-workspace-folder-insertion"
+          data-placement={folderDragState.placement}
+          aria-hidden="true"
+        />
+      )}
       <div
         data-desktop-open-in-explorer-kind="workspace"
         data-desktop-open-in-explorer-path={ws.cwd || undefined}
@@ -1632,11 +1654,24 @@ function WorkspaceGroup({
         data-desktop-workspace-rename="true"
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
-        className={clsx(
-          'ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 pl-[12px] pr-2 py-[3px] rounded-md text-[14px] cursor-pointer transition',
-          ws.active ? 'bg-accent-bg text-fg' : 'text-fg hover:bg-surface-hi',
-        )}
-        onClick={() => (ws.active ? onToggle(ws.hash) : onActivate(ws))}
+        data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
+        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 pl-[12px] pr-2 py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-keyshortcuts={folderReorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+        title={folderReorderable && !editing ? tr('拖动排序，也可按 Alt+上/下方向键') : undefined}
+        onPointerDown={editing ? undefined : (event) => onFolderPointerDown?.(event, ws)}
+        onClick={() => onToggle(ws.hash)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          onFolderKeyDown?.(event, ws);
+          if (event.defaultPrevented) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle(ws.hash);
+          }
+        }}
       >
         <span className="w-6 h-6 flex items-center justify-center shrink-0">
           <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />
@@ -1655,7 +1690,7 @@ function WorkspaceGroup({
             className="ace-sidebar-primary-text min-w-0 h-7 px-1 py-0 text-[14px] bg-surface border border-accent rounded outline-none"
           />
         ) : (
-          <span className={clsx('min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
+          <span data-sidebar-workspace-folder-label className={clsx('min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
             {ws.name || ws.hash}
           </span>
         )}
@@ -1717,8 +1752,8 @@ function WorkspaceGroup({
                   <span aria-hidden="true" />
                   <button
                     type="button"
-                    onClick={() => onToggleSessionList?.(ws.hash)}
-                    className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+                    onClick={() => onToggleSessionList?.(ws.hash, projectedSessions.action)}
+                    className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
                   >
                     {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
                   </button>
@@ -1735,7 +1770,7 @@ function WorkspaceGroup({
 function NoWorkspaceSessionGroup({
   sessions,
   sessionsLoading = false,
-  sessionListExpanded,
+  sessionListVisibleLimit,
   onToggleSessionList,
   activeId,
   activeTarget,
@@ -1748,7 +1783,7 @@ function NoWorkspaceSessionGroup({
   remoteControlSurgeRequest = null,
   onRemoteControlSurgeCompleted,
 }) {
-  const projectedSessions = sidebarSessionProjection(sessions, sessionListExpanded);
+  const projectedSessions = sidebarSessionProjection(sessions, sessionListVisibleLimit);
 
   return (
     <div className="mt-px mb-[10px]">
@@ -1779,8 +1814,8 @@ function NoWorkspaceSessionGroup({
               <span aria-hidden="true" />
               <button
                 type="button"
-                onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY)}
-                className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+                onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY, projectedSessions.action)}
+                className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
               >
                 {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
               </button>
@@ -1829,6 +1864,27 @@ export function Sidebar({
     dispatch: dispatchSessionHover,
   }), [sessionHoverState]);
   const [workspaces,  setWorkspaces]  = useState([]);
+  const workspacesRef = useRef(workspaces);
+  workspacesRef.current = workspaces;
+  const [workspaceOrderSaving, setWorkspaceOrderSaving] = useState(false);
+  const workspaceOrderRefreshRef = useRef(null);
+  const workspaceOrderControllerRef = useRef(null);
+  if (!workspaceOrderControllerRef.current) {
+    workspaceOrderControllerRef.current = createWorkspaceFolderOrderController({
+      getWorkspaces: () => workspacesRef.current,
+      setWorkspaces: (next) => {
+        workspacesRef.current = next;
+        setWorkspaces(next);
+      },
+      save: (hashes) => api.setWorkspaceOrder(hashes),
+      onSavingChange: setWorkspaceOrderSaving,
+      onError: (error) => {
+        toast({ kind: 'err', text: error?.code === 'WORKSPACE_ORDER_CONFLICT'
+          ? tr('工作区列表已变化，请重新拖动排序') : tr('保存工作区顺序失败，请重试') });
+        workspaceOrderRefreshRef.current?.().catch(() => {});
+      },
+    });
+  }
   const [sessions,    setSessions]    = useState([]);
   const [statusBySession, setStatusBySession] = useState(() => new Map());
   const [pinnedByWorkspace, setPinnedByWorkspace] = useState(() => new Map());
@@ -1838,7 +1894,7 @@ export function Sidebar({
   const [sessionFullyLoadedWorkspaces, setSessionFullyLoadedWorkspaces] = useState(() => new Set());
   const [sessionListTotals, setSessionListTotals] = useState(() => new Map());
   const [expanded,    setExpanded]    = useState(new Set());
-  const [expandedSessionLists, setExpandedSessionLists] = useState(new Set());
+  const [expandedSessionLists, setExpandedSessionLists] = useState(new Map());
   const [sectionExpansion, setSectionExpansion] = usePreference(
     SIDEBAR_SECTIONS_STORAGE_KEY,
     DEFAULT_SIDEBAR_SECTION_EXPANSION,
@@ -1869,6 +1925,14 @@ export function Sidebar({
   const [pinnedDragState, setPinnedDragState] = useState(null);
   const [workspaceDragState, setWorkspaceDragState] = useState(null);
   const [sessionDragGhost, setSessionDragGhost] = useState(null);
+  const folderReorder = useWorkspaceFolderReorder({
+    workspaces,
+    scrollRef: sidebarScrollRef,
+    disabled: collapsed || !sectionExpansion.workspaces || workspaceOrderSaving,
+    onReorder: (next) => workspaceOrderControllerRef.current.reorder(next),
+    conflictingDragRefs: [pinnedDragRef, workspaceDragRef],
+  });
+  const folderGestureRef = folderReorder.gestureRef;
   const [opencodeImportPreviews, setOpencodeImportPreviews] = useState(() => new Map());
   const opencodeImportPreviewsRef = useRef(new Map());
   const [opencodeImportDialog, setOpencodeImportDialog] = useState(null);
@@ -2183,6 +2247,7 @@ export function Sidebar({
   }, [applyPinnedReorder]);
 
   const handlePinnedPointerDown = useCallback((event, session, title) => {
+    if (folderGestureRef.current) return;
     startSidebarSessionPointerDrag({
       showSessionTime,
       event,
@@ -2196,7 +2261,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updatePinnedDragTarget,
     });
-  }, [finishPinnedDrag, showSessionTime, updatePinnedDragTarget, updateSessionDragScroll]);
+  }, [finishPinnedDrag, folderGestureRef, showSessionTime, updatePinnedDragTarget, updateSessionDragScroll]);
 
   const updateWorkspaceDragTarget = useCallback((clientY) => {
     const drag = workspaceDragRef.current;
@@ -2240,6 +2305,7 @@ export function Sidebar({
   }, []);
 
   const handleWorkspacePointerDown = useCallback((event, session, title) => {
+    if (folderGestureRef.current) return;
     startSidebarSessionPointerDrag({
       showSessionTime,
       event,
@@ -2253,7 +2319,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updateWorkspaceDragTarget,
     });
-  }, [finishWorkspaceDrag, showSessionTime, updateSessionDragScroll, updateWorkspaceDragTarget]);
+  }, [finishWorkspaceDrag, folderGestureRef, showSessionTime, updateSessionDragScroll, updateWorkspaceDragTarget]);
 
   useEffect(() => () => {
     pinnedDragRef.current?.cleanup?.();
@@ -2338,7 +2404,7 @@ export function Sidebar({
     });
   }, []);
 
-  const applyWorkspaceSessionList = useCallback((workspace, page) => {
+  const applyWorkspaceSessionList = useCallback((workspace, page, { appendNewSessions = false } = {}) => {
     const hash = workspace?.hash || '';
     if (!hash) return;
     const list = page?.sessions;
@@ -2358,6 +2424,7 @@ export function Sidebar({
       refreshedWorkspaceHashes: [hash],
       pinnedByWorkspace: pinnedByWorkspaceRef.current,
       refreshNoWorkspace: false,
+      appendNewSessions,
     }));
     setStatusBySession((prev) => incoming.reduce((map, session) => applyStatusUpdate(map, {
       ...session,
@@ -2377,6 +2444,7 @@ export function Sidebar({
     const workspace = workspaces.find((item) => item.hash === workspaceHash)
       || { hash: workspaceHash };
     const wantFull = full || sessionFullyLoadedWorkspacesRef.current.has(workspaceHash);
+    const appendNewSessions = wantFull && !sessionFullyLoadedWorkspacesRef.current.has(workspaceHash);
     const cached = silent || sessionLoadedWorkspacesRef.current.has(workspaceHash);
     if (!cached) setSessionWorkspaceLoading([workspaceHash], true);
 
@@ -2391,11 +2459,14 @@ export function Sidebar({
         );
       } else {
         payload = normalizeWorkspaceSessionListResponse(
-          await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
+          await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({
+            full: wantFull,
+            pinnedIds: pinnedByWorkspaceRef.current.get(workspaceHash),
+          })),
         );
       }
       if (workspaceSessionLoadSeqRef.current.get(workspaceHash) !== sequence) return;
-      applyWorkspaceSessionList(workspace, payload);
+      applyWorkspaceSessionList(workspace, payload, { appendNewSessions });
     } catch {
       /* 鉴权失败不致命 */
     } finally {
@@ -2405,30 +2476,29 @@ export function Sidebar({
     }
   }, [applyWorkspaceSessionList, setSessionWorkspaceLoading, workspaces]);
 
-  const toggleSessionListExpanded = useCallback((hash) => {
+  const toggleSessionListExpanded = useCallback((hash, action) => {
     if (!hash) return;
-    const collapsing = expandedSessionLists.has(hash);
+    const collapsing = action === 'collapse';
+    // 手动选择批次优先于当前会话的自动揭示，直到发生新的会话导航。
+    sessionListDisclosureCompactRef.current.add(hash);
     if (collapsing) {
-      sessionListDisclosureCompactRef.current.add(hash);
       setExpandedSessionLists((prev) => {
-        const next = new Set(prev);
+        const next = new Map(prev);
         next.delete(hash);
         return next;
       });
       return;
     }
-    sessionListDisclosureCompactRef.current.delete(hash);
-    if (hash === NO_WORKSPACE_SESSION_LIST_KEY || sessionFullyLoadedWorkspaces.has(hash)) {
-      setExpandedSessionLists((prev) => new Set(prev).add(hash));
-      return;
-    }
+    setExpandedSessionLists((prev) => new Map(prev).set(
+      hash,
+      (prev.get(hash) ?? SIDEBAR_SESSION_COLLAPSE_LIMIT) + SIDEBAR_SESSION_COLLAPSE_LIMIT,
+    ));
+    if (hash === NO_WORKSPACE_SESSION_LIST_KEY || sessionFullyLoadedWorkspaces.has(hash)) return;
     loadWorkspaceSessions(hash, {
       full: true,
       silent: sessionLoadedWorkspaces.has(hash),
-    }).then(() => {
-      setExpandedSessionLists((prev) => new Set(prev).add(hash));
     }).catch(() => {});
-  }, [expandedSessionLists, loadWorkspaceSessions, sessionFullyLoadedWorkspaces, sessionLoadedWorkspaces]);
+  }, [loadWorkspaceSessions, sessionFullyLoadedWorkspaces, sessionLoadedWorkspaces]);
 
   useEffect(() => {
     const handler = (event) => {
@@ -2453,6 +2523,7 @@ export function Sidebar({
       return;
     }
     refreshingRef.current = true;
+    const workspaceOrderRefresh = workspaceOrderControllerRef.current.captureRefresh();
     try {
       const activeNoWorkspace = !!revealTarget.noWorkspace && !requestedHash;
       let workspaceArr = [];
@@ -2496,7 +2567,7 @@ export function Sidebar({
         expandedHashes.add(revealWorkspaceHash);
       }
       setActiveWorkspaceHash(chosen);
-      setWorkspaces(withActive);
+      workspaceOrderControllerRef.current.acceptRefresh(withActive, workspaceOrderRefresh);
       const earlyVisibleWorkspaceHashes = withActive
         .filter((w) => w.active || w.hash === '__local__' || expandedHashes.has(w.hash) || w.hash === revealWorkspaceHash)
         .map((w) => w.hash)
@@ -2590,7 +2661,10 @@ export function Sidebar({
           }
           const wantFull = sessionFullyLoadedWorkspacesRef.current.has(w.hash);
           const payload = normalizeWorkspaceSessionListResponse(
-            await api.listWorkspaceSessions(w.hash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
+            await api.listWorkspaceSessions(w.hash, sidebarWorkspaceSessionListQuery({
+              full: wantFull,
+              pinnedIds: nextPinnedMap.get(w.hash),
+            })),
           );
           return { workspace: w, ...payload };
         }));
@@ -2643,6 +2717,7 @@ export function Sidebar({
       if (pendingHash) setTimeout(() => refresh(pendingHash).catch(() => {}), 0);
     }
   }, [activeWorkspaceHash, markWorkspaceSessionsFullyLoaded, refreshOpencodeImportPreview, revealTarget, setPinnedMap, setPinnedOrder, setSessionWorkspaceLoading, setSessionWorkspacesLoaded, syncRetainedSessionIds, updateExpanded]);
+  workspaceOrderRefreshRef.current = refresh;
 
   const archiveSession = useCallback(async (session) => {
     const id = session?.id || session?.sessionId || session?.session_id || '';
@@ -2880,12 +2955,12 @@ export function Sidebar({
         prev[targetSection] ? prev : { ...prev, [targetSection]: true }
       ));
     }
-    const sourceSessions = selectedRevealTarget.noWorkspace
+    const sourceSessions = filterPinnedSessions(selectedRevealTarget.noWorkspace
       ? noWorkspaceSessions
       : workspaceSessions.filter((session) => (
         !selectedRevealTarget.workspaceHash ||
         (session.workspace_hash || session.workspaceHash || '') === selectedRevealTarget.workspaceHash
-      ));
+      )), pinnedByWorkspace);
 
     if (
       allowSidebarWorkspaceAutoExpand(selectedRevealTarget.workspaceHash, {
@@ -2910,12 +2985,13 @@ export function Sidebar({
       && sessionListNeedsRevealExpansion(
         sourceSessions,
         selectedRevealTarget,
-        expandedSessionLists.has(listKey),
+        expandedSessionLists.get(listKey),
       )
     ) {
       setExpandedSessionLists((prev) => {
-        if (prev.has(listKey)) return prev;
-        return new Set(prev).add(listKey);
+        const visibleLimit = sidebarSessionRevealLimit(sourceSessions, selectedRevealTarget);
+        if ((prev.get(listKey) ?? SIDEBAR_SESSION_COLLAPSE_LIMIT) >= visibleLimit) return prev;
+        return new Map(prev).set(listKey, visibleLimit);
       });
     }
 
@@ -2939,7 +3015,7 @@ export function Sidebar({
       row.scrollIntoView?.({ block: 'nearest' });
     });
     return () => window.cancelAnimationFrame?.(frame);
-  }, [expandedSessionLists, noWorkspaceSessions, pinnedSessions, selectedRevealTarget, setSectionExpansion, updateExpanded, workspaceSessions]);
+  }, [expandedSessionLists, noWorkspaceSessions, pinnedByWorkspace, pinnedSessions, selectedRevealTarget, setSectionExpansion, updateExpanded, workspaceSessions]);
 
   // 把已加载的跨 workspace sessions / pinned order / workspaceName 推到桌面 tray 菜单。
   // pushTrayMenu 内部 100ms debounce + 无 bridge 时 no-op。
@@ -3582,7 +3658,7 @@ export function Sidebar({
               <NoWorkspaceSessionGroup
                 sessions={unpinnedNoWorkspaceSessions}
                 sessionsLoading={false}
-                sessionListExpanded={expandedSessionLists.has(NO_WORKSPACE_SESSION_LIST_KEY)}
+                sessionListVisibleLimit={expandedSessionLists.get(NO_WORKSPACE_SESSION_LIST_KEY)}
                 onToggleSessionList={toggleSessionListExpanded}
                 activeId={activeId}
                 activeTarget={selectedRevealTarget}
@@ -3627,7 +3703,13 @@ export function Sidebar({
               )}
             />
             {sidebarSectionIsVisible(sectionCounts.workspaces) && sectionExpansion.workspaces && (
-              <div className="my-1">
+              <div
+                className="my-1"
+                ref={folderReorder.listRef}
+                data-sidebar-workspace-folder-list
+                aria-busy={workspaceOrderSaving}
+                onClickCapture={folderReorder.onClickCapture}
+              >
                 {workspaces.map((ws) => {
                   const items = filterPinnedSessions(
                     workspaceSessions.filter((s) => s.workspace_hash ? s.workspace_hash === ws.hash : !!ws.active),
@@ -3640,8 +3722,8 @@ export function Sidebar({
                       expanded={expanded.has(ws.hash)}
                       onToggle={onToggle}
                       sessions={items}
-                      sessionListExpanded={expandedSessionLists.has(ws.hash)}
-                      sessionListTotal={sessionListTotals.get(ws.hash)}
+                      sessionListVisibleLimit={expandedSessionLists.get(ws.hash)}
+                      sessionListTotal={sessionFullyLoadedWorkspaces.has(ws.hash) ? items.length : sessionListTotals.get(ws.hash)}
                       onToggleSessionList={toggleSessionListExpanded}
                       activeId={activeId}
                       activeTarget={selectedRevealTarget}
@@ -3659,6 +3741,10 @@ export function Sidebar({
                       onRenameSession={renameSession}
                       onWorkspacePointerDown={handleWorkspacePointerDown}
                       workspaceDragState={workspaceDragState}
+                      folderReorderable={workspaces.length > 1 && !workspaceOrderSaving && ws.hash !== '__local__'}
+                      folderDragState={folderReorder.drag}
+                      onFolderPointerDown={folderReorder.onPointerDown}
+                      onFolderKeyDown={folderReorder.onKeyDown}
                       pendingPermissionSessionIds={pendingPermissionSessionIds}
                       pendingQuestionSessionIds={pendingQuestionSessionIds}
                       sessionsLoading={sessionLoadingWorkspaces.has(ws.hash) || !sessionLoadedWorkspaces.has(ws.hash)}
@@ -3723,6 +3809,23 @@ export function Sidebar({
       </aside>
       </SidebarSessionTimeContext.Provider>
       </SessionHoverLifecycleContext.Provider>
+      {folderReorder.drag && createPortal(
+        <div
+          data-sidebar-workspace-folder-drag-preview
+          data-ace-native-overlay="overlap"
+          className="ace-sidebar-workspace-folder-preview ace-sidebar-primary-text text-[13px]"
+          aria-hidden="true"
+          inert=""
+          style={{
+            width: folderReorder.drag.width,
+            height: folderReorder.drag.height,
+            transform: `translate3d(${folderReorder.drag.left}px, ${folderReorder.drag.top}px, 0)`,
+          }}
+        >
+          <VsIcon name={expanded.has(folderReorder.drag.source) ? 'folderOpen' : 'folder'} size={18} className="shrink-0" />
+          <span className="min-w-0 truncate">{folderReorder.drag.name}</span>
+        </div>, document.body,
+      )}
       <OpencodeImportDialog
         dialog={opencodeImportDialog}
         onCancel={closeOpencodeImportDialog}

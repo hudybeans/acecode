@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 #include <sqlite3.h>
+#include "computer_use/runtime.hpp"
 
 #include "provider/auth/github_auth.hpp"
 #include "provider/auth/xai_auth.hpp"
@@ -24,6 +25,7 @@
 #include "security/audit_log.hpp"
 #include "environment/data_dir_migration.hpp"
 #include "environment/terminal_runtime.hpp"
+#include "web/pty/pty_session_registry.hpp"
 #include "environment/toolchains.hpp"
 #include "config/config_recovery.hpp"
 #include "config/saved_models.hpp"
@@ -448,6 +450,7 @@ struct WebServerFixture {
     struct SideQuestionProviderTag {};
     struct NoSessionRegistryTag {};
     struct TaskSuggestionsTag {};
+    struct PtyTag {};
 
     acecode::ToolExecutor tools;
     acecode::PermissionManager template_perm;
@@ -466,6 +469,7 @@ struct WebServerFixture {
     std::unique_ptr<acecode::loop::LoopStore> loop_store;
     std::unique_ptr<FakeRemoteWebProxyController> remote_web_proxy;
     std::unique_ptr<acecode::web::WebServer> server;
+    std::unique_ptr<acecode::PtySessionRegistry> pty_registry;
 
     std::thread server_thread;
     int port = 0;
@@ -496,7 +500,8 @@ struct WebServerFixture {
         NativeSaveFilePicker native_save_file_picker = {},
         std::shared_ptr<acecode::LlmProvider> registry_provider = {},
         bool expose_session_registry = true,
-        bool enable_task_suggestions = false) {
+        bool enable_task_suggestions = false,
+        bool enable_pty = false) {
         port = pick_test_port();
         web_cfg.bind = "127.0.0.1";
         web_cfg.port = port;
@@ -609,6 +614,16 @@ struct WebServerFixture {
         wdeps.dangerous = dangerous;
         wdeps.loop_store = loop_store.get();
         wdeps.desktop_managed = desktop_managed;
+        if (enable_pty) {
+            pty_registry = std::make_unique<acecode::PtySessionRegistry>(
+#ifdef _WIN32
+                acecode::PtyBackendKind::Pipe,
+#else
+                acecode::PtyBackendKind::PosixPty,
+#endif
+                cwd, "");
+            wdeps.pty_registry = pty_registry.get();
+        }
 
         server = std::make_unique<acecode::web::WebServer>(std::move(wdeps));
         server_thread = std::thread([this] { server->run(); });
@@ -676,6 +691,10 @@ struct WebServerFixture {
     explicit WebServerFixture(TaskSuggestionsTag)
         : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
                            false, {}, {}, true, true) {}
+
+    explicit WebServerFixture(PtyTag)
+        : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
+                           false, {}, {}, true, false, true) {}
 
     explicit WebServerFixture(
         std::function<std::vector<std::string>()> remote_web_hosts,
@@ -1013,6 +1032,35 @@ TEST(WebServerHttp, HealthEndpointReturnsBasicMetadata) {
     ASSERT_TRUE(j.contains("features"));
     ASSERT_TRUE(j["features"].contains("completed_turn_self_heal"));
     EXPECT_EQ(j["features"]["completed_turn_self_heal"]["enabled"], true);
+}
+
+TEST(WebServerHttp, PtyOwnerProtocolFiltersAndTransfersWithoutRestart) {
+    WebServerFixture fx(WebServerFixture::PtyTag{});
+    const auto post = [&](const std::string& route, const json& body) {
+        return cpr::Post(cpr::Url{fx.url(route)},
+                         cpr::Header{{"Content-Type", "application/json"}},
+                         cpr::Body{body.dump()}, cpr::Timeout{10000});
+    };
+    auto created = post("/api/pty", {{"owner_id", "draft:http"}, {"title", "HTTP draft"}});
+    ASSERT_EQ(created.status_code, 201) << created.text;
+    const auto original = json::parse(created.text);
+    EXPECT_EQ(original.at("owner_id"), "draft:http");
+    auto other = cpr::Get(cpr::Url{fx.url("/api/pty?owner_id=session%3Aother")});
+    ASSERT_EQ(other.status_code, 200);
+    EXPECT_TRUE(json::parse(other.text).at("sessions").empty());
+    auto moved = post("/api/pty/transfer-owner", {{"from_owner", "draft:http"}, {"to_owner", "session:http"}});
+    ASSERT_EQ(moved.status_code, 204) << moved.text;
+    auto own = cpr::Get(cpr::Url{fx.url("/api/pty?owner_id=session%3Ahttp")});
+    ASSERT_EQ(own.status_code, 200) << own.text;
+    const auto sessions = json::parse(own.text).at("sessions");
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions[0].at("pid"), original.at("pid"));
+    EXPECT_EQ(sessions[0].at("id"), original.at("id"));
+    auto late = post("/api/pty", {{"owner_id", "draft:http"}});
+    ASSERT_EQ(late.status_code, 201) << late.text;
+    EXPECT_EQ(json::parse(late.text).at("owner_id"), "session:http");
+    EXPECT_EQ(post("/api/pty/transfer-owner", {{"from_owner", "session:http"}, {"to_owner", "session:other"}}).status_code, 409);
+    EXPECT_EQ(post("/api/pty/transfer-owner", json::object()).status_code, 400);
 }
 
 TEST(WebServerHttp, DesktopNotificationSettingDefaultsOnAndPersistsChanges) {
@@ -3524,6 +3572,61 @@ TEST(WebServerHttp, DefaultPermissionModeRejectsInvalidMode) {
     EXPECT_EQ(put.status_code, 400) << put.text;
     EXPECT_EQ(fx.cfg.default_permission_mode, "yolo");
     EXPECT_EQ(fx.registry->default_permission_mode(), acecode::PermissionMode::Yolo);
+}
+
+// Workspace ordering persists independently of the browser origin, and errors
+// expose stable codes through the API client's canonical `error` field.
+TEST(WebServerHttp, WorkspaceOrderPersistsAndRejectsInvalidOrStaleLists) {
+    WebServerFixture fx;
+    const auto first = acecode::compute_cwd_hash(fx.cwd);
+    const auto second = fx.workspace_registry->register_new(
+        fx.projects_dir.string(), (fx.tmp_dir / "other-order-workspace").string()).hash;
+    const std::vector<std::string> expected{second, first};
+    auto save = [&](const std::string& body) {
+        return cpr::Put(cpr::Url{fx.url("/api/workspaces/order")},
+                        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+    };
+    const auto saved = save(json{{"hashes", expected}}.dump());
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["hashes"], expected);
+
+    const auto listed = cpr::Get(cpr::Url{fx.url("/api/workspaces")});
+    ASSERT_EQ(listed.status_code, 200) << listed.text;
+    const auto workspaces = json::parse(listed.text);
+    ASSERT_EQ(workspaces.size(), 2u);
+    EXPECT_EQ(workspaces[0]["hash"], second);
+    EXPECT_EQ(workspaces[1]["hash"], first);
+
+    for (const std::string raw : {"{broken", "[]", "{}", "{\"hashes\":false}",
+                                 "{\"hashes\":[1]}", "{\"hashes\":[\"\"]}"}) {
+        const auto invalid = save(raw);
+        ASSERT_EQ(invalid.status_code, 400) << raw;
+        EXPECT_EQ(json::parse(invalid.text)["error"], "BAD_REQUEST");
+        EXPECT_TRUE(json::parse(invalid.text)["message"].is_string());
+    }
+    EXPECT_EQ(save(json{{"hashes", {first, first}}}.dump()).status_code, 400);
+    for (const auto& hashes : std::vector<std::vector<std::string>>{
+             {first}, {first, "unknown"}, {}}) {
+        const auto conflict = save(json{{"hashes", hashes}}.dump());
+        ASSERT_EQ(conflict.status_code, 409) << conflict.text;
+        EXPECT_EQ(json::parse(conflict.text)["error"], "WORKSPACE_ORDER_CONFLICT");
+        EXPECT_TRUE(json::parse(conflict.text)["message"].is_string());
+    }
+    acecode::desktop::WorkspaceRegistry restarted;
+    restarted.scan(fx.projects_dir.string());
+    ASSERT_EQ(restarted.list().size(), 2u);
+    EXPECT_EQ(restarted.list()[0].hash, second);
+    EXPECT_EQ(restarted.list()[1].hash, first);
+
+    ASSERT_TRUE(restarted.hide(fx.projects_dir.string(), second));
+    EXPECT_EQ(save(json{{"hashes", expected}}.dump()).status_code, 409);
+    const auto visible = save(json{{"hashes", {first}}}.dump());
+    EXPECT_EQ(visible.status_code, 200) << visible.text;
+    std::filesystem::create_directory(fx.projects_dir / "workspace_order.json.tmp");
+    const auto failed = save(json{{"hashes", {first}}}.dump());
+    ASSERT_EQ(failed.status_code, 500) << failed.text;
+    EXPECT_EQ(json::parse(failed.text)["error"], "PERSIST_FAILED");
+    EXPECT_TRUE(json::parse(failed.text)["message"].is_string());
 }
 
 // 场景: 共享 daemon 暴露 workspace registry,每个 workspace 有独立 session
@@ -9087,6 +9190,98 @@ TEST(WebServerHttp, FailedUpdateJobCanBeRetried) {
     EXPECT_EQ(retried["state"], "succeeded");
     EXPECT_EQ(retried["log_path"], failed["log_path"]);
     EXPECT_NE(read_text(log_path).find(retry_id), std::string::npos);
+}
+
+TEST(WebServerHttp, ComputerUseSettingsPersistAndRevokeToolsLive) {
+    struct RevokeComputerUse {
+        ~RevokeComputerUse() { acecode::computer_use::set_enabled(false); }
+    } revoke;
+    acecode::computer_use::set_enabled(false);
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const auto initial = cpr::Get(url);
+    ASSERT_EQ(initial.status_code, 200);
+    const auto snapshot = json::parse(initial.text);
+    EXPECT_FALSE(snapshot["enabled"].get<bool>());
+    EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+    EXPECT_EQ(initial.header.at("Cache-Control"), "no-store");
+    const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);
+    EXPECT_EQ(cpr::Put(url, cpr::Header{{"Origin", origin}},
+        cpr::Body{R"({"enabled":true})"}).status_code, 401);
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin},
+        {"X-ACECode-Token", "smoke-token"}}).status_code, 200);
+
+    EXPECT_EQ(snapshot["pointer_style"], "ace");
+    EXPECT_EQ(snapshot["pointer_color"], "#2563eb");
+    const auto styled = cpr::Put(url, headers, cpr::Body{R"({"pointer_style":"plain"})"});
+    ASSERT_EQ(styled.status_code, 200) << styled.text;
+    EXPECT_EQ(json::parse(styled.text)["pointer_style"], "plain");
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    const auto recolored = cpr::Put(url, headers, cpr::Body{R"({"pointer_color":"#AbCdEF"})"});
+    ASSERT_EQ(recolored.status_code, 200) << recolored.text;
+    EXPECT_EQ(json::parse(recolored.text)["pointer_style"], "plain");
+    EXPECT_EQ(json::parse(recolored.text)["pointer_color"], "#abcdef");
+    EXPECT_FALSE(json::parse(recolored.text)["enabled"].get<bool>());
+    const auto configured = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_FALSE(configured.computer_use.enabled);
+    EXPECT_EQ(configured.computer_use.pointer_style, "plain");
+    EXPECT_EQ(configured.computer_use.pointer_color, "#abcdef");
+
+    const auto enabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":true})"});
+#ifdef _WIN32
+    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+    EXPECT_TRUE(snapshot["supported"].get<bool>());
+    EXPECT_TRUE(fx.cfg.computer_use.enabled);
+    EXPECT_TRUE(acecode::computer_use::enabled());
+    EXPECT_TRUE(fx.tools.has_tool("computer_list_windows"));
+    EXPECT_TRUE(fx.tools.has_tool("computer_click"));
+    auto disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_TRUE(disk.computer_use.enabled);
+    disk.ui.locale = "en-US";
+    acecode::save_config(disk, (fx.tmp_dir / "config.json").string());
+    const auto disabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"});
+    ASSERT_EQ(disabled.status_code, 200) << disabled.text;
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(acecode::computer_use::enabled());
+    EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_FALSE(disk.computer_use.enabled);
+    EXPECT_EQ(disk.ui.locale, "en-US");
+    EXPECT_EQ(disk.computer_use.pointer_style, "plain");
+    EXPECT_EQ(disk.computer_use.pointer_color, "#abcdef");
+#else
+    EXPECT_EQ(enabled.status_code, 400);
+    EXPECT_EQ(json::parse(enabled.text)["error"], "COMPUTER_USE_PLATFORM_UNSUPPORTED");
+    EXPECT_FALSE(snapshot["supported"].get<bool>());
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 200);
+#endif
+}
+
+TEST(WebServerHttp, ComputerUseRejectsInvalidAndFailedWritesWithoutEnablingTools) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    for (const auto* patch : {"{", "[]", R"({"enabled":"yes"})",
+        R"({"enabled":1})", R"({"enabled":false,"supported":true})",
+        R"({"pointer_style":"invalid"})", R"({"pointer_color":"red"})"}) {
+        EXPECT_EQ(cpr::Put(url, headers, cpr::Body{patch}).status_code, 400);
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    }
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 500);
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"pointer_style":"plain","pointer_color":"#abcdef"})"}).status_code, 500);
+    EXPECT_EQ(fx.cfg.computer_use.pointer_style, "ace");
+    EXPECT_EQ(fx.cfg.computer_use.pointer_color, "#2563eb");
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
 }
 
 TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {

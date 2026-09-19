@@ -435,6 +435,13 @@ bool ToolExecutor::is_read_only(const std::string& name) const {
     return it != tools_.end() && it->second.is_read_only;
 }
 
+bool ToolExecutor::can_execute_in_parallel(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(tools_mu_);
+    const auto it = tools_.find(name);
+    return it != tools_.end() && it->second.is_read_only &&
+        !it->second.requires_serial_execution;
+}
+
 std::string ToolExecutor::generate_tools_prompt(
     const ToolCapabilityPolicy* policy) const {
     std::ostringstream oss;

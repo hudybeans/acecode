@@ -163,12 +163,12 @@ export function sidebarWorkspaceListKeys(workspaces = []) {
 }
 
 export function expandedSessionListsAfterWorkspaceCollapseAll(
-  currentExpanded = new Set(),
+  currentExpanded = new Map(),
   workspaces = [],
 ) {
-  const next = currentExpanded instanceof Set
-    ? new Set(currentExpanded)
-    : new Set();
+  const next = currentExpanded instanceof Map
+    ? new Map(currentExpanded)
+    : new Map();
   for (const hash of sidebarWorkspaceListKeys(workspaces)) {
     next.delete(hash);
   }
@@ -176,13 +176,13 @@ export function expandedSessionListsAfterWorkspaceCollapseAll(
 }
 
 export function expandedSessionListsAfterWorkspaceDisclosure(
-  currentExpanded = new Set(),
+  currentExpanded = new Map(),
   workspaceHash = '',
 ) {
   const hash = String(workspaceHash || '').trim();
-  const current = currentExpanded instanceof Set ? currentExpanded : new Set();
+  const current = currentExpanded instanceof Map ? currentExpanded : new Map();
   if (!hash || !current.has(hash)) return current;
-  const next = new Set(current);
+  const next = new Map(current);
   next.delete(hash);
   return next;
 }
@@ -215,17 +215,28 @@ export function allowSidebarSessionListRevealExpansion({
   return true;
 }
 
-export function sidebarSessionProjection(sessions = [], expanded = false, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT, total = null) {
+function sidebarSessionLimit(value, fallback = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback;
+}
+
+export function sidebarSessionProjection(
+  sessions = [],
+  visibleLimit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  limit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  total = null,
+) {
   const list = Array.isArray(sessions) ? sessions : [];
-  const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : SIDEBAR_SESSION_COLLAPSE_LIMIT;
+  const max = sidebarSessionLimit(limit);
+  const visibleCount = Math.max(max, sidebarSessionLimit(visibleLimit, max));
   const knownTotal = Number.isFinite(total) && total > list.length ? Math.floor(total) : list.length;
   const collapsible = knownTotal > max;
-  const visibleSessions = collapsible && !expanded ? list.slice(0, max) : list;
+  const visibleSessions = list.slice(0, visibleCount);
+  const hiddenCount = Math.max(0, knownTotal - visibleSessions.length);
   return {
     visibleSessions,
     collapsible,
-    action: collapsible ? (expanded ? 'collapse' : 'expand') : '',
-    hiddenCount: collapsible && !expanded ? Math.max(0, knownTotal - visibleSessions.length) : 0,
+    action: collapsible ? (hiddenCount > 0 ? 'expand' : 'collapse') : '',
+    hiddenCount,
   };
 }
 
@@ -260,13 +271,26 @@ export function sessionMatchesRevealTarget(session = {}, target = {}) {
   return sessionWorkspace(session) === targetWorkspace;
 }
 
-export function sessionListNeedsRevealExpansion(sessions = [], target = {}, expanded = false, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
-  if (expanded || !target?.sessionId) return false;
-  const projection = sidebarSessionProjection(sessions, false, limit);
+export function sessionListNeedsRevealExpansion(
+  sessions = [],
+  target = {},
+  visibleLimit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  limit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+) {
+  if (!target?.sessionId) return false;
+  const projection = sidebarSessionProjection(sessions, visibleLimit, limit);
   if (!projection.collapsible) return false;
-  const hasTarget = sessions.some((session) => sessionMatchesRevealTarget(session, target));
+  const list = Array.isArray(sessions) ? sessions : [];
+  const hasTarget = list.some((session) => sessionMatchesRevealTarget(session, target));
   if (!hasTarget) return false;
   return !projection.visibleSessions.some((session) => sessionMatchesRevealTarget(session, target));
+}
+
+export function sidebarSessionRevealLimit(sessions = [], target = {}, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
+  const batchSize = sidebarSessionLimit(limit);
+  const list = Array.isArray(sessions) ? sessions : [];
+  const targetIndex = list.findIndex((session) => sessionMatchesRevealTarget(session, target));
+  return Math.max(batchSize, Math.ceil((targetIndex + 1) / batchSize) * batchSize);
 }
 
 export function sortSidebarSessionsNewestFirst(sessions = []) {

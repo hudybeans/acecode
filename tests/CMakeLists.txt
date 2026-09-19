@@ -98,6 +98,44 @@ target_include_directories(acecode_unit_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
 )
+if(WIN32)
+    target_link_libraries(acecode_unit_tests PRIVATE acecode_computer_use_native)
+    add_dependencies(acecode_unit_tests acecode-computer-use)
+    # Runtime tests resolve their sidecar beside the test executable as the
+    # production daemon does, including multi-configuration generators.
+    add_custom_command(TARGET acecode_unit_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:acecode-computer-use>
+            $<TARGET_FILE_DIR:acecode_unit_tests>/acecode-computer-use.exe
+        VERBATIM)
+    # Isolated transport tests deliberately substitute a noninteractive worker.
+    # Keep its executable directory separate from the real helper and tests.
+    set(_computer_broker_dir "${CMAKE_CURRENT_BINARY_DIR}/computer-use-broker/$<CONFIG>")
+    add_executable(computer_use_broker_fixture EXCLUDE_FROM_ALL
+        computer_use/helpers/broker_fixture.cpp)
+    target_link_libraries(computer_use_broker_fixture PRIVATE nlohmann_json::nlohmann_json)
+    set_target_properties(computer_use_broker_fixture PROPERTIES
+        OUTPUT_NAME acecode-computer-use RUNTIME_OUTPUT_DIRECTORY "${_computer_broker_dir}")
+    add_executable(computer_use_broker_smoke EXCLUDE_FROM_ALL
+        computer_use/helpers/broker_smoke.cpp ${CMAKE_SOURCE_DIR}/src/computer_use/runtime.cpp)
+    target_include_directories(computer_use_broker_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(computer_use_broker_smoke PRIVATE nlohmann_json::nlohmann_json)
+    set_target_properties(computer_use_broker_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${_computer_broker_dir}")
+    add_dependencies(computer_use_broker_smoke computer_use_broker_fixture)
+    # Opt-in native fixture: operates only on its own disposable test window.
+    add_executable(computer_use_native_smoke EXCLUDE_FROM_ALL
+        computer_use/helpers/native_smoke.cpp
+        computer_use/helpers/ole_drag_fixture.cpp
+        ${CMAKE_SOURCE_DIR}/src/computer_use/runtime.cpp)
+    target_link_libraries(computer_use_native_smoke PRIVATE acecode_computer_use_native)
+    add_dependencies(computer_use_native_smoke acecode-computer-use)
+    add_custom_command(TARGET computer_use_native_smoke POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:acecode-computer-use>
+            $<TARGET_FILE_DIR:computer_use_native_smoke>/acecode-computer-use.exe
+        VERBATIM)
+endif()
 
 # Manual, opt-in Windows runtime smoke. It owns an isolated top-level HWND and
 # proves that the native Browser host proxies CDP to the exact visible WebView2

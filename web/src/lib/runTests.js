@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './workspaceFolderOrder.test.js';
 import './interfaceIcons.test.js';
 import './composerImagePresentation.test.js';
 import './questionPickerLayout.test.js';
@@ -45,6 +46,7 @@ import './sideChatStream.test.js';
 import './sideChatGeometry.test.js';
 import './editableFileDraft.test.js';
 import './unsavedFileGuard.test.js';
+import './sessionWorkbench.test.js';
 import './fileLink.test.js';
 import './threadLinkArchitecture.test.js';
 import './fileTreeLocate.test.js';
@@ -293,6 +295,8 @@ import './remoteWebArchitecture.test.js';
 // leak a temporary English locale into an unrelated presentation test.
 await import('./imageGenerationSettings.test.js');
 await import('./summaryGenerationSettings.test.js');
+await import('./computerUseSettings.test.js');
+await import('./computerUsePointerTheme.test.js');
 await import('./toolRewrites.test.js');
 await import('../i18n/runtime.test.js');
 await import('./uiLocale.test.js');

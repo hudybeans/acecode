@@ -38,9 +38,13 @@ run('Desktop injects stable appearance before WebUI modules execute', () => {
 run('App restores daemon appearance and owns durable mutations', () => {
   const app = sourceFromSrc('App.jsx');
   assert.match(app, /createAppearancePersistenceController\(\{/);
+  assert.match(app, /const applyAppearanceRef = useRef\(applyAppearance\);/);
+  assert.match(app, /applyAppearanceRef\.current = applyAppearance;/);
+  assert.match(app, /apply: \(next\) => applyAppearanceRef\.current\(next\),/);
   assert.match(app, /save: \(payload\) => api\.setUiPreferences\(payload\)/);
   assert.match(app, /api\.getUiPreferences\(\)\.then\(\(preferences\) => \{/);
   assert.match(app, /appearanceControllerRef\.current\.restore\(preferences\)/);
+  assert.doesNotMatch(app, /applyStartupTheme|claimStartupTheme/);
   assert.match(app, /onThemeChange=\{\(nextTheme\) => changeAppearance\(\{ theme: nextTheme \}\)\}/);
   assert.match(app, /onColorThemeChange=\{\(nextColorTheme\) => \(/);
   assert.match(app, /onFontSizeChange=\{\(nextFontSize\) => changeAppearance\(\{ fontSize: nextFontSize \}\)\}/);

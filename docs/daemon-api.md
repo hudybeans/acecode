@@ -239,6 +239,7 @@ update their transcript presentation.
 | POST | `/api/history` | append input history |
 | GET | `/api/workspaces` | list registered workspaces |
 | POST | `/api/workspaces` | register cwd as workspace |
+| PUT | `/api/workspaces/order` | persist visible workspace order |
 | POST | `/api/workspaces/pick-folder` | desktop native folder picker |
 | GET | `/api/projects/defaults` | new-project default parent directory |
 | POST | `/api/projects` | create and register a new project directory |
@@ -349,7 +350,7 @@ update their transcript presentation.
 | GET | `/api/config/ui-preferences` | read UI preferences |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
 | GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
-| POST | `/api/themes/first-run` | durably claim the one-time National Day startup attempt |
+| POST | `/api/themes/first-run` | legacy compatibility: durably claim the one-time National Day startup attempt |
 | POST | `/api/themes/import/preview` | validate a raw theme ZIP and return a read-only preview |
 | POST | `/api/themes/import?sha256=<digest>` | import the same previewed ZIP after confirmation |
 | GET | `/api/themes/job` | current theme download progress |
@@ -368,6 +369,8 @@ update their transcript presentation.
 | PUT | `/api/config/custom-instructions` | write custom instructions |
 | GET | `/api/config/connectors` | read connector settings |
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
+| GET | `/api/config/computer-use` | read computer control availability and pointer appearance |
+| PUT | `/api/config/computer-use` | partially update the switch or pointer appearance |
 | GET | `/api/config/summary-generation` | read summary-model override and available models |
 | PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
@@ -525,6 +528,29 @@ disabled, the write is silently ignored.
 
 Returns `Workspace[]`. The registry is scanned before listing. If no registry
 is available, the compatibility workspace may be returned.
+
+When a workspace order has been saved, visible workspaces follow that order;
+new workspaces are appended. Hidden workspaces retain their saved positions
+without appearing in this response. The same order is used by the Desktop
+workspace bridge and survives daemon restarts and loopback port changes.
+
+### `PUT /api/workspaces/order`
+
+Body and successful response:
+
+```json
+{"hashes":["workspace-hash-b","workspace-hash-a"]}
+```
+
+The request must contain every currently visible workspace hash exactly once.
+The registry atomically saves the order in `projects/workspace_order.json`;
+existing workspace markers and sessions are unchanged. Hidden hashes keep
+their saved slots when visible workspaces are reordered. Errors:
+
+- `400` malformed JSON, missing/non-array `hashes`, non-string, empty or duplicate hashes
+- `409` `WORKSPACE_ORDER_CONFLICT` for unknown/hidden hashes or an incomplete visible list
+- `500` save failure; the previously confirmed order remains intact
+- `503` workspace registry unavailable
 
 ### `POST /api/workspaces`
 
@@ -3109,9 +3135,13 @@ migration. It atomically creates `themes/.national-day-2026-attempted` and retur
 `{"id":"national-day-2026","claimed":true}` only to the first claimant; later
 requests return `claimed:false`. It neither downloads nor changes appearance.
 The marker persists across failures, process restarts and application upgrades.
-After restoring canonical appearance preferences, the first Web/Desktop client
-automatically installs the National Day package using the same exact integrity
-metadata with `automatic:true`, or reuses a valid installation. Automatic jobs
+当前 Web/Desktop 客户端恢复外观后不再调用此接口，也不自动下载或应用国庆节主题。
+新配置使用蓝色和跟随系统的明暗模式，已有配置保留已保存的主题。接口继续保留，
+兼容旧版客户端；以下自动任务行为仅适用于仍调用此接口的旧版启动流程。
+
+After restoring canonical appearance preferences, a legacy Web/Desktop client
+can automatically install the National Day package using the same exact integrity
+metadata with `automatic:true`, or reuse a valid installation. Automatic jobs
 retain that flag so every observing client suppresses their failure notifications.
 Application follows successful resource preparation. A later explicit theme
 choice wins, and persistence failures silently roll back the original appearance.
@@ -3395,6 +3425,33 @@ summary model gives `configured: false` and title generation skips that attempt
 without substituting another model. Disabling retains `model_name` and restores
 the previous title-resolution behavior, including the legacy override. This
 setting does not change the conversation model or disable automatic titles.
+
+### Computer use settings
+
+`GET /api/config/computer-use` returns `enabled` (default `false`),
+`supported` (currently Windows only), `platform` (`windows`, `macos`,
+or `linux`), `pointer_style` (`ace` by default, or `plain`), and `pointer_color`
+(default `#2563eb`). `PUT` accepts any subset of boolean `enabled`,
+`pointer_style`, and `pointer_color`; omitted fields keep their current values.
+Colors must be six-digit `#RRGGBB` and are normalized to lowercase. Both
+endpoints require authentication and return the persisted settings.
+Malformed JSON returns `400 BAD_JSON`, invalid fields return `400 BAD_REQUEST`,
+and enabling on another platform returns `400 COMPUTER_USE_PLATFORM_UNSUPPORTED`.
+Persistence errors return `500 PERSIST_FAILED` without changing the live switch.
+Pointer appearance can be saved while the tool is disabled and never enables it
+implicitly. The WebUI synchronizes the current theme accent color outside the
+settings panel too. Changes apply on the helper's next request without ending
+its session lease or invalidating an existing observation.
+
+Enabling registers the `computer_*` tools for subsequent model requests;
+disabling unregisters them and terminates the active desktop helper. An
+in-flight handler also checks the live gate, so stale calls cannot bypass a
+disabled setting. The UI reconciles uncertain save outcomes with a fresh GET.
+Window observations and PNG attachment metadata include a `cursor` object:
+`visible`, and when visible, `source` (`agent` or `system`), `x`, `y`,
+`hotspot_x`, `hotspot_y`, `width`, and `height`. All dimensions use that
+screenshot's pixels, including when the native window image was resized.
+See [Computer Use](computer-use.md) for native capabilities and platform limits.
 
 ### Image generation settings
 
@@ -4088,17 +4145,22 @@ return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
 Body:
 
 ```json
-{"cwd":"C:/repo","title":"Terminal","shell":"powershell"}
+{"cwd":"C:/repo","title":"Terminal","shell":"powershell","owner_id":"session:abc"}
 ```
 
 `shell` is a shell id from `/api/pty/shells`. The daemon enforces a 16-session
 limit and returns `429` when exceeded.
+
+`owner_id` identifies the conversation (`session:<id>`) or temporary new-chat
+state (`draft:<id>`), independently of `cwd`. It is limited to 512 bytes.
+Omitting it preserves the legacy unowned terminal behavior.
 
 Session info:
 
 ```json
 {
   "id": "pty-1",
+  "owner_id": "session:abc",
   "title": "Terminal 1",
   "shell": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
   "cwd": "C:/repo",
@@ -4113,11 +4175,28 @@ Session info:
 
 ### `GET /api/pty`
 
+Optional `owner_id` query parameter filters by owner. Omitted means all terminals;
+an explicit empty value selects legacy unowned terminals. The WebUI always sends
+the current owner and never attaches legacy terminals to an arbitrary conversation.
+
 Returns:
 
 ```json
 {"backend":"conpty","sessions":[]}
 ```
+
+### `POST /api/pty/transfer-owner`
+
+```json
+{"from_owner":"draft:unique-id","to_owner":"session:new-session-id"}
+```
+
+Moves a new-chat draft's terminals to the newly created conversation without
+restarting processes, clearing buffers or disconnecting subscribers. Late creates
+with the old draft owner follow the transfer. Identical retries return `204`;
+invalid owner prefixes, an already occupied target or a conflicting prior transfer
+return `409`. A malformed body returns `400`. Existing conversation-to-conversation
+transfers are rejected. Uses the same loopback/auth checks as all PTY endpoints.
 
 ### `DELETE /api/pty/:id`
 

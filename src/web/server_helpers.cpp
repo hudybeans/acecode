@@ -4,6 +4,7 @@
 // multiple route TUs.
 
 #include "server_impl.hpp"
+#include "../computer_use/runtime.hpp"
 #include "remote_control_session_event.hpp"
 #include "session_status_routing.hpp"
 #include "../config/saved_models_revision.hpp"
@@ -2292,6 +2293,14 @@ void WebServer::Impl::refresh_saved_models_from_disk() {
         AppConfig disk = deps.config_path.empty()
             ? load_config()
             : load_config_from_path(deps.config_path, false);
+        const bool computer_enabled_changed = deps.app_config->computer_use.enabled != disk.computer_use.enabled;
+        if (computer_enabled_changed ||
+            deps.app_config->computer_use.pointer_style != disk.computer_use.pointer_style ||
+            deps.app_config->computer_use.pointer_color != disk.computer_use.pointer_color) {
+            deps.app_config->computer_use = disk.computer_use;
+            if (computer_enabled_changed) refresh_computer_use_tool_locked();
+            else computer_use::set_pointer_appearance(disk.computer_use.pointer_style, disk.computer_use.pointer_color);
+        }
         if (publish_live_saved_models(
                 *deps.app_config, std::move(disk.saved_models))) {
             LOG_INFO("saved_models refreshed from disk after connector hook");

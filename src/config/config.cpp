@@ -1660,6 +1660,28 @@ static AppConfig load_config_from_path_once(
                 }
             }
 
+            if (j.contains("computer_use")) {
+                const auto& computer = j["computer_use"];
+                if (!computer.is_object() ||
+                    (computer.contains("enabled") && !computer["enabled"].is_boolean())) {
+                    throw std::runtime_error("computer_use.enabled must be a boolean");
+                }
+                cfg.computer_use.enabled = computer.value("enabled", false);
+                if (computer.contains("pointer_style")) {
+                    if (!computer["pointer_style"].is_string() ||
+                        !computer_use::pointer_appearance::valid_style(computer["pointer_style"].get<std::string>()))
+                        throw std::runtime_error("computer_use.pointer_style must be ace or plain");
+                    cfg.computer_use.pointer_style = computer["pointer_style"].get<std::string>();
+                }
+                if (computer.contains("pointer_color")) {
+                    const auto color = computer["pointer_color"].is_string()
+                        ? computer_use::pointer_appearance::normalize_color(computer["pointer_color"].get<std::string>())
+                        : std::nullopt;
+                    if (!color) throw std::runtime_error("computer_use.pointer_color must be #RRGGBB");
+                    cfg.computer_use.pointer_color = *color;
+                }
+            }
+
             if (j.contains("summary_generation")) {
                 const auto& summary = j["summary_generation"];
                 if (!summary.is_object() ||
@@ -2457,6 +2479,15 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         UiConfig ui_d;
         if (cfg.ui.locale != ui_d.locale) {
             j["ui"]["locale"] = cfg.ui.locale;
+        }
+
+        const auto pointer_color = computer_use::pointer_appearance::normalize_color(cfg.computer_use.pointer_color);
+        if (!computer_use::pointer_appearance::valid_style(cfg.computer_use.pointer_style) || !pointer_color)
+            throw std::runtime_error("refusing to save invalid computer_use pointer appearance");
+        if (cfg.computer_use.enabled || cfg.computer_use.pointer_style != computer_use::pointer_appearance::kDefaultStyle
+            || *pointer_color != computer_use::pointer_appearance::kDefaultColor) {
+            j["computer_use"] = {{"enabled", cfg.computer_use.enabled},
+                {"pointer_style", cfg.computer_use.pointer_style}, {"pointer_color", *pointer_color}};
         }
 
         nlohmann::json summary = nlohmann::json::object();

@@ -1,4 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef } from 'react';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { useWorkbenchScroll } from '../lib/useWorkbenchScroll.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 import {
   CHANGE_LIST_VIEW_TREE,
   buildChangeFileTree,
@@ -226,6 +229,8 @@ function selectedRowMatches(node, selectedPath, selectedTreePath) {
 }
 
 export function ChangeFileList({
+  owner: suppliedOwner,
+  viewKey = 'changes',
   rows,
   viewMode,
   cwd = '',
@@ -239,7 +244,13 @@ export function ChangeFileList({
   const list = Array.isArray(rows) ? rows : [];
   const treeMode = viewMode === CHANGE_LIST_VIEW_TREE;
   const listRef = useRef(null);
-  const [collapsedPaths, setCollapsedPaths] = useState(() => new Set());
+  const instanceId = useId();
+  const owner = suppliedOwner || `view:${instanceId}`;
+  const field = `changeList:${viewKey}:${cwd}`;
+  const [collapsedPaths, setCollapsedPaths] = useWorkbenchState(owner, `${field}:collapsed`, () => new Set());
+  useWorkbenchScroll(owner, `${field}:scroll`, listRef, list.length > 0);
+  const requestKey = JSON.stringify([selectedFile, selectedFileRevision, viewMode]);
+  const restoredSelection = useRef(sessionWorkbench.get(owner, `${field}:selection`, ''));
   const selectedPath = normalizeTreePath(selectedFile);
   const selectedTreePath = normalizeChangeTreePath(selectedFile, cwd);
   const tree = useMemo(() => buildChangeFileTree(list, cwd), [list, cwd]);
@@ -248,8 +259,8 @@ export function ChangeFileList({
     [tree, collapsedPaths],
   );
 
-  useEffect(() => {
-    if (!treeMode || !selectedFile) return;
+  useLayoutEffect(() => {
+    if (!treeMode || !selectedFile || restoredSelection.current === requestKey) return;
     const ancestors = changeTreeAncestorPaths(selectedFile, cwd);
     if (ancestors.length === 0) return;
     setCollapsedPaths((previous) => {
@@ -258,15 +269,18 @@ export function ChangeFileList({
       for (const path of ancestors) next.delete(path);
       return next;
     });
-  }, [cwd, selectedFile, selectedFileRevision, treeMode]);
+  }, [cwd, selectedFile, selectedFileRevision, treeMode, requestKey, setCollapsedPaths]);
 
   useLayoutEffect(() => {
     if (!selectedPath && !selectedTreePath) return;
+    if (restoredSelection.current === requestKey) return;
     const element = listRef.current;
     if (!element) return;
     const row = Array.from(element.querySelectorAll('[data-change-compact-file]'))
       .find((candidate) => selectedRowMatches(candidate, selectedPath, selectedTreePath));
     if (!row) return;
+    restoredSelection.current = requestKey;
+    sessionWorkbench.set(owner, `${field}:selection`, requestKey);
     const listRect = element.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
     if (rowRect.top < listRect.top) {

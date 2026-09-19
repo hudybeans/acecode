@@ -44,12 +44,13 @@ export function consoleCwdForContext({ activeRef = null, selectedHomeWorkspace =
   return stringValue(health?.cwd);
 }
 
-export function ptyCreateOptions({ shellId = '', cwd = '' } = {}) {
+export function ptyCreateOptions({ shellId = '', cwd = '', owner = '' } = {}) {
   const out = {};
   const cleanShell = stringValue(shellId);
   const cleanCwd = stringValue(cwd);
   if (cleanShell) out.shell = cleanShell;
   if (cleanCwd) out.cwd = cleanCwd;
+  if (owner) out.owner_id = owner;
   return out;
 }
 
@@ -69,7 +70,22 @@ export function addTab(state, info) {
     exitCode: typeof info.exit_code === 'number' ? info.exit_code : null,
     backend: info.backend || '',
   };
-  return { tabs: [...state.tabs, tab], activeId: tab.id };
+  const tabs = state.tabs.filter((item) => item.id !== tab.id);
+  return { tabs: [...tabs, tab], activeId: tab.id };
+}
+
+export function restoreDockTabs(state, sessions, owner) {
+  const owned = sessions.filter((info) => info.owner_id === owner);
+  const byId = new Map(owned.map((info) => [info.id, info]));
+  let next = createDockTabs();
+  for (const tab of state.tabs) {
+    if (byId.has(tab.id)) {
+      next = addTab(next, byId.get(tab.id));
+      byId.delete(tab.id);
+    }
+  }
+  for (const info of byId.values()) next = addTab(next, info);
+  return activateTab(next, state.activeId);
 }
 
 export function removeTab(state, id) {

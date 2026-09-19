@@ -57,6 +57,7 @@ Name: "addtopath"; Description: "将 ACECode 命令行加入用户 PATH"; GroupD
 [Files]
 Source: "staging\acecode.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\acecode-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\acecode-computer-use.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "staging\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "staging\README_CN.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "staging\share\*"; DestDir: "{app}\share"; Flags: ignoreversion recursesubdirs createallsubdirs

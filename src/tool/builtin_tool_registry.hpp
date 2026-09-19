@@ -4,6 +4,7 @@
 #include "agent_browser/browser_tools.hpp"
 #include "apply_patch_tool.hpp"
 #include "bash_tool.hpp"
+#include "computer_use_tool.hpp"
 #include "file_edit_tool.hpp"
 #include "file_read_tool.hpp"
 #include "file_write_tool.hpp"
@@ -60,6 +61,7 @@ inline void register_session_builtin_tools(ToolExecutor& tools, const AppConfig&
         tools.register_tool(create_lsp_tool());
     }
     agent_browser::register_agent_browser_tools(tools);
+    refresh_computer_use_tools(tools, config);
 }
 
 } // namespace acecode

@@ -9,6 +9,8 @@
 //  - 汇总文案:截断提示
 
 import assert from 'node:assert/strict';
+import { sessionChangesCache } from './gitChangesCache.js';
+import { sessionWorkbench } from './sessionWorkbench.js';
 import {
   buildBaseCandidates,
   createChangesCache,
@@ -30,6 +32,23 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('Git list and patch caches share only within an owner and follow new-session handoff', () => {
+  const a = sessionChangesCache('session:git-a');
+  const b = sessionChangesCache('session:git-b');
+  assert.equal(a, sessionChangesCache('session:git-a'));
+  assert.notEqual(a, b);
+  a.putList('/same', 'HEAD', { files: ['a'] });
+  a.putPatch('/same', 'HEAD', 'a.txt', 'patch A');
+  assert.equal(b.getList('/same', 'HEAD'), null);
+  assert.equal(b.getPatch('/same', 'HEAD', 'a.txt'), null);
+  b.markStale('/same');
+  assert.equal(a.getPatch('/same', 'HEAD', 'a.txt'), 'patch A');
+  const draft = sessionWorkbench.ownerFor({ hash: 'git-cache-transfer' });
+  const temporary = sessionChangesCache(draft);
+  sessionWorkbench.transfer(draft, 'session:git-cache-created');
+  assert.equal(temporary, sessionChangesCache('session:git-cache-created'));
+});
 
 run('基线候选:后端已验证的 default_base 优先,HEAD 兜底', () => {
   const { candidates, initial } = buildBaseCandidates({

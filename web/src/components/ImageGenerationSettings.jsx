@@ -76,12 +76,12 @@ export function ImageGenerationSettings({ onCheckUpdates }) {
           <div className="text-[13px] font-normal">图像生成</div>
           <div className="text-[11px] text-fg-mute mt-0.5">根据描述生成图片，或编辑已有图片</div>
         </div>
-        <Toggle on={!!draft?.enabled}
-          disabled={!snapshot || loading || testing} ariaLabel="启用图像生成"
-          onChange={(enabled) => update('enabled', enabled, true)} />
         <button type="button" className="px-1.5 py-0.5 text-[11px] hover:underline disabled:opacity-50"
           disabled={!snapshot || loading} aria-expanded={expanded} aria-controls="image-generation-config"
           onClick={() => { if (expanded) void store.flush(); setExpanded((value) => !value); setApiKeyVisible(false); }}>{expanded ? '收起' : '配置'}</button>
+        <Toggle on={!!draft?.enabled}
+          disabled={!snapshot || loading || testing} ariaLabel="启用图像生成"
+          onChange={(enabled) => update('enabled', enabled, true)} />
       </div>
 
       {error && <div role="alert" className="px-3.5 pb-3 text-[12px] text-danger">

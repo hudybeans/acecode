@@ -1,6 +1,7 @@
 #include "agent_loop.hpp"
 #include "agent_loop_doom_guard.hpp"
 #include "agent_loop_shell_guard.hpp"
+#include "computer_use/runtime.hpp"
 #include "sandbox/exec_permission.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
@@ -942,6 +943,7 @@ void AgentLoop::dispatch_session_title_changed_hook(
 
 void AgentLoop::abort() {
     abort_requested_ = true;
+    if (session_manager_) computer_use::release_session(session_manager_->current_session_id());
     wake_active_provider_retry();
 }
 
@@ -3974,7 +3976,7 @@ bool AgentLoop::execute_tool_calls(
         const auto& tc = accumulated.tool_calls[i];
         bool ro = tools_.is_read_only(tc.function_name);
         ToolCallEntry entry{i, &tc, ro};
-        if (ro) {
+        if (tools_.can_execute_in_parallel(tc.function_name)) {
             read_entries.push_back(entry);
         } else {
             write_entries.push_back(entry);
@@ -4776,12 +4778,14 @@ bool AgentLoop::execute_tool_calls(
                 bool auto_allow = true;
                 for (const auto& rule_path : rule_paths) {
                     if (!permissions_.should_auto_allow(
-                            effective_tc.function_name, false, rule_path, ctx_command)) {
+                            effective_tc.function_name,
+                            tools_.is_read_only(effective_tc.function_name), rule_path, ctx_command)) {
                         auto_allow = false;
                     }
                 }
                 if (permissions_.mode() == PermissionMode::Plan) {
-                    auto_allow = targets_active_plan_file || effective_tc.function_name == "TodoWrite";
+                    auto_allow = tools_.is_read_only(effective_tc.function_name) ||
+                        targets_active_plan_file || effective_tc.function_name == "TodoWrite";
                 }
                 if (effective_tc.function_name == "ExitPlanMode" &&
                     permissions_.mode() != PermissionMode::Plan) {
@@ -5353,6 +5357,12 @@ bool AgentLoop::execute_tool_calls(
 void AgentLoop::run_agent_with_input(const UserInput& input,
                                       bool hidden_goal_context,
                                       const ChatMessage* retry_message) {
+    // Capture the owner before callbacks can switch/delete the active session.
+    // RAII also releases on exceptions and early hook returns.
+    struct DesktopTurnLease {
+        std::string owner;
+        ~DesktopTurnLease() { computer_use::release_session(owner); }
+    } desktop_turn_lease{session_manager_ ? session_manager_->current_session_id() : std::string{}};
     {
         std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
         sandbox_prompt_snapshot_.reset();
@@ -5426,6 +5436,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     auto turn_info = retry_message
         ? prepare_retry_user_turn(*retry_message)
         : prepare_user_turn(input, hidden_goal_context);
+    if (session_manager_) desktop_turn_lease.owner = session_manager_->current_session_id();
     std::string turn_timing_status = "completed";
     if (preturn_compaction_failed) {
         turn_timing_status = "error";
@@ -6004,6 +6015,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         }
     }
 
+    computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);
     }

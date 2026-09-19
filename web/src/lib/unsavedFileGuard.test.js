@@ -6,21 +6,21 @@ const context = { scopeKey: 'workspace', sessionId: 'a' };
 function fixture() {
   let state = openFileTab({}, { ...context, cwd: '/project', path: 'a.txt' });
   const key = visiblePreviewTabs(state, context)[0].key;
-  state = updateFileTabDraft(state, { scopeKey: context.scopeKey, tabKey: key,
+  state = updateFileTabDraft(state, { ...context, tabKey: key,
     patch: { baselineText: 'disk', text: 'edit', readId: 'read-1' } });
   let dialog;
   let writes = 0;
   let navigation = 0;
   const guard = createUnsavedFileGuard((next) => { dialog = next; });
   const discard = (tabs) => {
-    for (const tab of tabs) state = discardFileTabDraft(state, { scopeKey: context.scopeKey, tabKey: tab.key });
+    for (const tab of tabs) state = discardFileTabDraft(state, { ...context, tabKey: tab.key });
   };
   const options = {
     getTabs: () => visiblePreviewTabs(state, context), discard,
     save: async (tabs) => {
       writes += 1;
       for (const tab of tabs) state = updateFileTabDraft(state, {
-        scopeKey: context.scopeKey, tabKey: tab.key,
+        ...context, tabKey: tab.key,
         patch: { baselineText: tab.edit.text, text: tab.edit.text, readId: 'read-2' },
       });
     },
