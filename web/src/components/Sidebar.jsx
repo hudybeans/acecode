@@ -1884,6 +1884,7 @@ export function Sidebar({
   const sessionFullyLoadedWorkspacesRef = useRef(new Set());
   const sessionsRef = useRef([]);
   const workspaceSessionLoadSeqRef = useRef(new Map());
+  const pendingFullWorkspaceLoadsRef = useRef(new Map());
   // 已经探过 opencode 导入预览的 workspace。探测结果近乎静态,没必要每轮
   // 对全部 workspace 重问一遍(见 lib/sidebarAuxiliaryFetch.js)。
   const opencodePreviewProbedRef = useRef(new Set());
@@ -2421,23 +2422,30 @@ export function Sidebar({
 
     const sequence = (workspaceSessionLoadSeqRef.current.get(workspaceHash) || 0) + 1;
     workspaceSessionLoadSeqRef.current.set(workspaceHash, sequence);
-    try {
-      let payload;
+    const pagePromise = (async () => {
       if (workspaceHash === '__local__') {
         const list = await api.listSessions();
-        payload = normalizeWorkspaceSessionListResponse(
+        return normalizeWorkspaceSessionListResponse(
           (Array.isArray(list) ? list : []).filter((session) => !isNoWorkspaceSession(session)),
         );
-      } else {
-        payload = normalizeWorkspaceSessionListResponse(
-          await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
-        );
       }
+      return normalizeWorkspaceSessionListResponse(
+        await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
+      );
+    })();
+    if (wantFull) {
+      pendingFullWorkspaceLoadsRef.current.set(workspaceHash, { sequence, promise: pagePromise });
+    }
+    try {
+      const payload = await pagePromise;
       if (workspaceSessionLoadSeqRef.current.get(workspaceHash) !== sequence) return;
       applyWorkspaceSessionList(workspace, payload);
     } catch {
       /* 鉴权失败不致命 */
     } finally {
+      if (pendingFullWorkspaceLoadsRef.current.get(workspaceHash)?.sequence === sequence) {
+        pendingFullWorkspaceLoadsRef.current.delete(workspaceHash);
+      }
       if (workspaceSessionLoadSeqRef.current.get(workspaceHash) === sequence) {
         setSessionWorkspaceLoading([workspaceHash], false);
       }
@@ -2576,6 +2584,16 @@ export function Sidebar({
       };
       // 会话行是侧边栏的主体，不能等待置顶等辅助数据后才开始请求。
       const startWorkspacePageLoad = (workspace) => {
+        const pendingFull = pendingFullWorkspaceLoadsRef.current.get(workspace.hash);
+        if (pendingFull && sidebarWorkspacePageIsCurrent(
+          workspaceSessionLoadSeqRef.current.get(workspace.hash), pendingFull.sequence,
+        )) {
+          // 用户的全量请求尚未完成时，后台摘要不能推进代次使它失效。
+          return {
+            sequence: pendingFull.sequence,
+            result: settleSidebarWorkspacePage(pendingFull.promise.then((page) => ({ workspace, ...page }))),
+          };
+        }
         const sequence = (workspaceSessionLoadSeqRef.current.get(workspace.hash) || 0) + 1;
         workspaceSessionLoadSeqRef.current.set(workspace.hash, sequence);
         return {
@@ -2662,12 +2680,15 @@ export function Sidebar({
       ));
       setSessionWorkspaceLoading(initiallyLoadingWorkspaceHashes, true);
       let refreshedWorkspaceHashes = [];
+      let settledPages = [];
       try {
-        const settledPages = await Promise.all(visibleWorkspaces.map(async (workspace) => {
+        settledPages = await Promise.all(visibleWorkspaces.map(async (workspace) => {
           const request = earlyWorkspacePages.get(workspace.hash)
             || startWorkspacePageLoad(workspace);
           return { workspace, sequence: request.sequence, result: await request.result };
         }));
+        // 所有等待结束后再检查代次，不能让这里较慢的请求造成旧摘要回写。
+        const noWorkspaceRaw = await noWorkspaceListPromise;
         const perWorkspace = settledPages.flatMap(({ workspace, sequence, result }) => {
           if (!result.ok) return [];
           if (sequence !== undefined && !sidebarWorkspacePageIsCurrent(
@@ -2678,7 +2699,6 @@ export function Sidebar({
         refreshedWorkspaceHashes = perWorkspace
           .map((item) => item.workspace?.hash)
           .filter(Boolean);
-        const noWorkspaceRaw = await noWorkspaceListPromise;
         const noWorkspaceIncoming = (Array.isArray(noWorkspaceRaw) ? noWorkspaceRaw : [])
           .filter(isNoWorkspaceSession)
           .map(normalizeNoWorkspaceSession);
@@ -2718,7 +2738,13 @@ export function Sidebar({
       catch { /* 鉴权失败不致命 */ }
       finally {
         setSessionWorkspacesLoaded(refreshedWorkspaceHashes, true);
-        setSessionWorkspaceLoading(initiallyLoadingWorkspaceHashes, false);
+        // 激活已加载空工作区也会设置 loading；只按本轮当前请求清理，
+        // 既不能遗漏已有标记，也不能清掉较新全量请求正在使用的标记。
+        setSessionWorkspaceLoading(settledPages
+          .filter(({ workspace, sequence }) => sidebarWorkspacePageIsCurrent(
+            workspaceSessionLoadSeqRef.current.get(workspace.hash), sequence,
+          ))
+          .map(({ workspace }) => workspace.hash), false);
       }
     } finally {
       refreshingRef.current = false;
