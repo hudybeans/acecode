@@ -30,3 +30,12 @@
 - [ ] 5.1 Run the focused logger, FTXUI trace-path, and feedback native tests.
 - [ ] 5.2 Configure and build an input-trace-enabled TUI executable with the bumped FTXUI port, then verify normal-workspace and `--worktree` runs leave no trace-created `acecode.log`.
 - [x] 5.3 Review the documentation diff and verify normal-TUI and FTXUI input-trace documentation no longer directs users to workspace-local `acecode.log`.
+
+## 6. PR 审核修复
+
+- [x] 6.1 修复 Windows UTF-8 日志目录首次创建，覆盖中文用户目录及重定向目录。
+- [x] 6.2 主日志与 FTXUI 输入追踪使用操作系统追加语义，避免多进程 seek/write 竞争覆盖记录。
+- [x] 6.3 增加并运行中文路径、多进程完整记录、追踪路径与不可写目标的独立回归，记录验证边界。
+- [x] 6.4 将 PR 新增根目录 CONTEXT.md 的术语移入已有反馈 ADR，保持根目录规范；现存同名引用均指 OpenCode 竞品文档。
+
+审核验证：Windows MSVC 独立 fixture 的 4 项 Python 回归和 10 项 LoggerRotationTest 通过；主日志、低层追加和 FTXUI 输入追踪各 4 进程 × 2000 条，均收到 8000 条完整唯一记录。中文新目录、追踪本地午夜、空/相对/不可打开目录均通过；开启 `ACECODE_TUI_INPUT_TRACE=1` 的真实 FTXUI app.cpp 定向编译通过。完整交互式 TUI 与非 Windows 实机验证仍由 5.2 和后续构建覆盖，不将 fixture 测试记作完整 TUI 运行。

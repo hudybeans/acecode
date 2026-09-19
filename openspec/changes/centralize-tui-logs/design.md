@@ -74,6 +74,12 @@ Update the user manual's FAQ and MCP troubleshooting text to use `<数据目录>
 
 ## Risks / Trade-offs
 
+### PR 审核补充：Unicode 路径与多进程写入
+
+Windows 创建目录与打开日志统一从 UTF-8 转换到原生路径，避免首次启动在中文数据目录创建乱码目录。集中日志允许多个工作区的 TUI 同时写入，因此不能用进程内互斥锁保护 CRT 的 seek-to-end + write：主日志使用独立的低层追加文件模块，Windows 以 `FILE_APPEND_DATA` 打开并整条 `WriteFile`，POSIX 以 `O_APPEND` 打开并整条 `write`。FTXUI 在其自身依赖边界内使用同样的系统语义，保持追踪记录格式。拒绝相对追踪目录；打开失败时维持静默 best-effort，不写工作区备用文件。
+
+回归验证包含独立进程同时写同一文件、中文路径首次创建及无法打开的目标。操作系统报告短写或磁盘错误时不把残余片段另行追加，以免把一条记录拆散穿插到其他进程记录中；这些错误仍按既有日志 best-effort 语义处理。
+
 - **Feedback archive name change:** consumers that recognize `logs/acecode.log.tail.txt` will no longer see a TUI legacy entry. The old file was workspace-specific and is no longer a valid runtime source; a distinct `logs/tui.log.tail.txt` accurately identifies the new source. The high-volume FTXUI input trace remains a local diagnostic artifact and is not attached by either feedback origin.
 - **Startup ordering:** TUI logger initialization remains before normal configuration loading, as it is today. `get_logs_dir()` only uses existing data-directory resolution and does not require loaded application configuration.
 - **Old docs and external scripts:** workspace-local `acecode.log` may be referenced externally. The selected migration policy intentionally preserves old files but does not maintain an active compatibility copy, preventing further workspace pollution.

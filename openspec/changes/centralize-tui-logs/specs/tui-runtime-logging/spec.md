@@ -86,6 +86,20 @@ Failure to find a rotated TUI log MUST remain non-fatal and MUST NOT prevent col
 - **THEN** feedback packaging continues without `logs/tui.log.tail.txt`
 - **AND THEN** other available daemon or upgrade log sources continue to be collected
 
+### Requirement: 集中日志支持 Unicode 路径和多进程追加
+
+主日志和 FTXUI 输入追踪 MUST 正确创建中文数据目录下的日志目录。多个进程向同一日期文件写入时 MUST 使用操作系统原子追加定位，不能因并发 seek/write 覆盖其他进程已写记录。追踪目录缺失、为相对路径或不可写时 MUST 静默跳过，不能回退到工作区文件。
+
+#### Scenario: 多工作区同时写日志
+
+- **WHEN** 多个 TUI 进程同时向相同数据目录写入正常长度的日志或输入追踪记录
+- **THEN** 所有成功写入的完整记录各出现一次，互不覆盖
+
+#### Scenario: 首次创建中文日志目录
+
+- **WHEN** 有效数据目录含中文且 logs 子目录尚不存在
+- **THEN** 初始化创建正确 Unicode 路径并写入对应日期日志
+
 ### Requirement: User documentation describes the unified runtime log location
 
 User-facing documentation SHALL describe the interactive TUI log as `<data-dir>/logs/tui-YYYY-MM-DD.log` and direct TUI troubleshooting, including MCP connection troubleshooting, to the centralized runtime logs directory. It MUST NOT describe normal TUI runtime logging as writing `<workspace>/acecode.log`.

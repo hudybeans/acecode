@@ -1,6 +1,6 @@
 // 覆盖 src/utils/logger.hpp 的 daemon 模式滚动日志(spec Section 12)。
 // 单元测试这层主要验证三件事:
-//   1. 老 init(file) API 行为不变 — TUI 仍然写 acecode.log,不滚动,不镜像 stderr
+//   1. 老 init(file) API 行为不变 — 指定单文件,不滚动,不镜像 stderr
 //   2. init_with_rotation() 创建 logs/ 目录并写到 daemon-{今日}.log
 //   3. 跨日滚动: 注入假时钟,把"今天"推到下一天,下一条日志要落到新文件
 //   4. foreground 模式: 每条日志同时落文件 + stderr
@@ -62,8 +62,7 @@ protected:
 
 } // namespace
 
-// 场景: 老 API init(file) 维持 TUI 行为 — 写到指定单文件,不创建带日期的文件,
-// 也不输出 stderr。这是兼容性硬保证(main.cpp:770 一直这么调)。
+// 场景:老 API init(file) 写到指定单文件,不创建带日期的文件,也不输出 stderr。
 TEST_F(LoggerRotationTest, SingleFileModeWritesToTargetFileOnly) {
     auto log_path = tmp_dir_ / "acecode.log";
     acecode::Logger::instance().init(log_path.string());
@@ -152,6 +151,31 @@ TEST_F(LoggerRotationTest, TuiRotationUsesTuiDatePrefixWithoutStderrMirror) {
     }
     EXPECT_EQ(matched, 1);
     EXPECT_TRUE(captured.str().empty());
+}
+
+TEST_F(LoggerRotationTest, RotationCreatesPreviouslyMissingUtf8Directory) {
+    const auto logs_dir = tmp_dir_ / fs::u8path(u8"中文数据") / "logs";
+    ASSERT_FALSE(fs::exists(logs_dir));
+    acecode::Logger::instance().init_with_rotation(logs_dir.u8string(), "tui", false);
+    LOG_INFO("utf8-directory-record");
+    ASSERT_TRUE(fs::is_directory(logs_dir));
+    int found = 0;
+    for (const auto& entry : fs::directory_iterator(logs_dir)) {
+        if (read_file(entry.path()).find("utf8-directory-record") != std::string::npos) {
+            ++found;
+        }
+    }
+    EXPECT_EQ(found, 1);
+}
+
+TEST_F(LoggerRotationTest, UnopenableLogDirectoryDoesNotCreateWorkspaceFallback) {
+    const auto blocked = tmp_dir_ / "regular-file";
+    { std::ofstream out(blocked); out << "preserved"; }
+    acecode::Logger::instance().init_with_rotation(
+        (blocked / "logs").u8string(), "tui", false);
+    EXPECT_NO_THROW(LOG_INFO("discarded-unopenable-record"));
+    EXPECT_EQ(read_file(blocked), "preserved");
+    EXPECT_FALSE(fs::exists(tmp_dir_ / "acecode.log"));
 }
 
 // 场景:启动早期尚无主 logger 时建立静默 config sink;若调用方已有 sink,
