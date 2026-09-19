@@ -11,6 +11,7 @@ Developers currently need to choose and invoke separate Web or Desktop launchers
 - Discover related worktrees through Git and validate a reusable build against the current source revision, platform, architecture, and requested target before using it.
 - Incrementally rebuild every verified build before launch so source changes are incorporated; require confirmation only before configuring a missing or incompatible build.
 - Initialize the Windows Visual Studio C++ developer environment from the direct launchers so incremental builds work from a normal shell or double-clicked batch file.
+- Allow Windows direct launchers to configure a missing target build automatically, so double-clicked entry points do not wait for unavailable confirmation input.
 - Give each Web development workspace an isolated daemon runtime directory and open the selected development surface after a successful start.
 - Add a repository-local skill that asks for a target when omitted and applies the same validation and launch policy.
 

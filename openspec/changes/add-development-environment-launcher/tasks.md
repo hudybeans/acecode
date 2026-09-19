@@ -15,4 +15,5 @@
 ## 3. Windows toolchain and verification
 
 - [x] 3.1 Add a shared Windows Visual Studio developer-environment helper and invoke it from each target-specific batch entry point; verify a normal shell receives C++ compiler include paths.
-- [x] 3.2 Extend focused launcher tests for toolchain initialization, incremental builds, frontend refresh, and target-specific wrappers; run them with Python compilation checks and `openspec validate add-development-environment-launcher --strict`.
+- [x] 3.2 Make Windows target-specific entry points automatically approve a missing-build configuration, while preserving explicit confirmation for Python and POSIX callers; verify wrapper argument forwarding and focused launcher tests.
+- [x] 3.3 Run Python compilation checks and `openspec validate add-development-environment-launcher --strict`.

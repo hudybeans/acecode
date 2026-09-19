@@ -20,5 +20,5 @@ if not errorlevel 1 (
     )
 )
 
-"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" desktop %*
+"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" desktop --yes %*
 exit /b %errorlevel%

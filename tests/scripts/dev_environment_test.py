@@ -78,6 +78,71 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment.sys.stdin, "isatty", return_value=False):
             self.assertIsNone(dev_environment.choose_target(None))
 
+    def test_sccache_discovery_prefers_path_and_has_install_hint(self):
+        with patch.object(dev_environment.shutil, "which", return_value="C:/tools/sccache.exe"), \
+             patch.object(Path, "is_file", return_value=True):
+            self.assertEqual(dev_environment.find_sccache(), Path("C:/tools/sccache.exe"))
+        self.assertIn("sccache", dev_environment.sccache_install_hint())
+
+    def test_cache_state_detects_configuration_transition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            cache = Path("C:/tools/sccache.exe")
+            self.assertTrue(dev_environment.cache_state_changed(build, cache))
+            dev_environment.write_sccache_marker(build, cache)
+            self.assertFalse(dev_environment.cache_state_changed(build, cache))
+            self.assertTrue(dev_environment.cache_state_changed(build, None))
+
+    def test_configure_and_build_disables_test_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dev_environment.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                 patch.object(dev_environment, "build_target", return_value=True):
+                self.assertEqual(
+                    dev_environment.configure_and_build(root, "windows-x64-release", "web"),
+                    root / "build/windows-x64-release",
+                )
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "cmake", "--preset", "windows-x64-release", "-DBUILD_TESTING=OFF",
+                "-DCMAKE_C_COMPILER_LAUNCHER=", "-DCMAKE_CXX_COMPILER_LAUNCHER=",
+            ],
+        )
+
+    def test_newest_web_seed_requires_clean_same_commit_and_uses_newest_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "current"
+            older = Path(directory) / "older"
+            newer = Path(directory) / "newer"
+            for worktree in (root, older, newer):
+                (worktree / "web/dist").mkdir(parents=True)
+                (worktree / "web/dist/index.html").write_text("ok", encoding="utf-8")
+            os.utime(older / "web/dist/index.html", (1, 1))
+            os.utime(newer / "web/dist/index.html", (2, 2))
+            with patch.object(dev_environment, "registered_worktrees", return_value=[root, older, newer]), \
+                 patch.object(dev_environment, "current_commit", return_value="same"), \
+                 patch.object(dev_environment, "web_worktree_is_clean", return_value=True):
+                self.assertEqual(dev_environment.newest_web_seed(root), newer / "web/dist/index.html")
+            with patch.object(dev_environment, "registered_worktrees", return_value=[root, newer]), \
+                 patch.object(dev_environment, "current_commit", return_value="same"), \
+                 patch.object(dev_environment, "web_worktree_is_clean", side_effect=lambda item: item != newer):
+                self.assertIsNone(dev_environment.newest_web_seed(root))
+
+    def test_seed_web_assets_copies_current_frontend_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "current"
+            source = Path(directory) / "source"
+            (root / "web/src").mkdir(parents=True)
+            (root / "web/src/main.js").write_text("source", encoding="utf-8")
+            (source / "web/dist").mkdir(parents=True)
+            (source / "web/dist/index.html").write_text("output", encoding="utf-8")
+            freshness = iter([True, False])
+            builder = type("Builder", (), {"web_build_is_stale": staticmethod(lambda _web, _index: next(freshness))})
+            with patch.object(dev_environment, "newest_web_seed", return_value=source / "web/dist/index.html"):
+                self.assertTrue(dev_environment.seed_web_assets(root, builder))
+            self.assertEqual((root / "web/dist/index.html").read_text(encoding="utf-8"), "output")
+
     def test_main_refreshes_build_and_web_assets_before_web_start(self):
         candidate = dev_environment.BuildCandidate(
             Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe")
@@ -90,7 +155,7 @@ class DevEnvironmentTest(unittest.TestCase):
              patch.object(dev_environment, "refresh_web_assets", return_value=True) as refresh, \
              patch.object(dev_environment, "launch_surface", return_value=0) as launch:
             self.assertEqual(dev_environment.main(), 0)
-        build.assert_called_once_with(Path("C:/work"), candidate.build_dir, "web")
+        build.assert_called_once_with(Path("C:/work"), candidate.build_dir, "web", None)
         refresh.assert_called_once_with(Path("C:/work"))
         launch.assert_called_once_with(Path("C:/work"), "web", candidate, False, [])
 
@@ -106,6 +171,11 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment, "worktree_runtime_dir", return_value=Path("C:/work/.acecode/dev-run/test")):
             result = dev_environment.launch_surface(Path("C:/work"), "web", candidate, dry_run=True, extra=[])
         self.assertEqual(result, 0)
+
+    def test_windows_target_launchers_auto_approve_initial_configuration(self):
+        for target in ("web", "desktop", "tui"):
+            wrapper = (ROOT / "scripts" / f"dev_{target}.bat").read_text(encoding="utf-8")
+            self.assertIn(f'dev_environment.py" {target} --yes %*', wrapper)
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper")
     def test_batch_wrapper_delegates_to_python(self):

@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import os
 import platform
-import importlib.util
 import re
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Iterable
 
 TARGETS = ("web", "desktop", "tui")
+CACHE_MARKER = ".acecode-sccache.json"
 
 
 @dataclass(frozen=True)
@@ -153,7 +155,7 @@ def ask_to_build(preset: str, target: str, assume_yes: bool) -> bool:
     binary_dir = f"build/{preset}"
     executable_target = "acecode-desktop" if target == "desktop" else "acecode"
     print("[INFO] No compatible build was found in this repository's registered worktrees.")
-    print(f"[INFO] Proposed configure preset: {preset}")
+    print(f"[INFO] Proposed configure preset: {preset} (BUILD_TESTING=OFF)")
     print(f"[INFO] Proposed build: cmake --build {binary_dir} --target {executable_target}")
     if assume_yes:
         return True
@@ -167,30 +169,198 @@ def ask_to_build(preset: str, target: str, assume_yes: bool) -> bool:
         return False
 
 
-def build_target(root: Path, build_dir: Path, target: str) -> bool:
+def sccache_candidates() -> list[Path]:
+    executable = "sccache.exe" if os.name == "nt" else "sccache"
+    candidates: list[Path] = []
+    from_path = shutil.which("sccache")
+    if from_path:
+        candidates.append(Path(from_path))
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.extend([
+                Path(local_app_data) / "Microsoft" / "WinGet" / "Links" / executable,
+                Path(local_app_data) / "scoop" / "shims" / executable,
+            ])
+        chocolatey = os.environ.get("ChocolateyInstall", r"C:\\ProgramData\\chocolatey")
+        candidates.append(Path(chocolatey) / "bin" / executable)
+    elif sys.platform == "darwin":
+        candidates.extend([Path("/opt/homebrew/bin/sccache"), Path("/usr/local/bin/sccache")])
+    else:
+        candidates.append(Path.home() / ".cargo" / "bin" / "sccache")
+    return candidates
+
+
+def find_sccache() -> Path | None:
+    for candidate in sccache_candidates():
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def sccache_install_hint() -> str:
+    if os.name == "nt":
+        return "Install sccache with: winget install Mozilla.sccache"
+    if sys.platform == "darwin":
+        return "Install sccache with: brew install sccache"
+    return "Install sccache with your package manager or cargo install sccache"
+
+
+def cache_marker(build_dir: Path) -> Path:
+    return build_dir / CACHE_MARKER
+
+
+def cached_sccache_path(build_dir: Path) -> str | None:
+    try:
+        data = json.loads(cache_marker(build_dir).read_text(encoding="utf-8"))
+        value = data.get("sccache")
+        return value if isinstance(value, str) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def write_sccache_marker(build_dir: Path, sccache: Path | None) -> None:
+    build_dir.mkdir(parents=True, exist_ok=True)
+    cache_marker(build_dir).write_text(json.dumps({"sccache": str(sccache) if sccache else None}) + "\n", encoding="utf-8")
+
+
+def cache_state_changed(build_dir: Path, sccache: Path | None) -> bool:
+    return cached_sccache_path(build_dir) != (str(sccache) if sccache else None)
+
+
+def configure_build(root: Path, preset: str, build_dir: Path, sccache: Path | None) -> bool:
+    command = ["cmake", "--preset", preset, "-DBUILD_TESTING=OFF"]
+    if sccache:
+        command.extend([
+            f"-DCMAKE_C_COMPILER_LAUNCHER={sccache}",
+            f"-DCMAKE_CXX_COMPILER_LAUNCHER={sccache}",
+        ])
+    else:
+        command.extend(["-DCMAKE_C_COMPILER_LAUNCHER=", "-DCMAKE_CXX_COMPILER_LAUNCHER="])
+    if subprocess.run(command, cwd=root, check=False).returncode != 0:
+        return False
+    write_sccache_marker(build_dir, sccache)
+    return True
+
+
+def sccache_stats(sccache: Path) -> dict[str, int] | None:
+    result = subprocess.run([str(sccache), "--show-stats", "--stats-format=json"], text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        return None
+    flat = json.dumps(data).lower()
+    values = {"hits": 0, "misses": 0, "errors": 0}
+    def collect(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized = key.lower().replace("_", " ")
+                if isinstance(child, int):
+                    if "hit" in normalized:
+                        values["hits"] += child
+                    elif "miss" in normalized:
+                        values["misses"] += child
+                    elif "error" in normalized:
+                        values["errors"] += child
+                else:
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+    collect(data)
+    return values if flat else None
+
+
+def report_sccache_delta(before: dict[str, int] | None, after: dict[str, int] | None) -> None:
+    if before is None or after is None:
+        print("[INFO] sccache statistics unavailable; continuing.")
+        return
+    delta = {key: max(0, after[key] - before[key]) for key in before}
+    print(f"[INFO] sccache this build: hits={delta['hits']} misses={delta['misses']} errors={delta['errors']}")
+
+
+def build_target(root: Path, build_dir: Path, target: str, sccache: Path | None = None) -> bool:
     executable_target = "acecode-desktop" if target == "desktop" else "acecode"
-    return subprocess.run(
+    before = sccache_stats(sccache) if sccache else None
+    result = subprocess.run(
         ["cmake", "--build", str(build_dir), "--target", executable_target],
         cwd=root,
         check=False,
-    ).returncode == 0
+    )
+    if sccache:
+        report_sccache_delta(before, sccache_stats(sccache))
+    return result.returncode == 0
 
 
-def configure_and_build(root: Path, preset: str, target: str) -> Path | None:
-    if subprocess.run(["cmake", "--preset", preset], cwd=root, check=False).returncode != 0:
-        return None
+def configure_and_build(root: Path, preset: str, target: str, sccache: Path | None = None) -> Path | None:
     build_dir = root / "build" / preset
-    return build_dir if build_target(root, build_dir, target) else None
+    if not configure_build(root, preset, build_dir, sccache):
+        return None
+    return build_dir if build_target(root, build_dir, target, sccache) else None
 
 
-def refresh_web_assets(root: Path) -> bool:
+def web_worktree_is_clean(root: Path) -> bool:
+    result = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", "web"], text=True, capture_output=True, check=False)
+    return result.returncode == 0 and not result.stdout.strip()
+
+
+def newest_web_seed(root: Path) -> Path | None:
+    commit = current_commit(root)
+    if not commit or not web_worktree_is_clean(root):
+        return None
+    candidates: list[Path] = []
+    for worktree in registered_worktrees(root):
+        if worktree == root.resolve() or current_commit(worktree) != commit or not web_worktree_is_clean(worktree):
+            continue
+        index = worktree / "web" / "dist" / "index.html"
+        if index.is_file():
+            candidates.append(index)
+    return max(candidates, key=lambda item: item.stat().st_mtime, default=None)
+
+
+def load_web_builder(root: Path):
     script_path = root / "scripts" / "dev_desktop.py"
     spec = importlib.util.spec_from_file_location("dev_desktop_for_environment", script_path)
     if spec is None or spec.loader is None:
-        print("[ERROR] Cannot load Web asset builder.", file=sys.stderr)
-        return False
+        return None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def seed_web_assets(root: Path, builder) -> bool:
+    web_dir = root / "web"
+    index = web_dir / "dist" / "index.html"
+    if not builder.web_build_is_stale(web_dir, index):
+        return False
+    seed_index = newest_web_seed(root)
+    if seed_index is None:
+        return False
+    try:
+        if (web_dir / "dist").exists():
+            shutil.rmtree(web_dir / "dist")
+        shutil.copytree(seed_index.parent, web_dir / "dist")
+        if builder.web_build_is_stale(web_dir, index):
+            print("[INFO] Reused Web assets were stale; falling back to local build.")
+            shutil.rmtree(web_dir / "dist", ignore_errors=True)
+            return False
+        print(f"[INFO] Reused Web assets from: {seed_index.parent.parent.parent}")
+        return True
+    except OSError as error:
+        print(f"[INFO] Could not reuse Web assets ({error}); falling back to local build.")
+        shutil.rmtree(web_dir / "dist", ignore_errors=True)
+        return False
+
+
+def refresh_web_assets(root: Path) -> bool:
+    module = load_web_builder(root)
+    if module is None:
+        print("[ERROR] Cannot load Web asset builder.", file=sys.stderr)
+        return False
+    if seed_web_assets(root, module):
+        return True
     try:
         _, pnpm = module.ensure_node_and_pnpm()
         module.build_web(root / "web", pnpm)
@@ -272,6 +442,11 @@ def main() -> int:
     if not target:
         return 2
     root = project_root()
+    sccache = find_sccache()
+    if sccache:
+        print(f"[INFO] Using sccache: {sccache}")
+    else:
+        print(f"[INFO] sccache not found. {sccache_install_hint()}")
     candidate = find_compatible_build(root, target, args.build_dir)
     if candidate is None:
         preset = default_preset(target)
@@ -283,14 +458,31 @@ def main() -> int:
         if args.dry_run:
             print(f"[INFO] Dry run: cmake --preset {preset}")
             return 0
-        built = configure_and_build(root, preset, target)
+        built = configure_and_build(root, preset, target, sccache)
         if not built:
-            return 1
+            if sccache:
+                print("[INFO] sccache configuration failed; retrying normal compilation.")
+                built = configure_and_build(root, preset, target, None)
+            if not built:
+                return 1
         candidate = find_compatible_build(root, target, built)
         if candidate is None:
             print("[ERROR] Build completed but did not produce a compatible executable.", file=sys.stderr)
             return 1
-    if not args.dry_run and not build_target(root, candidate.build_dir, target):
+    if not args.dry_run and cache_state_changed(candidate.build_dir, sccache):
+        preset = default_preset(target)
+        if preset is None:
+            print("[ERROR] Cannot reconfigure the build for this platform.", file=sys.stderr)
+            return 1
+        if not configure_build(root, preset, candidate.build_dir, sccache):
+            if sccache:
+                print("[INFO] sccache reconfiguration failed; retrying without it.")
+                sccache = None
+                if not configure_build(root, preset, candidate.build_dir, None):
+                    return 1
+            else:
+                return 1
+    if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache):
         print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
         return 1
     if target in {"web", "desktop"} and not args.dry_run and not refresh_web_assets(root):

@@ -29,7 +29,7 @@ Before requesting a rebuild, the launcher and skill SHALL search the Git worktre
 - **THEN** the launcher does not use it for the Desktop target
 
 ### Requirement: Fresh incremental builds and configuration confirmation
-Before starting a selected target from a compatible build directory, the launcher SHALL run that target's incremental CMake build so changed source files are incorporated. Before starting Web or Desktop, it SHALL also ensure the development frontend assets are current. When no compatible configured build exists, the launcher and skill SHALL report the missing requirement and the CMake preset selected for the current platform, then obtain explicit developer confirmation before configuring a new build. A declined confirmation SHALL leave source and build files unchanged and SHALL not start a development target.
+Before starting a selected target from a compatible build directory, the launcher SHALL run that target's incremental CMake build so changed source files are incorporated. Before starting Web or Desktop, it SHALL also ensure the development frontend assets are current. When no compatible configured build exists, the launcher and skill SHALL report the missing requirement and the CMake preset selected for the current platform, then configure the development target with testing disabled so optional unit-test dependencies do not block startup. They SHALL obtain explicit developer confirmation before configuring a new build unless a Windows direct entry point supplies its automatic approval. A declined confirmation SHALL leave source and build files unchanged and SHALL not start a development target.
 
 #### Scenario: Refresh a compatible build
 - **WHEN** a compatible build exists and source files have changed
@@ -42,6 +42,13 @@ Before starting a selected target from a compatible build directory, the launche
 #### Scenario: Decline a required configuration
 - **WHEN** the selected target has no compatible build and the developer declines the proposed configuration
 - **THEN** the launcher exits without configuring, compiling, or starting a target
+
+### Requirement: Windows direct-launch configuration
+Windows target-specific batch entry points SHALL pass automatic configuration approval to the shared launcher. When no compatible configured build exists, those direct entry points SHALL configure and build it without requiring console input. The shared Python launcher and POSIX direct entry points SHALL retain explicit confirmation requirements for a missing build.
+
+#### Scenario: Double-clicked Web launcher requires a first build
+- **WHEN** a developer starts the Windows Web batch entry point and no compatible configured build exists
+- **THEN** it configures, builds, and starts the Web target without waiting for confirmation input
 
 ### Requirement: Windows compiler environment initialization
 Before a Windows target-specific entry point runs an incremental CMake build, it SHALL initialize an installed Visual Studio C++ developer environment for the host and target architecture. If no suitable Visual Studio C++ tools installation is available, it SHALL exit before invoking the shared launcher and report how to install the required Build Tools workload.

@@ -20,5 +20,5 @@ if not errorlevel 1 (
     )
 )
 
-"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" tui %*
+"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" tui --yes %*
 exit /b %errorlevel%

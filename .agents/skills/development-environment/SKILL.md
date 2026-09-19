@@ -45,9 +45,8 @@ Every launch incrementally builds the verified target, so source changes are inc
 
 If no compatible configured build exists, the launcher reports the platform CMake preset and asks for confirmation before configuration. Preserve that safety boundary:
 
-- State that the launcher needs to configure and build the selected target and name the preset.
-- Ask the user for explicit confirmation before adding `--yes`.
-- After confirmation, run the same target-specific launcher with `--yes`.
+- Windows target-specific batch launchers automatically approve this first configuration so they work when double-clicked.
+- For the shared Python launcher and POSIX target-specific launchers, state that configuration is needed, name the preset, and ask the user for explicit confirmation before adding `--yes`.
 - If the user declines, do not configure, compile, or start a surface.
 
 The shared launcher calls the existing Python surface launchers: `scripts/dev_web.py` for Web and `scripts/dev_desktop.py` for Desktop. Web uses a worktree-isolated runtime directory and opens its resulting local URL; Desktop opens its application window; TUI opens a new terminal window.

@@ -49,6 +49,10 @@ Alternatives considered:
 - Reimplement Web and Desktop startup in the new tool: would create two sources of truth for Web assets and Desktop development-mode behavior.
 - Run TUI in the current terminal: conflicts with the agreed ability to continue launcher work after opening TUI.
 
+### Auto-configure missing builds from Windows direct entry points
+
+Double-clicked batch files do not provide a reliable input stream for the shared launcher's confirmation prompt. Each Windows target entry point will therefore append `--yes` when it calls `dev_environment.py`, approving only the missing-build configuration path. The shared Python launcher remains conservative for callers that invoke it directly, and POSIX wrappers retain their interactive confirmation behavior.
+
 ### Initialize the Windows C++ toolchain in batch entry points
 
 The three Windows target wrappers will call a shared batch helper before invoking Python. The helper locates `vswhere.exe` from the Visual Studio installer location, asks it for an installation containing the x64 C++ tools component, and calls that installation's `VsDevCmd.bat` with `-arch=amd64 -host_arch=amd64`. It preserves the caller's command context while supplying the standard-library and linker paths that CMake needs. If discovery fails, it reports the Build Tools C++ workload requirement and exits before Python runs.
@@ -60,7 +64,7 @@ Alternatives considered:
 
 ### Require interactive confirmation only for a new configuration
 
-When discovery cannot produce a compatible result, the tool calculates the native CMake preset for the selected target and prints configure/build commands. It asks a yes/no question only when stdin is interactive; non-interactive invocations fail with the same instructions rather than implicitly configuring. Once a build directory has been validated or configured, the target's incremental build runs without another confirmation so each launch reflects current sources.
+When discovery cannot produce a compatible result, the tool calculates the native CMake preset for the selected target and prints configure/build commands. It asks a yes/no question only when stdin is interactive; non-interactive invocations fail with the same instructions rather than implicitly configuring. Once a build directory has been validated or configured, the target's incremental build runs without another confirmation so each launch reflects current sources. First-time development configurations pass `-DBUILD_TESTING=OFF`, because unit-test dependencies are optional in the vcpkg manifest and are not needed to run a development surface.
 
 Alternatives considered:
 
