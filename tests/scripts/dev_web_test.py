@@ -41,11 +41,11 @@ class DevWebTest(unittest.TestCase):
                 result = dev_web.main()
                 return result, wait.call_count, open_ui.call_args
 
-    def test_startup_failure_ignores_stale_port(self):
+    def test_worker_timeout_opens_a_fresh_port(self):
         result, reads, opened = self.run_launcher(3, 12345)
-        self.assertEqual(result, 3)
-        self.assertEqual(reads, 0)
-        self.assertIsNone(opened)
+        self.assertEqual(result, 0)
+        self.assertEqual(reads, 1)
+        self.assertEqual(opened.kwargs, {"already_running": False})
 
     def test_verified_running_daemon_can_be_opened(self):
         result, reads, opened = self.run_launcher(6, 12345)

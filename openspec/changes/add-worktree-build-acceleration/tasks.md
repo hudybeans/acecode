@@ -3,7 +3,7 @@
 ## 1. Compiler-cache integration
 
 - [x] 1.1 Add cross-platform `sccache` discovery, installation guidance, and cache-state helpers; verify focused unit tests cover PATH, conventional paths, and absent-cache fallback.
-- [x] 1.2 Configure or remove CMake compiler launchers when cache availability changes, with ordinary-build fallback on cache errors; verify subprocess command tests cover both transitions.
+- [x] 1.2 Configure or remove CMake compiler launchers when cache availability changes, with ordinary-build fallback on cache configuration or cache-enabled build errors; verify subprocess command tests cover both transitions.
 - [x] 1.3 Collect and display best-effort per-launch `sccache` hit, miss, and error deltas; verify statistic parsing and failure fallback with focused tests.
 
 ## 2. Frontend artifact reuse

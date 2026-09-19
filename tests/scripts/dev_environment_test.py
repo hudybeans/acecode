@@ -16,8 +16,8 @@ spec.loader.exec_module(dev_environment)
 
 
 class DevEnvironmentTest(unittest.TestCase):
-    def make_build(self, root, desktop=False):
-        build = root / "build" / "test"
+    def make_build(self, root, desktop=False, name="test"):
+        build = root / "build" / name
         build.mkdir(parents=True)
         (build / "CMakeCache.txt").write_text(
             "CMAKE_HOME_DIRECTORY:INTERNAL=" + str(root) + "\n"
@@ -29,6 +29,17 @@ class DevEnvironmentTest(unittest.TestCase):
         if desktop:
             (build / dev_environment.native_executable_name("acecode-desktop")).touch()
         return build
+
+    def test_web_candidate_prefers_non_desktop_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain = self.make_build(root, name="plain")
+            self.make_build(root, desktop=True, name="desktop")
+            with patch.object(dev_environment, "current_commit", return_value="same"), \
+                 patch.object(dev_environment, "registered_worktrees", return_value=[root]), \
+                 patch.object(dev_environment, "platform_matches", return_value=True):
+                candidate = dev_environment.find_compatible_build(root, "web")
+            self.assertEqual(candidate.build_dir, plain.resolve())
 
     def test_candidate_requires_matching_source_commit_and_executable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -93,6 +104,14 @@ class DevEnvironmentTest(unittest.TestCase):
             self.assertFalse(dev_environment.cache_state_changed(build, cache))
             self.assertTrue(dev_environment.cache_state_changed(build, None))
 
+    def test_sccache_build_failure_disables_only_matching_cache_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            cache = Path("C:/tools/sccache.exe")
+            dev_environment.write_sccache_marker(build, cache, enabled=False)
+            self.assertTrue(dev_environment.sccache_disabled_for_build(build, cache))
+            self.assertFalse(dev_environment.sccache_disabled_for_build(build, Path("C:/tools/sccache-new.exe")))
+
     def test_configure_and_build_disables_test_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -150,7 +169,9 @@ class DevEnvironmentTest(unittest.TestCase):
         args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
         with patch.object(dev_environment, "parse_args", return_value=args), \
              patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
+             patch.object(dev_environment, "find_sccache", return_value=None), \
              patch.object(dev_environment, "find_compatible_build", return_value=candidate), \
+             patch.object(dev_environment, "cache_state_changed", return_value=False), \
              patch.object(dev_environment, "build_target", return_value=True) as build, \
              patch.object(dev_environment, "refresh_web_assets", return_value=True) as refresh, \
              patch.object(dev_environment, "launch_surface", return_value=0) as launch:
@@ -163,6 +184,24 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment.sys.stdin, "isatty", return_value=True), \
              patch("builtins.input", side_effect=EOFError):
             self.assertFalse(dev_environment.ask_to_build("windows-x64-release", "web", False))
+
+    def test_main_retries_failed_sccache_build_without_cache(self):
+        candidate = dev_environment.BuildCandidate(Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe"))
+        args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
+        cache = Path("C:/tools/sccache.exe")
+        with patch.object(dev_environment, "parse_args", return_value=args), \
+             patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
+             patch.object(dev_environment, "find_sccache", return_value=cache), \
+             patch.object(dev_environment, "find_compatible_build", return_value=candidate), \
+             patch.object(dev_environment, "cache_state_changed", return_value=False), \
+             patch.object(dev_environment, "build_target", side_effect=[False, True]) as build, \
+             patch.object(dev_environment, "configure_build", return_value=True) as configure, \
+             patch.object(dev_environment, "refresh_web_assets", return_value=True), \
+             patch.object(dev_environment, "launch_surface", return_value=0):
+            self.assertEqual(dev_environment.main(), 0)
+        self.assertEqual(build.call_args_list[0].args, (Path("C:/work"), candidate.build_dir, "web", cache))
+        self.assertEqual(build.call_args_list[1].args, (Path("C:/work"), candidate.build_dir, "web", None))
+        configure.assert_called_once_with(Path("C:/work"), "windows-x64-release", candidate.build_dir, None)
 
     def test_web_launch_forwards_the_build_and_isolated_runtime_directory(self):
         candidate = dev_environment.BuildCandidate(

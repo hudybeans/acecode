@@ -33,7 +33,7 @@ Alternatives considered:
 
 ### Treat cache instrumentation as best effort
 
-The launcher invokes `sccache --show-stats --stats-format=json` before and after building when supported, computes a delta for cache hits, misses, and errors, and prints it. Parsing or command failures disable only reporting; cache configuration failures trigger a CMake reconfiguration without launchers and continue with normal compilation.
+The launcher invokes `sccache --show-stats --stats-format=json` before and after building when supported, computes a delta for cache hits, misses, and errors, and prints it. Parsing or command failures disable only reporting. Cache configuration failures or cache-enabled build failures trigger a CMake reconfiguration without launchers and one ordinary-build retry; only a failed retry stops the requested launch.
 
 ### Copy frontend artifacts, never link them
 

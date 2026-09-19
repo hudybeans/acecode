@@ -126,7 +126,10 @@ def find_compatible_build(root: Path, target: str, explicit: Path | None = None)
     for worktree in worktrees:
         if current_commit(worktree) != commit:
             continue
-        directories = [explicit.resolve()] if explicit else build_directories(worktree)
+        directories = [explicit.resolve()] if explicit else sorted(
+            build_directories(worktree),
+            key=lambda directory: (configured_for_desktop(directory), str(directory).lower()),
+        )
         for build_dir in directories:
             source_dir = cmake_source_dir(build_dir)
             executable = executable_for(build_dir, target)
@@ -210,22 +213,29 @@ def cache_marker(build_dir: Path) -> Path:
     return build_dir / CACHE_MARKER
 
 
-def cached_sccache_path(build_dir: Path) -> str | None:
+def cached_sccache_state(build_dir: Path) -> tuple[str | None, bool] | None:
     try:
         data = json.loads(cache_marker(build_dir).read_text(encoding="utf-8"))
-        value = data.get("sccache")
-        return value if isinstance(value, str) else None
+        path = data.get("sccache")
+        enabled = data.get("enabled", True)
+        return (path if isinstance(path, str) else None, bool(enabled))
     except (OSError, ValueError, TypeError):
         return None
 
 
-def write_sccache_marker(build_dir: Path, sccache: Path | None) -> None:
+def write_sccache_marker(build_dir: Path, sccache: Path | None, enabled: bool = True) -> None:
     build_dir.mkdir(parents=True, exist_ok=True)
-    cache_marker(build_dir).write_text(json.dumps({"sccache": str(sccache) if sccache else None}) + "\n", encoding="utf-8")
+    cache_marker(build_dir).write_text(json.dumps({"sccache": str(sccache) if sccache else None, "enabled": enabled}) + "\n", encoding="utf-8")
 
 
 def cache_state_changed(build_dir: Path, sccache: Path | None) -> bool:
-    return cached_sccache_path(build_dir) != (str(sccache) if sccache else None)
+    state = cached_sccache_state(build_dir)
+    return state is None or state[0] != (str(sccache) if sccache else None)
+
+
+def sccache_disabled_for_build(build_dir: Path, sccache: Path | None) -> bool:
+    state = cached_sccache_state(build_dir)
+    return sccache is not None and state == (str(sccache), False)
 
 
 def configure_build(root: Path, preset: str, build_dir: Path, sccache: Path | None) -> bool:
@@ -448,6 +458,10 @@ def main() -> int:
     else:
         print(f"[INFO] sccache not found. {sccache_install_hint()}")
     candidate = find_compatible_build(root, target, args.build_dir)
+    sccache_disabled = candidate is not None and sccache_disabled_for_build(candidate.build_dir, sccache)
+    if sccache_disabled:
+        print("[INFO] sccache is disabled for this build after a prior compiler failure.")
+        sccache = None
     if candidate is None:
         preset = default_preset(target)
         if preset is None:
@@ -469,7 +483,7 @@ def main() -> int:
         if candidate is None:
             print("[ERROR] Build completed but did not produce a compatible executable.", file=sys.stderr)
             return 1
-    if not args.dry_run and cache_state_changed(candidate.build_dir, sccache):
+    if not args.dry_run and not sccache_disabled and cache_state_changed(candidate.build_dir, sccache):
         preset = default_preset(target)
         if preset is None:
             print("[ERROR] Cannot reconfigure the build for this platform.", file=sys.stderr)
@@ -483,8 +497,18 @@ def main() -> int:
             else:
                 return 1
     if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache):
-        print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
-        return 1
+        if sccache:
+            preset = default_preset(target)
+            print("[INFO] sccache build failed; retrying this build without sccache.")
+            if preset and configure_build(root, preset, candidate.build_dir, None) and build_target(root, candidate.build_dir, target, None):
+                write_sccache_marker(candidate.build_dir, find_sccache(), enabled=False)
+                sccache = None
+            else:
+                print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
+                return 1
+        else:
+            print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
+            return 1
     if target in {"web", "desktop"} and not args.dry_run and not refresh_web_assets(root):
         print("[ERROR] Web asset refresh failed; development environment was not started.", file=sys.stderr)
         return 1

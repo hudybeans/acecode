@@ -18,8 +18,8 @@ The development launcher SHALL detect an available `sccache` executable using th
 - **THEN** it reports an optional installation suggestion and continues with normal compilation
 
 #### Scenario: Cache tool failure
-- **WHEN** compiler-cache configuration, execution, or statistics collection fails
-- **THEN** the launcher reports a concise reason and falls back to ordinary compilation without blocking target startup
+- **WHEN** compiler-cache configuration, execution, statistics collection, or a cache-enabled build fails
+- **THEN** the launcher reports a concise reason, reconfigures without compiler launchers when necessary, and retries ordinary compilation without blocking target startup
 
 ### Requirement: Cache configuration transitions
 The development launcher SHALL detect when an existing build directory's configured compiler-cache state differs from the currently available cache state. It SHALL reconfigure that build directory before its next incremental build to add or remove compiler launcher settings as required.
