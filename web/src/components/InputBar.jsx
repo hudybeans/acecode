@@ -37,6 +37,7 @@ import {
   isComposerEditorFocused,
   preserveComposerFocusOnPointerDown,
   requestDesktopFileDragActivation,
+  requestDesktopFileDropFocus,
   requestDesktopWindowFocus,
   restoreComposerTextareaCaret,
 } from '../lib/composerCaretRestore.js';
@@ -863,7 +864,8 @@ export const InputBar = forwardRef(function InputBar({
   }, [setFileDragActive]);
 
   const handleDrop = useCallback((event) => {
-    const files = disabled || !onMediaFiles ? [] : filesFromTransfer(event.dataTransfer, { source: 'drop' });
+    if (disabled || !onMediaFiles) return;
+    const files = filesFromTransfer(event.dataTransfer, { source: 'drop' });
     if (NATIVE_FILE_DROP) {
       markNativeDropHover();
       if (HOST_OS === 'windows' && postWindowsNativeFilesystemDrop(event.dataTransfer)) {
@@ -879,6 +881,7 @@ export const InputBar = forwardRef(function InputBar({
     if (files.length > 0 || uriPaths.length > 0) {
       event.preventDefault();
       event.stopPropagation();
+      requestDesktopFileDropFocus();
       if (uriPaths.length > 0) {
         const savedCursor = composerSelection.end;
         addMaterializedPaths(uriPaths, savedCursor, { requestNativeFocus: false })
@@ -980,13 +983,17 @@ export const InputBar = forwardRef(function InputBar({
         try { rawPaths = JSON.parse(rawPaths); } catch { return; }
       }
       const hover = nativeDropHoverRef.current;
-      if (!Array.isArray(rawPaths) || rawPaths.length === 0 ||
+      if (disabled || !onMediaFiles || !Array.isArray(rawPaths) || rawPaths.length === 0 ||
           !hover.active || Date.now() - hover.ts > 1500) return;
 
       nativeDropHoverRef.current = { active: false, ts: 0 };
       resetDragState();
       const paths = localPathsFromDropPayload(rawPaths, HOST_OS);
       if (paths.length === 0) return;
+      // Drag-enter activation is best effort: the source window can still
+      // own keyboard focus while Slate shows a caret. Retry at acceptance,
+      // before async materialization; later completions must not foreground us.
+      requestDesktopFileDropFocus();
       const savedCursor = composerSelection.end;
       addMaterializedPaths(paths, savedCursor, { requestNativeFocus: false })
         .catch((error) => toast({
@@ -1003,7 +1010,9 @@ export const InputBar = forwardRef(function InputBar({
   }, [
     addMaterializedPaths,
     composerSelection.end,
+    disabled,
     nativeFilesystemMaterializerAvailable,
+    onMediaFiles,
     resetDragState,
   ]);
 

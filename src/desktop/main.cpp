@@ -2036,6 +2036,9 @@ int main(int argc, char** argv) {
         host.set_visible(true);
         return nlohmann::json{{"ok", true}}.dump();
     });
+    host.bind("aceDesktop_focusFileDropWindow", [&](const std::string& /*req*/) -> std::string {
+        return nlohmann::json{{"ok", host.focus_after_file_drop()}}.dump();
+    });
 
     // WM_SIZE 时如果最大化状态变化(被 web_host.cpp 内部 g_last_known_maximized 去重过),
     // eval 一段 JS 调前端 window.aceDesktop_onMaximizeStateChanged(bool),让 TopBar 切换

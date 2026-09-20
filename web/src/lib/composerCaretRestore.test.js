@@ -5,6 +5,7 @@ import {
   isComposerEditorFocused,
   preserveComposerFocusOnPointerDown,
   requestDesktopFileDragActivation,
+  requestDesktopFileDropFocus,
   requestDesktopWindowFocus,
   restoreComposerTextareaCaret,
   shouldAutoFocusDesktopComposer,
@@ -478,4 +479,22 @@ run('desktop file drag activation swallows bridge throw', () => {
   });
 
   assert.equal(ok, false);
+});
+
+run('file drop prefers keyboard focus restoration without notification activation', () => {
+  const calls = [];
+  assert.equal(requestDesktopFileDropFocus({
+    aceDesktop_focusFileDropWindow: () => calls.push('drop'),
+    aceDesktop_activateFileDropWindow: () => calls.push('entry'),
+    aceDesktop_focusWindow: () => calls.push('notification'),
+  }), true);
+  assert.deepEqual(calls, ['drop']);
+});
+
+run('older shells retry drag activation once; missing and failed bridges stay optional', () => {
+  let calls = 0;
+  assert.equal(requestDesktopFileDropFocus({aceDesktop_activateFileDropWindow: () => { calls++; }}), true);
+  assert.equal(calls, 1);
+  assert.equal(requestDesktopFileDropFocus({}), false);
+  assert.equal(requestDesktopFileDropFocus({aceDesktop_focusFileDropWindow: () => { throw new Error('unavailable'); }}), false);
 });

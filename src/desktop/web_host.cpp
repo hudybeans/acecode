@@ -2069,6 +2069,32 @@ void WebHost::dispatch(std::function<void()> task) {
     if (!task) return;
     impl_->w->dispatch(std::move(task));
 }
+bool WebHost::focus_after_file_drop() {
+#ifdef _WIN32
+    HWND hwnd = impl_->hwnd();
+    if (!hwnd) return false;
+    const DWORD current_thread = ::GetCurrentThreadId();
+    const DWORD foreground_thread =
+        ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
+    // The drag source owns the last native input. Briefly share its input
+    // queue for this explicit drop, then detach before returning to WebView.
+    const bool attached = foreground_thread && foreground_thread != current_thread &&
+        ::AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    set_visible(true);
+    if (attached) ::AttachThreadInput(current_thread, foreground_thread, FALSE);
+    if (::GetForegroundWindow() != hwnd) return false;
+
+    auto controller_result = impl_->w->browser_controller();
+    if (!controller_result.ok()) return false;
+    auto* controller = static_cast<ICoreWebView2Controller*>(controller_result.value());
+    return controller && SUCCEEDED(
+        controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+#else
+    set_visible(true);
+    return true;
+#endif
+}
+
 bool WebHost::open_dev_tools() {
 #ifdef _WIN32
     auto controller_result = impl_->w->browser_controller();

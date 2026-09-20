@@ -211,3 +211,15 @@ export function requestDesktopFileDragActivation(win = typeof window === 'undefi
     return false;
   }
 }
+
+export function requestDesktopFileDropFocus(win = typeof window === 'undefined' ? null : window) {
+  // Older desktop shells still get a best-effort retry at acceptance.
+  const focusWindow = win?.aceDesktop_focusFileDropWindow || win?.aceDesktop_activateFileDropWindow;
+  if (typeof focusWindow !== 'function') return false;
+  try {
+    Promise.resolve(focusWindow()).catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
+}

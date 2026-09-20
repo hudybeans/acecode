@@ -61,6 +61,10 @@ public:
     // WebView2 controller 在 hidden parent 下可能暂停渲染,导致页面一直空白。
     void set_visible(bool visible);
 
+    // Called once when a file drop is accepted, before asynchronous work.
+    // Restore OS keyboard focus without the notification TOPMOST fallback.
+    bool focus_after_file_drop();
+
     // 注入一段 JS 在每次 navigate 前执行(`window.__ACECODE_INITIAL_*` 之类常量
     // 在这里塞)。在 navigate 之前调。
     void init_script(const std::string& js);

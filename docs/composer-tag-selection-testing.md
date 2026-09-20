@@ -53,3 +53,16 @@ node scripts/test-composer-completion.mjs
 - IME 回归使用合成 composition/keyCode 229 事件和模型测试，未操作微软拼音真实候选窗口。
 - impeccable 检测发现的 12 处提醒均来自 globals.css 中未修改的既有样式，本次变更行未命中。
 - 测试和修复在独立 worktree 完成；未发布版本或操作用户正在使用的 Codex 草稿。
+
+## 2026-09-20：文件拖放后的系统键盘焦点
+
+基线 `9dfd0e11`。Windows 拖放进入时的窗口激活失败后，WebView2 仍可能显示正常光标并报告 `document.hasFocus() === true`，但系统前台仍是来源窗口，直接按键不会进入 composer；再次点击输入框才恢复。
+
+- 接收有效文件时，前端先调用 `aceDesktop_focusFileDropWindow` 再解析文件。Windows 临时连接前台线程的输入队列，恢复窗口后立即断开，再将键盘焦点交给 WebView2。无通知置顶兜底、定时重试或异步完成后的抢焦点。
+- `web/scripts/test-composer-file-drop.mjs` 的 7 项生产 InputBar 回归通过：Windows/macOS 原生回调、Linux URI、浏览器上传、批量文件、直接输入及方向键、异步切换窗口、重复/空回调和中途禁用。该脚本使用固定桥接，并不声称在 macOS/Linux 原生系统上运行。
+- 同组测试替换为修复前 InputBar 时 6 项失败。新增桥接优先级和旧版壳回退测试与全量 `pnpm test` 通过；`pnpm build` 和正则兼容检查通过。
+- Windows 原生验证使用当前 `WebHost` 代码编译的隔离窗口与生产 InputBar。以真实 OLE 文件拖放和系统键盘输入验证：拒绝第一次进入激活时，基线保留 tag/光标却收不到按键；修复后无需点击即可提交系统中文输入法候选，再输入英文并使用左方向键插入文字。
+- 原生验证未触碰用户正在使用的 Codex 草稿。详细过程日志位于临时目录 `acecode-drop-baseline-final.log`、`acecode-drop-native-final.log`。
+- 当前 Windows Release 客户端与 daemon 已增量构建并重新运行；实际客户端检查了启动与所服务开发前端的构建一致性。
+
+复跑浏览器回归：沿用上述 Playwright 环境设置后，在 `web` 中执行 `node scripts/test-composer-file-drop.mjs`。

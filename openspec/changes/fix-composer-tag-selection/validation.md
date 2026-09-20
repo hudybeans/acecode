@@ -27,3 +27,12 @@
 - impeccable detector：11 条提醒、1 条 advisory，均位于未修改的既有样式，本次改动行无提醒。
 
 原始完整回归与视觉复测结果分别保存在前述可视化目录的 `additive-final/results.json` 和 `additive-final/visual-regression/results.json`；真实组件截图位于 `additive-confirmed/`。验证范围为生产组件的 Windows Chromium 渲染与交互，本轮没有重新构建或切换用户正在运行的 Desktop 客户端。
+
+## 2026-09-20：拖入文件后继续输入
+
+基线 `9dfd0e11`。修复范围为文件释放时的原生键盘焦点恢复，完整路径、文件名标签展示与选择样式保持原有行为。
+
+- 新增生产 InputBar 浏览器回归 7 项通过；基线同组 6 项失败。覆盖平台入口、直接输入与方向键、重复/无效回调、禁用状态以及异步完成不抢前台。
+- 使用当前生产 `WebHost` 编译 Windows 隔离窗口，以真实 OLE 文件拖放和系统键盘验证。基线在拒绝第一次拖入激活后仍显示光标，但按键留在来源窗口；新桥接恢复窗口和 WebView2 焦点后，中文输入法候选提交、英文输入、左方向键插入均通过，无需额外点击。
+- `pnpm test`、`pnpm build`、`openspec validate fix-composer-tag-selection --strict` 与 `git diff --check` 通过。没有新增编辑器依赖或修改文件引用协议。
+- Windows Release `acecode-desktop` 及其 daemon 依赖增量构建通过，客户端已通过仓库 Desktop 开发启动器重新运行。原生交互验证在隔离窗口完成，实际客户端验证启动与开发前端资源一致性。
