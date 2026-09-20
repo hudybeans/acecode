@@ -9346,9 +9346,15 @@ TEST(WebServerHttp, ComputerUseRejectsInvalidAndFailedWritesWithoutEnablingTools
 
 TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     std::atomic<bool> requested_summary_model{false};
+    std::atomic<bool> requested_chinese_title{false};
+    std::atomic<bool> requested_english_title{false};
     LocalUpdateServer summary_upstream([&](httplib::Server& server) {
         server.Post("/v1/chat/completions", [&](const httplib::Request& request, httplib::Response& response) {
-            requested_summary_model = json::parse(request.body).value("model", "") == "small-local";
+            const auto body = json::parse(request.body);
+            requested_summary_model = body.value("model", "") == "small-local";
+            const auto prompt = body.at("messages").at(0).value("content", std::string{});
+            requested_chinese_title = prompt.find("Simplified Chinese (zh-CN)") != std::string::npos;
+            requested_english_title = prompt.find("English (en-US)") != std::string::npos;
             response.set_content(json{{"choices", json::array({
                 {{"message", {{"role", "assistant"}, {"content", "Local summary title"}}},
                  {"finish_reason", "stop"}}
@@ -9357,6 +9363,7 @@ TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     });
     WebServerFixture fx;
     const auto url = cpr::Url{fx.url("/api/config/summary-generation")};
+    const auto locale_url = cpr::Url{fx.url("/api/config/ui-locale")};
     const cpr::Header headers{{"Content-Type", "application/json"}};
     const auto initial = cpr::Get(url);
     ASSERT_EQ(initial.status_code, 200);
@@ -9378,9 +9385,19 @@ TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     EXPECT_EQ(selected->model, "small-local");
     auto provider = acecode::create_auto_title_provider(*selected, fx.cfg);
     ASSERT_NE(provider, nullptr);
-    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "Summarize this session", fx.cfg),
+    ASSERT_EQ(cpr::Put(locale_url, headers, cpr::Body{R"({"locale":"zh-CN"})"}).status_code, 200);
+    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "你好", fx.cfg),
         "Local summary title");
     EXPECT_TRUE(requested_summary_model.load());
+    EXPECT_TRUE(requested_chinese_title.load());
+    EXPECT_FALSE(requested_english_title.load());
+
+    ASSERT_EQ(cpr::Put(locale_url, headers, cpr::Body{R"({"locale":"en-US"})"}).status_code, 200);
+    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "你好", fx.cfg),
+        "Local summary title");
+    EXPECT_TRUE(requested_summary_model.load());
+    EXPECT_FALSE(requested_chinese_title.load());
+    EXPECT_TRUE(requested_english_title.load());
 
     const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
     EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);

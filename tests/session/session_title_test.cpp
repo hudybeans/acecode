@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "desktop/locale.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_auto_title.hpp"
 #include "session/session_storage.hpp"
@@ -31,8 +32,10 @@ public:
         : response_(std::move(response)) {}
 
     acecode::ChatResponse chat(
-        const std::vector<acecode::ChatMessage>&,
-        const std::vector<acecode::ToolDef>&) override {
+        const std::vector<acecode::ChatMessage>& messages,
+        const std::vector<acecode::ToolDef>& tools) override {
+        last_messages = messages;
+        last_tools = tools;
         return response_;
     }
 
@@ -45,6 +48,9 @@ public:
     bool is_authenticated() override { return true; }
     std::string model() const override { return "static-title"; }
     void set_model(const std::string&) override {}
+
+    std::vector<acecode::ChatMessage> last_messages;
+    std::vector<acecode::ToolDef> last_tools;
 
 private:
     acecode::ChatResponse response_;
@@ -504,7 +510,7 @@ TEST(SessionTitle, GeneratorRejectsProviderErrorsAndToolCalls) {
     provider_error.finish_reason = "error";
     StaticTitleProvider error_provider(provider_error);
     EXPECT_FALSE(acecode::generate_session_title(
-        error_provider, "fix the title", 1000).has_value());
+        error_provider, "fix the title", 1000, "en-US").has_value());
 
     acecode::ChatResponse tool_response;
     acecode::ToolCall call;
@@ -514,15 +520,97 @@ TEST(SessionTitle, GeneratorRejectsProviderErrorsAndToolCalls) {
     tool_response.tool_calls.push_back(std::move(call));
     StaticTitleProvider tool_provider(tool_response);
     EXPECT_FALSE(acecode::generate_session_title(
-        tool_provider, "fix the title", 1000).has_value());
+        tool_provider, "fix the title", 1000, "en-US").has_value());
 
     acecode::ChatResponse valid_response;
     valid_response.content = R"({"title":"Error handling cleanup"})";
     valid_response.finish_reason = "stop";
     StaticTitleProvider valid_provider(valid_response);
     EXPECT_EQ(acecode::generate_session_title(
-                  valid_provider, "fix the title", 1000),
+                  valid_provider, "fix the title", 1000, "en-US"),
               std::optional<std::string>{"Error handling cleanup"});
+}
+
+TEST(SessionTitle, AutoTitleUsesSelectedLanguageRegardlessOfInputLanguage) {
+    struct Case {
+        const char* locale;
+        const char* input;
+        const char* language_instruction;
+        const char* title;
+    };
+    const Case cases[] = {
+        {"zh-CN", "你好", "Write the title in Simplified Chinese (zh-CN)", "打招呼"},
+        {"zh-CN", "Say hello", "Write the title in Simplified Chinese (zh-CN)", "打招呼"},
+        {"en-US", "你好", "Write the title in English (en-US)", "Say hello"},
+        {"en-US", "Say hello", "Write the title in English (en-US)", "Say hello"},
+    };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(std::string(item.locale) + ": " + item.input);
+        acecode::AppConfig cfg;
+        cfg.ui.locale = item.locale;
+        acecode::ChatResponse response;
+        response.content = item.title;
+        response.finish_reason = "stop";
+        StaticTitleProvider provider(response);
+
+        EXPECT_EQ(acecode::generate_auto_session_title(provider, item.input, cfg),
+                  std::optional<std::string>{item.title});
+        ASSERT_EQ(provider.last_messages.size(), 2u);
+        EXPECT_EQ(provider.last_messages[0].role, "system");
+        const auto& prompt = provider.last_messages[0].content;
+        EXPECT_NE(prompt.find(item.language_instruction), std::string::npos);
+        EXPECT_NE(prompt.find("Follow this selected language even when the user's message is in another language"),
+                  std::string::npos);
+        EXPECT_EQ(prompt.find("8 English words or 24 Chinese characters"), std::string::npos);
+        EXPECT_EQ(provider.last_messages[1].role, "user");
+        EXPECT_EQ(provider.last_messages[1].content, item.input);
+        EXPECT_TRUE(provider.last_tools.empty());
+    }
+}
+
+TEST(SessionTitle, AutoTitlePreservesLegacyChineseDefault) {
+    acecode::AppConfig cfg;
+    acecode::ChatResponse response;
+    response.content = "打招呼";
+    StaticTitleProvider provider(response);
+
+    EXPECT_EQ(acecode::generate_auto_session_title(provider, "hello", cfg),
+              std::optional<std::string>{"打招呼"});
+    ASSERT_EQ(provider.last_messages.size(), 2u);
+    EXPECT_NE(provider.last_messages[0].content.find("Simplified Chinese (zh-CN)"),
+              std::string::npos);
+}
+
+TEST(SessionTitle, AutoTitleResolvesSystemLanguagePreference) {
+    acecode::AppConfig cfg;
+    cfg.ui.locale = "auto";
+    const auto locale = acecode::desktop::resolve_ui_locale(
+        cfg.ui.locale, acecode::desktop::detect_system_locale_tag());
+    acecode::ChatResponse response;
+    response.content = locale == "en-US" ? "Say hello" : "打招呼";
+    StaticTitleProvider provider(response);
+
+    EXPECT_EQ(acecode::generate_auto_session_title(provider, "你好", cfg),
+              std::optional<std::string>{response.content});
+    ASSERT_EQ(provider.last_messages.size(), 2u);
+    EXPECT_NE(provider.last_messages[0].content.find(
+                  locale == "en-US" ? "English (en-US)" : "Simplified Chinese (zh-CN)"),
+              std::string::npos);
+}
+
+TEST(SessionTitle, AutoTitleKeepsLanguageConstraintOutsideBoundedUserInput) {
+    acecode::AppConfig cfg;
+    cfg.ui.locale = "zh-CN";
+    cfg.session_title.max_input_bytes = 7;
+    acecode::ChatResponse response;
+    response.content = "打招呼";
+    StaticTitleProvider provider(response);
+
+    ASSERT_TRUE(acecode::generate_auto_session_title(provider, "你好世界", cfg));
+    ASSERT_EQ(provider.last_messages.size(), 2u);
+    EXPECT_EQ(provider.last_messages[1].content, "你好");
+    EXPECT_NE(provider.last_messages[0].content.find("Simplified Chinese (zh-CN)"),
+              std::string::npos);
 }
 
 TEST(SessionTitle, VisibleAutoTitleInputPrefersDisplayText) {
