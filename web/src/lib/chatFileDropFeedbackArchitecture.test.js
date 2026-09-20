@@ -46,7 +46,7 @@ run('home and session chat columns delegate file drops to the single InputBar pi
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
 });
 
@@ -66,7 +66,7 @@ run('chat-wide drop feedback remains active across children and always clears', 
   assert.match(inputBar, /onFileDragActiveChange\?\.\(next\)/);
 });
 
-run('desktop file drag activates once on entry and never re-foregrounds after drop', () => {
+run('desktop file drag activates on entry and acceptance without async foreground retries', () => {
   const inputBar = source('components/InputBar.jsx');
   const desktopMain = repoSource('src/desktop/main.cpp');
 
@@ -74,11 +74,12 @@ run('desktop file drag activates once on entry and never re-foregrounds after dr
     inputBar,
     /if \(dragDepthRef\.current === 0\) requestDesktopFileDragActivation\(\);\s*dragDepthRef\.current \+= 1/,
   );
-  assert.doesNotMatch(inputBar, /handleDragOver[\s\S]*requestDesktopFileDragActivation/);
-  assert.match(inputBar, /addMediaFiles\(files, \{ requestNativeFocus: false \}\)/);
+  const dragOver = inputBar.slice(inputBar.indexOf('const handleDragOver ='), inputBar.indexOf('const handleDragLeave ='));
+  assert.doesNotMatch(dragOver, /requestDesktopFileDragActivation/);
+  assert.match(inputBar, /acceptFileIntake\(\{ source: 'drop', paths: uriPaths, files \}\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
   assert.match(
     desktopMain,
@@ -88,6 +89,13 @@ run('desktop file drag activates once on entry and never re-foregrounds after dr
     /host\.bind\("aceDesktop_activateFileDropWindow"[\s\S]*?\n\s*\}\);/,
   )?.[0] || '';
   assert.doesNotMatch(bridge, /bring_window_foreground|activate_notification_window|HWND_TOPMOST/);
+  assert.match(desktopMain, /host\.bind\("aceDesktop_focusFileDropWindow"[\s\S]{0,200}host\.focus_after_file_drop\(\)/);
+  const webHost = repoSource('src/desktop/web_host.cpp');
+  const dropFocus = webHost.slice(webHost.indexOf('bool WebHost::focus_after_file_drop()'), webHost.indexOf('bool WebHost::open_dev_tools()'));
+  assert.match(dropFocus, /AttachThreadInput\(current_thread, foreground_thread, TRUE\)/);
+  assert.match(dropFocus, /AttachThreadInput\(current_thread, foreground_thread, FALSE\)/);
+  assert.match(dropFocus, /MoveFocus\(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC\)/);
+  assert.doesNotMatch(dropFocus, /HWND_TOPMOST|activate_notification_window/);
 });
 
 run('ChatView stages home attachments without creating or navigating a session', () => {
@@ -143,13 +151,10 @@ run('Desktop ordinary-file references bypass image normalization and Base64 uplo
 
 run('Desktop native filesystem items become path references before attachment staging', () => {
   const inputBar = source('components/InputBar.jsx');
-  const start = inputBar.indexOf('const addNativeFilesystemItems = useCallback((');
-  const end = inputBar.indexOf('\n\n  const addMaterializedPaths', start);
-  const nativeFlow = inputBar.slice(start, end);
-
-  assert.match(nativeFlow, /insertAbsolutePathReferences\(currentValue, savedCursor, list\)/);
-  assert.doesNotMatch(nativeFlow, /nativePickedFileToFile|addMediaFiles|onMediaFiles/);
-  assert.match(inputBar, /addNativeFilesystemItems\(picked\.files, savedCursor\)/);
+  assert.match(inputBar, /result\.kind === 'paths'\) transfer\.insertPaths\(result\.items\)/);
+  assert.match(inputBar, /onPasteFilesystemItems=\{handleFilesystemPaste\}/);
+  assert.match(inputBar, /source: 'picker', items: picked\.folder \? \[picked\.folder\] : picked\.files/);
+  assert.doesNotMatch(inputBar, /nativePickedFileToFile/);
 });
 
 run('file-tree Add to conversation inserts a path without reading file contents', () => {
@@ -168,13 +173,13 @@ run('file-tree Add to conversation inserts a path without reading file contents'
   assert.doesNotMatch(fileContextFlow, /无法引用二进制文件|文件过大，无法引用/);
 });
 
-run('drop overlay uses a themed blur fallback and Slate tags own their gutter', () => {
+run('drop overlay uses a themed blur fallback and Slate tags keep symmetric spacing', () => {
   const styles = source('styles/globals.css');
 
   assert.match(styles, /\.ace-chat-file-drop-overlay\s*\{[\s\S]*pointer-events:\s*none;[\s\S]*background:\s*rgba\(var\(--ace-bg-rgb\), 0\.7\);/);
   assert.match(styles, /@supports \(\(-webkit-backdrop-filter:[\s\S]*\.ace-chat-file-drop-overlay\s*\{[\s\S]*backdrop-filter:\s*blur\(2\.5px\) saturate\(0\.72\);/);
   assert.match(styles, /\.ace-chat-file-drop-prompt\s*\{[\s\S]*background:\s*rgba\(var\(--ace-surface-rgb\), 0\.94\);/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*\.ace-chat-file-drop-overlay\s*\{\s*animation:\s*none;/);
-  assert.match(styles, /\.ace-cmd-token\.ace-slate-inline-tag\s*\{\s*margin:\s*1px 5px 1px 0;/);
+  assert.match(styles, /\.ace-slate-inline-tag > \.ace-cmd-token\s*\{[^}]*margin:\s*1px 0;[^}]*padding:\s*0 5px;/);
   assert.match(styles, /\.ace-cmd-token\s*\{[\s\S]*margin-right:\s*1px;/);
 });

@@ -12,6 +12,7 @@ import {
   DROPDOWN_GAP_PX,
 } from '../lib/dropdownPlacement.js';
 import { clsx } from '../lib/format.js';
+import { shouldHandleComposerDropdownKey } from '../lib/composerDropdownKeyboard.js';
 import {
   PATH_REFERENCE_KEY_ACTION,
   pathReferenceKeyboardAction,
@@ -69,6 +70,7 @@ export function PathReferenceDropdown({
   }, [selected]);
 
   const onKey = useCallback((event) => {
+    if (!shouldHandleComposerDropdownKey(event)) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();

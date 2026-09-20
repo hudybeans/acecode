@@ -25,6 +25,7 @@ export function hasNativeFilesystemClipboard(win = globalThis.window) {
 
 export function localPathsFromUriList(text, os = desktopHostOs()) {
   return parseUriList(text)
+    .filter((item) => /^file:\/\//i.test(item))
     .map((item) => fileUriToLocalPath(item, os))
     .filter(Boolean);
 }

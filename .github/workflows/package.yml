@@ -736,6 +736,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to install the WhatsApp channel bridge"
           }
+          & cmake --install build --config MinSizeRel --prefix $packageRoot --component computer_use_runtime
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install the Computer Use runtime"
+          }
+          $computerUseExe = Join-Path $packageRoot "acecode-computer-use.exe"
+          if (-not (Test-Path -LiteralPath $computerUseExe -PathType Leaf) -or
+              (Get-Item -LiteralPath $computerUseExe).Length -eq 0) {
+            throw "Missing Computer Use runtime: $computerUseExe"
+          }
           Assert-ModelsDevRegistry (Join-Path $packageDir "share/acecode/models_dev")
           & python scripts/verify_seed_bundle.py `
             --source assets/seed `
@@ -772,6 +781,12 @@ jobs:
           $verifyRoot = Join-Path $env:RUNNER_TEMP ("acecode-package-verify-" + [Guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $verifyRoot | Out-Null
           Expand-Archive -LiteralPath "acecode-${{ matrix.id }}.zip" -DestinationPath $verifyRoot
+          $archivedComputerUseExe = Join-Path $verifyRoot "acecode-computer-use.exe"
+          if (-not (Test-Path -LiteralPath $archivedComputerUseExe -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $archivedComputerUseExe -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $computerUseExe -Algorithm SHA256).Hash) {
+            throw "Archived Computer Use runtime is missing or does not match the build"
+          }
           Assert-ModelsDevRegistry (Join-Path $verifyRoot "share/acecode/models_dev")
           & python scripts/verify_seed_bundle.py `
             --source assets/seed `
@@ -787,7 +802,8 @@ jobs:
           $packageDir = "dist/acecode-${{ matrix.id }}"
           $expectedExecutables = @(
             "acecode.exe",
-            "acecode-desktop.exe"
+            "acecode-desktop.exe",
+            "acecode-computer-use.exe"
           )
           foreach ($name in $expectedExecutables) {
             $path = Join-Path $packageDir $name

@@ -5,7 +5,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, ApiError, createApi } from './lib/api.js';
+import { api, apiConnectionScope, ApiError, createApi } from './lib/api.js';
+import { computerUseSettingsStore } from './lib/computerUseSettings.js';
+import { observeComputerUsePointerTheme } from './lib/computerUsePointerTheme.js';
 import { useTheme } from './theme.jsx';
 import { useThemeDownloads } from './lib/useThemeDownloads.js';
 import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThemeCreation.js';
@@ -54,7 +56,9 @@ import {
   SESSION_LIST_CHANGED_EVENT,
 } from './lib/sessionListEvents.js';
 import { normalizeRemoteControlSessionSelected } from './lib/remoteControlSessionNavigation.js';
-import { usePreference } from './lib/usePreference.js';
+import { usePreference, mergeNextValue, readWithFallback } from './lib/usePreference.js';
+import { sessionWorkbench } from './lib/sessionWorkbench.js';
+import { useWorkbenchState } from './lib/useWorkbenchState.js';
 import {
   appearanceBootstrapPreferences,
   createAppearancePersistenceController,
@@ -228,12 +232,18 @@ export function App() {
   const initialAppearance = useMemo(() => initialAppearancePreferences(), []);
   const bootstrapAppearance = useMemo(() => appearanceBootstrapPreferences(), []);
   const [authState, setAuthState] = useState('checking'); // 'checking' | 'ok' | 'need-token'
+  const computerUseScope = apiConnectionScope(api);
+  useEffect(() => {
+    if (authState !== 'ok') return undefined;
+    return observeComputerUsePointerTheme(computerUseSettingsStore(api));
+  }, [authState, computerUseScope]);
   const [health,    setHealth]    = useState(null);
   const [desktopStartupProgress, setDesktopStartupProgress] = useState(
     () => initialDesktopStartupProgress(),
   );
 
   const [activeRef,    setActiveRef]    = useState(null);
+  const workbenchOwner = sessionWorkbench.ownerFor(activeRef);
   const [sessionTitleTarget, setSessionTitleTarget] = useState(null);
   const [sessionActionsTarget, setSessionActionsTarget] = useState(null);
   const [sidebarSessionLoadState, setSidebarSessionLoadState] = useState(null);
@@ -278,8 +288,8 @@ export function App() {
   const [updateRestarting, setUpdateRestarting] = useState(false);
   const [updateJob, setUpdateJob] = useState(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [singleLayout, setSingleLayout] = usePreference(
-    SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths);
+  const [singleLayout, setSingleLayout] = useWorkbenchState(workbenchOwner, 'layout', () =>
+    readWithFallback(SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths));
   const previewPanelUserSized = previewPanelWidthIsUserSized(singleLayout);
   const initialUiPrefs = useMemo(() => ({
     ...DEFAULT_UI_PREFS,
@@ -287,19 +297,30 @@ export function App() {
     sidebarSessionTime: initialAppearance.sidebarSessionTime,
     messageAutoCollapse: initialAppearance.messageAutoCollapse,
   }), [initialAppearance]);
-  const [uiPrefs, setUiPrefs] = usePreference(
+  const [globalUiPrefs, setGlobalUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
-  // 首屏默认收起右侧面板,在绘制前覆盖旧版保存的展开状态;后续手动切换照常生效。
-  useLayoutEffect(() => {
-    setUiPrefs((prev) => prev.sidePanelCollapsed ? prev : { ...prev, sidePanelCollapsed: true });
-  }, [setUiPrefs]);
+  const [panelPrefs, setPanelPrefs] = useWorkbenchState(workbenchOwner, 'panels', () => ({
+    sidePanelCollapsed: true, sidePanelListCollapsed: false, sidePanelMaximized: false,
+  }));
+  const uiPrefs = useMemo(() => ({ ...globalUiPrefs, ...panelPrefs }), [globalUiPrefs, panelPrefs]);
+  const setUiPrefs = useCallback((updater) => {
+    const next = mergeNextValue(uiPrefs, updater);
+    const panelKeys = ['sidePanelCollapsed', 'sidePanelListCollapsed', 'sidePanelMaximized'];
+    setPanelPrefs((previous) => panelKeys.some((key) => previous[key] !== next[key])
+      ? Object.fromEntries(panelKeys.map((key) => [key, next[key]])) : previous);
+    const changes = Object.fromEntries(Object.entries(next).filter(([key, value]) => (
+      !panelKeys.includes(key) && value !== uiPrefs[key]
+    )));
+    if (Object.keys(changes).length) setGlobalUiPrefs(changes);
+  }, [uiPrefs, setPanelPrefs, setGlobalUiPrefs]);
   useLayoutEffect(() => {
     if (bootstrapAppearance) {
       setUiPrefs({ messageAutoCollapse: bootstrapAppearance.messageAutoCollapse });
     }
   }, [bootstrapAppearance, setUiPrefs]);
-  const [consoleDock, setConsoleDock] = usePreference(
-    CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock);
+  const [consoleDock, setConsoleDock] = useWorkbenchState(workbenchOwner, 'consoleDock', () => ({
+    ...readWithFallback(CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock), open: false,
+  }));
   const [recentExpertIds, setRecentExpertIds] = usePreference(
     RECENT_EXPERTS_STORAGE_KEY,
     DEFAULT_RECENT_EXPERT_IDS,
@@ -334,6 +355,11 @@ export function App() {
       messageAutoCollapse: next.messageAutoCollapse,
     });
   }, [setColorTheme, setTheme, setUiPrefs]);
+  // The persistence controller outlives individual renders. Keep its callback
+  // current so a later appearance choice is compared against the latest UI
+  // preferences rather than the values from the controller's first render.
+  const applyAppearanceRef = useRef(applyAppearance);
+  applyAppearanceRef.current = applyAppearance;
   const appearanceControllerRef = useRef(null);
   if (!appearanceControllerRef.current) {
     appearanceControllerRef.current = createAppearancePersistenceController({
@@ -344,7 +370,7 @@ export function App() {
         sidebarSessionTime,
         messageAutoCollapse: bootstrapAppearance?.messageAutoCollapse ?? messageAutoCollapse,
       },
-      apply: applyAppearance,
+      apply: (next) => applyAppearanceRef.current(next),
       save: (payload) => api.setUiPreferences(payload),
       onError: (error) => {
         toast({
@@ -373,7 +399,7 @@ export function App() {
   const showAceCodeAvatar = false;
   const singleShellRef = useRef(null);
   const sidebarResizeActiveRef = useRef(false);
-  const [previewPanelVisible, setPreviewPanelVisible] = useState(false);
+  const [previewPanelVisible, setPreviewPanelVisible] = useWorkbenchState(workbenchOwner, '$previewVisible', false);
   const activeRefRef = useRef(activeRef);
   const themeCreationMonitor = useMemo(() => createLiveThemeCreationMonitor({
     onStart: () => themeDownloads.controller.beginCreation(),
@@ -835,12 +861,10 @@ export function App() {
     });
     api.getUiPreferences().then((preferences) => {
       appearanceControllerRef.current.restore(preferences);
-      // The daemon owns the durable attempt marker, shared across windows and upgrades.
-      void themeDownloads.controller.applyStartupTheme(preferences);
     }).catch(() => {
       // Older/offline daemons keep the injected or cached appearance usable.
     });
-  }, [authState, themeDownloads.controller]);
+  }, [authState]);
 
   useEffect(() => {
     if (authState !== 'ok') {
@@ -2213,6 +2237,7 @@ export function App() {
           </div>
           {consoleAvailable && (
             <ConsoleDock
+              owner={workbenchOwner}
               open={consoleDock.open}
               height={consoleDock.height}
               onHeightChange={setConsoleDockHeight}

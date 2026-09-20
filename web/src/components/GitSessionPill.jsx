@@ -15,10 +15,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clsx } from '../lib/format.js';
 import { gitInfoCache } from '../lib/gitInfoCache.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
 import { buildPillModel, shouldLoadGitInfo } from '../lib/gitSessionPill.js';
 import { VsIcon } from './Icon.jsx';
 
 export function GitSessionPill({
+  owner,
   api,
   cwd,
   variant = 'bar',
@@ -29,11 +31,11 @@ export function GitSessionPill({
   onIntentChange = null,
 }) {
   const [gitInfo, setGitInfo] = useState(
-    () => gitInfoCache.peek(api, cwd) ?? null,
+    () => gitInfoCache.peek(api, cwd, owner) ?? null,
   );
   const [open, setOpen] = useState(false);
-  const [worktreeChecked, setWorktreeChecked] = useState(false);
-  const [selectedBase, setSelectedBase] = useState('');
+  const [worktreeChecked, setWorktreeChecked] = useWorkbenchState(owner, `worktreeIntent:${cwd}`, false);
+  const [selectedBase, setSelectedBase] = useWorkbenchState(owner, `worktreeBase:${cwd}`, '');
   const cwdRef = useRef(cwd);
   cwdRef.current = cwd;
 
@@ -55,18 +57,16 @@ export function GitSessionPill({
     const target = cwdRef.current;
     if (!target) { setGitInfo(null); return; }
     const request = force
-      ? gitInfoCache.refresh(api, target)
-      : gitInfoCache.get(api, target);
+      ? gitInfoCache.refresh(api, target, owner)
+      : gitInfoCache.get(api, target, owner);
     request
       .then((info) => { if (cwdRef.current === target) setGitInfo(info); })
       .catch(() => { if (cwdRef.current === target) setGitInfo(null); });
-  }, [api]);
+  }, [api, owner]);
 
   // cwd 变化(切 workspace)重拉;非仓库时 pill 整体不渲染(零占位)。
   useEffect(() => {
-    setGitInfo(gitInfoCache.peek(api, cwdRef.current) ?? null);
-    setWorktreeChecked(false);
-    setSelectedBase('');
+    setGitInfo(gitInfoCache.peek(api, cwdRef.current, owner) ?? null);
     if (!pillCouldRender) return;
     refreshInfo();
   }, [api, cwd, pillCouldRender, refreshInfo]);

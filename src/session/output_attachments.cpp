@@ -1,11 +1,13 @@
 #include "output_attachments.hpp"
 
+#include "../image/image_processor.hpp"
 #include "../utils/base64.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -202,8 +204,25 @@ void materialize_one(const nlohmann::json& item,
         return;
     }
 
+    nlohmann::json metadata = nlohmann::json::object();
+    if (item.contains("metadata") && item["metadata"].is_object() &&
+        item["metadata"].contains("computer_use")) {
+        const auto provenance = computer_use_image_provenance(item["metadata"]);
+        if (provenance.empty()) {
+            push_warning(result, "invalid Computer Use screenshot provenance");
+            return;
+        }
+        const auto info = image::probe_image_info(bytes);
+        if (!info || info->width != provenance["geometry"]["width"].get<int>() ||
+            info->height != provenance["geometry"]["height"].get<int>()) {
+            push_warning(result, "Computer Use screenshot dimensions do not match its geometry: " +
+                         provenance["screenshot_id"].get<std::string>());
+            return;
+        }
+        metadata["computer_use"] = provenance;
+    }
     std::string save_error;
-    auto record = save_attachment(project_dir, session_id, name, mime, bytes, &save_error);
+    auto record = save_attachment(project_dir, session_id, name, mime, bytes, &save_error, metadata);
     if (!record.has_value()) {
         push_warning(result, save_error.empty() ? "failed to save output image attachment" : save_error);
         return;
@@ -218,7 +237,67 @@ std::string attachment_display_name(const nlohmann::json& attachment) {
     return attachment.value("id", std::string{"attachment"});
 }
 
+nlohmann::json capture_cursor_metadata(const nlohmann::json& cursor, const nlohmann::json& geometry) {
+    using json = nlohmann::json;
+    if (!cursor.is_object() || !cursor.contains("visible") || !cursor["visible"].is_boolean())
+        return json::object();
+    if (!cursor["visible"].get<bool>()) return {{"visible", false}};
+    if (!cursor.contains("source") || !cursor["source"].is_string()) return json::object();
+    const auto source = cursor["source"].get<std::string>();
+    if (source != "agent" && source != "system") return json::object();
+    json result{{"visible", true}, {"source", source}};
+    for (const char* key : {"x", "y", "hotspot_x", "hotspot_y", "width", "height"}) {
+        if (!cursor.contains(key) || !cursor[key].is_number() || !std::isfinite(cursor[key].get<double>()))
+            return json::object();
+        result[key] = cursor[key];
+    }
+    // Position is the hotspot in the resized screenshot. The full glyph may
+    // extend beyond an edge, but its hotspot must remain within that image.
+    const double x = cursor["x"].get<double>(), y = cursor["y"].get<double>();
+    const double width = cursor["width"].get<double>(), height = cursor["height"].get<double>();
+    const double hotspot_x = cursor["hotspot_x"].get<double>(), hotspot_y = cursor["hotspot_y"].get<double>();
+    if (x < 0 || y < 0 || x >= geometry["width"].get<double>() || y >= geometry["height"].get<double>()
+        || width <= 0 || height <= 0 || hotspot_x < 0 || hotspot_y < 0 || hotspot_x >= width || hotspot_y >= height)
+        return json::object();
+    return result;
+}
+
 } // namespace
+
+nlohmann::json computer_use_image_provenance(const nlohmann::json& metadata) {
+    using json = nlohmann::json;
+    if (!metadata.is_object() || !metadata.contains("computer_use") ||
+        !metadata["computer_use"].is_object()) return json::object();
+    const auto& source = metadata["computer_use"];
+    json result = json::object();
+    for (const char* key : {"observation_id", "screenshot_id"}) {
+        if (!source.contains(key) || !source[key].is_string()) return json::object();
+        const auto value = source[key].get<std::string>();
+        if (value.empty() || value.size() > 128) return json::object();
+        result[key] = value;
+    }
+    if (!source.contains("geometry") || !source["geometry"].is_object()) return json::object();
+    const auto& geometry = source["geometry"];
+    for (const char* key : {"width", "height"}) {
+        if (!geometry.contains(key) || !geometry[key].is_number_integer()) return json::object();
+        const auto size = geometry[key].get<double>();
+        if (size < 1 || size > image::kImageNormalizeMaxEdge) return json::object();
+    }
+    for (const char* key : {"width", "height", "native_width", "native_height",
+                           "originX", "originY", "scaleX", "scaleY"}) {
+        if (geometry.contains(key) && geometry[key].is_number() &&
+            std::isfinite(geometry[key].get<double>())) result["geometry"][key] = geometry[key];
+    }
+    if (source.contains("window") && source["window"].is_number_unsigned())
+        result["window"] = source["window"];
+    else if (source.contains("window") && source["window"].is_number_integer() &&
+             source["window"].get<std::int64_t>() > 0) result["window"] = source["window"];
+    if (source.contains("cursor")) {
+        const auto cursor = capture_cursor_metadata(source["cursor"], geometry);
+        if (!cursor.empty()) result["cursor"] = cursor;
+    }
+    return result;
+}
 
 nlohmann::json attachment_content_part(const AttachmentRecord& record) {
     const std::string kind = attachment_kind_for_mime(record.mime_type, record.name);

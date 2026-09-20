@@ -111,6 +111,23 @@ await run('API serialization sends a complete compatibility snapshot', () => {
   });
 });
 
+await run('startup restores each saved theme without rewriting preferences', () => {
+  for (const colorTheme of ['blue', 'orange', 'national-day-2026', 'eva-01', 'ai-existing']) {
+    const applied = [], saves = [];
+    const controller = createAppearancePersistenceController({
+      initial: { theme: 'system', colorTheme: 'blue', fontSize: 'medium' },
+      apply: (value) => applied.push(value),
+      save: async (value) => { saves.push(value); return value; },
+    });
+    assert.equal(controller.restore({ theme: 'dark', color_theme: colorTheme, font_size: 'large' }), true);
+    assert.equal(controller.current().colorTheme, colorTheme);
+    assert.equal(controller.current().theme, 'dark');
+    assert.equal(controller.current().fontSize, 'large');
+    assert.equal(applied.at(-1).colorTheme, colorTheme);
+    assert.deepEqual(saves, []);
+  }
+});
+
 await run('canonical restore wins only before a local user mutation', async () => {
   const applied = [];
   const controller = createAppearancePersistenceController({

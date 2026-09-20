@@ -2036,6 +2036,9 @@ int main(int argc, char** argv) {
         host.set_visible(true);
         return nlohmann::json{{"ok", true}}.dump();
     });
+    host.bind("aceDesktop_focusFileDropWindow", [&](const std::string& /*req*/) -> std::string {
+        return nlohmann::json{{"ok", host.focus_after_file_drop()}}.dump();
+    });
 
     // WM_SIZE 时如果最大化状态变化(被 web_host.cpp 内部 g_last_known_maximized 去重过),
     // eval 一段 JS 调前端 window.aceDesktop_onMaximizeStateChanged(bool),让 TopBar 切换
@@ -2523,12 +2526,13 @@ int main(int argc, char** argv) {
     });
 
     host.bind("aceDesktop_readClipboardContextItems", [&](const std::string&) -> std::string {
-        auto clipboard = acecode::read_system_clipboard_paths();
-        if (clipboard.status == acecode::ClipboardPathsReadResult::Status::TooMany) {
+        auto clipboard = host.read_clipboard_paths();
+        if (clipboard.status == acecode::ClipboardPathsReadResult::Status::TooMany
+            || clipboard.status == acecode::ClipboardPathsReadResult::Status::Unavailable) {
             return nlohmann::json{
                 {"ok", false},
                 {"error", clipboard.detail.empty()
-                    ? "clipboard contains too many filesystem items"
+                    ? "filesystem clipboard is unavailable"
                     : clipboard.detail},
             }.dump();
         }
@@ -2542,6 +2546,27 @@ int main(int argc, char** argv) {
         auto response = context_items_json(clipboard.paths);
         response["filesystem_items"] = true;
         return response.dump();
+    });
+
+    host.bind("aceDesktop_storeContextFiles", [&](const std::string& req) -> std::string {
+        try {
+            const auto args = nlohmann::json::parse(req);
+            if (!args.is_array() || args.empty() || !args[0].is_array()) {
+                return nlohmann::json{{"ok", false}, {"error", "expect [files]"}}.dump();
+            }
+            std::vector<acecode::desktop::ContextDataFile> files;
+            for (const auto& value : args[0]) {
+                files.push_back({value.at("name").get<std::string>(), value.at("data_base64").get<std::string>()});
+            }
+            const auto stored = acecode::desktop::store_context_data_files(
+                path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "composer-files"), files);
+            if (!stored) return nlohmann::json{{"ok", false}, {"error", stored.error}}.dump();
+            auto items = nlohmann::json::array();
+            for (const auto& item : stored.items) items.push_back(context_item_json(item));
+            return nlohmann::json{{"ok", true}, {"items", std::move(items)}}.dump();
+        } catch (const std::exception& error) {
+            return nlohmann::json{{"ok", false}, {"error", error.what()}}.dump();
+        }
     });
 
     // Preview file picker: return one absolute path without materializing the

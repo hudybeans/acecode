@@ -205,6 +205,7 @@ function ChangeFileButton({ group, open, onClick, selected = false, cwd = '' }) 
 }
 
 export function ChangeCompactList({
+  owner,
   groups,
   summary,
   cwd = '',
@@ -246,6 +247,7 @@ export function ChangeCompactList({
         <ChangeTotals summary={changeSummary} compact />
       </div>
       <ChangeFileList
+        owner={owner}
         rows={rows}
         viewMode={viewMode}
         cwd={cwd}
@@ -458,6 +460,9 @@ export function ChangeGlassDock({
 }
 
 export function ChangeReviewPanel({
+  owner,
+  viewKey,
+  ready = true,
   groups,
   summary,
   cwd = '',
@@ -505,8 +510,10 @@ export function ChangeReviewPanel({
 
   return (
     <ChangeReviewDetails
+      owner={owner}
+      viewKey={viewKey}
       rows={rows}
-      ready
+      ready={ready}
       summaryLabel={formatCount(changeSummary.fileCount || 0, 'filesChanged')}
       fileCount={changeSummary.fileCount || 0}
       totalAdditions={changeSummary.totalAdditions || 0}
@@ -530,6 +537,9 @@ export function ChangeReviewPanel({
 }
 
 export function SessionChangeDetails({
+  owner,
+  viewKey,
+  ready = true,
   groups,
   summary,
   cwd = '',
@@ -542,6 +552,9 @@ export function SessionChangeDetails({
 }) {
   return (
     <ChangeReviewPanel
+      owner={owner}
+      viewKey={viewKey}
+      ready={ready}
       groups={groups}
       summary={summary}
       cwd={cwd}

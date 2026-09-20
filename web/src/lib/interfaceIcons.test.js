@@ -36,7 +36,8 @@ run('all public functional SVGs are complete deterministic exports', () => {
   assert.deepEqual(files, Object.keys(INTERFACE_ICONS).map((name) => `${name}.svg`).sort());
   for (const file of files) {
     const name = file.slice(0, -4);
-    const source = readFileSync(new URL(file, dir), 'utf8').replaceAll('\r\n', '\n');
+    // Windows Git checkouts may use CRLF; compare the generated SVG content.
+    const source = readFileSync(new URL(file, dir), 'utf8').replace(/\r\n/g, '\n');
     assert.equal(source, interfaceIconSvg(name), `${name}: regenerate the assets`);
     const svg = new DOMParser().parseFromString(source, 'image/svg+xml').documentElement;
     assert.equal(svg.tagName, 'svg');

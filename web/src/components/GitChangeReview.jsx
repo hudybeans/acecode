@@ -3,11 +3,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildChangeRow, buildSummaryLabel } from '../lib/gitChanges.js';
-import { changesCache } from '../lib/gitChangesCache.js';
+import { sessionChangesCache } from '../lib/gitChangesCache.js';
 import { GIT_STATE_CHANGED_EVENT } from '../lib/gitSessionPill.js';
 import { ChangeReviewDetails } from './ChangeReviewDetails.jsx';
 
 export function GitChangeDetails({
+  owner,
   api,
   cwd = '',
   base = '',
@@ -19,6 +20,7 @@ export function GitChangeDetails({
   onOpenFilePreview,
   onRefresh,
 }) {
+  const changesCache = useMemo(() => sessionChangesCache(owner), [owner]);
   const [list, setList] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -94,7 +96,7 @@ export function GitChangeDetails({
           && listRequestTokenRef.current === requestToken
         ) setLoading(false);
       });
-  }, [api]);
+  }, [api, changesCache]);
 
   useEffect(() => {
     setList(null);
@@ -246,6 +248,8 @@ export function GitChangeDetails({
 
   return (
     <ChangeReviewDetails
+      owner={owner}
+      viewKey={`git:${cwd}:${base}`}
       key={`${cwd}\u0000${base}`}
       rows={rows}
       ready={!!list}

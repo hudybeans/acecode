@@ -302,7 +302,8 @@ export function createApi(base = null) {
     modelPoolStatus:  ()             => request('GET',    '/api/model-pool-status', undefined, base),
     // 控制台 PTY(add-console-dock):loopback-only,daemon 端 16 会话上限(429)。
     createPty:        (opts={})      => request('POST',   '/api/pty', opts, base),
-    listPty:          ()             => request('GET',    '/api/pty', undefined, base),
+    listPty:          (owner)        => request('GET', `/api/pty${owner == null ? '' : `?owner_id=${encodeURIComponent(owner)}`}`, undefined, base),
+    transferPtyOwner: (from, to)     => request('POST', '/api/pty/transfer-owner', { from_owner: from, to_owner: to }, base),
     deletePty:        (id)           => request('DELETE', `/api/pty/${encodeURIComponent(id)}`, undefined, base),
     resizePty:        (id, cols, rows) =>
       request('POST', `/api/pty/${encodeURIComponent(id)}/resize`, { cols, rows }, base),
@@ -315,6 +316,7 @@ export function createApi(base = null) {
     listWorkspaces:   (options={})   => request(
       'GET', '/api/workspaces', undefined, base, { signal: options.signal },
     ),
+    setWorkspaceOrder: (hashes)      => request('PUT', '/api/workspaces/order', { hashes }, base),
     listLoops:        ()             => request('GET',    '/api/loops', undefined, base),
     listExperts:      (workspace='') => request('GET',    expertsPath(workspace), undefined, base),
     listExpertCapabilities: (workspace='') =>
@@ -600,6 +602,8 @@ export function createApi(base = null) {
     setCustomInstructions: (cfg)     => request('PUT',    '/api/config/custom-instructions', cfg, base),
     getConnectors: ()                => request('GET',    '/api/config/connectors', undefined, base),
     getImageGeneration: ()           => request('GET', '/api/config/image-generation', undefined, base),
+    getComputerUse: ()               => request('GET', '/api/config/computer-use', undefined, base),
+    setComputerUse: (config)         => request('PUT', '/api/config/computer-use', config, base, { keepalive: true }),
     getSummaryGeneration: ()         => request('GET', '/api/config/summary-generation', undefined, base),
     setSummaryGeneration: (config)   => request('PUT', '/api/config/summary-generation', config, base, { keepalive: true }),
     setImageGeneration: (config)     => request('PUT', '/api/config/image-generation', config, base, { keepalive: true }),

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -19,6 +20,28 @@ namespace acecode::desktop {
 namespace {
 
 constexpr const char* kWorkspaceJson = "workspace.json";
+constexpr const char* kWorkspaceOrderJson = "workspace_order.json";
+
+std::vector<std::string> read_workspace_order(const std::string& projects_dir) {
+    std::ifstream input(path_from_utf8(projects_dir) / kWorkspaceOrderJson);
+    if (!input.is_open()) return {};
+    try {
+        const auto document = nlohmann::json::parse(input);
+        if (!document.is_object() || !document.contains("hashes") ||
+            !document["hashes"].is_array()) return {};
+        std::vector<std::string> hashes;
+        std::unordered_set<std::string> seen;
+        for (const auto& value : document["hashes"]) {
+            if (!value.is_string()) return {};
+            auto hash = value.get<std::string>();
+            if (hash.empty() || !seen.insert(hash).second) return {};
+            hashes.push_back(std::move(hash));
+        }
+        return hashes;
+    } catch (const std::exception&) {
+        return {};
+    }
+}
 
 // 给 hash 目录 + 根 projects_dir 拼出 workspace.json 完整路径。
 std::string workspace_json_path(const std::string& projects_dir, const std::string& hash) {
@@ -152,6 +175,9 @@ DirStamp dir_entry_stamp(const fs::directory_entry& entry) {
 
 void WorkspaceRegistry::scan_locked(const std::string& projects_dir) {
     entries_.clear();
+    // Desktop and daemon own separate registries. Read the small shared order
+    // file even when all workspace marker probes can use their cached values.
+    workspace_order_ = read_workspace_order(projects_dir);
 
     std::error_code ec;
     fs::path native_projects_dir = path_from_utf8(projects_dir);
@@ -211,8 +237,49 @@ std::vector<WorkspaceMeta> WorkspaceRegistry::list() const {
     std::lock_guard<std::mutex> lk(mu_);
     std::vector<WorkspaceMeta> out;
     out.reserve(entries_.size());
-    for (const auto& [_, m] : entries_) out.push_back(m);
+    std::unordered_set<std::string> ordered;
+    for (const auto& hash : workspace_order_) {
+        auto entry = entries_.find(hash);
+        if (entry != entries_.end()) {
+            out.push_back(entry->second);
+            ordered.insert(hash);
+        }
+    }
+    // Preserve the existing fallback order until the user first saves, and
+    // append newly registered workspaces after the saved entries.
+    for (const auto& [hash, m] : entries_) {
+        if (!ordered.count(hash)) out.push_back(m);
+    }
     return out;
+}
+
+WorkspaceOrderStatus WorkspaceRegistry::set_order(
+    const std::string& projects_dir, const std::vector<std::string>& hashes) {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::unordered_set<std::string> seen;
+    for (const auto& hash : hashes) {
+        if (hash.empty() || !seen.insert(hash).second) {
+            return WorkspaceOrderStatus::InvalidOrder;
+        }
+    }
+    scan_locked(projects_dir);
+    if (hashes.size() != entries_.size()) return WorkspaceOrderStatus::Conflict;
+    for (const auto& hash : hashes) {
+        if (!entries_.count(hash)) return WorkspaceOrderStatus::Conflict;
+    }
+
+    auto next = workspace_order_;
+    size_t visible_index = 0;
+    for (auto& hash : next) {
+        if (entries_.count(hash)) hash = hashes[visible_index++];
+    }
+    next.insert(next.end(), hashes.begin() + visible_index, hashes.end());
+    const auto path = path_to_utf8(path_from_utf8(projects_dir) / kWorkspaceOrderJson);
+    if (!atomic_write_file(path, nlohmann::json{{"hashes", next}}.dump(2))) {
+        return WorkspaceOrderStatus::WriteFailed;
+    }
+    workspace_order_ = std::move(next);
+    return WorkspaceOrderStatus::Saved;
 }
 
 std::optional<WorkspaceMeta> WorkspaceRegistry::get(const std::string& hash) const {

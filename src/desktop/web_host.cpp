@@ -96,11 +96,58 @@ bool mac_window_is_fullscreen(NSWindow* window) {
            (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
 }
 
+constexpr CGFloat kMacTopbarControlCenterFromTop = 20.0;
+
+void show_and_align_mac_standard_button(NSWindow* window,
+                                        NSWindowButton button,
+                                        CGFloat horizontal_offset) {
+    NSButton* button_view = [window standardWindowButton:button];
+    if (!button_view) return;
+    [button_view setHidden:NO];
+
+    NSView* container = [button_view superview];
+    if (!container) return;
+
+    const NSRect bounds = [container bounds];
+    NSRect frame = [button_view frame];
+    const CGFloat target_center_y = [container isFlipped]
+        ? NSMinY(bounds) + kMacTopbarControlCenterFromTop
+        : NSMaxY(bounds) - kMacTopbarControlCenterFromTop;
+    frame.origin.x += horizontal_offset;
+    frame.origin.y = target_center_y - NSHeight(frame) / 2.0;
+    [button_view setFrame:frame];
+}
+
+void align_mac_standard_buttons(NSWindow* window) {
+    NSButton* close_button =
+        [window standardWindowButton:NSWindowCloseButton];
+    CGFloat horizontal_offset = 0.0;
+    if (close_button && [close_button superview]) {
+        const NSRect container_bounds = [[close_button superview] bounds];
+        const NSRect close_frame = [close_button frame];
+        const CGFloat equal_edge_inset =
+            kMacTopbarControlCenterFromTop - NSHeight(close_frame) / 2.0;
+        const CGFloat target_close_x =
+            NSMinX(container_bounds) + equal_edge_inset;
+        horizontal_offset = target_close_x - NSMinX(close_frame);
+    }
+
+    show_and_align_mac_standard_button(
+        window, NSWindowCloseButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowMiniaturizeButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowZoomButton, horizontal_offset);
+}
+
 void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
     if (!window) return;
     const bool fullscreen = mac_window_is_fullscreen(window);
     if (fullscreen == g_mac_last_known_fullscreen) return;
     g_mac_last_known_fullscreen = fullscreen;
+    if (!fullscreen) {
+        align_mac_standard_buttons(window);
+    }
     if (g_mac_window_fullscreen_handler) {
         g_mac_window_fullscreen_handler(fullscreen);
     }
@@ -117,12 +164,6 @@ id install_mac_window_fullscreen_observer(webview::webview& w,
                 usingBlock:^(__unused NSNotification* note) {
                     notify_mac_window_fullscreen_if_changed(window);
                 }];
-}
-
-void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
-    NSButton* button_view = [window standardWindowButton:button];
-    if (!button_view) return;
-    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -149,11 +190,9 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
-    // retain their standard layout, actions, and full-screen behavior.
-    show_mac_standard_button(window, NSWindowCloseButton);
-    show_mac_standard_button(window, NSWindowMiniaturizeButton);
-    show_mac_standard_button(window, NSWindowZoomButton);
+    // Keep AppKit's hierarchy and actions intact, but align the native traffic
+    // lights with the web top-bar controls and match their top/left edge insets.
+    align_mac_standard_buttons(window);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
     g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
@@ -2069,6 +2108,32 @@ void WebHost::dispatch(std::function<void()> task) {
     if (!task) return;
     impl_->w->dispatch(std::move(task));
 }
+bool WebHost::focus_after_file_drop() {
+#ifdef _WIN32
+    HWND hwnd = impl_->hwnd();
+    if (!hwnd) return false;
+    const DWORD current_thread = ::GetCurrentThreadId();
+    const DWORD foreground_thread =
+        ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
+    // The drag source owns the last native input. Briefly share its input
+    // queue for this explicit drop, then detach before returning to WebView.
+    const bool attached = foreground_thread && foreground_thread != current_thread &&
+        ::AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    set_visible(true);
+    if (attached) ::AttachThreadInput(current_thread, foreground_thread, FALSE);
+    if (::GetForegroundWindow() != hwnd) return false;
+
+    auto controller_result = impl_->w->browser_controller();
+    if (!controller_result.ok()) return false;
+    auto* controller = static_cast<ICoreWebView2Controller*>(controller_result.value());
+    return controller && SUCCEEDED(
+        controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+#else
+    set_visible(true);
+    return true;
+#endif
+}
+
 bool WebHost::open_dev_tools() {
 #ifdef _WIN32
     auto controller_result = impl_->w->browser_controller();
@@ -2345,6 +2410,61 @@ void WebHost::set_file_drop_handler(FileDropHandler handler) {
     install_mac_file_drop(*impl_->w);
 #endif
     // Linux/WebKitGTK:前端经 text/uri-list 处理,native 不安装拦截。
+}
+acecode::ClipboardPathsReadResult WebHost::read_clipboard_paths() {
+    using Result = acecode::ClipboardPathsReadResult;
+#ifdef _WIN32
+    return acecode::read_system_clipboard_paths();
+#else
+    Result result;
+    result.status = Result::Status::Empty;
+#ifdef __APPLE__
+    NSArray<NSURL*>* urls = [[NSPasteboard generalPasteboard]
+        readObjectsForClasses:@[[NSURL class]]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    for (NSURL* url in urls) {
+        const char* path = [url.path UTF8String];
+        if (path) result.paths.emplace_back(path);
+    }
+#else
+    // WebKitGTK already loads these libraries. Keep GTK types out of the
+    // desktop wrapper's public API, as with the window operations above.
+    auto& api = gtk_window_api();
+    if (!api.load()) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    const auto atom = reinterpret_cast<void* (*)(const char*, int)>(dlsym(api.gdk, "gdk_atom_intern"));
+    const auto clipboard_get = reinterpret_cast<void* (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_get"));
+    const auto read_uris = reinterpret_cast<char** (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_wait_for_uris"));
+    const auto filename = reinterpret_cast<char* (*)(const char*, char**, void**)>(dlsym(api.gtk, "g_filename_from_uri"));
+    const auto free_string = reinterpret_cast<void (*)(void*)>(dlsym(api.gtk, "g_free"));
+    const auto free_strings = reinterpret_cast<void (*)(char**)>(dlsym(api.gtk, "g_strfreev"));
+    if (!atom || !clipboard_get || !read_uris || !filename || !free_string || !free_strings) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    char** uris = read_uris(clipboard_get(atom("CLIPBOARD", 0)));
+    if (uris) {
+        for (char** uri = uris; *uri; ++uri) {
+            char* path = filename(*uri, nullptr, nullptr);
+            if (path) {
+                result.paths.emplace_back(path);
+                free_string(path);
+            }
+        }
+        free_strings(uris);
+    }
+#endif
+    if (result.paths.size() > acecode::kMaxClipboardFilesystemPaths) {
+        result.status = Result::Status::TooMany;
+        result.paths.clear();
+        result.detail = "clipboard contains too many filesystem items";
+    } else if (!result.paths.empty()) result.status = Result::Status::Success;
+    return result;
+#endif
 }
 void WebHost::request_quit() {
 #ifdef _WIN32

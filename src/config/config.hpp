@@ -2,6 +2,7 @@
 
 #include "desktop_close_behavior.hpp"
 #include "saved_models.hpp"
+#include "../computer_use/pointer_appearance.hpp"
 #include "../utils/constants.hpp"
 
 #include <cstddef>
@@ -302,6 +303,13 @@ struct WebSearchConfig {
     int timeout_ms = 8000;      // Per-backend HTTP timeout.
 };
 
+struct ComputerUseConfig {
+    // Desktop control is opt-in, including after loading a legacy config.
+    bool enabled = false;
+    std::string pointer_style = computer_use::pointer_appearance::kDefaultStyle;
+    std::string pointer_color = computer_use::pointer_appearance::kDefaultColor;
+};
+
 // 图像生成工具配置(openspec add-image-generation-tool)。
 //
 // 端点是 OpenAI 兼容的 Images API。三档 quality 对应三个**不同的模型名** ——
@@ -553,6 +561,7 @@ struct AppConfig {
     LspConfig lsp;                               // LSP 集成(参见 add-lsp-service)
     WorktreeConfig worktree;                     // worktree 隔离(enter_worktree / --worktree)
     ImageGenerationConfig image_generation;      // 图像生成工具(参见 add-image-generation-tool)
+    ComputerUseConfig computer_use;              // Windows desktop control, explicitly enabled
     GitContextConfig git_context;                // git 感知(参见 add-git-context)
     RemoteControlConfig remote_control;          // TUI /remote-control channel 托管
     UpgradeConfig upgrade;                       // explicit self-upgrade command config

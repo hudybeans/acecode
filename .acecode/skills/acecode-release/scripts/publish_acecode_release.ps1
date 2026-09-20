@@ -8,6 +8,9 @@ param(
     [string]$Repo = (Get-Location).Path,
     [string]$UpdateDir = 'J:\jenkins_green\aupdate',
     [string]$RemoteBaseUrl = 'http://2017studio.imwork.net:82/aupdate/',
+    [string]$GitHubRepo = 'tmoonlight/acecode',
+    [ValidateRange(1, 180)]
+    [int]$GitHubReleaseWaitMinutes = 45,
     [string]$Configuration = 'Release',
     [string]$Target = 'windows-x64',
     [string[]]$StageFiles = @(),
@@ -239,24 +242,46 @@ function Ensure-ZipMimeConfig {
     param([Parameter(Mandatory = $true)][string]$Directory)
     $webConfig = Join-Path $Directory 'web.config'
     if (Test-Path -LiteralPath $webConfig) {
-        $text = [System.IO.File]::ReadAllText($webConfig)
-        if ($text -match 'mimeType="application/zip"') {
-            return
-        }
+        $xml = [xml][System.IO.File]::ReadAllText($webConfig)
+    } else {
+        $xml = [xml]'<configuration />'
     }
-
-    $xml = @'
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    <system.webServer>
-        <staticContent>
-            <remove fileExtension=".zip" />
-            <mimeMap fileExtension=".zip" mimeType="application/zip" />
-        </staticContent>
-    </system.webServer>
-</configuration>
-'@
-    Write-Utf8NoBom $webConfig ($xml + [Environment]::NewLine)
+    $configuration = $xml.SelectSingleNode('/configuration')
+    if ($null -eq $configuration) {
+        throw "Update server web.config has no configuration root: $webConfig"
+    }
+    $server = $configuration.SelectSingleNode('system.webServer')
+    if ($null -eq $server) {
+        $server = $xml.CreateElement('system.webServer')
+        [void]$configuration.AppendChild($server)
+    }
+    $content = $server.SelectSingleNode('staticContent')
+    if ($null -eq $content) {
+        $content = $xml.CreateElement('staticContent')
+        [void]$server.AppendChild($content)
+    }
+    # Both formats are required by full GitHub mirroring. Preserve unrelated IIS
+    # settings when repairing the ZIP-only config left by earlier publishers.
+    foreach ($mapping in @(
+            @('.zip', 'application/zip'),
+            @('.pkg', 'application/vnd.apple.installer+xml'))) {
+        foreach ($node in @($content.SelectNodes(
+                "mimeMap[@fileExtension='$($mapping[0])'] | remove[@fileExtension='$($mapping[0])']"))) {
+            [void]$content.RemoveChild($node)
+        }
+        $remove = $xml.CreateElement('remove')
+        $remove.SetAttribute('fileExtension', $mapping[0])
+        [void]$content.AppendChild($remove)
+        $mime = $xml.CreateElement('mimeMap')
+        $mime.SetAttribute('fileExtension', $mapping[0])
+        $mime.SetAttribute('mimeType', $mapping[1])
+        [void]$content.AppendChild($mime)
+    }
+    $settings = New-Object System.Xml.XmlWriterSettings
+    $settings.Encoding = New-Object System.Text.UTF8Encoding($false)
+    $settings.Indent = $true
+    $writer = [System.Xml.XmlWriter]::Create($webConfig, $settings)
+    try { $xml.Save($writer) } finally { $writer.Dispose() }
 }
 
 function Update-Manifest {
@@ -625,12 +650,17 @@ try {
 
     $exe = Join-Path $buildRoot "$Configuration\acecode.exe"
     $desktopExe = Join-Path $buildRoot "$Configuration\acecode-desktop.exe"
+    $computerUseExe = Join-Path $buildRoot "$Configuration\acecode-computer-use.exe"
     $versionOutput = (& $exe --version).Trim()
     if ($versionOutput -ne "acecode v$Version") {
         throw "Built executable reports '$versionOutput', expected 'acecode v$Version'."
     }
     if (-not (Test-Path -LiteralPath $desktopExe)) {
         throw "Desktop executable missing: $desktopExe. Configure the build with -DACECODE_BUILD_DESKTOP=ON before release packaging."
+    }
+    if (-not (Test-Path -LiteralPath $computerUseExe -PathType Leaf) -or
+        (Get-Item -LiteralPath $computerUseExe).Length -eq 0) {
+        throw "Computer Use runtime missing: $computerUseExe. Rebuild the acecode-computer-use target before release packaging."
     }
 
     if (-not $QuickValidation -and -not $NoCommit) {
@@ -680,8 +710,14 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $stage 'share\acecode') | Out-Null
         Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'acecode.exe') -Force
         Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stage 'acecode-desktop.exe') -Force
+        Copy-Item -LiteralPath $computerUseExe -Destination (Join-Path $stage 'acecode-computer-use.exe') -Force
         Copy-Item -LiteralPath (Join-Path $Repo 'assets\models_dev') -Destination (Join-Path $stage 'share\acecode\models_dev') -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $Repo 'assets\seed') -Destination (Join-Path $stage 'share\acecode\seed') -Recurse -Force
+        $channelStage = Join-Path $stage 'channels\whatsapp'
+        New-Item -ItemType Directory -Force -Path $channelStage | Out-Null
+        foreach ($asset in @('bridge.mjs', 'protocol.mjs', 'package.json', 'package-lock.json')) {
+            Copy-Item -LiteralPath (Join-Path $Repo "assets\channels\whatsapp\$asset") -Destination $channelStage -Force
+        }
 
         New-Item -ItemType Directory -Force -Path $UpdateDir | Out-Null
         Ensure-ZipMimeConfig -Directory $UpdateDir
@@ -690,6 +726,11 @@ try {
         Test-ZipEntries -ZipPath $zipPath -RequiredEntries @(
             'acecode.exe',
             'acecode-desktop.exe',
+            'acecode-computer-use.exe',
+            'channels/whatsapp/bridge.mjs',
+            'channels/whatsapp/protocol.mjs',
+            'channels/whatsapp/package.json',
+            'channels/whatsapp/package-lock.json',
             'share/acecode/models_dev/api.json',
             'share/acecode/seed/MANIFEST.json'
         ) -ForbiddenPrefixes @('ace-browser-')
@@ -708,6 +749,21 @@ try {
         Write-Host "SHA256:  $sha"
     }
 
+    if (-not $QuickValidation -and $Push -and -not $NoPublish) {
+        $syncScript = Join-Path $PSScriptRoot 'sync_github_release_to_aupdate.ps1'
+        if (-not (Test-Path -LiteralPath $syncScript -PathType Leaf)) {
+            throw "Required GitHub updater mirror helper is missing: $syncScript"
+        }
+        Write-Host '== Waiting for the complete GitHub Release and mirroring all updater platforms =='
+        & $syncScript `
+            -Version $Version `
+            -UpgradeTip $UpgradeTip `
+            -RepoSlug $GitHubRepo `
+            -UpdateDir $UpdateDir `
+            -RemoteBaseUrl $RemoteBaseUrl `
+            -WaitMinutes $GitHubReleaseWaitMinutes
+    }
+
     $head = (& git -C $Repo rev-parse --short HEAD).Trim()
 } finally {
     if ($null -ne $lockStream) {
@@ -720,6 +776,8 @@ try {
 
 if ($QuickValidation) {
     Write-Host "Quick validation package complete: $Version from $head (no commit or tag created)"
+} elseif ($Push -and -not $NoPublish) {
+    Write-Host "Full cross-platform release complete: $tag at $head"
 } else {
-    Write-Host "Release complete: $tag at $head"
+    Write-Host "Local/source release steps complete: $tag at $head"
 }

@@ -124,6 +124,45 @@ TEST(PtySessionRegistryTest, CreateListRemoveLifecycle) {
 }
 
 // 触发场景:订阅后向 shell 写命令。
+TEST(PtySessionRegistryTest, SessionOwnersIsolateAndTransferWithoutRestart) {
+    FrameCollector collector;
+    acecode::PtySessionRegistry registry(test_backend(), ".", "");
+    std::string error;
+    auto a = registry.create("", "A", "", error, "session:a");
+    auto draft = registry.create("", "Draft", "", error, "draft:new");
+    auto legacy = registry.create("", "Legacy", "", error);
+    ASSERT_TRUE(a && draft && legacy) << error;
+    ASSERT_EQ(registry.list("session:a").size(), 1u);
+    EXPECT_TRUE(registry.list("session:b").empty());
+    ASSERT_EQ(registry.list("").size(), 1u);
+    EXPECT_EQ(registry.list("")[0].id, legacy->id);
+
+    int subscriber = 0;
+    ASSERT_TRUE(registry.connect(draft->id, &subscriber, 0, collector.sender()));
+    EXPECT_FALSE(registry.transfer_owner("draft:new", "session:a"));
+    EXPECT_FALSE(registry.transfer_owner("session:a", "session:b"));
+    ASSERT_TRUE(registry.transfer_owner("draft:new", "session:b"));
+    EXPECT_TRUE(registry.transfer_owner("draft:new", "session:b"));
+    EXPECT_FALSE(registry.transfer_owner("draft:new", "session:c"));
+    auto moved = registry.get(draft->id);
+    ASSERT_TRUE(moved);
+    EXPECT_EQ(moved->pid, draft->pid);
+    EXPECT_EQ(moved->owner_id, "session:b");
+    registry.write_input(draft->id, kEchoMark);
+    EXPECT_TRUE(wait_until([&] { return collector.data_contains("REGISTRY_MARK"); }, 10000));
+
+    // A creation arriving after the transfer belongs to the same new session.
+    auto late = registry.create("", "Late", "", error, "draft:new");
+    ASSERT_TRUE(late) << error;
+    EXPECT_EQ(late->owner_id, "session:b");
+    EXPECT_EQ(registry.list("session:b").size(), 2u);
+    registry.remove(a->id);
+    EXPECT_TRUE(registry.list("session:a").empty());
+    EXPECT_EQ(registry.list("session:b").size(), 2u);
+    EXPECT_EQ(registry.get(draft->id)->pid, draft->pid);
+}
+
+// 触发场景:订阅后向 shell 写命令。
 // 期望:订阅者通过数据帧收到 echo 输出,且 connect 时收到 cursor 控制帧
 // (协议要求:补发结束必有 {"cursor":N} 同步帧,前端据此推进本地游标)。
 TEST(PtySessionRegistryTest, SubscribeReceivesOutputAndCursorFrame) {

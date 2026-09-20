@@ -52,6 +52,7 @@ import { QuestionPicker } from './QuestionPicker.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
+import { sessionContentLoadingPhase } from '../lib/sessionContentLoading.js';
 import { SidePanel } from './SidePanel.jsx';
 import { SubagentPanel } from './SubagentPanel.jsx';
 import { TranscriptItems } from './TranscriptItems.jsx';
@@ -233,6 +234,9 @@ import {
   saveEditableFileDraftBatch,
 } from '../lib/editableFileDraft.js';
 import { createUnsavedFileGuard, runAfterFileApproval } from '../lib/unsavedFileGuard.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { transferPreviewTabs } from '../lib/previewTabs.js';
 import {
   AGENT_BROWSER_STATE_EVENT,
   agentBrowserActivityFromItems,
@@ -555,6 +559,7 @@ const FORK_ACTION_KEY = 'fork-session';
 export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, onRegisterPreviewLeaveGuard, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, messageAutoCollapse = true, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
+  const workbenchOwner = sessionWorkbench.ownerFor(ref);
   const sessionRuntimeUnavailable = ref?.resumePending === true || ref?.resumeFailed === true;
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
   const stagedExpertDraft = expertDispatchDraftFromRef(ref);
@@ -793,21 +798,18 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const [modelRefreshing, setModelRefreshing] = useState(false);
   const [permissionMode, setPermissionMode] = useState('default');
   const [permissionSwitching, setPermissionSwitching] = useState(false);
-  const [reviewRequest, setReviewRequest] = useState(0);
-  const [fileLocateRequest, setFileLocateRequest] = useState({ path: '', token: 0 });
-  const [previewTabState, setPreviewTabSnapshot] = useState({});
-  const previewTabStateRef = useRef(previewTabState);
-  const setPreviewTabState = useCallback((producer) => {
-    const next = producer(previewTabStateRef.current);
-    previewTabStateRef.current = next;
-    setPreviewTabSnapshot(next);
-  }, []);
+  const [reviewRequest, setReviewRequest] = useWorkbenchState(workbenchOwner, 'reviewRequest', 0);
+  const [fileLocateRequest, setFileLocateRequest] = useWorkbenchState(workbenchOwner, 'fileLocate', () => ({ path: '', token: 0 }));
+  const [previewTabState, setPreviewTabState] = useWorkbenchState(workbenchOwner, 'previews', () => ({}));
+  const getPreviewTabState = useCallback(() => sessionWorkbench.get(workbenchOwner, 'previews', () => ({})), [workbenchOwner]);
+  const previewContextRef = useRef(null);
+  const previewLeaveRequestRef = useRef(() => true);
   const [previewCloseConfirm, setPreviewCloseConfirm] = useState(null);
   const previewFileGuardRef = useRef(null);
   if (!previewFileGuardRef.current) {
     previewFileGuardRef.current = createUnsavedFileGuard(setPreviewCloseConfirm);
   }
-  const [previewPanelHidden, setPreviewPanelHidden] = useState(false);
+  const [previewPanelHidden, setPreviewPanelHidden] = useWorkbenchState(workbenchOwner, 'previewHidden', false);
   const [dismissedDockSignatures, setDismissedDockSignatures] = usePreference(
     CHANGE_DOCK_DISMISSALS_STORAGE_KEY,
     {},
@@ -1274,9 +1276,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   useEffect(() => { sidRef.current = sid; }, [sid]);
   useEffect(() => { draftSessionKeyRef.current = draftSessionKey; }, [draftSessionKey]);
   useEffect(() => {
-    setPreviewPanelHidden(false);
     previewFileGuardRef.current.cancelPending();
-  }, [sid]);
+  }, [workbenchOwner]);
   useEffect(() => () => previewFileGuardRef.current.cancelPending(), []);
 
   const handleComposerChange = useCallback((next, content = null) => {
@@ -1351,6 +1352,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     title = '',
   } = {}) => {
     if (homeSubmitting || reasoningSwitching) return null;
+    const sourcePreviewContext = previewContextRef.current;
+    if (!await previewLeaveRequestRef.current()) return null;
     const target = selectedHomeWorkspace || fallbackWorkspaceOption(ref, health);
     const targetHash = target?.hash || '';
     const targetNoWorkspace = !!target?.noWorkspace;
@@ -1406,6 +1409,14 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       if (pendingFirstUserMessage) {
         setPendingNewSessionFirstUserMessage(pendingFirstUserMessage);
       }
+      const nextOwner = sessionWorkbench.ownerFor(next);
+      if (health?.console?.available) await api.transferPtyOwner(workbenchOwner, nextOwner);
+      sessionWorkbench.transfer(workbenchOwner, nextOwner, (record) => ({
+        ...record,
+        previews: sourcePreviewContext ? transferPreviewTabs(record.previews || {}, sourcePreviewContext, {
+          ...sourcePreviewContext, sessionId: id,
+        }) : {},
+      }));
       onSessionPromoted?.(next);
       notifySessionListChanged({
         reason: 'session-created',
@@ -1423,7 +1434,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     } finally {
       setHomeSubmitting(false);
     }
-  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
+  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace, workbenchOwner]);
 
   const stageMediaFiles = useCallback((reservedFiles) => {
     const stagedItems = [];
@@ -4572,9 +4583,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     [ref?.workspaceHash, sessionWorktree?.path, sid, sidePanelCwd, sidePanelFilesEnabled],
   );
   const previewContext = useMemo(
-    () => previewTabContext({ scopeKey: previewScope, sessionId: sid }),
-    [previewScope, sid],
+    () => previewTabContext({ scopeKey: previewScope, sessionId: sid || workbenchOwner }),
+    [previewScope, sid, workbenchOwner],
   );
+  previewContextRef.current = previewContext;
   const previewTabs = useMemo(
     () => visiblePreviewTabs(previewTabState, previewContext),
     [previewContext, previewTabState],
@@ -4589,12 +4601,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       getTabs,
       discard: (tabs) => {
         setPreviewTabState((state) => tabs.reduce((next, tab) => discardFileTabDraft(next, {
-          scopeKey: previewScope, tabKey: tab.key,
+          ...previewContext, tabKey: tab.key,
         }), state));
       },
       save: async (tabs) => {
         const updateDraft = (tab, patch) => setPreviewTabState((state) => updateFileTabDraft(state, {
-          scopeKey: previewScope, tabKey: tab.key, patch,
+          ...previewContext, tabKey: tab.key, patch,
         }));
         const result = await saveEditableFileDraftBatch(api, {
           tabs,
@@ -4613,21 +4625,22 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         }
       },
     })
-  ), [api, previewScope, setPreviewTabState, sidePanelCwd]);
+  ), [api, previewContext, setPreviewTabState, sidePanelCwd]);
   const requestPreviewLeave = useCallback(() => requestPreviewApproval(
-    () => visiblePreviewTabs(previewTabStateRef.current, previewContext),
-  ), [previewContext, requestPreviewApproval]);
+    () => visiblePreviewTabs(getPreviewTabState(), previewContext),
+  ), [getPreviewTabState, previewContext, requestPreviewApproval]);
+  previewLeaveRequestRef.current = requestPreviewLeave;
   useLayoutEffect(() => onRegisterPreviewLeaveGuard?.(requestPreviewLeave), [
     onRegisterPreviewLeaveGuard, requestPreviewLeave,
   ]);
   const requestActiveFileLeave = useCallback(() => {
-    const key = activePreviewTab(previewTabStateRef.current, previewContext)?.key;
-    return requestPreviewApproval(() => visiblePreviewTabs(previewTabStateRef.current, previewContext)
+    const key = activePreviewTab(getPreviewTabState(), previewContext)?.key;
+    return requestPreviewApproval(() => visiblePreviewTabs(getPreviewTabState(), previewContext)
       .filter((tab) => tab.key === key));
-  }, [previewContext, requestPreviewApproval]);
+  }, [getPreviewTabState, previewContext, requestPreviewApproval]);
   const selectPreview = useCallback((producer, afterSelect) => {
     if (previewFileGuardRef.current.isPending()) return false;
-    const state = previewTabStateRef.current;
+    const state = getPreviewTabState();
     const current = activePreviewTab(state, previewContext);
     const next = activePreviewTab(producer(state), previewContext);
     const approval = current?.key === next?.key ? true : requestActiveFileLeave();
@@ -4636,7 +4649,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       afterSelect?.();
       return true;
     });
-  }, [previewContext, requestActiveFileLeave, setPreviewTabState]);
+  }, [getPreviewTabState, previewContext, requestActiveFileLeave, setPreviewTabState]);
   const previewTabsOpen = previewTabs.length > 0;
   // 总开关必须连最大化详情一起隐藏;恢复时仍保留最大化偏好与原页签。
   const previewPanelVisible = previewTabsOpen && !sidePanelCollapsed && !previewPanelHidden;
@@ -4765,6 +4778,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     if (sidePanelCollapsed) onToggleSidePanel?.();
     const created = await createAgentBrowserPage(agentBrowserOwnerForSession(ref));
     if (created?.ok === false || !created?.page_id) return;
+    if (sidRef.current !== sid) return;
     showBrowserPage(
       created.page_id,
       created.title || defaultBrowserTabTitle(),
@@ -4800,6 +4814,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const revealedBrowserPagesRef = useRef(new Map());
   useEffect(() => {
     if (!sid) return;
+    const restoredPages = visiblePreviewTabs(getPreviewTabState(), previewContext)
+      .filter((tab) => tab.type === PREVIEW_TAB_TYPES.BROWSER).map((tab) => tab.pageId);
     setPreviewTabState((prev) => syncBrowserTabsForSession(prev, {
       scopeKey: previewScope,
       sessionId: sid,
@@ -4807,7 +4823,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     }));
     let revealed = revealedBrowserPagesRef.current.get(sid);
     if (!revealed) {
-      revealed = new Set();
+      revealed = new Set(restoredPages);
       revealedBrowserPagesRef.current.set(sid, revealed);
     }
     for (const page of sessionBrowserPages) {
@@ -4820,7 +4836,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         revealed.delete(pageId);
       }
     }
-  }, [previewScope, sessionBrowserPages, showBrowserPage, sid]);
+  }, [getPreviewTabState, previewContext, previewScope, sessionBrowserPages, showBrowserPage, sid]);
 
   // Agent 切换默认目标页(browser_open / 显式选页)且有浏览器工具正在执行时,把
   // 那一页的页签激活到前台;目标不属于本会话(显式操作别的会话的页)则不动。
@@ -4900,11 +4916,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const updateFilePreviewDraft = useCallback((tabKey, patch) => {
     setPreviewTabState((prev) => updateFileTabDraft(prev, {
-      scopeKey: previewScope,
+      ...previewContext,
       tabKey,
       patch,
     }));
-  }, [previewScope]);
+  }, [previewContext, setPreviewTabState]);
 
   useEffect(() => {
     const transition = nextAutoPreviewRefresh(previewAutoRefreshRef.current, {
@@ -4959,11 +4975,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     if (affected.length === 0) return;
     const keys = new Set(affected.map((tab) => tab.key));
     return runAfterFileApproval(requestPreviewApproval(
-      () => visiblePreviewTabs(previewTabStateRef.current, previewContext)
+      () => visiblePreviewTabs(getPreviewTabState(), previewContext)
         .filter((tab) => keys.has(tab.key)),
       'close',
     ), () => performPreviewClose(kind, tabKey));
   }, [
+    getPreviewTabState,
     performPreviewClose,
     previewContext,
     previewTabsForCloseAction,
@@ -5166,7 +5183,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               )}
             </div>
             <GitSessionPill
-              key={`home-${homeWorkspaceHash}`}
+              key={workbenchOwner}
+              owner={workbenchOwner}
               api={api}
               cwd={selectedHomeWorkspace?.cwd || ''}
               variant="hero"
@@ -5603,6 +5621,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             }}
           />
           <GitSessionPill
+            owner={workbenchOwner}
             key={`session-${sid}`}
             api={api}
             cwd={sidePanelCwd}
@@ -5615,15 +5634,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           />
           </>
           )}
-          <SessionContentLoading
-            phase={ref?.resumeFailed ? 'error' : (ref?.resumePending ? 'loading' : '')}
-          />
         </div>
       )}
       <SessionContentLoading
-        phase={transcriptLoadState === 'loading'
-          ? 'transcript'
-          : (transcriptLoadState === 'error' ? 'error' : '')}
+        phase={sessionContentLoadingPhase({
+          transcriptLoadState,
+          resumePending: ref?.resumePending,
+          resumeFailed: ref?.resumeFailed,
+          readOnly: readOnlyExternalSession,
+        })}
       />
       <ChatFileDropOverlay active={chatFileDropActive} />
       </div>
@@ -5648,12 +5667,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           style={previewShellStyle}
         >
           <PreviewDetailsPanel
+            key={workbenchOwner}
+            owner={workbenchOwner}
             api={api}
             cwd={sidePanelCwd}
             tabs={previewTabs}
             activeTab={activePreview}
             changeGroups={changeGroups}
             changeSummary={changeSummary}
+            sessionChangesReady={transcriptLoadState === 'loaded'}
             turnChangeSets={turnChangeSets}
             maximized={previewPanelMaximized}
             busy={busy}
@@ -5772,6 +5794,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             style={sidePanelShellStyle}
           >
             <SidePanel
+              key={workbenchOwner}
+              owner={workbenchOwner}
               sessionRef={ref}
               sessionId={sid}
               cwd={sidePanelCwd}

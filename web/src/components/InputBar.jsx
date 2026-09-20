@@ -29,6 +29,7 @@ import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHist
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
 import { composerContentWithoutImages, isComposerThumbnailAttachment, withComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { composerDraftEditFingerprint, removeComposerAttachmentReference } from '../lib/composerDraft.js';
+import { isComposerCompletionSelectionCollapsed } from '../lib/composerDropdownKeyboard.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
 import {
@@ -36,6 +37,7 @@ import {
   isComposerEditorFocused,
   preserveComposerFocusOnPointerDown,
   requestDesktopFileDragActivation,
+  requestDesktopFileDropFocus,
   requestDesktopWindowFocus,
   restoreComposerTextareaCaret,
 } from '../lib/composerCaretRestore.js';
@@ -63,21 +65,17 @@ import {
 } from '../lib/sessionReference.js';
 import {
   hasNativeContextPicker,
-  nativeFolderReferencePath,
   parseNativeContextPickerResult,
 } from '../lib/desktopContextPicker.js';
 import {
   desktopHostOs,
-  hasNativeFilesystemClipboard,
   hasNativeFilesystemMaterializer,
-  insertAbsolutePathReferences,
   localPathsFromDropPayload,
   localPathsFromUriList,
-  materializeNativeFilesystemPaths,
   nativeFileDropEnabled,
-  readNativeClipboardFilesystemItems,
   uriListFromTransfer,
 } from '../lib/desktopFilesystemTransfer.js';
+import { resolveComposerFileIntake } from '../lib/composerFileIntake.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
 import {
   nextExpertMenuItemIndex,
@@ -229,6 +227,13 @@ export const InputBar = forwardRef(function InputBar({
   const attentionRingRef = useRef(null);
   const lastAttentionRequestRef = useRef(attentionRequest);
   const fileInputRef = useRef(null);
+  const fileIntakeQueueRef = useRef(Promise.resolve());
+  const fileIntakeScope = JSON.stringify([cwd, currentSessionId]);
+  const fileIntakeScopeRef = useRef(fileIntakeScope);
+  if (fileIntakeScopeRef.current !== fileIntakeScope) {
+    fileIntakeScopeRef.current = fileIntakeScope;
+    fileIntakeQueueRef.current = Promise.resolve();
+  }
   const dismissedPathSignatureRef = useRef('');
   const mentionGenerationRef = useRef(0);
   const capabilityMenuRef = useRef(null);
@@ -297,7 +302,6 @@ export const InputBar = forwardRef(function InputBar({
   const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0;
   const nativeContextPickerAvailable = hasNativeContextPicker();
   const nativeFilesystemMaterializerAvailable = hasNativeFilesystemMaterializer();
-  const nativeFilesystemClipboardAvailable = hasNativeFilesystemClipboard();
   const canChooseLocalContext = !!onMediaFiles || nativeContextPickerAvailable;
   const hasExpertHandlers = !!onSelectExpert || !!onOpenExpertComponents;
   const hasCapabilityHandlers = !!onSwarmModeChange || canChooseLocalContext || hasExpertHandlers;
@@ -469,7 +473,8 @@ export const InputBar = forwardRef(function InputBar({
   );
 
   // 触发条件:value 非空、首字符 /、整段无空白
-  const commandQuery = commandQueryAtCursor(value, composerSelection.end);
+  const composerSelectionCollapsed = isComposerCompletionSelectionCollapsed(composerSelection);
+  const commandQuery = composerSelectionCollapsed ? commandQueryAtCursor(value, composerSelection.end) : null;
   const commandItems = commandQuery?.leading ? commands : commands.filter((item) => item.kind === 'skill');
   const showDropdownRaw = !!commandQuery;
   const showDropdown = showDropdownRaw && !dropdownClosed && !composerComposing && commandItems.length > 0;
@@ -537,7 +542,7 @@ export const InputBar = forwardRef(function InputBar({
     const cursor = composerSelection.end;
     const token = pathReferenceTokenAtCursor(value, cursor);
     const signature = pathReferenceSignature(token, cursor, cwd);
-    const unavailable = disabled || !pathReferenceApi || composerComposing || showDropdown || !token;
+    const unavailable = disabled || !pathReferenceApi || composerComposing || !composerSelectionCollapsed || showDropdown || !token;
     if (unavailable || dismissedPathSignatureRef.current === signature) {
       mentionGenerationRef.current += 1;
       setPathMention(null);
@@ -623,6 +628,7 @@ export const InputBar = forwardRef(function InputBar({
     };
   }, [
     composerComposing,
+    composerSelectionCollapsed,
     composerSelection.end,
     currentSessionId,
     cwd,
@@ -668,78 +674,46 @@ export const InputBar = forwardRef(function InputBar({
     restorePathCaret(replacement.cursor);
   }, [pathMention?.token, restorePathCaret, updateValue, value]);
 
-  const activePathDropdown = pathMention;
+  const activePathDropdown = composerSelectionCollapsed ? pathMention : null;
 
-  const addMediaFiles = useCallback((files, { requestNativeFocus = true } = {}) => {
-    const fileList = Array.from(files || []).filter(Boolean);
-    if (disabled || !onMediaFiles || fileList.length === 0) return false;
+  const handleFileIntake = useCallback((payload, transfer) => {
+    if (disabled || !transfer?.isActive()) return Promise.resolve(true);
     setCapabilityOpen(false);
-    requestComposerCaretRestore({ requestNativeFocus });
-    ta.current?.reserveAttachmentSelection?.();
-    onMediaFiles(fileList);
-    return true;
-  }, [disabled, onMediaFiles, requestComposerCaretRestore]);
+    // Start acquisition immediately (the clipboard can change), but commit
+    // batches in gesture order even when native requests finish out of order.
+    const request = resolveComposerFileIntake(payload).then(
+      result => ({ result }), error => ({ error }),
+    );
+    const completion = fileIntakeQueueRef.current.then(async () => {
+      const { result, error } = await request;
+      if (!transfer.isActive()) return true;
+      if (error) {
+        toast({ kind: 'err', text: `添加文件或文件夹失败:${error.message || '原生文件系统不可用'}` });
+        return true;
+      }
+      if (result.kind === 'none') return false;
+      if (result.kind === 'paths') transfer.insertPaths(result.items);
+      else if (onMediaFiles && transfer.reserveAttachments()) onMediaFiles(result.files);
+      setEditedSinceHistory(true);
+      return true;
+    }).catch(error => {
+      if (transfer.isActive()) toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '原生文件系统不可用'}` });
+      return true;
+    });
+    fileIntakeQueueRef.current = completion;
+    return completion;
+  }, [disabled, onMediaFiles]);
 
-  const addNativeFilesystemItems = useCallback((
-    items,
-    savedCursor = composerSelection.end,
-  ) => {
-    const list = Array.from(items || []);
-    if (list.length === 0) return false;
+  const acceptFileIntake = useCallback((payload) => {
+    const transfer = ta.current?.beginFileTransfer();
+    if (!transfer) return;
+    ta.current?.focus();
+    handleFileIntake(payload, transfer).finally(() => transfer.dispose());
+  }, [handleFileIntake]);
 
-    const currentValue = valueRef.current;
-    const insertion = insertAbsolutePathReferences(currentValue, savedCursor, list);
-    if (insertion.text === currentValue) return false;
-
-    valueRef.current = insertion.text;
-    updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
-    setEditedSinceHistory(true);
-    restorePathCaret(insertion.cursor);
-    return true;
-  }, [composerSelection.end, restorePathCaret, updateValue]);
-
-  const addMaterializedPaths = useCallback(async (paths, savedCursor, options) => {
-    const result = await materializeNativeFilesystemPaths(paths);
-    return addNativeFilesystemItems(result.items, savedCursor, options);
-  }, [addNativeFilesystemItems]);
-
-  const handleFilesystemPaste = useCallback(({ files = [], uriList = '' } = {}) => {
-    const fallbackFiles = Array.from(files || []);
-    const savedCursor = composerSelection.end;
-    const uriPaths = nativeFilesystemMaterializerAvailable
-      ? localPathsFromUriList(uriList, HOST_OS)
-      : [];
-
-    let request = null;
-    if (uriPaths.length > 0) {
-      request = materializeNativeFilesystemPaths(uriPaths);
-    } else if (nativeFilesystemClipboardAvailable) {
-      request = readNativeClipboardFilesystemItems();
-    }
-
-    if (!request) {
-      addMediaFiles(fallbackFiles);
-      return;
-    }
-
-    Promise.resolve(request)
-      .then((result) => {
-        if (result.items.length > 0) {
-          addNativeFilesystemItems(result.items, savedCursor);
-        } else {
-          addMediaFiles(fallbackFiles);
-        }
-      })
-      .catch((error) => {
-        toast({ kind: 'err', text: `粘贴文件或文件夹失败:${error?.message || '原生文件系统不可用'}` });
-      });
-  }, [
-    addMediaFiles,
-    addNativeFilesystemItems,
-    composerSelection.end,
-    nativeFilesystemClipboardAvailable,
-    nativeFilesystemMaterializerAvailable,
-  ]);
+  const handleFilesystemPaste = useCallback((payload, transfer) => (
+    handleFileIntake({ ...payload, source: 'paste' }, transfer)
+  ), [handleFileIntake]);
 
   const chooseLocalContext = useCallback(async () => {
     setCapabilityOpen(false);
@@ -748,46 +722,31 @@ export const InputBar = forwardRef(function InputBar({
       return;
     }
 
-    const savedCursor = composerSelection.end;
+    const transfer = ta.current?.beginFileTransfer();
+    if (!transfer) return;
     try {
       const raw = await window.aceDesktop_pickContextItems({ cwd });
       const picked = parseNativeContextPickerResult(raw);
-      if (picked.cancelled) {
-        restorePathCaret(savedCursor);
-        return;
-      }
-      if (picked.folder) {
-        const referencePath = nativeFolderReferencePath(cwd, picked.folder);
-        const insertion = insertPathReferenceAtCaret(value, savedCursor, referencePath, {
-          directory: true,
-        });
-        updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
-        setEditedSinceHistory(true);
-        restorePathCaret(insertion.cursor);
-        return;
-      }
-
-      if (!addNativeFilesystemItems(picked.files, savedCursor)) {
-        restorePathCaret(savedCursor);
-      }
+      if (!transfer.isActive()) return;
+      ta.current?.focus();
+      if (!picked.cancelled) await handleFileIntake({
+        source: 'picker', items: picked.folder ? [picked.folder] : picked.files,
+      }, transfer);
     } catch (error) {
-      toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '选择器不可用'}` });
-      restorePathCaret(savedCursor);
+      if (transfer.isActive()) toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '选择器不可用'}` });
+    } finally {
+      transfer.dispose();
     }
   }, [
-    addNativeFilesystemItems,
-    composerSelection.end,
+    handleFileIntake,
     cwd,
     nativeContextPickerAvailable,
-    restorePathCaret,
-    updateValue,
-    value,
   ]);
 
   const handleFiles = (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
-    addMediaFiles(files);
+    acceptFileIntake({ source: 'picker', files });
   };
 
   const restoreCapabilityMenuFocus = useCallback(() => {
@@ -860,7 +819,8 @@ export const InputBar = forwardRef(function InputBar({
   }, [setFileDragActive]);
 
   const handleDrop = useCallback((event) => {
-    const files = disabled || !onMediaFiles ? [] : filesFromTransfer(event.dataTransfer, { source: 'drop' });
+    if (disabled || !onMediaFiles) return;
+    const files = filesFromTransfer(event.dataTransfer, { source: 'drop' });
     if (NATIVE_FILE_DROP) {
       markNativeDropHover();
       if (HOST_OS === 'windows' && postWindowsNativeFilesystemDrop(event.dataTransfer)) {
@@ -876,22 +836,12 @@ export const InputBar = forwardRef(function InputBar({
     if (files.length > 0 || uriPaths.length > 0) {
       event.preventDefault();
       event.stopPropagation();
-      if (uriPaths.length > 0) {
-        const savedCursor = composerSelection.end;
-        addMaterializedPaths(uriPaths, savedCursor, { requestNativeFocus: false })
-          .catch((error) => toast({
-            kind: 'err',
-            text: `拖入文件或文件夹失败:${error?.message || '原生文件系统不可用'}`,
-          }));
-      } else {
-        addMediaFiles(files, { requestNativeFocus: false });
-      }
+      requestDesktopFileDropFocus();
+      acceptFileIntake({ source: 'drop', paths: uriPaths, files });
     }
     resetDragState();
   }, [
-    addMaterializedPaths,
-    addMediaFiles,
-    composerSelection.end,
+    acceptFileIntake,
     disabled,
     markNativeDropHover,
     nativeFilesystemMaterializerAvailable,
@@ -977,19 +927,18 @@ export const InputBar = forwardRef(function InputBar({
         try { rawPaths = JSON.parse(rawPaths); } catch { return; }
       }
       const hover = nativeDropHoverRef.current;
-      if (!Array.isArray(rawPaths) || rawPaths.length === 0 ||
+      if (disabled || !onMediaFiles || !Array.isArray(rawPaths) || rawPaths.length === 0 ||
           !hover.active || Date.now() - hover.ts > 1500) return;
 
       nativeDropHoverRef.current = { active: false, ts: 0 };
       resetDragState();
       const paths = localPathsFromDropPayload(rawPaths, HOST_OS);
       if (paths.length === 0) return;
-      const savedCursor = composerSelection.end;
-      addMaterializedPaths(paths, savedCursor, { requestNativeFocus: false })
-        .catch((error) => toast({
-          kind: 'err',
-          text: `拖入文件或文件夹失败:${error?.message || '原生文件系统不可用'}`,
-        }));
+      // Drag-enter activation is best effort: the source window can still
+      // own keyboard focus while Slate shows a caret. Retry at acceptance,
+      // before async materialization; later completions must not foreground us.
+      requestDesktopFileDropFocus();
+      acceptFileIntake({ source: 'drop', paths });
     };
     window.__aceComposerAcceptFileDrop = handler;
     return () => {
@@ -998,9 +947,10 @@ export const InputBar = forwardRef(function InputBar({
       catch { window.__aceComposerAcceptFileDrop = undefined; }
     };
   }, [
-    addMaterializedPaths,
-    composerSelection.end,
+    acceptFileIntake,
+    disabled,
     nativeFilesystemMaterializerAvailable,
+    onMediaFiles,
     resetDragState,
   ]);
 
@@ -1577,7 +1527,7 @@ export const InputBar = forwardRef(function InputBar({
           <RichComposer
             ref={ta}
             value={value}
-            syncKey={currentSessionId}
+            syncKey={fileIntakeScope}
             commands={commands}
             composerContent={editorContent}
             attachments={editorAttachmentItems}
@@ -1590,12 +1540,7 @@ export const InputBar = forwardRef(function InputBar({
             onSubmit={submit}
             onPreviewAttachment={previewComposerAttachment}
             onRemoveAttachment={removeAttachment}
-            onPasteFiles={addMediaFiles}
-            onPasteFilesystemItems={
-              nativeFilesystemClipboardAvailable || nativeFilesystemMaterializerAvailable
-                ? handleFilesystemPaste
-                : undefined
-            }
+            onPasteFilesystemItems={handleFilesystemPaste}
             allowNativeFilesystemDrop={NATIVE_FILE_DROP}
             disabled={disabled}
             placeholder={placeholder}
