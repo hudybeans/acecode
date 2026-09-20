@@ -1,6 +1,13 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '开发者模式': 'Developer mode',
+  '桌面启动': 'Desktop startup',
+  '允许多进程启动': 'Allow multiple instances',
+  '用于同时运行多个 ACECode 桌面实例，方便开发和调试 ACECode。': 'Run multiple ACECode desktop instances to develop and debug ACECode.',
+  '全局生效。开启后，新启动的桌面实例可与已有实例同时运行；关闭后不影响已打开的实例。': 'Applies globally. New desktop instances can run alongside existing ones when enabled. Turning this off leaves open instances running.',
+  '加载开发者配置失败': 'Could not load developer settings',
+  '保存开发者配置失败，请重试': 'Could not save developer settings. Please try again.',
   '当前桌面版本无法保存文件，请更新客户端后重试': 'This desktop version cannot save files. Update the app and try again.',
   '无本地路径的文件数据不能超过 25 MiB': 'File data without a local path cannot exceed 25 MiB.',
   '拖动排序，也可按 Alt+上/下方向键': 'Drag to reorder, or press Alt+Up/Down',

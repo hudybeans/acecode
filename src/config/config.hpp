@@ -441,6 +441,9 @@ struct DesktopNotificationsConfig {
 
 struct DesktopConfig {
     DesktopNotificationsConfig notifications;
+    // Developer preference, shared by all installations for the current user.
+    // Only new Desktop processes consult it; existing instances keep running.
+    bool allow_multiple_instances = false;
     // Windows 关窗(× / Alt+F4 / aceDesktop_closeWindow)默认隐藏到托盘。
     // false 时回到关窗即退出。macOS 始终将关窗与真正退出分开。
     bool close_to_tray = true;

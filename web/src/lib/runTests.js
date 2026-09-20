@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './developerMode.test.js';
 import './workspaceFolderOrder.test.js';
 import './interfaceIcons.test.js';
 import './composerImagePresentation.test.js';

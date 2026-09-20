@@ -1063,6 +1063,66 @@ TEST(WebServerHttp, PtyOwnerProtocolFiltersAndTransfersWithoutRestart) {
     EXPECT_EQ(post("/api/pty/transfer-owner", json::object()).status_code, 400);
 }
 
+TEST(WebServerHttp, DesktopMultiInstancePersistsAndReadsOtherInstancesChanges) {
+    WebServerFixture fx;
+    const std::string route = "/api/config/desktop-multi-instance";
+    auto get = [&] { return cpr::Get(cpr::Url{fx.url(route)}); };
+    auto put = [&](bool enabled) {
+        return cpr::Put(cpr::Url{fx.url(route)},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"enabled", enabled}}.dump()});
+    };
+    auto initial = get();
+    ASSERT_EQ(initial.status_code, 200) << initial.text;
+    EXPECT_EQ(json::parse(initial.text)["enabled"], false);
+    EXPECT_EQ(response_header(initial, "Cache-Control"), "no-store");
+    auto enabled = put(true);
+    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+    EXPECT_TRUE(fx.cfg.desktop.allow_multiple_instances);
+    const auto config_path = (fx.tmp_dir / "config.json").string();
+    auto from_other_instance = acecode::load_config_from_path(config_path, false);
+    EXPECT_TRUE(from_other_instance.desktop.allow_multiple_instances);
+    from_other_instance.desktop.allow_multiple_instances = false;
+    from_other_instance.web_ui.font_size = "large";
+    acecode::save_config(from_other_instance, config_path);
+    auto refreshed = get();
+    ASSERT_EQ(refreshed.status_code, 200) << refreshed.text;
+    EXPECT_EQ(json::parse(refreshed.text)["enabled"], false);
+    EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
+    ASSERT_EQ(put(true).status_code, 200);
+    EXPECT_EQ(acecode::load_config_from_path(config_path, false).web_ui.font_size, "large");
+    ASSERT_EQ(put(false).status_code, 200);
+    EXPECT_FALSE(acecode::load_config_from_path(config_path, false)
+                     .desktop.allow_multiple_instances);
+}
+
+TEST(WebServerHttp, DesktopMultiInstanceRejectsUnauthorizedAndInvalidRequests) {
+    WebServerFixture fx;
+    const std::string route = "/api/config/desktop-multi-instance";
+    const cpr::Header denied{{"Origin", "http://localhost:5173"}};
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(route)}, denied).status_code, 401);
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url(route)}, denied,
+        cpr::Body{R"({"enabled":true})"}).status_code, 401);
+    for (const auto* body : {"{", "{}", "null", R"({"enabled":"true"})",
+                             R"({"enabled":1})"}) {
+        auto result = cpr::Put(cpr::Url{fx.url(route)},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+        EXPECT_EQ(result.status_code, 400) << result.text;
+        EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
+    }
+}
+
+TEST(WebServerHttp, DesktopMultiInstancePersistenceFailureKeepsPreviousValue) {
+    WebServerFixture fx;
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    auto result = cpr::Put(cpr::Url{fx.url("/api/config/desktop-multi-instance")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"enabled":true})"});
+    EXPECT_EQ(result.status_code, 500) << result.text;
+    EXPECT_EQ(json::parse(result.text)["error"], "CONFIG_FAILED");
+    EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
+}
+
 TEST(WebServerHttp, DesktopNotificationSettingDefaultsOnAndPersistsChanges) {
     WebServerFixture fx;
 

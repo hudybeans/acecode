@@ -1517,6 +1517,11 @@ static AppConfig load_config_from_path_once(
                     LOG_WARN("[config] 'desktop' must be an object, ignoring");
                 } else {
                     const auto& dj = j["desktop"];
+                    if (dj.contains("allow_multiple_instances") &&
+                        dj["allow_multiple_instances"].is_boolean()) {
+                        cfg.desktop.allow_multiple_instances =
+                            dj["allow_multiple_instances"].get<bool>();
+                    }
                     std::optional<bool> legacy_close_to_tray;
                     if (dj.contains("close_to_tray") && dj["close_to_tray"].is_boolean()) {
                         cfg.desktop.close_to_tray = dj["close_to_tray"].get<bool>();
@@ -2439,6 +2444,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         nlohmann::json deskj = nlohmann::json::object();
         if (cfg.desktop.close_to_tray != desk_d.close_to_tray)
             deskj["close_to_tray"] = cfg.desktop.close_to_tray;
+        if (cfg.desktop.allow_multiple_instances != desk_d.allow_multiple_instances)
+            deskj["allow_multiple_instances"] = cfg.desktop.allow_multiple_instances;
         if (cfg.desktop.close_behavior != desk_d.close_behavior) {
             deskj["close_behavior"] = std::string(
                 desktop_close_behavior_value(cfg.desktop.close_behavior));

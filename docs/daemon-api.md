@@ -348,6 +348,8 @@ update their transcript presentation.
 | GET | `/api/ui/onboarding/desktop` | read Desktop guided-tour status |
 | POST | `/api/ui/onboarding/desktop/dismiss` | dismiss the current Desktop guided-tour version |
 | GET | `/api/config/ui-preferences` | read UI preferences |
+| GET | `/api/config/desktop-multi-instance` | read global desktop multi-instance preference |
+| PUT | `/api/config/desktop-multi-instance` | save global desktop multi-instance preference |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
 | GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
 | POST | `/api/themes/first-run` | legacy compatibility: durably claim the one-time National Day startup attempt |
@@ -2981,6 +2983,23 @@ survives Desktop loopback-port changes and Edge compatibility profiles.
 Idempotently marks the current Desktop guided-tour version as dismissed and
 returns the same payload with `dismissed:true`. A state-file write failure
 returns HTTP `500` with `error:"PERSIST_FAILED"`.
+
+### `GET /api/config/desktop-multi-instance`
+
+读取当前用户全局配置中的 `desktop.allow_multiple_instances`，返回
+`{"enabled": false}`（默认关闭）。接口要求认证，并设置 `Cache-Control: no-store`。
+每次从磁盘读取，其他桌面实例保存后的选择会在下次读取时生效。
+
+### `PUT /api/config/desktop-multi-instance`
+
+请求体为 `{"enabled": true}` 或 `{"enabled": false}`，成功返回已持久化的同形响应。
+使用跨进程配置锁，重新读取最新配置后只变更多进程选项；内存状态在保存成功后更新。
+非法 JSON 返回 `400 BAD_JSON`，缺少布尔字段返回 `400 BAD_REQUEST`，读写失败返回
+`500 CONFIG_FAILED`。未通过认证的请求遵循公共认证规则。
+
+该开关只影响以后启动的 `acecode-desktop`，不停止当前实例。主实例继续持有单实例锁，
+允许启动的附加实例使用各自的后台运行目录；每个壳内部仍由一个 daemon 服务多个工作区。
+开发者页在设置面板内依次输入 `↑↑↓↓←→←→BABA` 后显示，解锁本身不改变开关。
 
 ### `GET /api/config/ui-preferences`
 

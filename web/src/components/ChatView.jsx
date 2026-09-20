@@ -5192,7 +5192,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               onIntentChange={handleGitPillIntentChange}
             />
             </div>
-            <div className="ace-home-hints">
+            {/* 暂时隐藏首页底部四个快捷提示卡片，保留数据和渲染代码便于恢复。 */}
+            <div className="ace-home-hints hidden" aria-hidden="true">
               {homeHints.map((c) => (
                 <div key={c.title} className="ace-home-hint-card">
                   <VsIcon name={c.icon} size={22} className="mb-1" />

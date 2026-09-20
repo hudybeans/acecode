@@ -30,6 +30,7 @@
 #include "open_in_explorer.hpp"
 #include "pick_active.hpp"
 #include "single_instance.hpp"
+#include "instance_startup.hpp"
 #include "splash_screen.hpp"
 #include "startup_progress.hpp"
 #include "strings.hpp"
@@ -365,10 +366,6 @@ std::string detect_dev_web_dir() {
 
 std::string projects_dir() {
     return path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "projects");
-}
-
-std::string desktop_shared_run_dir() {
-    return path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "run" / "desktop-shared");
 }
 
 std::string current_cwd() {
@@ -744,37 +741,6 @@ int main(int argc, char** argv) {
     const std::int64_t desktop_instance_started_at_ms =
         acecode::daemon::now_unix_ms();
 
-    // 单例锁:per-user。已有实例时把对方拉前 + 自己 exit(0),避免多份 desktop /
-    // 多份 daemon 子进程同时存在。设计见 src/desktop/single_instance.hpp。
-    SingleInstance singleton;
-    if (!singleton.try_acquire()) {
-        if (startup_open_request.has_value()) {
-            std::string handoff_error;
-            if (!publish_pending_desktop_open_request(
-                    *startup_open_request, &handoff_error)) {
-                LOG_WARN("[desktop] failed to publish open request to existing "
-                         "instance: " + handoff_error);
-            }
-        }
-        LOG_INFO("[desktop] another acecode-desktop instance is running, focusing it");
-        focus_existing_instance(); // POSIX 端是 stub,返回 false 也只是 exit
-        return 0;
-    }
-
-    const std::int64_t desktop_owner_pid =
-        acecode::daemon::current_pid();
-    const std::string desktop_owner_instance = acecode::generate_uuid();
-    const std::string shared_run_dir = desktop_shared_run_dir();
-    if (!acecode::daemon::write_desktop_owner_record(
-            shared_run_dir,
-            acecode::daemon::DesktopOwnerRecord{
-                desktop_owner_pid,
-                desktop_owner_instance,
-                acecode::daemon::now_unix_ms(),
-            })) {
-        LOG_WARN("[desktop] failed to publish Desktop owner record");
-    }
-
     SplashScreen splash;
     auto publish_startup_snapshot = [&]() {
         if (!startup_progress_host || !startup_navigation_started) return;
@@ -813,9 +779,7 @@ int main(int argc, char** argv) {
         publish_startup_snapshot();
         return event;
     };
-    startup_splash_open = true;
     mark_startup("desktop_starting");
-    splash.show();
 
     // 加载 desktop 端用到的 config(窗口关闭行为、通知、后台进程等)。
     // 失败回退默认 AppConfig — 不阻断启动,与 daemon 一致;只是 close-to-tray
@@ -836,6 +800,46 @@ int main(int argc, char** argv) {
     LOG_INFO("[desktop] GUI locale preference=" + desktop_cfg.ui.locale +
               " effective=" + desktop_effective_locale);
     mark_startup("config_load_end");
+
+    // Read the global preference before enforcing the singleton. Still acquire
+    // it when possible so the primary keeps normal focus/handoff behavior.
+    SingleInstance singleton;
+    const std::string desktop_owner_instance = acecode::generate_uuid();
+    const auto instance_plan = plan_instance_startup(
+        desktop_cfg.desktop.allow_multiple_instances,
+        singleton.try_acquire(), desktop_owner_instance);
+    if (!instance_plan.start) {
+        if (startup_open_request.has_value()) {
+            std::string handoff_error;
+            if (!publish_pending_desktop_open_request(
+                    *startup_open_request, &handoff_error)) {
+                LOG_WARN("[desktop] failed to publish open request to existing "
+                         "instance: " + handoff_error);
+            }
+        }
+        LOG_INFO("[desktop] another acecode-desktop instance is running, focusing it");
+        focus_existing_instance();
+        return 0;
+    }
+
+    const std::int64_t desktop_owner_pid = acecode::daemon::current_pid();
+    const std::string shared_run_dir = path_to_utf8(
+        path_from_utf8(acecode::get_acecode_dir()) / "run" /
+        path_from_utf8(instance_plan.run_subdirectory));
+    if (!instance_plan.primary) {
+        LOG_INFO("[desktop] developer multi-instance startup with isolated daemon runtime");
+    }
+    if (!acecode::daemon::write_desktop_owner_record(
+            shared_run_dir,
+            acecode::daemon::DesktopOwnerRecord{
+                desktop_owner_pid,
+                desktop_owner_instance,
+                acecode::daemon::now_unix_ms(),
+            })) {
+        LOG_WARN("[desktop] failed to publish Desktop owner record");
+    }
+    startup_splash_open = true;
+    splash.show();
 
     std::string daemon_exe = locate_daemon_exe();
     if (daemon_exe.empty()) {

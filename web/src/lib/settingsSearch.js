@@ -1,8 +1,9 @@
-import { SETTINGS_NAV_ITEMS } from './settingsNavigation.js';
+import { getSettingsNavItems } from './settingsNavigation.js';
 import { sourceCatalogs } from '../i18n/sourceCatalog.generated.js';
 
 // Labels are also the destination anchors. Both catalog languages remain searchable.
-export function settingsSearchEntries() {
+export function settingsSearchEntries(developerModeUnlocked = false) {
+  const navItems = getSettingsNavItems(developerModeUnlocked);
   const fields = [
     ['general', '界面语言', 'language locale english chinese'],
     ['general', '工作模式', 'work mode coding daily'],
@@ -47,15 +48,18 @@ export function settingsSearchEntries() {
     ['about', '当前版本', 'version upgrade'],
     ['about', 'Web 核心', 'webview browser engine'],
   ];
+  if (developerModeUnlocked) {
+    fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
+  }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),
-    ...SETTINGS_NAV_ITEMS.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
+    ...navItems.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
   ];
   const catalogs = Object.entries(sourceCatalogs['zh-CN']);
   return all.map((item) => {
     const source = catalogs.find(([key, zh]) => zh === item.label || sourceCatalogs['en-US'][key] === item.label);
     return { ...item, translations: source ? [source[1], sourceCatalogs['en-US'][source[0]]] : [],
-      sectionLabel: SETTINGS_NAV_ITEMS.find((nav) => nav.key === item.section)?.label || item.section };
+      sectionLabel: navItems.find((nav) => nav.key === item.section)?.label || item.section };
   });
 }
 

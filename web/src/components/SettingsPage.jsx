@@ -12,6 +12,8 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { DeveloperSettings } from './DeveloperSettings.jsx';
+import { createDeveloperModeUnlock, loadDeveloperModeUnlocked, rememberDeveloperModeUnlocked } from '../lib/developerMode.js';
 import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
@@ -88,8 +90,8 @@ import {
   workspaceAutoExpand,
 } from '../lib/skillsSettings.js';
 import {
-  SETTINGS_NAV_GROUPS,
-  SETTINGS_NAV_ITEMS,
+  getSettingsNavGroups,
+  getSettingsNavItems,
   settingsNavIndexForKey,
 } from '../lib/settingsNavigation.js';
 import { useSlashCommands } from './SlashCommandsContext.jsx';
@@ -160,8 +162,13 @@ export function SettingsPage({
   } = useTheme();
   const setTheme = onThemeChange || setThemeCache;
   const setColorTheme = onColorThemeChange || setColorThemeCache;
+  const [developerModeUnlocked, setDeveloperModeUnlocked] = useState(loadDeveloperModeUnlocked);
+  const unlockSequenceRef = useRef(createDeveloperModeUnlock());
+  const developerNavRef = useRef(null);
+  const navGroups = getSettingsNavGroups(developerModeUnlocked);
+  const navItems = getSettingsNavItems(developerModeUnlocked);
   const [activeNav, setActiveNav] = useState(
-    () => settingsNavIndexForKey(initialNavKey),
+    () => settingsNavIndexForKey(initialNavKey, developerModeUnlocked),
   );
   const [show, setShow] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -173,11 +180,15 @@ export function SettingsPage({
   const [searchNavigation, setSearchNavigation] = useState(0);
   const contentRef = useRef(null);
   const windowRef = useRef(null);
-  const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
+  const searchEntries = useMemo(() => settingsSearchEntries(developerModeUnlocked), [i18n.language, developerModeUnlocked]);
   const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
   const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
   const closeTimerRef = useRef(null);
-  const activeNavKey = SETTINGS_NAV_ITEMS[activeNav]?.key || 'general';
+  const activeNavKey = navItems[activeNav]?.key || 'general';
+
+  useEffect(() => {
+    if (developerModeUnlocked) developerNavRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [developerModeUnlocked]);
 
   useEffect(() => {
     if (composing) return undefined;
@@ -185,8 +196,8 @@ export function SettingsPage({
     return () => clearTimeout(timer);
   }, [searchQuery, composing]);
   useEffect(() => {
-    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section));
-  }, [selectedResult]);
+    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section, developerModeUnlocked));
+  }, [selectedResult, developerModeUnlocked]);
   useEffect(() => {
     const root = contentRef.current;
     if (!root || !selectedResult || selectedResult.section !== activeNavKey) return undefined;
@@ -212,7 +223,7 @@ export function SettingsPage({
 
   useEffect(() => { requestAnimationFrame(() => setShow(true)); }, []);
   useEffect(() => {
-    setActiveNav(settingsNavIndexForKey(initialNavKey));
+    setActiveNav(settingsNavIndexForKey(initialNavKey, developerModeUnlocked));
   }, [initialNavKey]);
   useEffect(() => () => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
@@ -265,6 +276,20 @@ export function SettingsPage({
         aria-modal="true"
         aria-labelledby="settings-window-title"
         data-settings-window="true"
+        onKeyDownCapture={(event) => {
+          if (developerModeUnlocked) return;
+          if (!windowRef.current?.contains(event.target)
+            || document.querySelector('[data-ace-modal-dialog="true"]')) {
+            unlockSequenceRef.current = createDeveloperModeUnlock();
+            return;
+          }
+          if (unlockSequenceRef.current(event)) {
+            rememberDeveloperModeUnlocked();
+            setSearchQuery('');
+            setSearchTerm('');
+            setDeveloperModeUnlocked(true);
+          }
+        }}
         data-expanded={expanded ? 'true' : 'false'}
         tabIndex={-1}
         className={clsx(
@@ -275,8 +300,8 @@ export function SettingsPage({
         <span id="settings-window-title" className="sr-only">设置</span>
         <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
           <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
-            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
-          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
+            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked)); }} onComposing={setComposing} />
+          {!searchQuery.trim() && navGroups.map((group, groupIndex) => {
             const headingId = `settings-nav-group-${group.key}`;
             return (
               <div
@@ -294,11 +319,12 @@ export function SettingsPage({
                   {group.label}
                 </div>
                 {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key);
+                  const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
                   const active = activeNav === itemIndex;
                   return (
                     <button
                       key={item.key}
+                      ref={item.key === 'developer' ? developerNavRef : undefined}
                       type="button"
                       aria-current={active ? 'page' : undefined}
                       aria-label={item.label}
@@ -387,6 +413,7 @@ export function SettingsPage({
           {activeNavKey === 'usage' && <SectionUsage />}
           {activeNavKey === 'feedback' && <FeedbackForm />}
           {activeNavKey === 'about' && <SectionAbout health={health} />}
+          {developerModeUnlocked && activeNavKey === 'developer' && <DeveloperSettings />}
         </div>
         </div>
       </div>
