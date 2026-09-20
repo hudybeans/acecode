@@ -1273,9 +1273,24 @@ body {
 .ace-composer-card {
   /* Avoid container-type / @container: they create an extra stacking
      context on older WebView2 and are ignored before Chromium 105. */
+  /* Hover / focus emphasis stays quiet: the edge darkens a touch and a soft
+     shadow lifts the card. Focus used to switch the border to the accent
+     color, which was too loud for a surface that is looked at all day. The
+     darker edge is derived from fg-mute so installed theme packages keep
+     their own tint (no color-mix: older WebView2 paints it as a solid block). */
+  --ace-composer-hover-shadow: 0 2px 16px rgba(0, 0, 0, 0.07);
   border: 1.5px solid var(--ace-border);
 }
-.ace-composer-card:focus-within,
+[data-theme="dark"] .ace-composer-card {
+  --ace-composer-hover-shadow: 0 2px 16px rgba(0, 0, 0, 0.32);
+}
+.ace-composer-card:hover,
+.ace-composer-card:focus-within {
+  border-color: rgba(var(--ace-fg-mute-rgb), 0.36);
+  box-shadow: var(--ace-composer-hover-shadow);
+}
+/* The file drop target keeps the accent ring: it is a transient affordance,
+   not a resting state. Same specificity as hover / focus, later, so it wins. */
 .ace-composer-card.is-drag-active {
   border-color: var(--ace-accent);
   box-shadow: 0 0 0 2px rgba(var(--ace-accent-rgb), 0.15);
@@ -3043,9 +3058,11 @@ body {
   min-height: 120px;
   display: flex;
   flex-direction: column;
+  /* The hero already floats on a large ambient shadow; hover / focus only
+     deepens it slightly. The edge darkening comes from .ace-composer-card. */
+  --ace-composer-hover-shadow: 0 18px 46px rgba(0, 0, 0, 0.12);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.08);
 }
-.ace-inputbar-hero-card:focus-within,
 .ace-inputbar-hero-card.is-drag-active {
   box-shadow:
     0 0 0 2px rgba(var(--ace-accent-rgb), 0.15),
@@ -3060,9 +3077,9 @@ body {
   height: 100%;
 }
 [data-theme="dark"] .ace-inputbar-hero-card {
+  --ace-composer-hover-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
 }
-[data-theme="dark"] .ace-inputbar-hero-card:focus-within,
 [data-theme="dark"] .ace-inputbar-hero-card.is-drag-active {
   box-shadow:
     0 0 0 2px rgba(var(--ace-accent-rgb), 0.15),
