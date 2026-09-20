@@ -51,8 +51,8 @@ if kind == 'cmake':
         resource = 'models_dev' if value('--component') == 'models_dev_registry' else 'seed'
         shutil.copytree(root / 'assets' / resource, pathlib.Path(value('--prefix')) / 'share/acecode' / resource, dirs_exist_ok=True)
 elif kind == 'lipo':
-    assert args[0] == '-verify_arch'
-    sys.exit(0 if 'arch=' + args[1] + ' ' in pathlib.Path(args[2]).read_text() else 1)
+    assert args[1] == '-verify_arch'
+    sys.exit(0 if 'arch=' + args[2] + ' ' in pathlib.Path(args[0]).read_text() else 1)
 elif kind == 'ditto':
     if '-c' in args:
         source, target = map(pathlib.Path, args[-2:])
