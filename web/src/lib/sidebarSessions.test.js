@@ -21,6 +21,7 @@ import {
   sidebarRevealTarget,
   sidebarRevealTargetKey,
   sidebarSessionProjection,
+  sidebarSessionRevealLimit,
   sidebarWorkspaceListKeys,
   sortSidebarSessionsNewestFirst,
   upsertSidebarSession,
@@ -183,7 +184,7 @@ test('stale surge completion cannot clear a newer target sequence', () => {
 
 test('five or fewer sidebar sessions are not collapsible', () => {
   const sessions = Array.from({ length: SIDEBAR_SESSION_COLLAPSE_LIMIT }, (_, i) => ({ id: String(i) }));
-  const result = sidebarSessionProjection(sessions, false);
+  const result = sidebarSessionProjection(sessions);
   assert.equal(result.collapsible, false);
   assert.equal(result.action, '');
   assert.deepEqual(result.visibleSessions.map((s) => s.id), ['0', '1', '2', '3', '4']);
@@ -191,25 +192,73 @@ test('five or fewer sidebar sessions are not collapsible', () => {
 
 test('more than five sidebar sessions collapse to first five', () => {
   const sessions = Array.from({ length: 7 }, (_, i) => ({ id: String(i) }));
-  const result = sidebarSessionProjection(sessions, false);
+  const result = sidebarSessionProjection(sessions);
   assert.equal(result.collapsible, true);
   assert.equal(result.action, 'expand');
   assert.equal(result.hiddenCount, 2);
   assert.deepEqual(result.visibleSessions.map((s) => s.id), ['0', '1', '2', '3', '4']);
 });
 
-test('expanded sidebar sessions show all rows and collapse action', () => {
-  const sessions = Array.from({ length: 7 }, (_, i) => ({ id: String(i) }));
-  const result = sidebarSessionProjection(sessions, true);
-  assert.equal(result.collapsible, true);
-  assert.equal(result.action, 'collapse');
-  assert.equal(result.hiddenCount, 0);
-  assert.deepEqual(result.visibleSessions.map((s) => s.id), ['0', '1', '2', '3', '4', '5', '6']);
+test('sidebar sessions reveal five rows per batch through a partial last batch and collapse again', () => {
+  const sessions = Array.from({ length: 17 }, (_, i) => ({ id: String(i) }));
+  for (const [visibleLimit, expectedCount, expectedAction] of [
+    [5, 5, 'expand'],
+    [10, 10, 'expand'],
+    [15, 15, 'expand'],
+    [20, 17, 'collapse'],
+    [5, 5, 'expand'],
+  ]) {
+    const result = sidebarSessionProjection(sessions, visibleLimit);
+    assert.equal(result.collapsible, true);
+    assert.equal(result.action, expectedAction);
+    assert.equal(result.hiddenCount, sessions.length - expectedCount);
+    assert.deepEqual(result.visibleSessions, sessions.slice(0, expectedCount));
+  }
+});
+
+test('six, ten, and twelve sessions show only the available rows in the final batch', () => {
+  for (const total of [6, 10, 12]) {
+    const sessions = Array.from({ length: total }, (_, i) => ({ id: String(i) }));
+    const firstExpansion = sidebarSessionProjection(sessions, 10);
+    assert.equal(firstExpansion.visibleSessions.length, Math.min(10, total));
+    assert.equal(firstExpansion.action, total > 10 ? 'expand' : 'collapse');
+    const complete = sidebarSessionProjection(sessions, 15);
+    assert.equal(complete.visibleSessions.length, total);
+    assert.equal(complete.action, 'collapse');
+  }
+});
+
+test('partially loaded session lists keep the expand action until all reported rows are visible', () => {
+  const sessions = Array.from({ length: 12 }, (_, i) => ({ id: String(i) }));
+  const loading = sidebarSessionProjection(sessions.slice(0, 5), 10, 5, 12);
+  assert.equal(loading.visibleSessions.length, 5);
+  assert.equal(loading.action, 'expand');
+  assert.equal(loading.hiddenCount, 7);
+  const loaded = sidebarSessionProjection(sessions, 10, 5, 12);
+  assert.equal(loaded.visibleSessions.length, 10);
+  assert.equal(loaded.action, 'expand');
+  assert.equal(loaded.hiddenCount, 2);
+  assert.equal(sidebarSessionProjection(sessions, 15, 5, 12).action, 'collapse');
+});
+
+test('invalid visible limits retain the compact batch while finite limits use whole rows', () => {
+  const sessions = Array.from({ length: 12 }, (_, i) => ({ id: String(i) }));
+  for (const visibleLimit of [undefined, null, 0, -5, NaN, Infinity]) {
+    assert.equal(sidebarSessionProjection(sessions, visibleLimit).visibleSessions.length, 5);
+  }
+  assert.equal(sidebarSessionProjection(sessions, 2).visibleSessions.length, 5);
+  assert.equal(sidebarSessionProjection(sessions, 10.8).visibleSessions.length, 10);
 });
 
 test('collapse all workspaces resets registered session lists to the default compact state', () => {
   const expanded = expandedSessionListsAfterWorkspaceCollapseAll(
-    new Set(['__no_workspace__', 'w1', 'w2', 'w3', 'stale-workspace']),
+    new Map([
+      ['__no_workspace__', 10],
+      ['w1', 10],
+      ['w2', 15],
+      ['w3', 20],
+      ['stale-workspace', 25],
+    ]),
     [
       { hash: 'w1' },
       { workspace_hash: 'w2' },
@@ -219,13 +268,13 @@ test('collapse all workspaces resets registered session lists to the default com
   );
   assert.deepEqual(
     Array.from(expanded),
-    ['__no_workspace__', 'stale-workspace'],
+    [['__no_workspace__', 10], ['stale-workspace', 25]],
   );
   const sessions = Array.from({ length: 7 }, (_, index) => ({ id: String(index) }));
-  const projection = sidebarSessionProjection(sessions, expanded.has('w1'));
+  const projection = sidebarSessionProjection(sessions, expanded.get('w1'));
   assert.equal(projection.action, 'expand');
   assert.deepEqual(projection.visibleSessions.map((session) => session.id), ['0', '1', '2', '3', '4']);
-  assert.equal(expanded.has('__no_workspace__'), true);
+  assert.equal(expanded.get('__no_workspace__'), 10);
   assert.deepEqual(sidebarWorkspaceListKeys([
     { hash: 'w1' },
     { workspace_hash: 'w1' },
@@ -236,9 +285,10 @@ test('collapse all workspaces resets registered session lists to the default com
 });
 
 test('workspace disclosure forgets an expanded session list and restores the compact five-row mode', () => {
-  const expanded = new Set(['w1', 'w2', '__no_workspace__']);
+  const expanded = new Map([['w1', 10], ['w2', 15], ['__no_workspace__', 20]]);
   const afterCollapse = expandedSessionListsAfterWorkspaceDisclosure(expanded, 'w1');
-  assert.deepEqual(Array.from(afterCollapse), ['w2', '__no_workspace__']);
+  assert.deepEqual(Array.from(afterCollapse), [['w2', 15], ['__no_workspace__', 20]]);
+  assert.equal(expanded.get('w1'), 10);
   assert.equal(expandedSessionListsAfterWorkspaceDisclosure(afterCollapse, 'w1'), afterCollapse);
   assert.equal(expandedSessionListsAfterWorkspaceDisclosure(afterCollapse, ''), afterCollapse);
 
@@ -246,13 +296,25 @@ test('workspace disclosure forgets an expanded session list and restores the com
     id: String(index),
     workspace_hash: 'w1',
   }));
-  const compact = sidebarSessionProjection(sessions, afterCollapse.has('w1'));
+  const compact = sidebarSessionProjection(sessions, afterCollapse.get('w1'));
   assert.equal(compact.action, 'expand');
   assert.deepEqual(compact.visibleSessions.map((session) => session.id), ['0', '1', '2', '3', '4']);
   assert.equal(sessionListNeedsRevealExpansion(sessions, {
     sessionId: '6',
     workspaceHash: 'w1',
-  }, afterCollapse.has('w1')), true);
+  }, afterCollapse.get('w1')), true);
+});
+
+test('workspace and no-workspace visible limits stay independent', () => {
+  const sessions = Array.from({ length: 18 }, (_, i) => ({ id: String(i) }));
+  const limits = new Map([['w1', 10], ['w2', 15], ['__no_workspace__', 20]]);
+  assert.equal(sidebarSessionProjection(sessions, limits.get('w1')).visibleSessions.length, 10);
+  assert.equal(sidebarSessionProjection(sessions, limits.get('w2')).visibleSessions.length, 15);
+  assert.equal(sidebarSessionProjection(sessions, limits.get('__no_workspace__')).visibleSessions.length, 18);
+  assert.equal(sidebarSessionProjection(sessions, limits.get('w3')).visibleSessions.length, 5);
+  const compact = expandedSessionListsAfterWorkspaceDisclosure(limits, 'w1');
+  assert.equal(sidebarSessionProjection(sessions, compact.get('w1')).visibleSessions.length, 5);
+  assert.equal(sidebarSessionProjection(sessions, compact.get('w2')).visibleSessions.length, 15);
 });
 
 test('user-collapsed workspaces and disclosure-compact lists block sticky reveal expansion', () => {
@@ -295,13 +357,13 @@ test('user-collapsed workspaces and disclosure-compact lists block sticky reveal
   }));
   const hiddenTarget = { sessionId: '6', workspaceHash: 'w1' };
   const compactKeys = new Set(['w1']);
-  assert.equal(sessionListNeedsRevealExpansion(sessions, hiddenTarget, false), true);
+  assert.equal(sessionListNeedsRevealExpansion(sessions, hiddenTarget), true);
   assert.equal(allowSidebarSessionListRevealExpansion({
     listKey: 'w1',
     disclosureCompactKeys: compactKeys,
   }), false);
   assert.deepEqual(
-    sidebarSessionProjection(sessions, false).visibleSessions.map((session) => session.id),
+    sidebarSessionProjection(sessions).visibleSessions.map((session) => session.id),
     ['0', '1', '2', '3', '4'],
   );
 });
@@ -378,11 +440,32 @@ test('sessionListNeedsRevealExpansion expands when target row is hidden', () => 
   assert.equal(sessionListNeedsRevealExpansion(sessions, {
     sessionId: '6',
     workspaceHash: 'w1',
-  }, false), true);
+  }), true);
   assert.equal(sessionListNeedsRevealExpansion(sessions, {
     sessionId: '3',
     workspaceHash: 'w1',
-  }, false), false);
+  }), false);
+});
+
+test('session reveal compares the current visible batch and expands only through the target batch', () => {
+  const sessions = Array.from({ length: 18 }, (_, i) => ({
+    id: String(i),
+    workspace_hash: 'w1',
+  }));
+  for (const [index, expectedLimit] of [[0, 5], [4, 5], [5, 10], [9, 10], [10, 15], [17, 20]]) {
+    const target = { sessionId: String(index), workspaceHash: 'w1' };
+    const revealLimit = sidebarSessionRevealLimit(sessions, target);
+    assert.equal(revealLimit, expectedLimit);
+    assert.equal(sessionListNeedsRevealExpansion(sessions, target, 10), index >= 10);
+    assert.equal(sessionListNeedsRevealExpansion(sessions, target, revealLimit), false);
+    assert.ok(sidebarSessionProjection(sessions, revealLimit).visibleSessions.some((session) => session.id === target.sessionId));
+  }
+  const missing = { sessionId: 'missing', workspaceHash: 'w1' };
+  assert.equal(sidebarSessionRevealLimit(sessions, missing), 5);
+  assert.equal(sessionListNeedsRevealExpansion(sessions, missing), false);
+  assert.equal(sidebarSessionRevealLimit(sessions, { sessionId: '10', workspaceHash: 'w2' }), 5);
+  assert.equal(sidebarSessionRevealLimit(sessions, { sessionId: '10', noWorkspace: true }), 5);
+  assert.equal(sidebarSessionRevealLimit(sessions, { sessionId: '9', workspaceHash: 'w1' }, 4), 12);
 });
 
 test('sessionMatchesRevealTarget separates workspace and no-workspace rows', () => {
@@ -609,9 +692,9 @@ test('created session stays first across refreshes without expanding a compact l
   });
 
   assert.equal(optimistic[0].id, 'created');
-  assert.equal(sessionListNeedsRevealExpansion(optimistic, target, false), false);
+  assert.equal(sessionListNeedsRevealExpansion(optimistic, target), false);
   assert.deepEqual(
-    sidebarSessionProjection(optimistic, false).visibleSessions.map((session) => session.id),
+    sidebarSessionProjection(optimistic).visibleSessions.map((session) => session.id),
     ['created', 'old-0', 'old-1', 'old-2', 'old-3'],
   );
 
@@ -640,5 +723,5 @@ test('created session stays first across refreshes without expanding a compact l
   assert.equal(withMetadata[0].message_count, 0);
   assert.equal(withContent[0].id, 'created');
   assert.equal(withContent[0].message_count, 2);
-  assert.equal(sessionListNeedsRevealExpansion(withContent, target, false), false);
+  assert.equal(sessionListNeedsRevealExpansion(withContent, target), false);
 });

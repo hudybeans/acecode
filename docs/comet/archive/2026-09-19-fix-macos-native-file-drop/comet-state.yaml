@@ -1,0 +1,346 @@
+schema: comet.native.v4
+name: fix-macos-native-file-drop
+language: zh-CN
+phase: archive
+status: done
+state_version: 21
+brief: brief.md
+shape_confirmation_hash: baf880af1ab4856dd8ecd70dd86aedca4076403608fbf8f59bf97778b311df5d
+spec_changes:
+  - capability: macos-native-file-drop
+    operation: create
+    source: specs/macos-native-file-drop/spec.md
+workspace:
+  isolation: current
+  change_branch: feat/macos-custom-installer-updates
+  target_branch: feat/macos-custom-installer-updates
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 5
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 3
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "Scenario: 输入能力不受修复影响 - GIVEN macOS 桌面端已安装文件拖放处理 - WHEN 用户在 composer 中输入
+      ASCII、中文输入法文本或粘贴文本 - THEN 输入事件继续由原有 WKWebView/responder 路径处理，修复不使用
+      `object_setClass` 或改写输入相关类"
+    result: passed
+    reason:
+      text: 未修改实例 class 或输入 responder，用户实机输入正常。
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "Scenario: Finder 文件在 composer 实际落点插入一次 - GIVEN native drop payload
+      含有效释放坐标和至少一个本地路径 - WHEN 坐标命中可用、可见且未被遮挡的 composer - THEN composer 不依赖 DOM
+      hover 时间戳，materialize 路径并只插入一次"
+    result: passed
+    reason:
+      text: 实际坐标唯一路由 composer 并 materialize；用户已验证单/多文件成功。
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: "Scenario: 非法或错误落点不进入 composer - GIVEN native drop 坐标缺失、越界、命中侧栏/预览/模态遮罩，或
+      composer 已禁用 - WHEN 前端路由该 drop - THEN composer 不 materialize
+      文件且记录不含路径的拒绝阶段"
+    result: passed
+    reason:
+      text: 无效坐标、外部目标、overlay、disabled 均拒绝且有隐私安全诊断。
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "Scenario: 唯一目标和兼容行为 - GIVEN composer 与 terminal 接收函数同时存在 - WHEN native
+      drop 的实际坐标只命中其中一个目标 - THEN 最多一个目标接收；无坐标 payload、Windows、Linux 和非文件 WebKit
+      拖放保持既有行为"
+    result: passed
+    reason:
+      text: 唯一坐标目标，Windows legacy、Linux 和非文件路径保持。
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: "Scenario: 坐标边界与页面缩放 - GIVEN AppKit 使用 view-local point、Retina backing
+      scale 或 WebView 页面缩放 - WHEN native 坐标转换为前端 viewport 坐标 - THEN 命中逻辑使用一致的
+      viewport 比例并正确处理上下边界和翻转方向"
+    result: passed
+    reason:
+      text: view-local bounds 归一化、flipped Y、viewport 恢复正确。
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: "Scenario: 运行期间不干扰当前 ACECode - GIVEN 修复、测试和构建正在当前 ACECode 会话中进行 - WHEN
+      Agent 完成自动验证 - THEN 不自动退出、重启、启动或替换任何 ACECode 实例或已安装应用"
+    result: passed
+    reason:
+      text: 未操作运行实例或安装应用。
+      truncated: false
+  - id: A7
+    source: specs/macos-native-file-drop/spec.md
+    text: 输入路径保持不变 - GIVEN 文件拖放处理已安装 - WHEN 用户键入、使用输入法组合或粘贴文本 - THEN 文件拖放代码不改写
+      WKWebView 实例 class，也不接管键盘或文本输入事件
+    result: passed
+    reason:
+      text: 仅 class-wide 拖放 swizzle，无实例改类或输入事件拦截。
+      truncated: false
+  - id: A8
+    source: specs/macos-native-file-drop/spec.md
+    text: composer 接收带坐标 drop - GIVEN payload 含本地路径和有效 viewport 归一化坐标 - AND
+      最上层元素位于可见、启用的 `.ace-composer-card` 内 - WHEN 前端路由最终 drop - THEN 只调用
+      composer receiver 一次 - AND composer materialize 并插入路径，不要求 DOM drag hover
+      已激活
+    result: passed
+    reason:
+      text: 最上层 eligible composer 单次接收且不依赖 hover。
+      truncated: false
+  - id: A9
+    source: specs/macos-native-file-drop/spec.md
+    text: 错误目标被拒绝 - GIVEN payload 的坐标越界、命中 composer 外部、命中覆盖层，或 composer 不可用 - WHEN
+      前端路由最终 drop - THEN 不向 composer materialize 路径 - AND
+      诊断只记录坐标有效性、目标和结果，不记录路径或输入内容
+    result: passed
+    reason:
+      text: 错误目标不 materialize；同步异常固定枚举、异步失败最终结果均有日志且不含路径、内容或异常正文。
+      truncated: false
+  - id: A10
+    source: specs/macos-native-file-drop/spec.md
+    text: terminal 与 composer 不重复接收 - GIVEN composer 与 terminal receiver 同时存在 - AND
+      实际释放坐标只命中其中一个 eligible target - WHEN native bridge 分发 payload - THEN 仅命中的
+      receiver 被调用
+    result: passed
+    reason:
+      text: 互斥分支与异常返回防止重复分发。
+      truncated: false
+  - id: A11
+    source: specs/macos-native-file-drop/spec.md
+    text: legacy payload 保持兼容 - GIVEN receiver 收到不含坐标的既有路径数组 - WHEN 平台或旧 bridge 使用
+      legacy callback - THEN 各 receiver 继续使用现有 hover gate，且其他平台行为不改变
+    result: passed
+    reason:
+      text: legacy 数组/字符串和 hover gate 保留。
+      truncated: false
+  - id: A12
+    source: specs/macos-native-file-drop/spec.md
+    text: 归一化坐标跨缩放命中 - GIVEN WebView bounds、backing scale 或页面 viewport 尺寸不同 - WHEN
+      native drop 点转换为归一化坐标并由前端还原 - THEN 左、上、右、下边界使用一致的半开区间规则 - AND
+      有效内部点命中对应的最上层 DOM 元素
+    result: passed
+    reason:
+      text: 两端 [0,1) 边界与缩放转换一致。
+      truncated: false
+  - id: A13
+    source: specs/macos-native-file-drop/spec.md
+    text: 自动验证不干扰运行实例 - GIVEN Agent 在当前 ACECode 会话中构建和测试候选实现 - WHEN 自动验证完成 - THEN 当前
+      ACECode 进程与已安装应用未被自动停止、启动或替换
+    result: passed
+    reason:
+      text: 验收仅测试、构建和静态检查。
+      truncated: false
+builder_handoff:
+  candidate_id: bea7f7ef-38b0-4d51-ab66-89a3428be50f
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:0a044869-a6d9-4fd0-bbb4-bbded032bf47
+  iteration: 5
+  summary:
+    text: 补齐日志精简后的同步异常诊断：macOS 坐标 router 或 receiver 同步抛出时，bridge 记录固定枚举
+      drop-result（accepted=false,target=router,reason=receiver-exception）并返回；不记录异常正文、路径或输入内容。补充
+      source-level 回归断言。功能路由不变。
+    truncated: false
+  addressed_acceptance_ids:
+    - A9
+  checks:
+    - name:
+        text: web pnpm test
+        truncated: false
+      result: passed
+      note:
+        text: 完整 runner 通过，含同步异常诊断守卫
+        truncated: false
+    - name:
+        text: acecode-desktop compile
+        truncated: false
+      result: passed
+      note:
+        text: x64 target 编译链接通过
+        truncated: false
+    - name:
+        text: git diff --check and object_setClass guard
+        truncated: false
+      result: passed
+      note:
+        text: 通过
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: 日志精简后二进制未再做 Finder 实机验证；用户已验证精简前同一功能路径。
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-19T05:51:10.422Z
+blockers: []
+verification:
+  candidate_id: bea7f7ef-38b0-4d51-ab66-89a3428be50f
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:efa650d2-3ee2-4fac-a669-eb666d762957
+  iteration: 5
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: frontend-tests
+      name:
+        text: frontend-tests
+        truncated: false
+      argv_display:
+        - text: -lc
+          truncated: false
+        - text: export PATH="$HOME/.nvm/versions/node/v22.22.2/bin:$PATH"; corepack
+            pnpm@10.11.0 test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: web
+      status: passed
+      exit_code: 0
+      duration_ms: 6000
+    - id: frontend-build
+      name:
+        text: frontend-build
+        truncated: false
+      argv_display:
+        - text: -lc
+          truncated: false
+        - text: export PATH="$HOME/.nvm/versions/node/v22.22.2/bin:$PATH"; corepack
+            pnpm@10.11.0 build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: web
+      status: passed
+      exit_code: 0
+      duration_ms: 26584
+    - id: desktop-build
+      name:
+        text: desktop-build
+        truncated: false
+      argv_display:
+        - text: -lc
+          truncated: false
+        - text: export
+            PATH="/Users/hudy/Desktop/GitHubCode/acecode/.acecode/tmp/session-20260918-145721-6662/build-tools/bin:$PATH";
+            export VCPKG_FORCE_SYSTEM_BINARIES=1 CMAKE_BUILD_PARALLEL_LEVEL=4
+            VCPKG_ROOT="$HOME/vcpkg"; cmake --build build/macos-x64-release
+            --target acecode-desktop -j4
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 734
+    - id: diff-check
+      name:
+        text: diff-check
+        truncated: false
+      argv_display:
+        - text: -lc
+          truncated: false
+        - text: git diff --check && ! grep -R "object_setClass" -n src/desktop web/src
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 796
+  summary:
+    text: A1-A13 全部通过；实机日志确认主问题修复，日志已精简为安装、最终结果和拒绝/异常，且隐私安全。
+    truncated: false
+  risks:
+    - text: 日志精简后二进制未再次 Finder 实机验证，但功能路径未变且精简前用户已验证。
+      truncated: false
+    - text: 同步异常测试为源码断言，源码审查确认逻辑。
+      truncated: false
+    - text: 全缩放/Retina 组合未逐一实机覆盖。
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-19T05:55:11.199Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A1
+      - A3
+      - A7
+      - A9
+    summary:
+      text: 有效坐标路由总体正确，但 macOS 无效坐标错误降级 legacy，违反 A3/A9；需回 Build 修复。
+      truncated: false
+    completed_at: 2026-09-18T17:48:22.683Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A9
+    summary:
+      text: 无效坐标 fallback 与输入热路径风险已修复，但 composer 内嵌 native overlay 仍可能被误判，A9 失败。
+      truncated: false
+    completed_at: 2026-09-18T17:56:48.166Z
+  - goal_cycle: 1
+    iteration: 3
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 实现级验收通过：坐标必需语义、唯一目标、legacy 兼容、边界、隐私诊断及 composer 内嵌 overlay
+        拒绝均符合规格；保留实机交互风险。
+      truncated: false
+    completed_at: 2026-09-18T18:01:20.054Z
+  - goal_cycle: 1
+    iteration: 3
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 用户实机验证日志确认单文件四次与双文件一次均完成 coordinate_valid=true、唯一 composer 路由及 materialize
+        inserted=true，输入事件也持续正常。归档前按用户要求精简诊断日志：保留必要的安装、最终 drop 路由/结果和异常信息，移除重复
+        entered、bridge、materialize-start 及历史 input/focus 噪声后重新验收。
+      truncated: false
+    completed_at: 2026-09-19T05:40:08.152Z
+  - goal_cycle: 1
+    iteration: 4
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A9
+    summary:
+      text: 功能与实机证据通过，日志显著精简；仅同步 bridge/router/receiver 异常仍静默，A9 失败。
+      truncated: false
+    completed_at: 2026-09-19T05:49:35.371Z
+  - goal_cycle: 1
+    iteration: 5
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: A1-A13 全部通过；实机日志确认主问题修复，日志已精简为安装、最终结果和拒绝/异常，且隐私安全。
+      truncated: false
+    completed_at: 2026-09-19T05:55:11.199Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-18T17:28:50.619Z

@@ -9,7 +9,9 @@
 // 字节原样 ws.send。断线(非 1000)按 nextReconnectDelay 退避,携带本地
 // cursor 续传,刷新页面后 listPty 恢复 running 会话并从 cursor=0 回放。
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -30,9 +32,11 @@ import {
   ptyWsUrl,
   removeTab,
   renameTab,
+  restoreDockTabs,
 } from '../lib/consoleDock.js';
 import { formatDroppedPaths, parseUriList } from '../lib/consoleDropPaths.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
+import { fileDropDiagnostic } from '../lib/macNativeFileDrag.js';
 import { copyTextToSystemClipboard, readTextFromSystemClipboard } from '../lib/systemClipboard.js';
 import { normalizeShells, buildShellMenuItems } from '../lib/consoleShells.js';
 import { useTheme } from '../theme.jsx';
@@ -90,7 +94,7 @@ function transferHasFiles(dataTransfer) {
 const HOST_OS = detectHostOs();
 const NATIVE_DROP = nativeFileDropEnabled();
 
-export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onToggle, consoleInfo, preferredCwd = '' }) {
+export function ConsoleDock({ owner, open, height: preferredHeight, onHeightChange, onToggle, consoleInfo, preferredCwd = '' }) {
   const { theme: mode } = useTheme();
   const dockRef = useRef(null);
   const [availableHeight, setAvailableHeight] = useState(null);
@@ -105,8 +109,12 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
-  const [tabsState, setTabsState] = useState(createDockTabs);
-  const [creating, setCreating] = useState(false);
+  const [tabsState, setTabsState] = useWorkbenchState(owner, 'consoleTabs', createDockTabs);
+  const [creating, setCreating] = useWorkbenchState(owner, '$consoleCreating', false);
+  useSyncExternalStore(sessionWorkbench.subscribe, sessionWorkbench.version, sessionWorkbench.version);
+  const allTabs = sessionWorkbench.entries('consoleTabs')
+    .filter(([tabOwner]) => sessionWorkbench.get(tabOwner, '$consoleRestored', false) === true)
+    .flatMap(([tabOwner, state]) => state.tabs.map((tab) => ({ ...tab, owner: tabOwner })));
   // + 旁 shell 下拉框(控制台 Shell 选择器):可用 shell 列表 / 默认 id / 菜单开合 /
   // 「指定 bash 路径」模态状态。
   const [shells, setShells] = useState([]);
@@ -119,8 +127,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
   const entriesRef = useRef(new Map()); // id → {term, fit, ws, container, cursor, tries, timers, disposed}
   const bodyRef = useRef(null);
   const tabsStateRef = useRef(tabsState);
-  const restoredRef = useRef(false);
-  useEffect(() => { tabsStateRef.current = tabsState; }, [tabsState]);
+  tabsStateRef.current = tabsState;
 
   const backend = consoleInfo?.backend || '';
 
@@ -207,7 +214,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
       if (!payload) return;
       if (typeof payload.cursor === 'number') entry.cursor = payload.cursor;
       if (typeof payload.exit_code === 'number') {
-        setTabsState((s) => markTabExited(s, id, payload.exit_code));
+        sessionWorkbench.set(entry.owner, 'consoleTabs', (s) => markTabExited(s, id, payload.exit_code), createDockTabs);
         if (entry.term) {
           entry.term.options.disableStdin = true;
           entry.term.write(
@@ -218,7 +225,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
     ws.onclose = (ev) => {
       if (entry.ws === ws) entry.ws = null;
       if (entry.disposed || ev.code === 1000) return;
-      const tab = tabsStateRef.current.tabs.find((t) => t.id === id);
+      const tab = sessionWorkbench.get(entry.owner, 'consoleTabs', createDockTabs).tabs.find((t) => t.id === id);
       if (!tab || tab.status === 'exited') return;
       entry.reconnectTimer = setTimeout(() => {
         entry.reconnectTimer = null;
@@ -229,12 +236,13 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
   }, [scheduleResize]);
 
   // tab 容器挂载回调:首次拿到 DOM 时创建 xterm 并连 WS。
-  const mountContainer = useCallback((id, el) => {
+  const mountContainer = useCallback((id, tabOwner, el) => {
     if (!el) return;
     let entry = entriesRef.current.get(id);
     if (entry && entry.container === el) return;
     if (entry) return; // 容器被 React 重建的极端情况:保持原实例(display 切换不触发)
     entry = {
+      owner: tabOwner,
       term: null, fit: null, ws: null, container: el,
       cursor: 0, tries: 0, reconnectTimer: null, resizeTimer: null,
       disposed: false,
@@ -267,7 +275,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
     // 终端内程序经 OSC 0/2 设置标题(cmd 的 title 命令 / TUI 应用) →
     // tab 标题跟随,并同步回 daemon(刷新恢复会话时标题不丢)。
     term.onTitleChange((title) => {
-      setTabsState((s) => renameTab(s, id, title));
+      sessionWorkbench.set(entry.owner, 'consoleTabs', (s) => renameTab(s, id, title), createDockTabs);
       const trimmed = String(title || '').trim();
       if (trimmed) api.setPtyTitle(id, trimmed).catch(() => {});
     });
@@ -318,10 +326,10 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
   // 新建终端。shellId 省略 → 用默认 shell;指定 → 用该 shell。后端对 git-bash
   // 未指定路径返回 400 {needs_path} → 弹「指定 bash 路径」模态。
   const createTab = useCallback(async (shellId) => {
-    if (creating) return;
+    if (sessionWorkbench.get(owner, '$consoleCreating', false)) return;
     setCreating(true);
     try {
-      const info = await api.createPty(ptyCreateOptions({ shellId, cwd: preferredCwd }));
+      const info = await api.createPty(ptyCreateOptions({ shellId, cwd: preferredCwd, owner }));
       setTabsState((s) => addTab(s, info));
     } catch (err) {
       if (err?.body?.needs_path || err?.body?.shell === 'git-bash') {
@@ -334,7 +342,7 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
     } finally {
       setCreating(false);
     }
-  }, [creating, preferredCwd]);
+  }, [owner, preferredCwd, setCreating, setTabsState]);
 
   // 拉取当前 OS 可用 shell(dock 打开时一次)。
   const loadShells = useCallback(async () => {
@@ -395,32 +403,28 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
     api.deletePty(id).catch(() => {});
     if (willBeEmpty) {
       // 重置 restore 闸门:下次展开重新拉起一个新终端(否则展开后空面板)。
-      restoredRef.current = false;
+      sessionWorkbench.set(owner, '$consoleRestored', false);
       onToggle(false);
     }
-  }, [teardownEntry, onToggle]);
+  }, [owner, teardownEntry, onToggle, setTabsState]);
 
   // 首次展开:恢复 daemon 上仍存活的会话(页面刷新场景,cursor=0 全量回放),
   // 没有则自动建第一个 tab。
   useEffect(() => {
-    if (!open || restoredRef.current) return;
-    restoredRef.current = true;
+    if (!open || sessionWorkbench.get(owner, '$consoleRestored', false)) return;
+    sessionWorkbench.set(owner, '$consoleRestored', 'loading');
     (async () => {
       try {
-        const out = await api.listPty();
-        const running = (out?.sessions || []).filter((s) => s.status === 'running');
-        if (running.length > 0) {
-          setTabsState((prev) => {
-            let s = prev;
-            for (const info of running) s = addTab(s, info);
-            return s;
-          });
-          return;
-        }
-      } catch {}
-      createTab();
+        const out = await api.listPty(owner);
+        const restored = setTabsState((prev) => restoreDockTabs(prev, out?.sessions || [], sessionWorkbench.resolve(owner)));
+        sessionWorkbench.set(owner, '$consoleRestored', true);
+        if (restored.tabs.length === 0) await createTab();
+      } catch (error) {
+        sessionWorkbench.set(owner, '$consoleRestored', false);
+        toast({ kind: 'err', text: error?.message || '恢复终端失败' });
+      }
     })();
-  }, [open, createTab]);
+  }, [owner, open, createTab, setTabsState]);
 
   // dock 打开时拉取可用 shell 列表(+ 旁下拉框)。
   useEffect(() => {
@@ -428,8 +432,9 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
   }, [open, loadShells]);
 
   useEffect(() => {
-    if (!open) setShellMenuOpen(false);
-  }, [open]);
+    setShellMenuOpen(false);
+    setBashPrompt(null);
+  }, [open, owner]);
 
   // ── 顶边拖拽(startSidebarResize 模式改纵向,只动 dock 高度) ─────────
 
@@ -564,19 +569,26 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
   useEffect(() => {
     if (!NATIVE_DROP) return undefined;
     window.__aceConsoleAcceptFileDrop = (payload) => {
-      let paths = payload;
+      const coordinateAuthorized = payload?.nativeLocation === true;
+      let paths = coordinateAuthorized ? payload.paths : payload;
       if (typeof payload === 'string') {
         try { paths = JSON.parse(payload); } catch { return; }
       }
       if (!Array.isArray(paths) || paths.length === 0) return;
       const hover = dropHoverRef.current;
-      // 松手落在终端上 → 该 tab 仍是最近悬停且时间戳新鲜(回传通常几十 ms 内到)。
-      // 否则(拖到非终端区)静默忽略,只让 native 吞掉文件导航即可。
-      if (!hover.tabId || Date.now() - hover.ts > 1500) return;
-      const targetId = hover.tabId;
+      // 带原生坐标的 macOS drop 已由顶层 router 命中具体 tab；legacy payload
+      // 仍依赖最近 hover,保持 Windows/旧 bridge 行为。
+      if (!coordinateAuthorized && (!hover.tabId || Date.now() - hover.ts > 1500)) return;
+      const targetId = coordinateAuthorized ? payload.tabId : hover.tabId;
+      if (!targetId) return;
       dropHoverRef.current = { tabId: null, ts: 0 };
       setDropHoverTabId(null);
-      injectTextToTab(targetId, formatDroppedPaths(paths, HOST_OS));
+      const inserted = injectTextToTab(targetId, formatDroppedPaths(paths, HOST_OS));
+      if (coordinateAuthorized) {
+        fileDropDiagnostic('drop-result', {
+          count: paths.length, accepted: inserted, target: 'console', failed: false,
+        });
+      }
     };
     return () => {
       try { delete window.__aceConsoleAcceptFileDrop; }
@@ -705,14 +717,14 @@ export function ConsoleDock({ open, height: preferredHeight, onHeightChange, onT
         </div>
       </div>
       <div ref={bodyRef} className="ace-console-body">
-        {tabsState.tabs.map((tab) => (
+        {allTabs.map((tab) => (
           <div
             key={tab.id}
             className="ace-console-term"
             data-tab-id={tab.id}
             data-drop-active={dropHoverTabId === tab.id ? 'true' : undefined}
             style={{ display: tab.id === tabsState.activeId ? 'block' : 'none' }}
-            ref={(el) => mountContainer(tab.id, el)}
+            ref={(el) => mountContainer(tab.id, tab.owner, el)}
             onDragEnter={(e) => handleTermDragEnter(tab.id, e)}
             onDragOver={(e) => handleTermDragOver(tab.id, e)}
             onDragLeave={(e) => handleTermDragLeave(tab.id, e)}

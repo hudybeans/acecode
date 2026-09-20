@@ -825,6 +825,11 @@ void WebServer::Impl::register_sessions() {
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
         });
+
+        CROW_ROUTE(app, "/api/sessions/<string>/messages/retry").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
         CROW_ROUTE(app, "/api/sessions/<string>/trajectory").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
@@ -1909,6 +1914,36 @@ void WebServer::Impl::register_sessions() {
             r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        CROW_ROUTE(app, "/api/sessions/<string>/messages/retry").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& id) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (auto rej = reject_if_migrating(req)) return std::move(*rej);
+            auto respond = [&](int status, const json& body) {
+                crow::response response(status);
+                response.body = body.dump();
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.session_client) {
+                return respond(503, {{"error", "session client unavailable"}});
+            }
+            const auto payload = json::parse(req.body, nullptr, false);
+            if (!payload.is_object() || payload.size() != 1 ||
+                !payload.contains("expected_user_message_id") ||
+                !payload["expected_user_message_id"].is_string()) {
+                return respond(400, {{"error", "expected_user_message_id is required"}});
+            }
+            const auto message_id = payload["expected_user_message_id"].get<std::string>();
+            if (message_id.empty() || message_id.size() > 256) {
+                return respond(400, {{"error", "invalid expected_user_message_id"}});
+            }
+            std::string error;
+            if (!deps.session_client->retry_last_user_message(id, message_id, error)) {
+                return respond(409, {{"error", error}});
+            }
+            return respond(202, {{"queued", true}, {"user_message_id", message_id}});
         });
 
         // Soft steer: append structured input to the matching active turn and

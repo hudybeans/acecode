@@ -77,7 +77,7 @@ function ThemeImportDialog({ downloads, onClose }) {
       {busy && <p className="mt-4 text-sm text-fg-2" role="status">{installing ? '正在导入主题…' : '正在校验主题包…'}</p>}
       {definition && <div className="mt-4">
         <img src={preview.thumbnail_url} alt="待导入主题预览" className="w-full max-h-56 object-contain rounded-lg bg-surface" />
-        <h4 className="mt-3 text-sm font-semibold break-words">{definition.name}</h4>
+        <h4 className="mt-3 text-sm font-normal break-words">{definition.name}</h4>
         <p className="mt-1 text-xs text-fg-mute">{definition.mode === 'dark' ? '深色主题' : '浅色主题'} · v{definition.version}</p>
         <div className="flex gap-2 mt-3" aria-label="主题配色">{['accent', 'bg', 'surface', 'fg', 'send-bg'].map((key) => <span key={key} className="h-6 w-6 rounded border border-border" title={definition.colors[key]} style={{ backgroundColor: definition.colors[key] }} />)}</div>
         <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 mt-4 text-xs"><dt className="text-fg-mute">ACECode 图标</dt><dd>{appearance.logo_color || '原始配色'}</dd><dt className="text-fg-mute">首页标题</dt><dd>{appearance.home_title_color || definition.colors.fg}</dd><dt className="text-fg-mute">背景通顶</dt><dd>{appearance.extend_to_titlebar ? '开启' : '关闭'}</dd></dl>

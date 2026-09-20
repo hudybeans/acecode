@@ -354,6 +354,17 @@ public:
         return send_input(session_id, input.text, input.display_text);
     }
 
+    // Reuse the exact trailing user message without appending new input.
+    // Implementations must check the transcript and worker queue atomically.
+    virtual bool retry_last_user_message(const std::string& session_id,
+                                         const std::string& expected_user_message_id,
+                                         std::string& error) {
+        (void)session_id;
+        (void)expected_user_message_id;
+        error = "retrying the last user message is unavailable";
+        return false;
+    }
+
     // Append input to the currently running regular turn. Implementations must
     // validate expected_turn_id atomically with enqueueing so callers cannot
     // accidentally steer a replacement turn.

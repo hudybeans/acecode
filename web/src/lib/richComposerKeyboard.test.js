@@ -9,6 +9,7 @@ import { composerDraftEditFingerprint } from './composerDraft.js';
 import { withComposerImageAttachments } from './composerImagePresentation.js';
 import { isUserComposerEdit } from './inputHistoryNavigation.js';
 import * as composerModel from './richComposerModel.js';
+import * as composerSelection from './composerSelection.js';
 import { formatSessionReferenceToken } from './sessionReference.js';
 
 // Execute the production callback and deletion helpers with a real Slate model.
@@ -52,7 +53,7 @@ function fixture({ kind = 'path', key = 'Backspace', selected = false } = {}) {
     submissions: 0,
     removed: [],
   };
-  const context = vm.createContext({ ...composerModel, ...contentModel, Editor, Range, Transforms, HistoryEditor, COMPOSER_CLIPBOARD_TYPE: 'application/x-acecode-composer-content' });
+  const context = vm.createContext({ ...composerModel, ...contentModel, ...composerSelection, Editor, Range, Transforms, HistoryEditor, COMPOSER_CLIPBOARD_TYPE: 'application/x-acecode-composer-content' });
   const editor = withHistory(loadFunction('withComposerInlineTags', context)(createEditor()));
   editor.children = composerModel.composerDocumentFromText(tokens[kind], commands, attachments);
   const offset = key === 'Delete' ? 0 : tokens[kind].length;
@@ -118,6 +119,34 @@ function run(name, fn) {
 }
 
 for (const kind of ['path', 'command', 'session', 'attachment']) {
+  run(`collapsed ${kind} void selection copies its canonical content and cuts only that tag`, () => {
+    const test = fixture({ kind });
+    const before = structuredClone(test.editor.children);
+    const [tag, path] = [...Editor.nodes(test.editor, { at: [], match: composerModel.isComposerInlineTag })][0];
+    Transforms.select(test.editor, Editor.start(test.editor, path));
+    const formats = new Map();
+    const event = { clipboardData: { setData: (type, value) => formats.set(type, value) }, preventDefault() {} };
+    assert.equal(loadFunction('writeSelectedPlainText', test.context)(event, test.editor), true);
+    assert.equal(formats.get('text/plain'), tag.token || `[${tag.name}]`);
+    assert.ok(formats.has('application/x-acecode-composer-content'));
+    assert.equal(loadFunction('deleteSelectedPlainText', test.context)(test.editor), true);
+    assert.equal([...Editor.nodes(test.editor, { at: [], match: composerModel.isComposerInlineTag })].length, 0);
+    HistoryEditor.undo(test.editor);
+    assert.deepEqual(test.editor.children, before);
+  });
+
+  run(`pasting text replaces a collapsed ${kind} void selection and undo restores it`, () => {
+    const test = fixture({ kind });
+    const before = structuredClone(test.editor.children);
+    const [, path] = [...Editor.nodes(test.editor, { at: [], match: composerModel.isComposerInlineTag })][0];
+    Transforms.select(test.editor, Editor.start(test.editor, path));
+    loadFunction('insertPlainText', test.context)(test.editor, 'replacement');
+    assert.equal([...Editor.nodes(test.editor, { at: [], match: composerModel.isComposerInlineTag })].length, 0);
+    assert.ok(composerModel.composerTextFromDocument(test.editor.children).startsWith('replacement'));
+    HistoryEditor.undo(test.editor);
+    assert.deepEqual(test.editor.children, before);
+  });
+
   for (const key of ['Backspace', 'Delete']) {
     run(`IME ${key} preserves the ${kind} tag`, () => {
       const test = fixture({ kind, key });

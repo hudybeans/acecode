@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import rawRendererSource from 'pptx2html/dist/pptx2html.full.min.js?raw';
+import scrollbarStyles from '../styles/scrollbars.css?raw';
 import {
   createPresentationPreviewChannel,
   postPresentationPreviewMessage,
@@ -32,7 +33,7 @@ export function PresentationPreview({ blob, path }) {
   } = useOfficePreviewZoom(path, shellRef);
   const channel = useMemo(() => createPresentationPreviewChannel(), [blob, path]);
   const srcDoc = useMemo(
-    () => presentationFrameDocument(rendererSource, channel),
+    () => presentationFrameDocument(rendererSource, channel, scrollbarStyles),
     [channel],
   );
 

@@ -162,6 +162,7 @@ export function TopBar({
           onClick={onToggleSidebar}
           pressed={!sidebarCollapsed}
           panelToggle
+          className="ml-[8px]"
         >
           <PanelToggleIcon side="left" size={16} expanded={!sidebarCollapsed} />
         </QuickBtn>

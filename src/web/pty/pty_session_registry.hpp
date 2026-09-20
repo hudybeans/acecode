@@ -41,6 +41,7 @@ struct PtySessionInfo {
     std::string title;
     std::string shell;
     std::string cwd;
+    std::string owner_id; // session:<id> / draft:<id>; empty for legacy clients
     std::string status;  // "running" | "exited"
     int pid = 0;
     int exit_code = 0;   // status=="exited" 时有效
@@ -65,9 +66,13 @@ public:
     std::optional<PtySessionInfo> create(const std::string& cwd_override,
                                          const std::string& title,
                                          const std::string& shell_override,
-                                         std::string& error);
+                                         std::string& error,
+                                         const std::string& owner_id = {});
 
-    std::vector<PtySessionInfo> list() const;
+    std::vector<PtySessionInfo> list(const std::optional<std::string>& owner_id = std::nullopt) const;
+    // Transfer only a new-chat draft; preserves process, buffer and subscribers.
+    // Redirects late creates from the same draft; repeated identical calls are idempotent.
+    bool transfer_owner(const std::string& from, const std::string& to);
     std::optional<PtySessionInfo> get(const std::string& id) const;
 
     // kill 进程 + 断开订阅者 + 移除会话。不存在返回 false。
@@ -119,12 +124,14 @@ private:
 
     void on_pty_data(const std::string& id, const std::string& data);
     void on_pty_exit(const std::string& id, int exit_code);
+    std::string resolve_owner(const std::string& owner_id) const; // mu_ held
 
     PtyBackendKind backend_;
     std::string default_cwd_;
     std::string shell_;
     mutable std::mutex mu_;
     std::map<std::string, std::unique_ptr<Session>> sessions_;
+    std::map<std::string, std::string> owner_redirects_;
     std::uint64_t next_id_ = 1;
 };
 

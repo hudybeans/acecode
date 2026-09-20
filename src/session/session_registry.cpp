@@ -19,6 +19,8 @@
 #include "../skills/skill_init.hpp"
 #include "../gitinfo/git_context_core.hpp"
 #include "../tool/mcp_manager.hpp"
+#include "../tool/mcp_scope.hpp"
+#include "../config/mcp_config.hpp"
 #include "../tool/question_policy.hpp"
 #include "../worktree/worktree_core.hpp"
 #include "../worktree/worktree_manager.hpp"
@@ -76,39 +78,15 @@ std::string trim_copy(const std::string& value) {
 }
 
 ToolCapabilityPolicy tool_policy_from_expert_scopes(
-    const ExpertCapabilityScopes& scopes,
-    const AppConfig* config) {
-    ToolCapabilityPolicy policy;
+    const ExpertCapabilityScopes& scopes, const AppConfig* config,
+    const std::string& cwd, const SessionRegistryDeps& deps) {
+    auto policy = mcp_scope_policy(config, deps.load_project_mcp ? cwd : "",
+                                   scopes.mcp_servers, deps.mcp_manager, deps.tools);
     if (scopes.tools) {
         policy.builtin_tools = std::unordered_set<std::string>(
             scopes.tools->begin(), scopes.tools->end());
     }
-    if (scopes.mcp_servers) {
-        policy.mcp_servers = std::unordered_set<std::string>(
-            scopes.mcp_servers->begin(), scopes.mcp_servers->end());
-    } else if (config) {
-        // A shared MCP runtime may contain servers started for another
-        // expert. Inheriting sessions only see daemon-global enabled servers.
-        std::unordered_set<std::string> globally_enabled;
-        for (const auto& [name, server] : config->mcp_servers) {
-            if (!server.disabled) globally_enabled.insert(name);
-        }
-        policy.mcp_servers = std::move(globally_enabled);
-    }
     return policy;
-}
-
-void ensure_expert_mcp_servers_available(
-    const ExpertCapabilityScopes& scopes,
-    McpManager* manager,
-    ToolExecutor* tools) {
-    if (!scopes.mcp_servers || !manager || !tools) return;
-    for (const auto& name : *scopes.mcp_servers) {
-        if (!manager->has_server(name)) continue;
-        // enable() is idempotent for Connected/Starting entries and does not
-        // mutate AppConfig, so the global default remains disabled.
-        (void)manager->enable(name, *tools);
-    }
 }
 
 ExpertCapabilityScopes fail_closed_expert_scopes() {
@@ -974,10 +952,9 @@ SessionRegistry::make_entry_locked(const std::string& id,
             ? entry->expert->selected_skill_roots(entry->expert_member_id)
             : std::vector<std::filesystem::path>{};
     entry->expert_skill_allowlist = expert_scopes.skills;
-    ensure_expert_mcp_servers_available(
-        expert_scopes, deps_.mcp_manager, deps_.tools);
     entry->tool_capability_policy =
-        tool_policy_from_expert_scopes(expert_scopes, entry_config);
+        tool_policy_from_expert_scopes(
+            expert_scopes, entry_config, entry->no_workspace ? "" : entry->cwd, deps_);
 
     if (entry_config) {
         entry->skill_registry = std::make_shared<SkillRegistry>();
@@ -1735,7 +1712,7 @@ void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {
                 }
                 const auto refreshed =
                     tool_policy_from_expert_scopes(
-                        scopes, config_snapshot.get());
+                        scopes, config_snapshot.get(), active.no_workspace ? "" : active.cwd, deps_);
                 active.tool_capability_policy.mcp_servers =
                     refreshed.mcp_servers;
                 if (active.loop) {
@@ -1752,7 +1729,8 @@ void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {
 }
 
 bool SessionRegistry::expert_requires_mcp_server(
-    const std::string& name) const {
+    const std::string& name, const std::string& scope) const {
+    const auto owner = scope.empty() ? name : mcp_project_server_id(scope, name);
     std::lock_guard<std::mutex> lk(mu_);
     for (const auto& [id, entry] : entries_) {
         (void)id;
@@ -1762,7 +1740,8 @@ bool SessionRegistry::expert_requires_mcp_server(
         }
         const auto scopes =
             entry->expert->selected_capabilities(entry->expert_member_id);
-        if (!scopes.mcp_servers) continue;
+        if (!scopes.mcp_servers || !entry->tool_capability_policy.mcp_servers ||
+            !entry->tool_capability_policy.mcp_servers->count(owner)) continue;
         if (std::find(scopes.mcp_servers->begin(),
                       scopes.mcp_servers->end(),
                       name) != scopes.mcp_servers->end()) {
@@ -1810,10 +1789,9 @@ ExpertSwitchResult SessionRegistry::switch_expert(
     auto expert = std::make_shared<ExpertDefinition>(std::move(*resolved));
     const ExpertCapabilityScopes expert_scopes =
         expert->selected_capabilities();
-    ensure_expert_mcp_servers_available(
-        expert_scopes, deps_.mcp_manager, deps_.tools);
     const ToolCapabilityPolicy tool_policy =
-        tool_policy_from_expert_scopes(expert_scopes, deps_.config);
+        tool_policy_from_expert_scopes(
+            expert_scopes, deps_.config, entry->no_workspace ? "" : entry->cwd, deps_);
     const auto expert_skill_roots = expert->selected_skill_roots();
     const auto expert_skill_allowlist = expert_scopes.skills;
     std::shared_ptr<SkillRegistry> skills;

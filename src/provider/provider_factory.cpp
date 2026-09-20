@@ -227,7 +227,7 @@ std::optional<EffectiveProviderBuildPlan> effective_plan_from_entry(
 
     plan.applies_vision_routing =
         entry.provider == "openai" || entry.provider == "copilot" ||
-        entry.provider == "grok";
+        entry.provider == "grok" || entry.provider == "anthropic";
     if (plan.applies_vision_routing) {
         plan.model_has_vision = model_profile_has_vision(entry);
         plan.any_vision_model_available =
@@ -265,6 +265,9 @@ std::shared_ptr<LlmProvider> construct_from_plan(
         if (auto compat = std::dynamic_pointer_cast<OpenAiCompatProvider>(provider)) {
             compat->set_vision_routing(plan.model_has_vision,
                                        plan.any_vision_model_available);
+        } else if (auto anthropic = std::dynamic_pointer_cast<AnthropicProvider>(provider)) {
+            anthropic->set_vision_routing(plan.model_has_vision,
+                                          plan.any_vision_model_available);
         }
     }
     return provider;

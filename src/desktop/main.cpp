@@ -30,6 +30,7 @@
 #include "open_in_explorer.hpp"
 #include "pick_active.hpp"
 #include "single_instance.hpp"
+#include "instance_startup.hpp"
 #include "splash_screen.hpp"
 #include "startup_progress.hpp"
 #include "strings.hpp"
@@ -365,10 +366,6 @@ std::string detect_dev_web_dir() {
 
 std::string projects_dir() {
     return path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "projects");
-}
-
-std::string desktop_shared_run_dir() {
-    return path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "run" / "desktop-shared");
 }
 
 std::string current_cwd() {
@@ -744,37 +741,6 @@ int main(int argc, char** argv) {
     const std::int64_t desktop_instance_started_at_ms =
         acecode::daemon::now_unix_ms();
 
-    // 单例锁:per-user。已有实例时把对方拉前 + 自己 exit(0),避免多份 desktop /
-    // 多份 daemon 子进程同时存在。设计见 src/desktop/single_instance.hpp。
-    SingleInstance singleton;
-    if (!singleton.try_acquire()) {
-        if (startup_open_request.has_value()) {
-            std::string handoff_error;
-            if (!publish_pending_desktop_open_request(
-                    *startup_open_request, &handoff_error)) {
-                LOG_WARN("[desktop] failed to publish open request to existing "
-                         "instance: " + handoff_error);
-            }
-        }
-        LOG_INFO("[desktop] another acecode-desktop instance is running, focusing it");
-        focus_existing_instance(); // POSIX 端是 stub,返回 false 也只是 exit
-        return 0;
-    }
-
-    const std::int64_t desktop_owner_pid =
-        acecode::daemon::current_pid();
-    const std::string desktop_owner_instance = acecode::generate_uuid();
-    const std::string shared_run_dir = desktop_shared_run_dir();
-    if (!acecode::daemon::write_desktop_owner_record(
-            shared_run_dir,
-            acecode::daemon::DesktopOwnerRecord{
-                desktop_owner_pid,
-                desktop_owner_instance,
-                acecode::daemon::now_unix_ms(),
-            })) {
-        LOG_WARN("[desktop] failed to publish Desktop owner record");
-    }
-
     SplashScreen splash;
     auto publish_startup_snapshot = [&]() {
         if (!startup_progress_host || !startup_navigation_started) return;
@@ -813,9 +779,7 @@ int main(int argc, char** argv) {
         publish_startup_snapshot();
         return event;
     };
-    startup_splash_open = true;
     mark_startup("desktop_starting");
-    splash.show();
 
     // 加载 desktop 端用到的 config(窗口关闭行为、通知、后台进程等)。
     // 失败回退默认 AppConfig — 不阻断启动,与 daemon 一致;只是 close-to-tray
@@ -836,6 +800,46 @@ int main(int argc, char** argv) {
     LOG_INFO("[desktop] GUI locale preference=" + desktop_cfg.ui.locale +
               " effective=" + desktop_effective_locale);
     mark_startup("config_load_end");
+
+    // Read the global preference before enforcing the singleton. Still acquire
+    // it when possible so the primary keeps normal focus/handoff behavior.
+    SingleInstance singleton;
+    const std::string desktop_owner_instance = acecode::generate_uuid();
+    const auto instance_plan = plan_instance_startup(
+        desktop_cfg.desktop.allow_multiple_instances,
+        singleton.try_acquire(), desktop_owner_instance);
+    if (!instance_plan.start) {
+        if (startup_open_request.has_value()) {
+            std::string handoff_error;
+            if (!publish_pending_desktop_open_request(
+                    *startup_open_request, &handoff_error)) {
+                LOG_WARN("[desktop] failed to publish open request to existing "
+                         "instance: " + handoff_error);
+            }
+        }
+        LOG_INFO("[desktop] another acecode-desktop instance is running, focusing it");
+        focus_existing_instance();
+        return 0;
+    }
+
+    const std::int64_t desktop_owner_pid = acecode::daemon::current_pid();
+    const std::string shared_run_dir = path_to_utf8(
+        path_from_utf8(acecode::get_acecode_dir()) / "run" /
+        path_from_utf8(instance_plan.run_subdirectory));
+    if (!instance_plan.primary) {
+        LOG_INFO("[desktop] developer multi-instance startup with isolated daemon runtime");
+    }
+    if (!acecode::daemon::write_desktop_owner_record(
+            shared_run_dir,
+            acecode::daemon::DesktopOwnerRecord{
+                desktop_owner_pid,
+                desktop_owner_instance,
+                acecode::daemon::now_unix_ms(),
+            })) {
+        LOG_WARN("[desktop] failed to publish Desktop owner record");
+    }
+    startup_splash_open = true;
+    splash.show();
 
     std::string daemon_exe = locate_daemon_exe();
     if (daemon_exe.empty()) {
@@ -2036,6 +2040,9 @@ int main(int argc, char** argv) {
         host.set_visible(true);
         return nlohmann::json{{"ok", true}}.dump();
     });
+    host.bind("aceDesktop_focusFileDropWindow", [&](const std::string& /*req*/) -> std::string {
+        return nlohmann::json{{"ok", host.focus_after_file_drop()}}.dump();
+    });
 
     // WM_SIZE 时如果最大化状态变化(被 web_host.cpp 内部 g_last_known_maximized 去重过),
     // eval 一段 JS 调前端 window.aceDesktop_onMaximizeStateChanged(bool),让 TopBar 切换
@@ -2186,17 +2193,34 @@ int main(int argc, char** argv) {
     // navigate 前注入 JS: hook console + window 错误事件 → 全部转发回 native。
     // 故意不 hook console.log / console.info,避免噪音(可在前端代码里需要时
     // 显式调 aceDesktop_logFromWeb('info', ...))。
-    // 系统文件拖放。Windows/macOS 的 native 拦截把路径回传给终端和 composer
-    // 两个接收函数；各自用最近 hover 时间戳判定落点，不会互相抢占。Linux 由
-    // 前端 text/uri-list 进入同一个 filesystem-item materialize bridge。
-    host.set_file_drop_handler([&host](std::vector<std::string> paths) {
+    // 系统文件拖放。macOS 附带实际释放坐标,由前端 router 命中唯一目标；
+    // Windows 与旧 bridge 保持路径数组 + 最近 hover 的兼容行为。Linux 由前端
+    // text/uri-list 进入同一个 filesystem-item materialize bridge。
+    host.set_file_drop_handler([&host](
+                                   std::vector<std::string> paths,
+                                   acecode::desktop::WebHost::FileDropContext context) {
         if (paths.empty()) return;
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& p : paths) arr.push_back(p);
+        nlohmann::json payload = {{"paths", paths}};
+        if (context.location) {
+            payload["location"] = {
+                {"xRatio", context.location->x_ratio},
+                {"yRatio", context.location->y_ratio},
+            };
+        }
+        const std::string coordinate_required = context.coordinate_required ? "true" : "false";
         const std::string js =
-            "(function(){var p=" + arr.dump() + ";"
-            "try{if(window.__aceConsoleAcceptFileDrop){window.__aceConsoleAcceptFileDrop(p);}}catch(e){}"
-            "try{if(window.__aceComposerAcceptFileDrop){window.__aceComposerAcceptFileDrop(p);}}catch(e){}"
+            "(function(){var p=" + payload.dump() + ";"
+            "var r=typeof window.__aceRouteNativeFileDrop==='function';"
+            "var c=typeof window.__aceConsoleAcceptFileDrop==='function';"
+            "var m=typeof window.__aceComposerAcceptFileDrop==='function';"
+            "try{if(r&&p.location){window.__aceRouteNativeFileDrop(p);return;}}catch(e){"
+            "try{if(window.aceDesktop_logFromWeb){Promise.resolve(window.aceDesktop_logFromWeb('info',"
+            "'[file-drop] drop-result {\"accepted\":false,\"target\":\"router\",\"reason\":\"receiver-exception\"}')).catch(function(){});}}catch(_){}"
+            "return;}"
+            "if(" + coordinate_required + "){return;}"
+            "var legacy=p.paths;"
+            "try{if(c){window.__aceConsoleAcceptFileDrop(legacy);}}catch(e){}"
+            "try{if(m){window.__aceComposerAcceptFileDrop(legacy);}}catch(e){}"
             "})();";
         host.eval(js);
     });
@@ -2217,6 +2241,7 @@ int main(int argc, char** argv) {
         {"color_theme", desktop_cfg.web_ui.color_theme},
         {"font_size", desktop_cfg.web_ui.font_size},
         {"sidebar_session_time", desktop_cfg.web_ui.sidebar_session_time},
+        {"message_auto_collapse", desktop_cfg.web_ui.message_auto_collapse},
     }.dump();
     const std::string startup_bootstrap = startup_timeline.snapshot_json();
     host.init_script(acecode::desktop::locale_bootstrap_script(
@@ -2522,12 +2547,13 @@ int main(int argc, char** argv) {
     });
 
     host.bind("aceDesktop_readClipboardContextItems", [&](const std::string&) -> std::string {
-        auto clipboard = acecode::read_system_clipboard_paths();
-        if (clipboard.status == acecode::ClipboardPathsReadResult::Status::TooMany) {
+        auto clipboard = host.read_clipboard_paths();
+        if (clipboard.status == acecode::ClipboardPathsReadResult::Status::TooMany
+            || clipboard.status == acecode::ClipboardPathsReadResult::Status::Unavailable) {
             return nlohmann::json{
                 {"ok", false},
                 {"error", clipboard.detail.empty()
-                    ? "clipboard contains too many filesystem items"
+                    ? "filesystem clipboard is unavailable"
                     : clipboard.detail},
             }.dump();
         }
@@ -2541,6 +2567,27 @@ int main(int argc, char** argv) {
         auto response = context_items_json(clipboard.paths);
         response["filesystem_items"] = true;
         return response.dump();
+    });
+
+    host.bind("aceDesktop_storeContextFiles", [&](const std::string& req) -> std::string {
+        try {
+            const auto args = nlohmann::json::parse(req);
+            if (!args.is_array() || args.empty() || !args[0].is_array()) {
+                return nlohmann::json{{"ok", false}, {"error", "expect [files]"}}.dump();
+            }
+            std::vector<acecode::desktop::ContextDataFile> files;
+            for (const auto& value : args[0]) {
+                files.push_back({value.at("name").get<std::string>(), value.at("data_base64").get<std::string>()});
+            }
+            const auto stored = acecode::desktop::store_context_data_files(
+                path_to_utf8(path_from_utf8(acecode::get_acecode_dir()) / "composer-files"), files);
+            if (!stored) return nlohmann::json{{"ok", false}, {"error", stored.error}}.dump();
+            auto items = nlohmann::json::array();
+            for (const auto& item : stored.items) items.push_back(context_item_json(item));
+            return nlohmann::json{{"ok", true}, {"items", std::move(items)}}.dump();
+        } catch (const std::exception& error) {
+            return nlohmann::json{{"ok", false}, {"error", error.what()}}.dump();
+        }
     });
 
     // Preview file picker: return one absolute path without materializing the

@@ -12,6 +12,8 @@
 #include "session/session_manager.hpp"
 #include "session/session_storage.hpp"
 #include "tool/mcp_manager.hpp"
+#include "tool/mcp_scope.hpp"
+#include "config/mcp_config.hpp"
 #include "tool/tool_executor.hpp"
 #include "utils/token_tracker.hpp"
 #include "utils/paths.hpp"
@@ -895,6 +897,37 @@ TEST(BuiltinCommands, McpDisableDoesNotDeadlockWithStatusCallback) {
 
     const std::string out = h.last_system_message();
     EXPECT_NE(out.find("Disabled MCP server 'off'."), std::string::npos);
+}
+
+TEST(BuiltinCommands, McpCommandsResolveCurrentProjectWithoutAffectingOtherOwners) {
+    McpCommandHarness h("mcp_project_scope");
+    fs::create_directories(h.cwd_ / ".git");
+    h.config_ = mcp_config_with_stdio_server("same", mcp_helper_args({"--tool", "global"}));
+    ASSERT_TRUE(h.mcp_.connect_all(h.config_));
+    h.mcp_.start_async(h.tools_);
+    auto project = mcp_config_with_stdio_server("same", mcp_helper_args({"--tool", "local"}));
+    project.mcp_servers.at("same").disabled = true;
+    acecode::save_project_mcp_config(h.cwd_.string(), acecode::serialize_mcp_config(project.mcp_servers));
+    const auto other = h.cwd_ / "other";
+    fs::create_directories(other / ".git");
+    h.mcp_.reconcile_scope(other.string(),
+        mcp_config_with_stdio_server("foreign", mcp_helper_args({"--tool", "elsewhere"})).mcp_servers,
+        h.tools_);
+    h.loop_.set_tool_capability_policy(acecode::mcp_scope_policy(
+        &h.config_, h.cwd_.string(), std::nullopt, &h.mcp_, &h.tools_));
+    ASSERT_TRUE(h.mcp_.wait_for_startup_settled(std::chrono::seconds(5)));
+    ASSERT_TRUE(h.dispatch("/mcp list"));
+    EXPECT_EQ(h.last_system_message().find("foreign"), std::string::npos);
+    EXPECT_EQ(h.last_system_message().find("mcp_same_global"), std::string::npos);
+    ASSERT_TRUE(h.dispatch("/mcp enable same"));
+    ASSERT_TRUE(h.mcp_.wait_for_startup_settled(std::chrono::seconds(5)));
+    const auto owner = acecode::mcp_project_server_id(h.cwd_.string(), "same");
+    EXPECT_EQ(h.loop_.tool_capability_policy().mcp_servers->count(owner), 1u);
+    EXPECT_EQ(h.tools_.get_tool_definitions(&h.loop_.tool_capability_policy()).size(), 1u);
+    ASSERT_TRUE(h.dispatch("/mcp disable same"));
+    EXPECT_TRUE(h.tools_.has_tool("mcp_same_global"));
+    EXPECT_EQ(h.mcp_.connected_server_count(), 2u);
+    EXPECT_TRUE(h.tools_.get_tool_definitions(&h.loop_.tool_capability_policy()).empty());
 }
 
 TEST(BuiltinCommands, McpListShowsNoToolsForConnectedEmptyServer) {

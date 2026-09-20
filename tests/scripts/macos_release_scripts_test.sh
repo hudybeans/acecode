@@ -71,7 +71,8 @@ grep -Fq 'scripts/macos_create_pkg.sh' "$package_workflow"
 grep -Fq 'scripts/macos_notarize_pkg.sh' "$package_workflow"
 grep -Fq -- '--installer-identity "${{ steps.macos-keychain.outputs.installer_identity }}"' "$package_workflow"
 grep -Fq 'acecode-${{ matrix.id }}-pkg' "$package_workflow"
-grep -Fq 'DMG artifacts are no longer permitted in tagged releases' "$package_workflow"
+grep -Fq 'Tagged releases require exactly two signed macOS installer DMGs' "$package_workflow"
+grep -Fq 'ACECode-${release_version}-macos-${arch}.dmg' "$package_workflow"
 grep -Fq 'Unsigned PKG artifacts must not be published' "$package_workflow"
 grep -Fq 'Unsigned macOS update artifacts must not be published' "$package_workflow"
 grep -Fq 'Tagged releases allow either zero or two signed macOS PKGs' "$package_workflow"
@@ -91,17 +92,7 @@ if grep -Fq 'identity="$MACOS_CODESIGN_IDENTITY"' "$package_workflow"; then
     exit 1
 fi
 
-if grep -ERni \
-    --exclude='macos_create_pkg.sh' \
-    'macos_create_dmg|macos_notarize\.sh|macos-dmg' \
-    "$package_workflow" "$repo_root/scripts"; then
-    echo "Active macOS release automation must not retain DMG packaging" >&2
-    exit 1
-fi
-if grep -Fq -- "-o -name '*.dmg'" "$package_workflow"; then
-    echo "Tagged release asset collection must not include DMG files" >&2
-    exit 1
-fi
+grep -Fq -- "-o -name '*.dmg'" "$package_workflow"
 if grep -En 'Applications\.app|acecode-user-applications|macos_verify_user_applications_drop' \
     "$package_workflow"; then
     echo "Release workflow must not build or package the fake Applications target" >&2
@@ -118,6 +109,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     fake_app="$temporary_root/ACECode.app"
     mkdir -p "$fake_app/Contents/MacOS"
     mkdir -p "$fake_app/Contents/Resources/share/acecode/models_dev"
+    /usr/bin/ditto "$repo_root/assets/seed" \
+        "$fake_app/Contents/Resources/share/acecode/seed"
     touch "$fake_app/Contents/MacOS/ACECode" \
           "$fake_app/Contents/MacOS/acecode-daemon"
     printf '%s\n' '{}' > \

@@ -22,7 +22,7 @@ async function run(name, fn) {
 
 await run('failed automatic theme persistence silently restores the original new or upgraded appearance', async () => {
   for (const colorTheme of ['blue', 'orange', 'ai-existing']) {
-    const initial = { theme: 'system', colorTheme, fontSize: 'large', sidebarSessionTime: false };
+    const initial = { theme: 'system', colorTheme, fontSize: 'large', sidebarSessionTime: false, messageAutoCollapse: true };
     const applied = [], errors = [], saves = [];
     const expected = appearancePreferencesToApi(initial);
     const controller = createAppearancePersistenceController({ initial,
@@ -50,7 +50,7 @@ await run('appearance defaults preserve system preference, blue, and medium', ()
     fontSize: 'medium',
     // 侧栏时间是产品默认开的显示项:空输入必须归一成 true,否则升级用户
     // 一进来就发现时间列没了。
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
   // 只有显式 false 才关;缺键、null、非布尔值都按开处理,免得旧 daemon 的
   // 半截报文把这一列意外关掉。
@@ -77,13 +77,13 @@ await run('desktop bootstrap is normalized before first render', () => {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
   assert.deepEqual(appearanceBootstrapPreferences(scope), {
     theme: 'light',
     colorTheme: 'orange',
     fontSize: 'large',
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
 });
 
@@ -107,7 +107,25 @@ await run('API serialization sends a complete compatibility snapshot', () => {
     color_theme: 'orange',
     font_size: 'small',
     sidebar_session_time: true,
+    message_auto_collapse: true,
   });
+});
+
+await run('startup restores each saved theme without rewriting preferences', () => {
+  for (const colorTheme of ['blue', 'orange', 'national-day-2026', 'eva-01', 'ai-existing']) {
+    const applied = [], saves = [];
+    const controller = createAppearancePersistenceController({
+      initial: { theme: 'system', colorTheme: 'blue', fontSize: 'medium' },
+      apply: (value) => applied.push(value),
+      save: async (value) => { saves.push(value); return value; },
+    });
+    assert.equal(controller.restore({ theme: 'dark', color_theme: colorTheme, font_size: 'large' }), true);
+    assert.equal(controller.current().colorTheme, colorTheme);
+    assert.equal(controller.current().theme, 'dark');
+    assert.equal(controller.current().fontSize, 'large');
+    assert.equal(applied.at(-1).colorTheme, colorTheme);
+    assert.deepEqual(saves, []);
+  }
 });
 
 await run('canonical restore wins only before a local user mutation', async () => {
@@ -132,7 +150,7 @@ await run('canonical restore wins only before a local user mutation', async () =
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'small',
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
   assert.equal(applied.length, 3);
 });
@@ -153,7 +171,7 @@ await run('color and font changes preserve a canonical system theme preference',
     theme: 'system',
     colorTheme: 'orange',
     fontSize: 'large',
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
 });
 
@@ -168,8 +186,8 @@ await run('failed latest save rolls back to the last confirmed appearance', asyn
   });
   await controller.change({ theme: 'dark', colorTheme: 'orange' });
   assert.deepEqual(applied, [
-    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium', sidebarSessionTime: true },
-    { theme: 'light', colorTheme: 'blue', fontSize: 'medium', sidebarSessionTime: true },
+    { theme: 'dark', colorTheme: 'orange', fontSize: 'medium', sidebarSessionTime: true, messageAutoCollapse: true },
+    { theme: 'light', colorTheme: 'blue', fontSize: 'medium', sidebarSessionTime: true, messageAutoCollapse: true },
   ]);
   assert.deepEqual(errors, ['disk full']);
 });
@@ -198,13 +216,50 @@ await run('rapid changes serialize saves and keep the newest snapshot', async ()
     theme: 'dark',
     colorTheme: 'orange',
     fontSize: 'medium',
-    sidebarSessionTime: true,
+    sidebarSessionTime: true, messageAutoCollapse: true,
   });
 });
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const deletionTick = () => new Promise((resolve) => setImmediate(resolve));
-const localAppearance = { theme: 'dark', colorTheme: 'ai-night', fontSize: 'medium', sidebarSessionTime: true };
+const localAppearance = { theme: 'dark', colorTheme: 'ai-night', fontSize: 'medium', sidebarSessionTime: true, messageAutoCollapse: true };
+
+await run('消息自动折叠缺省开启，关闭值经启动注入、API、其它偏好修改后保持', async () => {
+  const canonical = { theme: 'system', color_theme: 'blue', font_size: 'medium', message_auto_collapse: false };
+  assert.equal(normalizeAppearancePreferences({}).messageAutoCollapse, true);
+  assert.equal(normalizeAppearancePreferences({ message_auto_collapse: 'false' }).messageAutoCollapse, true);
+  assert.equal(initialAppearancePreferences({ __ACECODE_APPEARANCE__: canonical }).messageAutoCollapse, false);
+  assert.equal(parseAppearancePreferences(canonical).messageAutoCollapse, false);
+  const saves = [];
+  const controller = createAppearancePersistenceController({
+    initial: {}, apply: () => {}, save: async (value) => { saves.push(value); return value; },
+  });
+  assert.equal(controller.restore(canonical), true);
+  await controller.change({ fontSize: 'large' });
+  assert.equal(saves[0].message_auto_collapse, false);
+  assert.equal(controller.confirmed().messageAutoCollapse, false);
+  await controller.change({ messageAutoCollapse: true });
+  assert.equal(saves.at(-1).message_auto_collapse, true);
+});
+
+await run('消息折叠切换立即更新，保存失败恢复确认值，连续切换按最后选择落盘', async () => {
+  const applied = [];
+  let fail = true;
+  const controller = createAppearancePersistenceController({
+    initial: {}, apply: (value) => applied.push(value.messageAutoCollapse),
+    save: async (value) => { if (fail) throw new Error('disk full'); return value; },
+  });
+  const rejected = controller.change({ messageAutoCollapse: false });
+  assert.deepEqual(applied, [false]);
+  await rejected;
+  assert.deepEqual(applied, [false, true]);
+  fail = false;
+  controller.change({ messageAutoCollapse: false });
+  controller.change({ messageAutoCollapse: true });
+  controller.change({ messageAutoCollapse: false });
+  await controller.idle();
+  assert.equal(controller.confirmed().messageAutoCollapse, false);
+});
 
 await run('deleting the current theme waits for older writes and rewrites later snapshots referencing it', async () => {
   const firstSave = deferred(), deletion = deferred(), events = [];

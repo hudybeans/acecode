@@ -110,6 +110,8 @@ TEST_F(ConfigFirstInitTest, LoadConfigTracksFreshAcecodeHomeCreationOnce) {
     EXPECT_TRUE(cfg.saved_models.empty());
     EXPECT_TRUE(cfg.default_model_name.empty());
     EXPECT_EQ(cfg.default_permission_mode, "default");
+    EXPECT_FALSE(cfg.sandbox.enabled);
+    EXPECT_TRUE(cfg.sandbox_disable_migration_completed);
 
     std::ifstream ifs(temp_home / ".acecode" / "config.json");
     ASSERT_TRUE(ifs.is_open());
@@ -225,6 +227,8 @@ TEST_F(ConfigFirstInitTest, RuntimeSkillAllowlistIsNeverPersisted) {
         EXPECT_FALSE(saved["skills"].contains("allowed"));
         EXPECT_FALSE(saved["skills"].contains("allowlist"));
     }
+    // Startup migrations atomically replace the config on Windows.
+    ifs.close();
 
     const auto reloaded = acecode::load_config();
     EXPECT_FALSE(reloaded.skills.allowed.has_value());
@@ -574,6 +578,31 @@ TEST_F(ConfigFirstInitTest, DefaultPermissionModeLoadsAndInvalidFallsBack) {
 
     cfg = acecode::load_config();
     EXPECT_EQ(cfg.default_permission_mode, "default");
+}
+
+TEST_F(ConfigFirstInitTest, StartupDisablesSandboxOnceAndPreservesReenabledChoice) {
+    const fs::path config_path = temp_home / ".acecode" / "config.json";
+    fs::create_directories(config_path.parent_path());
+    {
+        std::ofstream output(config_path);
+        output << R"({"saved_models":[],"sandbox":{"enabled":true},
+                      "openai":{"stream_timeout_ms":1234}})";
+    }
+    set_env_value(kOpenAiStreamTimeoutEnvName, "9876");
+    const auto initial = acecode::load_config();
+    EXPECT_FALSE(initial.sandbox.enabled);
+    EXPECT_TRUE(initial.sandbox_disable_migration_completed);
+    EXPECT_EQ(initial.openai.stream_timeout_ms, 9876);
+
+    auto disk = acecode::load_config_from_path(config_path.string());
+    EXPECT_EQ(disk.openai.stream_timeout_ms, 1234);
+    disk.sandbox.enabled = true;
+    acecode::save_config(disk, config_path.string());
+    for (int i = 0; i < 3; ++i) {
+        const auto restarted = acecode::load_config();
+        EXPECT_TRUE(restarted.sandbox.enabled);
+        EXPECT_TRUE(restarted.sandbox_disable_migration_completed);
+    }
 }
 
 TEST_F(ConfigFirstInitTest, SavedModelsDefaultCodexFallsBackToEnabledModel) {

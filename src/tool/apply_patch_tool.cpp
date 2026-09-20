@@ -1,4 +1,5 @@
 #include "apply_patch_tool.hpp"
+#include "../config/mcp_config.hpp"
 
 #include "apply_patch_format.hpp"
 #include "diff_utils.hpp"
@@ -296,6 +297,18 @@ ToolResult execute_apply_patch(const std::string& arguments_json, const ToolCont
             }
         }
         plan.push_back(std::move(change));
+    }
+
+    // Validate all MCP targets before the first file in this patch changes.
+    try {
+        for (const auto& change : plan) {
+            if (change.kind == apply_patch::HunkKind::Delete) continue;
+            (void)validate_mcp_file_edit(
+                change.move_path.empty() ? change.path : change.move_path,
+                change.new_content);
+        }
+    } catch (const std::exception& error) {
+        return ToolResult{error.what(), false};
     }
 
     // ---- 阶段二:按补丁顺序落盘 ----

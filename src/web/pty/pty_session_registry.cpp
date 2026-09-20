@@ -43,7 +43,7 @@ PtySessionRegistry::~PtySessionRegistry() { stop_all(); }
 
 std::optional<PtySessionInfo> PtySessionRegistry::create(
     const std::string& cwd_override, const std::string& title,
-    const std::string& shell_override, std::string& error) {
+    const std::string& shell_override, std::string& error, const std::string& owner_id) {
     std::unique_lock<std::mutex> lock(mu_);
 
     if (sessions_.size() >= static_cast<std::size_t>(kPtyMaxSessions)) {
@@ -82,6 +82,7 @@ std::optional<PtySessionInfo> PtySessionRegistry::create(
         ? ("Terminal " + std::to_string(next_id_ - 1)) : title;
     session->info.shell = shell;
     session->info.cwd = spec.cwd;
+    session->info.owner_id = resolve_owner(owner_id);
     session->info.status = "running";
     session->info.pid = process->pid();
     session->info.backend = process->kind();
@@ -94,11 +95,34 @@ std::optional<PtySessionInfo> PtySessionRegistry::create(
     return info;
 }
 
-std::vector<PtySessionInfo> PtySessionRegistry::list() const {
+std::string PtySessionRegistry::resolve_owner(const std::string& owner_id) const {
+    const auto it = owner_redirects_.find(owner_id);
+    return it == owner_redirects_.end() ? owner_id : it->second;
+}
+
+bool PtySessionRegistry::transfer_owner(const std::string& from, const std::string& to) {
+    if (from.rfind("draft:", 0) != 0 || from.size() <= 6 || from.size() > 512 ||
+        to.rfind("session:", 0) != 0 || to.size() <= 8 || to.size() > 512) return false;
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto previous = owner_redirects_.find(from);
+    if (previous != owner_redirects_.end()) return previous->second == to;
+    for (const auto& [id, session] : sessions_) {
+        if (session->info.owner_id == to) return false;
+    }
+    owner_redirects_[from] = to;
+    for (const auto& [id, session] : sessions_) {
+        if (session->info.owner_id == from) session->info.owner_id = to;
+    }
+    return true;
+}
+
+std::vector<PtySessionInfo> PtySessionRegistry::list(const std::optional<std::string>& owner_id) const {
     std::lock_guard<std::mutex> lock(mu_);
     std::vector<PtySessionInfo> out;
     out.reserve(sessions_.size());
-    for (const auto& [id, session] : sessions_) out.push_back(session->info);
+    for (const auto& [id, session] : sessions_) {
+        if (!owner_id || session->info.owner_id == resolve_owner(*owner_id)) out.push_back(session->info);
+    }
     return out;
 }
 

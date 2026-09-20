@@ -47,7 +47,10 @@ fs::path current_desktop_executable_path() {
         buffer.assign(static_cast<std::size_t>(size) + 1, '\0');
         if (_NSGetExecutablePath(buffer.data(), &size) != 0) return {};
     }
-    return fs::path(buffer.data());
+    // Capture the stable installation path before an update renames the bundle.
+    std::error_code ec;
+    const fs::path resolved = fs::canonical(fs::path(buffer.data()), ec);
+    return ec ? fs::path{} : resolved;
 #else
     std::vector<char> buffer(4096);
     for (;;) {

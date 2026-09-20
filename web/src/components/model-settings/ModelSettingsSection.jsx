@@ -666,7 +666,7 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
                 data-ace-dialog-primary="true"
                 onClick={confirmDelete}
                 disabled={!!mutationBusy || deleteTarget.blocked}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-danger px-3.5 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-danger-bg disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-danger px-3.5 text-[11px] font-normal text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-danger-bg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {mutationBusy && <span className="ace-spinner" />}
                 删除预设

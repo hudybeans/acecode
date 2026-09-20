@@ -38,6 +38,15 @@ run('busy 空输入禁用排队但不禁用中断', () => {
   assert.equal(state.canAbort, true);
 });
 
+run('仅空闲且末尾用户消息可重试时允许空输入发送', () => {
+  assert.equal(getInputBarActionState({ value: '  ' }).canSubmit, false);
+  assert.equal(getInputBarActionState({ value: '  ', canRetryLastUserMessage: true }).canSubmit, true);
+  for (const blocker of [{ busy: true }, { disabled: true }, { submitting: true }]) {
+    assert.equal(getInputBarActionState({ value: '', canRetryLastUserMessage: true, ...blocker }).canSubmit, false);
+  }
+  assert.equal(getInputBarActionState({ value: 'next', busy: true, canRetryLastUserMessage: true }).mode, 'queue');
+});
+
 run('附件可在空文本时提交', () => {
   const state = getInputBarActionState({ value: '   ', hasExtras: true });
   assert.equal(state.canSubmit, true);

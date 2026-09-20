@@ -8,6 +8,7 @@
 
 @import "tailwindcss";
 @import "./select.css";
+@import "./scrollbars.css";
 
 /* dark 模式由 [data-theme="dark"] 触发,而非 prefers-color-scheme */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
@@ -66,6 +67,9 @@
 
 :root {
   --ace-topbar-height: 41px;
+  /* Match the native pointer's fixed contrast edges on either theme. */
+  --ace-computer-pointer-outline: #181818;
+  --ace-computer-pointer-highlight: #ffffff;
   --ace-bg:           #f5f5f2;
   --ace-bg-rgb:       245, 245, 242;
   --ace-surface:      #ffffff;
@@ -368,14 +372,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* ── Custom thin scrollbar ── */
-::-webkit-scrollbar       { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(150,150,150,.3); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(150,150,150,.5); }
-
 .ace-chat-transcript-scroll {
-  scrollbar-color: rgba(150,150,150,.34) transparent;
   /* 跟随滚动由 ChatView 自己管理;浏览器原生 scroll anchoring 会在流式
      渲染替换 DOM 时自行调整 scrollTop,与我们的滚到底逻辑互相打架,
      表现为消息区上下跳动(desktop/WebView2 上尤其明显)。 */
@@ -388,23 +385,6 @@ body {
 .ace-md-block {
   display: contents;
 }
-.ace-chat-transcript-scroll::-webkit-scrollbar {
-  width: 10px;
-}
-.ace-chat-transcript-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.ace-chat-transcript-scroll::-webkit-scrollbar-thumb {
-  background: rgba(150,150,150,.34);
-  background-clip: padding-box;
-  border: 1px solid transparent;
-  border-radius: 999px;
-}
-.ace-chat-transcript-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(150,150,150,.52);
-  background-clip: padding-box;
-}
-
 /* Conversation turn scrubber: delayed, lightweight navigation over user turns. */
 .ace-conversation-turn-scrubber {
   position: absolute;
@@ -1293,9 +1273,24 @@ body {
 .ace-composer-card {
   /* Avoid container-type / @container: they create an extra stacking
      context on older WebView2 and are ignored before Chromium 105. */
+  /* Hover / focus emphasis stays quiet: the edge darkens a touch and a soft
+     shadow lifts the card. Focus used to switch the border to the accent
+     color, which was too loud for a surface that is looked at all day. The
+     darker edge is derived from fg-mute so installed theme packages keep
+     their own tint (no color-mix: older WebView2 paints it as a solid block). */
+  --ace-composer-hover-shadow: 0 2px 16px rgba(0, 0, 0, 0.07);
   border: 1.5px solid var(--ace-border);
 }
-.ace-composer-card:focus-within,
+[data-theme="dark"] .ace-composer-card {
+  --ace-composer-hover-shadow: 0 2px 16px rgba(0, 0, 0, 0.32);
+}
+.ace-composer-card:hover,
+.ace-composer-card:focus-within {
+  border-color: rgba(var(--ace-fg-mute-rgb), 0.36);
+  box-shadow: var(--ace-composer-hover-shadow);
+}
+/* The file drop target keeps the accent ring: it is a transient affordance,
+   not a resting state. Same specificity as hover / focus, later, so it wins. */
 .ace-composer-card.is-drag-active {
   border-color: var(--ace-accent);
   box-shadow: 0 0 0 2px rgba(var(--ace-accent-rgb), 0.15);
@@ -1345,7 +1340,6 @@ body {
   line-height: 20px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  scrollbar-width: thin;
 }
 .ace-goal-status-bar + .ace-composer-card {
   z-index: 1;
@@ -1711,6 +1705,8 @@ body {
 .ace-topbar {
   /* Add 5px above and 6px below the original 30px row without enlarging controls. */
   --ace-topbar-control-size: 24px;
+  /* Four controls, three gaps, and the sidebar toggle's 8px left inset. */
+  --ace-topbar-navigation-min-width: 116px;
   box-sizing: border-box;
   min-height: var(--ace-topbar-height);
   height: auto;
@@ -1730,9 +1726,9 @@ body {
   margin-top: 3px;
 }
 .ace-topbar-navigation {
-  width: max(108px, calc(var(--ace-topbar-sidebar-width) - var(--ace-topbar-leading-inset, 8px) - 4px));
+  width: max(var(--ace-topbar-navigation-min-width), calc(var(--ace-topbar-sidebar-width) - var(--ace-topbar-leading-inset, 8px) - 4px));
   max-width: 35vw;
-  min-width: 108px;
+  min-width: var(--ace-topbar-navigation-min-width);
   flex-shrink: 1;
 }
 .ace-session-workspace {
@@ -1751,7 +1747,7 @@ body {
   height: var(--ace-topbar-control-size);
 }
 @media (max-width: 640px) {
-  .ace-topbar-navigation { width: 108px; }
+  .ace-topbar-navigation { width: var(--ace-topbar-navigation-min-width); }
   .ace-topbar-session-title { padding-left: 0; }
 }
 .ace-topbar-update-button {
@@ -1764,23 +1760,24 @@ body {
 .ace-sidebar-fixed-nav {
   max-height: 55%;
 }
-/* 固定导航与会话列表之间不画硬线:列表顶部一段渐隐,滚上去的内容淡出而不是被
-   直接切断,与 Claude 侧栏同款。渐隐高度落在首个分节标题的 pt-3 内边距上,
-   所以未滚动时看不出来。 */
+/* 渐隐只作用于列表滚动内容,外层边框和底部设置区保持清晰。
+   底部留白让最后一行滚到尽头时完全离开渐隐区。 */
+.ace-sidebar-scroll,
+.ace-file-tree {
+  --ace-list-edge-fade: 14px;
+  --ace-list-edge-mask: linear-gradient(to bottom,
+    transparent 0,
+    #000 var(--ace-list-top-fade, 0px),
+    #000 calc(100% - var(--ace-list-edge-fade)),
+    transparent 100%);
+  padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
+  scroll-padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
+  -webkit-mask-image: var(--ace-list-edge-mask);
+  mask-image: var(--ace-list-edge-mask);
+}
+/* 保留会话列表已有的顶部渐隐,首个分节标题的内边距避开此区域。 */
 .ace-sidebar-scroll {
-  --ace-sidebar-scrollbar-thumb: transparent;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
-}
-/* Keep the scroll gutter allocated; only reveal its thumb on list hover. */
-.ace-sidebar-scroll:hover {
-  --ace-sidebar-scrollbar-thumb: rgba(150,150,150,.3);
-}
-.ace-sidebar-scroll::-webkit-scrollbar-thumb {
-  background: var(--ace-sidebar-scrollbar-thumb);
-}
-@supports not selector(::-webkit-scrollbar) {
-  .ace-sidebar-scroll { scrollbar-color: var(--ace-sidebar-scrollbar-thumb) transparent; }
+  --ace-list-top-fade: var(--ace-list-edge-fade);
 }
 /* 底部设置区与会话列表之间唯一保留的细分隔线。 */
 .ace-sidebar-footer {
@@ -1999,11 +1996,11 @@ body {
   text-decoration-skip-ink: none;
 }
 .ace-settings-group { margin-bottom: 24px; }
-.ace-settings-group h3 { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
+.ace-settings-group > h3 { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
 .ace-settings-group > p { font-size: 12px; color: var(--ace-fg-mute); margin-bottom: 8px; }
 .ace-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-block: 13px; }
 .ace-settings-row + .ace-settings-row { border-top: 1px solid var(--ace-settings-divider); }
-.ace-settings-label { flex: 0 0 135px; font-size: 13px; font-weight: 500; }
+.ace-settings-label { flex: 0 0 135px; font-size: 13px; font-weight: 400; color: var(--ace-fg); }
 .ace-settings-label small { display: block; margin-top: 3px; color: var(--ace-fg-mute); font-size: 11px; font-weight: 400; }
 .ace-settings-value { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
 .ace-settings-value :is(input, select), .ace-settings-pending input {
@@ -2540,7 +2537,14 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
-@keyframes ace-session-loading-turn { to { transform: rotate(360deg); } }
+@keyframes ace-session-loading-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes ace-session-loading-fade {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 @keyframes ace-session-loading-dot-top {
   0%, 100% { transform: translateY(-5px); }
   50% { transform: translateY(-3.5px); }
@@ -2578,7 +2582,11 @@ body {
 }
 .ace-session-loading-orbit {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(0deg);
   animation: ace-session-loading-turn 6.47s linear infinite;
 }
 .ace-session-loading-dot {
@@ -2595,20 +2603,31 @@ body {
   animation-timing-function: cubic-bezier(.65, 0, .35, 1);
   animation-iteration-count: infinite;
 }
-.ace-session-loading-dot.is-top { animation-name: ace-session-loading-dot-top; }
-.ace-session-loading-dot.is-right { animation-name: ace-session-loading-dot-right; }
-.ace-session-loading-dot.is-bottom { animation-name: ace-session-loading-dot-bottom; }
-.ace-session-loading-dot.is-left { animation-name: ace-session-loading-dot-left; }
+.ace-session-loading-dot.is-top {
+  transform: translateY(-3.5px);
+  animation-name: ace-session-loading-dot-top;
+}
+.ace-session-loading-dot.is-right {
+  transform: translateX(3.5px);
+  animation-name: ace-session-loading-dot-right;
+}
+.ace-session-loading-dot.is-bottom {
+  transform: translateY(3.5px);
+  animation-name: ace-session-loading-dot-bottom;
+}
+.ace-session-loading-dot.is-left {
+  transform: translateX(-3.5px);
+  animation-name: ace-session-loading-dot-left;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .ace-session-loading-orbit,
-  .ace-session-loading-dot {
+  /* Keep running feedback visible when Windows requests reduced motion. */
+  .ace-session-loading-orbit {
+    animation: ace-session-loading-fade 2.4s ease-in-out infinite;
+  }
+  .ace-session-loading .ace-session-loading-dot {
     animation: none;
   }
-  .ace-session-loading-dot.is-top { transform: translateY(-3.5px); }
-  .ace-session-loading-dot.is-right { transform: translateX(3.5px); }
-  .ace-session-loading-dot.is-bottom { transform: translateY(3.5px); }
-  .ace-session-loading-dot.is-left { transform: translateX(-3.5px); }
 }
 
 /* Upgrade progress is deliberately quicker than the 350ms status polling interval,
@@ -2776,7 +2795,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ace-theme-card-download-cover { transition: none; }
 }
-.ace-theme-card-name { font-size: 14px; font-weight: 600; margin-top: 4px; }
+.ace-theme-card-name { font-size: 14px; font-weight: 400; margin-top: 4px; }
 .ace-local-theme .ace-theme-card-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ace-local-theme .ace-theme-card-choice { padding: 10px 16px 34px; }
 .ace-local-theme .ace-theme-card-swatches { min-height: 30px; }
@@ -2999,6 +3018,25 @@ body {
 :root[data-color-theme="eva-01"]:not([data-theme-logo-color="custom"]) .ace-brand-logo {
   filter: hue-rotate(55deg);
 }
+.ace-home-content > .ace-home-logo {
+  --ace-home-logo-size: 48px;
+  flex-basis: var(--ace-home-logo-size);
+  width: var(--ace-home-logo-size);
+  height: var(--ace-home-logo-size);
+  margin-bottom: 0;
+}
+.ace-home-content > .ace-home-logo::before {
+  content: none;
+}
+.ace-home-content > .ace-home-logo .ace-home-logo-fallback {
+  width: 100%;
+  height: 100%;
+  filter: none;
+}
+.ace-home-content > .ace-home-logo .ace-home-logo-canvas {
+  width: 156%;
+  height: 156%;
+}
 .ace-home-title {
   margin: 0 0 16px;
   text-align: center;
@@ -3020,9 +3058,11 @@ body {
   min-height: 120px;
   display: flex;
   flex-direction: column;
+  /* The hero already floats on a large ambient shadow; hover / focus only
+     deepens it slightly. The edge darkening comes from .ace-composer-card. */
+  --ace-composer-hover-shadow: 0 18px 46px rgba(0, 0, 0, 0.12);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.08);
 }
-.ace-inputbar-hero-card:focus-within,
 .ace-inputbar-hero-card.is-drag-active {
   box-shadow:
     0 0 0 2px rgba(var(--ace-accent-rgb), 0.15),
@@ -3037,9 +3077,9 @@ body {
   height: 100%;
 }
 [data-theme="dark"] .ace-inputbar-hero-card {
+  --ace-composer-hover-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.32);
 }
-[data-theme="dark"] .ace-inputbar-hero-card:focus-within,
 [data-theme="dark"] .ace-inputbar-hero-card.is-drag-active {
   box-shadow:
     0 0 0 2px rgba(var(--ace-accent-rgb), 0.15),
@@ -4222,11 +4262,11 @@ a.ace-thread-link:focus-visible {
   --ace-composer-selection-bg: Highlight;
   --ace-composer-selection-fg: HighlightText;
   position: relative;
+  isolation: isolate;
   display: block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  scrollbar-width: thin;
 }
 .ace-rich-composer-input::selection,
 .ace-rich-composer-input ::selection {
@@ -4254,8 +4294,11 @@ a.ace-thread-link:focus-visible {
   margin: 0;
 }
 .ace-slate-inline-tag {
+  position: relative;
+  display: inline-flex;
   max-width: 100%;
-  user-select: none;
+  vertical-align: baseline;
+  user-select: text;
   -webkit-user-drag: none;
 }
 .ace-slate-path-tag .ace-cmd-token-name {
@@ -4267,11 +4310,11 @@ a.ace-thread-link:focus-visible {
 .ace-slate-attachment-tag {
   max-width: min(320px, calc(100vw - 96px));
 }
-.ace-slate-attachment-tag.is-uploading {
+.ace-slate-attachment-tag.is-uploading > .ace-cmd-token {
   opacity: 0.72;
 }
-.ace-slate-attachment-tag.is-previewable {
-  cursor: zoom-in;
+.ace-slate-attachment-tag.is-previewable > .ace-cmd-token {
+  cursor: text;
 }
 .ace-slate-attachment-name {
   min-width: 0;
@@ -4282,7 +4325,6 @@ a.ace-thread-link:focus-visible {
 .ace-slate-attachment-remove {
   width: 14px;
   height: 14px;
-  margin-right: -3px;
   padding: 0;
   flex: 0 0 auto;
   display: inline-flex;
@@ -4301,7 +4343,7 @@ a.ace-thread-link:focus-visible {
   opacity: 1;
   outline: none;
 }
-.ace-slate-attachment-tag:focus-within {
+.ace-slate-attachment-tag:focus-within > .ace-cmd-token {
   background: var(--ace-accent-bg);
   border-color: var(--ace-accent);
 }
@@ -4325,8 +4367,16 @@ a.ace-thread-link:focus-visible {
   cursor: default;
   outline: none;
 }
-.ace-cmd-token.ace-slate-inline-tag {
-  margin: 1px 5px 1px 0;
+.ace-slate-inline-tag > .ace-cmd-token {
+  max-width: 100%;
+  margin: 1px 0;
+  padding: 0 5px;
+}
+.ace-slate-inline-tag .ace-file-type-glyph {
+  /* Seti glyph ink fills about half its em square. Scale only the ink so the
+     icon matches the label while its layout box and hit target remain 1em. */
+  transform: scale(2);
+  pointer-events: none;
 }
 .ace-cmd-token-glyph {
   flex: 0 0 auto;
@@ -4342,22 +4392,30 @@ a.ace-thread-link:focus-visible {
   border-color: var(--ace-accent);
 }
 
-/* Inline voids need a whole-tag selection fill; native selection only paints text. */
-.ace-cmd-token.ace-slate-inline-tag[data-composer-selected="true"] {
+/* The rectangular selection sits behind the original rounded badge. Keep this
+   layer in the editor's stacking context, below the tag's own surface/content. */
+.ace-slate-inline-tag[data-composer-selected="true"]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 100%;
+  height: max(1lh, 100%);
+  transform: translateY(-50%);
   background: var(--ace-composer-selection-bg);
-  border-color: var(--ace-composer-selection-bg);
-  color: var(--ace-composer-selection-fg);
-  opacity: 1;
 }
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-name,
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-cmd-token-glyph,
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
-  /* File icons carry inline type colors, which must not obscure selection. */
-  color: inherit !important;
-  opacity: 1;
-}
-.ace-slate-inline-tag[data-composer-selected="true"] .ace-slate-attachment-remove {
+.ace-slate-inline-tag::selection,
+.ace-slate-inline-tag ::selection {
+  /* Native selection still paints adjacent text; it must not recolor the badge. */
   background: transparent;
+  color: currentColor;
+}
+.ace-slate-inline-tag .ace-file-type-icon::selection,
+.ace-slate-inline-tag .ace-file-type-glyph::selection {
+  color: var(--ace-file-type-color);
 }
 
 /* 描述气泡:portal 到 body + position:fixed,坐标由 JS 计算(锚右对齐徽标右缘)。
@@ -4511,13 +4569,16 @@ a.ace-thread-link:focus-visible {
   left: 0;
   right: 0;
   bottom: -1px;
-  height: 10px;
+  height: var(--ace-scrollbar-hit-size);
   z-index: 3;
   opacity: 0;
   pointer-events: none;
   transition: opacity 160ms ease;
 }
 .ace-preview-details-tab-scroll-shell:hover .ace-preview-details-tab-scrollbar,
+.ace-preview-details-tab-scroll-shell:focus-within .ace-preview-details-tab-scrollbar,
+.ace-preview-details-tab-scroll-shell[data-scrollbar-visibility="always"] .ace-preview-details-tab-scrollbar,
+.ace-preview-details-tab-scroll-shell.ace-scrollbar-always .ace-preview-details-tab-scrollbar,
 .ace-preview-details-tab-scrollbar:hover,
 .ace-tab-scroll-dragging .ace-preview-details-tab-scrollbar {
   opacity: 1;
@@ -4526,15 +4587,24 @@ a.ace-thread-link:focus-visible {
 .ace-preview-details-tab-scrollbar-thumb {
   position: absolute;
   left: 0;
-  bottom: 0;
-  height: 3px;
+  bottom: var(--ace-scrollbar-thin-inset);
+  height: var(--ace-scrollbar-thin-size);
   border-radius: 999px;
-  background: rgba(var(--ace-fg-mute-rgb), 0.44);
+  background: var(--ace-scrollbar-thumb-color);
   transition: background 120ms ease;
 }
 .ace-preview-details-tab-scrollbar:hover .ace-preview-details-tab-scrollbar-thumb,
 .ace-tab-scroll-dragging .ace-preview-details-tab-scrollbar-thumb {
-  background: rgba(var(--ace-fg-mute-rgb), 0.72);
+  bottom: var(--ace-scrollbar-hover-inset);
+  height: var(--ace-scrollbar-hover-size);
+  background: var(--ace-scrollbar-thumb-hover-color);
+}
+@media (hover: none) {
+  .ace-preview-details-tab-scrollbar { opacity: 1; pointer-events: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ace-preview-details-tab-scrollbar,
+  .ace-preview-details-tab-scrollbar-thumb { transition: none; }
 }
 .ace-preview-details-tab {
   flex: 0 1 180px;
@@ -5834,22 +5904,6 @@ a.ace-thread-link:focus-visible {
   height: 100%;
   overflow: auto;
   background: var(--ace-code-bg);
-  scrollbar-color: rgba(var(--ace-fg-mute-rgb), 0.38) var(--ace-code-bg);
-}
-.ace-side-preview-code .ace-preview::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-.ace-side-preview-code .ace-preview::-webkit-scrollbar-track {
-  background: var(--ace-code-bg);
-}
-.ace-side-preview-code .ace-preview::-webkit-scrollbar-thumb {
-  background: rgba(var(--ace-fg-mute-rgb), 0.35);
-  border: 2px solid var(--ace-code-bg);
-  border-radius: 999px;
-}
-.ace-side-preview-code .ace-preview::-webkit-scrollbar-thumb:hover {
-  background: rgba(var(--ace-fg-mute-rgb), 0.55);
 }
 .ace-side-preview-code .ace-code-actions {
   top: 8px;
@@ -6029,7 +6083,6 @@ a.ace-thread-link:focus-visible {
   font-variant-ligatures: none;
   line-height: 1.55;
   tab-size: 4;
-  scrollbar-color: rgba(var(--ace-fg-mute-rgb), 0.38) var(--ace-code-bg);
 }
 .ace-file-text-editor::selection {
   background: rgba(var(--ace-accent-rgb), 0.34);
@@ -6235,6 +6288,17 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 .ace-side-spreadsheet-preview .x-spreadsheet {
   color: #111827;
   transform-origin: top left;
+}
+.ace-side-spreadsheet-preview .x-spreadsheet-scrollbar {
+  background: transparent;
+  opacity: 1;
+}
+.ace-side-spreadsheet-preview .x-spreadsheet-scrollbar > div {
+  background: transparent;
+}
+.ace-side-spreadsheet-preview:hover .x-spreadsheet-scrollbar,
+.ace-side-spreadsheet-preview:focus-within .x-spreadsheet-scrollbar {
+  --ace-scrollbar-visible-thumb: var(--ace-scrollbar-thumb-color);
 }
 .ace-side-presentation-preview {
   position: relative;
@@ -6979,6 +7043,11 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 .ace-console-term { height: 100%; width: 100%; position: relative; }
 /* xterm 的滚动条贴右缘,viewport 撑满容器 */
 .ace-console-term .xterm { height: 100%; }
+/* xterm 内容画布与原生 viewport 是兄弟节点，从终端容器统一传递悬停。 */
+.ace-console-term:hover .xterm-viewport,
+.ace-console-term:focus-within .xterm-viewport {
+  --ace-scrollbar-visible-thumb: var(--ace-scrollbar-thumb-color);
+}
 /* 拖文件悬停时的浮层提示。用 ::after 伪元素而非 React 子节点,避免与 xterm
    命令式插入的 DOM 冲突;pointer-events:none 确保拖放命中不被浮层吞掉。 */
 .ace-console-term[data-drop-active="true"]::after {

@@ -1,8 +1,9 @@
-import { SETTINGS_NAV_ITEMS } from './settingsNavigation.js';
+import { getSettingsNavItems } from './settingsNavigation.js';
 import { sourceCatalogs } from '../i18n/sourceCatalog.generated.js';
 
 // Labels are also the destination anchors. Both catalog languages remain searchable.
-export function settingsSearchEntries() {
+export function settingsSearchEntries(developerModeUnlocked = false) {
+  const navItems = getSettingsNavItems(developerModeUnlocked);
   const fields = [
     ['general', '界面语言', 'language locale english chinese'],
     ['general', '工作模式', 'work mode coding daily'],
@@ -18,6 +19,7 @@ export function settingsSearchEntries() {
     ['appearance', '暗黑模式', 'dark light mode'],
     ['appearance', '字体大小', 'font size'],
     ['appearance', '显示任务时间', 'sidebar task time timestamp'],
+    ['appearance', '消息自动折叠', '会话 conversation messages auto collapse fold expand tools'],
     ['config', '升级服务 URL', 'upgrade update service url'],
     ['config', 'Python 工具', 'python uv ruff mypy path directory'],
     ['config', 'Node.js 工具', 'node nodejs npm pnpm tsx path directory'],
@@ -30,6 +32,7 @@ export function settingsSearchEntries() {
     ['mcp', '服务器配置', 'mcp server config json'],
     ['tools', '内置工具', 'builtin tools'],
     ['tools', 'Agent 浏览器', 'agent browser'],
+    ['tools', '电脑操控（实验性）', 'computer use experimental windows desktop mouse keyboard screenshot pointer cursor style theme color ace plain 指针 样式 主题色'],
     ['tools', '图像生成', 'image generation drawing'],
     ['tools', '摘要生成', 'summary title generation local model 摘要模型 会话标题'],
     ['tools', '工具重写', 'tool rewrite rename alias audit'],
@@ -45,15 +48,18 @@ export function settingsSearchEntries() {
     ['about', '当前版本', 'version upgrade'],
     ['about', 'Web 核心', 'webview browser engine'],
   ];
+  if (developerModeUnlocked) {
+    fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
+  }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),
-    ...SETTINGS_NAV_ITEMS.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
+    ...navItems.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
   ];
   const catalogs = Object.entries(sourceCatalogs['zh-CN']);
   return all.map((item) => {
     const source = catalogs.find(([key, zh]) => zh === item.label || sourceCatalogs['en-US'][key] === item.label);
     return { ...item, translations: source ? [source[1], sourceCatalogs['en-US'][source[0]]] : [],
-      sectionLabel: SETTINGS_NAV_ITEMS.find((nav) => nav.key === item.section)?.label || item.section };
+      sectionLabel: navItems.find((nav) => nav.key === item.section)?.label || item.section };
   });
 }
 

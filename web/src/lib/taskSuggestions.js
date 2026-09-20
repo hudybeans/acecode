@@ -3,6 +3,7 @@ import { sessionRefFromJumpTarget } from './sessionJump.js';
 const STATUSES = new Set(['pending', 'queued', 'starting', 'started', 'failed', 'dismissed']);
 const KINDS = new Set(['side_task', 'context_handoff']);
 export const SUGGESTION_POLL_INTERVAL_MS = 3000;
+export const SUGGESTION_DISMISS_DELAY_MS = 30_000;
 
 export function normalizeTaskSuggestion(raw, sourceSessionId) {
   if (!raw || typeof raw !== 'object' || !raw.id || !KINDS.has(raw.kind) || !STATUSES.has(raw.status)) return null;
@@ -44,11 +45,13 @@ export function createTaskSuggestionsController({
   onStarted = () => {},
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
+  now = Date.now,
   pollIntervalMs = SUGGESTION_POLL_INTERVAL_MS,
 }) {
   let snapshot = {
     suggestions: [], sourceBusy: !!busy, workspaceBusy: !!busy,
     worktreeAvailable: false, unsupported: false, pending: {}, errors: {}, errorActions: {}, refreshError: '',
+    dismissDeadlines: {},
   };
   let disposed = false;
   let timer = null;
@@ -61,10 +64,46 @@ export function createTaskSuggestionsController({
   const actions = new Map();
   const acceptedHandoffs = new Set();
   const announced = new Set();
+  const countdowns = new Map();
+  const stoppedCountdowns = new Set();
+
+  function syncCountdowns() {
+    const eligible = new Set(snapshot.suggestions
+      .filter((item) => item.status === 'pending' && !snapshot.pending[item.id]
+        && !snapshot.errors[item.id] && !item.error && !stoppedCountdowns.has(item.id))
+      .map((item) => item.id));
+    for (const [id, countdown] of countdowns) {
+      if (eligible.has(id)) continue;
+      clearTimer(countdown.timer);
+      countdowns.delete(id);
+      stoppedCountdowns.add(id);
+    }
+    for (const id of eligible) {
+      if (countdowns.has(id)) continue;
+      const deadline = now() + SUGGESTION_DISMISS_DELAY_MS;
+      const expire = () => {
+        if (disposed || !countdowns.has(id)) return;
+        const remaining = deadline - now();
+        if (remaining > 0) {
+          countdowns.get(id).timer = setTimer(expire, remaining);
+          return;
+        }
+        // Use the same serialized action path as the close button. Starting an
+        // action removes this deadline synchronously, before its request runs.
+        stoppedCountdowns.add(id);
+        void mutate(id, 'dismiss');
+      };
+      countdowns.set(id, { deadline, timer: setTimer(expire, SUGGESTION_DISMISS_DELAY_MS) });
+    }
+    snapshot.dismissDeadlines = Object.fromEntries(
+      [...countdowns].map(([id, countdown]) => [id, countdown.deadline]),
+    );
+  }
 
   function publish(patch) {
     if (disposed) return;
     snapshot = { ...snapshot, ...patch };
+    syncCountdowns();
     onChange(snapshot);
   }
 
@@ -201,6 +240,8 @@ export function createTaskSuggestionsController({
     dispose() {
       disposed = true;
       clearPoll();
+      for (const countdown of countdowns.values()) clearTimer(countdown.timer);
+      countdowns.clear();
       readAbort?.abort();
     },
   };

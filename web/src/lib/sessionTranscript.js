@@ -22,6 +22,97 @@ function messageEventUsesOccurrenceIdentity(payload) {
   return (payload?.role || 'system') === 'error';
 }
 
+// 回放(REST since=N 补拉 / WS 带游标订阅)时 token / reasoning 先攒着,直到看见
+// 能决定它们归属的事件再 flush。旧写法是「遇到任何非流式事件就 flush」,但 daemon
+// 在最后一个 token 与 assistant message 事件之间恒有一条 usage(chat_stream 一返回
+// 就 emit,message 要到 execute_tool_calls / 文本回合收尾才发;工具回合还会夹着
+// tool_planning 的 agent_progress):usage 把 token 提前 flush 成一条新草稿,随后
+// 那条 REST 历史里已有的 message 事件再把草稿「定稿」成第二份 —— 切进正在运行的
+// 会话(busy → since=1 全量回放)时,上一轮的 assistant 正文就在用户消息后面又
+// 出现一次。只有会往 transcript 追加 / 收尾条目的事件才需要先 flush;下面这些
+// 只改 usage / activity / goal / todo 等旁路状态,与草稿的先后无关。
+const STREAM_NEUTRAL_EVENT_TYPES = new Set([
+  'usage',
+  'agent_progress',
+  'model_step_start',
+  'model_step_finish',
+  'goal_updated',
+  'goal_cleared',
+  'todo_updated',
+  'session_updated',
+  'permission_request',
+  'permission_closed',
+  'question_request',
+  'question_closed',
+]);
+
+function eventFlushesPendingStream(ev) {
+  return !STREAM_NEUTRAL_EVENT_TYPES.has(ev?.type || '');
+}
+
+// 攒着的 token 入队时已经过了水位检查;推迟到 flush 时,水位可能已被中间的旁路
+// 事件(usage 等)推高,不能再把它们当过期帧丢掉 —— 否则被中断的回合(没有
+// assistant message 收尾)已流出的正文会整段消失。应用后水位仍取较大值。
+function reduceDeferredStreamEvent(state, ev) {
+  const watermark = Number(state?.lastSeq) || 0;
+  const seq = eventSeq(ev);
+  if (seq === null || seq > watermark) return reduceTranscriptEvent(state, ev);
+  const reduced = reduceTranscriptEvent({ ...state, lastSeq: seq - 1 }, ev);
+  reduced.state.lastSeq = Math.max(watermark, Number(reduced.state.lastSeq) || 0);
+  return reduced;
+}
+
+// message 事件命中已有条目时的原位更新:事件可能带更完整的 content_parts / metadata。
+function mergeMessageEventIntoItem(item, payload, msg) {
+  const incomingContent = payload.content || '';
+  return {
+    ...item,
+    role: payload.role || 'system',
+    content: incomingContent || item.content || '',
+    contentParts: Array.isArray(payload.content_parts) ? payload.content_parts : item.contentParts,
+    metadata: payload.metadata ?? item.metadata,
+    ...composerContentFields(payload, item),
+    ts: eventTs(msg),
+  };
+}
+
+// 回放帧里的 assistant message 若已在 transcript 里(REST 历史已含这条消息),
+// 说明此前回放出来的流式草稿只是它的副本:草稿必须丢弃,而不是被「定稿」成第二份。
+// 只对 replayed 帧生效 —— assistant 消息 id 是内容哈希,实时回合里模型说了一句
+// 与旧消息一字不差的话时 id 也相同,那是真的新回复,必须照常展示。
+function replayedDuplicateMessageIndex(items, payload, msg, isDraft) {
+  if (msg?.replayed !== true) return -1;
+  const incomingId = payload?.id || '';
+  if (!incomingId || messageEventUsesOccurrenceIdentity(payload)) return -1;
+  return items.findIndex((item, index) => (
+    !isDraft(item, index) && item.kind === 'msg' && item.messageId === incomingId
+  ));
+}
+
+function dropDraftAndMergeReplayedMessage(items, duplicateIndex, isDraft, payload, msg) {
+  return items
+    .map((item, index) => (index === duplicateIndex
+      ? mergeMessageEventIntoItem(item, payload, msg)
+      : item))
+    .filter((item, index) => !isDraft(item, index));
+}
+
+// 同一根因的工具版:REST 历史里已有这次调用落盘的结果条目(本回合里已经跑完的
+// 工具,含答完的 AskUserQuestion 卡片)时,回放的 tool_start 不能再追加一条,
+// 而是把后续 tool_update / tool_end 绑到已有条目上。从尾部找最近一条未被
+// 绑定的同 call id 条目 —— 有的 provider 会跨回合复用 call id。同样只对
+// replayed 帧生效:实时回合里复用的 call id 是真的新调用。
+function replayedPersistedToolIndex(state, toolCallId, msg) {
+  if (msg?.replayed !== true || !toolCallId) return -1;
+  const bound = new Set(state.toolMap.values());
+  for (let index = state.items.length - 1; index >= 0; index -= 1) {
+    const item = state.items[index];
+    if (item?.kind !== 'tool' || item.tool?.isDone !== true || bound.has(item.id)) continue;
+    if (String(item.tool?.toolCallId || '') === String(toolCallId)) return index;
+  }
+  return -1;
+}
+
 function normalizeSessionRef(sessionRef) {
   if (!sessionRef) return null;
   if (typeof sessionRef === 'string') return { sessionId: sessionRef };
@@ -277,11 +368,23 @@ function isAbortLikeReason(reason) {
   return /abort|cancel|interrupt|terminat|用户.*终止|已终止|取消|中断/i.test(String(reason || ''));
 }
 
+function isUserAbortMessage(message) {
+  return message?.role === 'system' && message.metadata?.transcript_only === true &&
+    message.metadata?.user_aborted === true;
+}
+
 function appendTerminationNotice(next, msg, payload = {}) {
   const text = terminationNoticeText(payload);
   const last = next.items[next.items.length - 1];
   if (last?.kind === 'termination_notice') {
-    if (last.content === text) return;
+    if (last.content === text) {
+      if (payload.metadata?.user_aborted === true) {
+        next.items = [...next.items.slice(0, -1), {
+          ...last, messageId: payload.id || '', metadata: payload.metadata,
+        }];
+      }
+      return;
+    }
     if (last.source === 'user' && payload.source !== 'user' && isAbortLikeReason(payload.reason || payload.message)) {
       return;
     }
@@ -292,6 +395,7 @@ function appendTerminationNotice(next, msg, payload = {}) {
       kind: 'termination_notice',
       id: allocateItemId(next),
       source: payload.source || 'server',
+      ...(payload.metadata ? { metadata: payload.metadata, messageId: payload.id || '' } : {}),
       content: text,
       ts: eventTs(msg),
     },
@@ -599,6 +703,13 @@ function genericHistoryMessageItem(next, m, extra = {}) {
 function historyItemFromMessage(next, m, messageOrdinal = null) {
   const metadata = m?.metadata && typeof m.metadata === 'object' ? m.metadata : null;
   const ts = transcriptTimestampMs(m) || Date.now();
+  if (isUserAbortMessage(m)) {
+    return {
+      kind: 'termination_notice', id: allocateItemId(next),
+      source: 'user', content: terminationNoticeText({ source: 'user' }),
+      metadata, messageId: m.id || '', ts,
+    };
+  }
   if ((m?.role || '') === 'tool' && metadata) {
     const summary = normalizePersistedToolSummary(metadata);
     const hunks = normalizePersistedToolHunks(metadata);
@@ -936,6 +1047,9 @@ export function preserveLiveAssistantTailOnLoad(loadedState, liveState) {
       ...loadedState,
       items,
       nextItemId: nextId + 1,
+      // 实时还在流式时,推入的草稿要接管 streamingId:后续 token 续在它后面,
+      // 而不是另起一条草稿,把同一段正文拆成「前半截 + 完整版」两个气泡。
+      streamingId: liveState?.streamingId != null ? nextId : (loadedState.streamingId ?? null),
       lastSeq: Math.max(loadedSeq, liveSeq),
     };
   }
@@ -1003,7 +1117,7 @@ export function applyTranscriptReplayEvents(state, events = []) {
   let pendingStreamEvents = [];
   const flushPendingStreamEvents = () => {
     for (const ev of pendingStreamEvents) {
-      const reduced = reduceTranscriptEvent(next, ev);
+      const reduced = reduceDeferredStreamEvent(next, ev);
       next = reduced.state;
       effects.push(...reduced.effects);
     }
@@ -1038,7 +1152,7 @@ export function applyTranscriptReplayEvents(state, events = []) {
         seenMessages.add(key);
       }
     }
-    flushPendingStreamEvents();
+    if (eventFlushesPendingStream(ev)) flushPendingStreamEvents();
     const reduced = reduceTranscriptEvent(next, ev);
     next = reduced.state;
     effects.push(...reduced.effects);
@@ -1052,6 +1166,7 @@ export function createTranscriptState(overrides = {}) {
   return {
     items: [],
     busy: false,
+    abortPending: false,
     activeTurnId: '',
     turns: 0,
     title: '',
@@ -1197,6 +1312,35 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'message': {
       const role = p.role || 'system';
+      if (role === 'assistant' && p.metadata?.transcript_only === true &&
+          p.metadata?.interrupted_output === true) {
+        // A local stop can split one stream into drafts on both sides of its
+        // optimistic notice. Replace that trailing span with the persisted
+        // partial response; the confirmed stop notice follows it.
+        let keep = next.items.length;
+        while (keep > 0) {
+          const item = next.items[keep - 1];
+          const draft = item.kind === 'msg' && item.role === 'assistant' &&
+            item.streamDraft && !item.messageId;
+          const localStop = item.kind === 'termination_notice' && item.source === 'user' &&
+            item.metadata?.user_aborted !== true;
+          if (!draft && !localStop) break;
+          keep -= 1;
+        }
+        if (keep < next.items.length) {
+          next.items = next.items.slice(0, keep);
+          next.streamingId = null;
+        }
+      }
+      if (isUserAbortMessage(p)) {
+        if (msg.replayed && p.id && next.items.some((item) => (
+          item.kind === 'termination_notice' && item.messageId === p.id &&
+          item.metadata?.retry_user_message_id === p.metadata.retry_user_message_id
+        ))) break;
+        finalizeStreaming(next);
+        appendTerminationNotice(next, msg, { ...p, source: 'user' });
+        break;
+      }
       const turnNetDiff = normalizeTurnNetDiffRecord(p);
       if (turnNetDiff) {
         next.turnNetDiffs.set(turnNetDiff.userMessageUuid, turnNetDiff);
@@ -1224,14 +1368,30 @@ export function reduceTranscriptEvent(state, msg) {
           next.turnHadAssistantText = true;
           next.lastAssistantText = finalContent;
         }
-        next.items = next.items.map((item) => item.id === currentStreamingId
+        const isStreamingDraft = (item) => item.id === currentStreamingId;
+        // WS 带旧游标订阅时,REST 已加载的 assistant 会被回放的 token 重新
+        // 流成草稿,再由这条 replayed message 定稿 —— 那就是同一条消息的第二份。
+        const duplicateIndex = replayedDuplicateMessageIndex(next.items, p, msg, isStreamingDraft);
+        if (duplicateIndex >= 0) {
+          next.items = dropDraftAndMergeReplayedMessage(
+            next.items, duplicateIndex, isStreamingDraft, p, msg);
+          break;
+        }
+        next.items = next.items.map((item) => (isStreamingDraft(item)
           ? replaceAssistantItemWithFinal(item, p, msg)
-          : item);
+          : item));
         break;
       }
       if (role === 'assistant' && (p.content || '').trim()) {
         const draftIndex = trailingAssistantDraftIndex(next.items);
         if (draftIndex >= 0) {
+          const isTrailingDraft = (item, index) => index === draftIndex;
+          const duplicateIndex = replayedDuplicateMessageIndex(next.items, p, msg, isTrailingDraft);
+          if (duplicateIndex >= 0) {
+            next.items = dropDraftAndMergeReplayedMessage(
+              next.items, duplicateIndex, isTrailingDraft, p, msg);
+            break;
+          }
           next.items = next.items.map((item, index) => (index === draftIndex
             ? replaceAssistantItemWithFinal(item, p, msg)
             : item));
@@ -1259,15 +1419,7 @@ export function reduceTranscriptEvent(state, msg) {
         : -1;
       if (existingIndex >= 0) {
         next.items = next.items.map((item, index) => (index === existingIndex
-          ? {
-              ...item,
-              role,
-              content: incomingContent || item.content || '',
-              contentParts: Array.isArray(p.content_parts) ? p.content_parts : item.contentParts,
-              metadata: p.metadata ?? item.metadata,
-              ...composerContentFields(p, item),
-              ts: eventTs(msg),
-            }
+          ? mergeMessageEventIntoItem(item, p, msg)
           : item));
         break;
       }
@@ -1358,6 +1510,12 @@ export function reduceTranscriptEvent(state, msg) {
     case 'tool_start': {
       markTranscriptRunning(next);
       finalizeStreaming(next);
+      const persistedIndex = replayedPersistedToolIndex(
+        next, p.tool_call_id || p.call_id || p.id || '', msg);
+      if (persistedIndex >= 0) {
+        next.toolMap.set(toolKey(p), next.items[persistedIndex].id);
+        break;
+      }
       const id = allocateItemId(next);
       next.toolMap.set(toolKey(p), id);
       const tool = {
@@ -1476,6 +1634,7 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = !!p.busy;
+      next.abortPending = false;
       next.activeTurnId = next.busy ? String(p.turn_id || '') : '';
       next.status = next.busy ? 'running' : 'idle';
       if (next.busy && !wasBusy) {
@@ -1509,6 +1668,7 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;
@@ -1526,6 +1686,7 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'error':
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'error';
       next.error = p.reason || '';
@@ -1539,6 +1700,7 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     case 'turn_aborted':
       next.busy = false;
+      next.abortPending = true;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;
@@ -1585,7 +1747,7 @@ export function loadTranscriptHistory(state, data = {}) {
   let pendingStreamEvents = [];
   const flushPendingStreamEvents = () => {
     for (const ev of pendingStreamEvents) {
-      const reduced = reduceTranscriptEvent(next, ev);
+      const reduced = reduceDeferredStreamEvent(next, ev);
       next = reduced.state;
       effects.push(...reduced.effects);
     }
@@ -1609,7 +1771,7 @@ export function loadTranscriptHistory(state, data = {}) {
       }
       if (!occurrenceIdentity) seenMessages.add(key);
     }
-    flushPendingStreamEvents();
+    if (eventFlushesPendingStream(ev)) flushPendingStreamEvents();
     const reduced = reduceTranscriptEvent(next, ev);
     next = reduced.state;
     effects.push(...reduced.effects);

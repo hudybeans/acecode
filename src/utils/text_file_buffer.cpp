@@ -1,4 +1,5 @@
 #include "text_file_buffer.hpp"
+#include "../config/mcp_config.hpp"
 
 #include "sha256.hpp"
 #include "tool_errors.hpp"
@@ -842,6 +843,18 @@ TextSafeWriteResult safe_write_text_file(
     const std::string& lf_text,
     const TextFileMetadata& metadata,
     const std::function<void(const std::string& path)>& before_write) {
+    try {
+        if (const auto servers = validate_mcp_file_edit(path, lf_text)) {
+            if (before_write) before_write(path);
+            // Configuration JSON is persisted as UTF-8, independently of an
+            // external editor's previous encoding. Snapshot and active-file
+            // publication share the same transaction as the settings APIs.
+            write_validated_config_file(path, normalize_text_to_lf(lf_text), *servers);
+            return {true, {}, false, false};
+        }
+    } catch (const std::exception& error) {
+        return {false, error.what(), false, false};
+    }
     auto encoded = encode_text_for_write(lf_text, metadata);
     if (!encoded.success) {
         return {false, encoded.error, false, false};

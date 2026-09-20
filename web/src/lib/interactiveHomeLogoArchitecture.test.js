@@ -289,7 +289,7 @@ test('idle wandering keeps its frame loop local and stops on hidden or lost cont
   assert.match(logo, /disposed = true;\s*stopIdleMotion\(\{ cancelFrame: true \}\);/);
 });
 
-test('home logo layout reserves 100px while the transparent shadow canvas overflows safely', () => {
+test('default logo layout reserves 100px while the transparent shadow canvas overflows safely', () => {
   const styles = source('styles/globals.css');
   const start = styles.indexOf('.ace-home-logo {');
   const end = styles.indexOf('.ace-home-title {', start);
@@ -305,14 +305,14 @@ test('home logo layout reserves 100px while the transparent shadow canvas overfl
   );
 });
 
-test('dark theme adds a local fading blue grid behind both logo render paths', () => {
+test('default dark logo backdrop retains a local fading blue grid', () => {
   const styles = source('styles/globals.css');
   const start = styles.indexOf('.ace-home-logo {');
   const end = styles.indexOf('.ace-home-title {', start);
   assert.ok(start >= 0 && end > start);
   const logoStyles = styles.slice(start, end);
 
-  assert.equal((logoStyles.match(/\.ace-home-logo::before/g) || []).length, 1);
+  assert.equal((logoStyles.match(/\[data-theme="dark"\] \.ace-home-logo::before/g) || []).length, 1);
   assert.match(
     logoStyles,
     /\[data-theme="dark"\] \.ace-home-logo::before\s*\{[\s\S]*content: "";[\s\S]*position: absolute;[\s\S]*z-index: 0;/,

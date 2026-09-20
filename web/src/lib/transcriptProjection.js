@@ -7,6 +7,7 @@ import {
 } from './toolSummaryFallback.js';
 import { isImageAttachment, normalizeAttachmentList } from './messageAttachments.js';
 import { questionFeedbackForItem } from './questionFeedback.js';
+import { isShellCommand } from './shellCommandPresentation.js';
 
 function isUserMessage(item) {
   return item?.kind === 'msg' && item.role === 'user';
@@ -689,7 +690,19 @@ function suppressStructuredToolWrappers(items) {
     .map((item, index) => {
       if (hiddenIndexes.has(index)) return null;
       const extras = coveredExtras.get(index);
-      return extras ? attachCoveredItems(item, extras) : item;
+      if (!extras) return item;
+      const call = extras.find(isToolCallTranscriptMessage);
+      const invocation = call ? parseLegacyToolCall(call.content, transcriptToolName(call)) : null;
+      // 历史结构化结果没有 args，配对后先恢复命令，再移除调用包装。
+      // 已有实时参数优先，且不修改原始消息或其它工具的专用展示。
+      const restored = invocation && (isShellCommand(item.tool) || isShellCommand({ tool: invocation.toolName }))
+        ? { ...item, tool: {
+            ...item.tool,
+            tool: item.tool.tool || invocation.toolName,
+            args: item.tool.args ?? (invocation.malformed ? null : invocation.args),
+          } }
+        : item;
+      return attachCoveredItems(restored, extras);
     })
     .filter(Boolean);
 }
@@ -767,6 +780,8 @@ function makeLegacyInvocationItem(call, result, betweenItems) {
       elapsed: 0,
       summary,
       output: legacyInvocationContent(call, result),
+      ...(isShellCommand({ tool: toolName }) && !invocation.malformed
+        ? { resultOutput: legacyResultText(result) } : {}),
       hunks: [],
       attachments: [],
       metadata,
@@ -1004,7 +1019,7 @@ function projectGenericTurn(items, options = {}) {
       continue;
     }
 
-    if (isActivityBufferItem(item)) {
+    if (options.messageAutoCollapse !== false && isActivityBufferItem(item)) {
       tools.push(item);
       continue;
     }
@@ -1318,15 +1333,19 @@ function projectTurn(items, options = {}) {
   const normalizedItems = groupMediaTools(
     groupSubagentTools(visibleItems),
   );
+  if (options.messageAutoCollapse === false) {
+    return projectGenericTurn(normalizedItems, options);
+  }
   const finalCollapsed = projectFinalCollapsedTurn(normalizedItems, options);
   if (finalCollapsed) return finalCollapsed;
   return projectCompletionTurn(normalizedItems, options);
 }
 
 export function projectCollapsedTranscriptItems(items, options = {}) {
-  const source = collapseCompletedCompactNoticeGroups(
-    Array.isArray(items) ? items : [],
-  );
+  const raw = Array.isArray(items) ? items : [];
+  const source = options.messageAutoCollapse === false
+    ? raw
+    : collapseCompletedCompactNoticeGroups(raw);
   if (source.length === 0) {
     return options.ensureLiveActivity && options.deferTrailingToolSummary
       ? [makeToolSummaryItem([], {
@@ -1344,6 +1363,7 @@ export function projectCollapsedTranscriptItems(items, options = {}) {
       out.push(...projectTurn(turn, {
         ...turnOptions,
         filterNormalizedItem: options.filterNormalizedItem,
+        messageAutoCollapse: options.messageAutoCollapse,
       }));
       turn = [];
     }

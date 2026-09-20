@@ -258,6 +258,40 @@ TEST(ConfigWebUiPreferencesSave, NationalDayThemeRoundTripsForUpgradedProfiles) 
     std::filesystem::remove(path, ec);
 }
 
+// 消息自动折叠默认开启，旧配置和无效值兼容默认；关闭后稀疏落盘并可恢复。
+TEST(ConfigWebUiPreferencesMessageAutoCollapse, DefaultsAndLegacyConfigStayEnabled) {
+    EXPECT_TRUE(WebUiPreferencesConfig{}.message_auto_collapse);
+    const auto path = temp_config_path("message-collapse-default");
+    for (const auto& value : {nlohmann::json::object(),
+                              nlohmann::json{{"message_auto_collapse", "false"}}}) {
+        write_json(path, {{"web_ui", value}});
+        EXPECT_TRUE(load_config_from_path(path.string()).web_ui.message_auto_collapse);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(ConfigWebUiPreferencesMessageAutoCollapse, DisabledRoundTripsAndDefaultIsOmitted) {
+    const auto path = temp_config_path("message-collapse-roundtrip");
+    AppConfig cfg;
+    cfg.web_ui.message_auto_collapse = false;
+    save_config(cfg, path.string());
+    {
+        std::ifstream input(path);
+        const auto saved = nlohmann::json::parse(input);
+        EXPECT_EQ(saved["web_ui"]["message_auto_collapse"], false);
+    }
+    EXPECT_FALSE(load_config_from_path(path.string()).web_ui.message_auto_collapse);
+    cfg.web_ui.message_auto_collapse = true;
+    save_config(cfg, path.string());
+    {
+        std::ifstream input(path);
+        EXPECT_FALSE(nlohmann::json::parse(input).contains("web_ui"));
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST(ConfigWebUiPreferencesSave, DownloadedThemePreservesOrdinaryDarkPreference) {
     const auto path = temp_config_path("eva-theme");
     AppConfig cfg;

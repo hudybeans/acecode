@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseSync, traverse } from '@babel/core';
 
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -92,7 +93,7 @@ run('右侧局部遮罩不复用全屏导航遮罩且不会挡住侧栏', () => 
 
   assert.match(app, /onSessionLoadStateChange=\{setSidebarSessionLoadState\}/);
   assert.match(app, /phase=\{activeRef\?\.resumePending \? '' : \(sidebarSessionLoadState\?\.phase \|\| ''\)\}/);
-  assert.match(chat, /phase=\{ref\?\.resumeFailed \? 'error' : \(ref\?\.resumePending \? 'loading' : ''\)\}/);
+  assert.match(chat, /phase=\{sessionContentLoadingPhase\(\{/);
   assert.match(app, /anchorSelector="\[data-session-content-loading-anchor='true'\]"/);
   assert.equal(
     (chat.match(/data-session-content-loading-anchor="true"/g) || []).length,
@@ -114,15 +115,37 @@ run('右侧局部遮罩不复用全屏导航遮罩且不会挡住侧栏', () => 
   assert.match(app, /<SessionNavigationMask\s+open=\{sessionNavigationPending\}/);
 });
 
-run('ChatView 在 transcript 加载和失败时给出局部反馈', () => {
+run('会话只有一个内容遮罩，直接挂在会话主列而非输入区', () => {
   const chat = source('components/ChatView.jsx');
+  const ast = parseSync(chat, {
+    configFile: false,
+    babelrc: false,
+    sourceType: 'module',
+    parserOpts: { plugins: ['jsx'] },
+  });
+  const overlays = [];
+  traverse(ast, {
+    JSXElement(nodePath) {
+      if (nodePath.node.openingElement.name.name === 'SessionContentLoading') overlays.push(nodePath);
+    },
+  });
+  assert.equal(overlays.length, 1, '记录读取和运行环境恢复必须共用同一个遮罩');
+  const parent = overlays[0].parentPath.node;
+  assert.equal(parent.type, 'JSXElement');
+  const anchor = parent.openingElement.attributes.find(
+    (attribute) => attribute.name?.name === 'data-session-content-loading-anchor',
+  );
+  assert.equal(anchor?.value?.value, 'true', '遮罩必须以会话主列为直接父节点，不能落入输入区');
+  assert.match(chat.slice(parent.start, parent.openingElement.end), /ace-session-panel[^']*relative/);
+  assert.match(chat, /readOnly: readOnlyExternalSession/);
+  assert.match(chat, /if \(sessionRuntimeUnavailable\) return;/);
+  assert.match(chat, /if \(!targetSid \|\| busy \|\| drainRef\.current \|\| sessionRuntimeUnavailable\) return;/);
+});
+
+run('会话加载反馈保留中英文文案', () => {
   const zh = source('i18n/catalogs/zh-CN.js');
   const en = source('i18n/catalogs/en-US.js');
 
-  assert.match(
-    chat,
-    /transcriptLoadState === 'loading'[\s\S]*\? 'transcript'[\s\S]*transcriptLoadState === 'error' \? 'error'/,
-  );
   for (const catalog of [zh, en]) {
     assert.match(catalog, /sidebarQueued:/);
     assert.match(catalog, /sidebarLoading:/);

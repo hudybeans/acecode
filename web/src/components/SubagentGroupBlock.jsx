@@ -61,8 +61,9 @@ function AgentRow({ agent, task, onOpen }) {
   );
 }
 
-export function SubagentGroupBlock({ agents = [], tasksById, onOpen }) {
-  const [expanded, setExpanded] = useState(false);
+export function SubagentGroupBlock({ agents = [], tasksById, onOpen, messageAutoCollapse = true }) {
+  const [manuallyExpanded, setExpanded] = useState(false);
+  const expanded = !messageAutoCollapse || manuallyExpanded;
   const count = agents.length;
   const byId = tasksById || new Map();
 
@@ -71,11 +72,11 @@ export function SubagentGroupBlock({ agents = [], tasksById, onOpen }) {
       <ActivityLine
         icon={<VsIcon name="embedding" size={13} className="opacity-80" />}
         label={`调用了 ${count} 个智能体`}
-        expandable
+        expandable={messageAutoCollapse}
         expanded={expanded}
-        onToggle={() => setExpanded((v) => !v)}
-        title={expanded ? '收起智能体' : '展开智能体'}
-        ariaLabel={expanded ? '收起智能体' : '展开智能体'}
+        onToggle={messageAutoCollapse ? () => setExpanded((v) => !v) : undefined}
+        title={messageAutoCollapse ? (expanded ? '收起智能体' : '展开智能体') : undefined}
+        ariaLabel={messageAutoCollapse ? (expanded ? '收起智能体' : '展开智能体') : undefined}
       />
       {expanded && (
         <div className="mt-1 flex flex-col gap-0.5">

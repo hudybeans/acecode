@@ -27,6 +27,7 @@
 #include <webview/webview.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -57,7 +58,7 @@ std::function<bool()> g_close_handler;
 // 系统文件拖放 handler(plan: 桌面控制台拖放文件 → 插入完整路径)。Windows 的
 // WebView2 事件回调 / macOS swizzle 的拖放回调命中文件时调它,把路径交给 main.cpp
 // eval 回前端。主线程 only(WebView2 事件与 AppKit 拖放均在 GUI 主线程)。
-std::function<void(std::vector<std::string>)> g_file_drop_handler;
+WebHost::FileDropHandler g_file_drop_handler;
 
 // A second Desktop process can carry more intent than "show the window".
 // main.cpp uses this GUI-thread callback to consume its one-shot open request.
@@ -96,11 +97,58 @@ bool mac_window_is_fullscreen(NSWindow* window) {
            (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
 }
 
+constexpr CGFloat kMacTopbarControlCenterFromTop = 20.0;
+
+void show_and_align_mac_standard_button(NSWindow* window,
+                                        NSWindowButton button,
+                                        CGFloat horizontal_offset) {
+    NSButton* button_view = [window standardWindowButton:button];
+    if (!button_view) return;
+    [button_view setHidden:NO];
+
+    NSView* container = [button_view superview];
+    if (!container) return;
+
+    const NSRect bounds = [container bounds];
+    NSRect frame = [button_view frame];
+    const CGFloat target_center_y = [container isFlipped]
+        ? NSMinY(bounds) + kMacTopbarControlCenterFromTop
+        : NSMaxY(bounds) - kMacTopbarControlCenterFromTop;
+    frame.origin.x += horizontal_offset;
+    frame.origin.y = target_center_y - NSHeight(frame) / 2.0;
+    [button_view setFrame:frame];
+}
+
+void align_mac_standard_buttons(NSWindow* window) {
+    NSButton* close_button =
+        [window standardWindowButton:NSWindowCloseButton];
+    CGFloat horizontal_offset = 0.0;
+    if (close_button && [close_button superview]) {
+        const NSRect container_bounds = [[close_button superview] bounds];
+        const NSRect close_frame = [close_button frame];
+        const CGFloat equal_edge_inset =
+            kMacTopbarControlCenterFromTop - NSHeight(close_frame) / 2.0;
+        const CGFloat target_close_x =
+            NSMinX(container_bounds) + equal_edge_inset;
+        horizontal_offset = target_close_x - NSMinX(close_frame);
+    }
+
+    show_and_align_mac_standard_button(
+        window, NSWindowCloseButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowMiniaturizeButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowZoomButton, horizontal_offset);
+}
+
 void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
     if (!window) return;
     const bool fullscreen = mac_window_is_fullscreen(window);
     if (fullscreen == g_mac_last_known_fullscreen) return;
     g_mac_last_known_fullscreen = fullscreen;
+    if (!fullscreen) {
+        align_mac_standard_buttons(window);
+    }
     if (g_mac_window_fullscreen_handler) {
         g_mac_window_fullscreen_handler(fullscreen);
     }
@@ -117,12 +165,6 @@ id install_mac_window_fullscreen_observer(webview::webview& w,
                 usingBlock:^(__unused NSNotification* note) {
                     notify_mac_window_fullscreen_if_changed(window);
                 }];
-}
-
-void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
-    NSButton* button_view = [window standardWindowButton:button];
-    if (!button_view) return;
-    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -149,11 +191,9 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
-    // retain their standard layout, actions, and full-screen behavior.
-    show_mac_standard_button(window, NSWindowCloseButton);
-    show_mac_standard_button(window, NSWindowMiniaturizeButton);
-    show_mac_standard_button(window, NSWindowZoomButton);
+    // Keep AppKit's hierarchy and actions intact, but align the native traffic
+    // lights with the web top-bar controls and match their top/left edge insets.
+    align_mac_standard_buttons(window);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
     g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
@@ -470,8 +510,27 @@ static bool mac_drag_has_file_urls(id sender) {
                                options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
 }
 
+static std::optional<WebHost::FileDropLocation> mac_drop_location(id self, id sender) {
+    NSView* view = [self isKindOfClass:[NSView class]] ? static_cast<NSView*>(self) : nil;
+    if (!view || !sender) return std::nullopt;
+    const NSRect bounds = [view bounds];
+    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) return std::nullopt;
+
+    const NSPoint window_point = [sender draggingLocation];
+    const NSPoint local_point = [view convertPoint:window_point fromView:nil];
+    const double x = (local_point.x - NSMinX(bounds)) / NSWidth(bounds);
+    const double local_y = (local_point.y - NSMinY(bounds)) / NSHeight(bounds);
+    const double y = [view isFlipped] ? local_y : 1.0 - local_y;
+    if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || x >= 1.0 ||
+        y < 0.0 || y >= 1.0) {
+        return std::nullopt;
+    }
+    return WebHost::FileDropLocation{x, y};
+}
+
 static BOOL ace_perform_drag_operation(id self, SEL cmd, id sender) {
-    if (mac_drag_has_file_urls(sender)) {
+    const bool has_file_urls = mac_drag_has_file_urls(sender);
+    if (has_file_urls) {
         NSArray<NSURL*>* urls = [[sender draggingPasteboard]
             readObjectsForClasses:@[ [NSURL class] ]
                           options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
@@ -482,10 +541,19 @@ static BOOL ace_perform_drag_operation(id self, SEL cmd, id sender) {
                 if (p) paths.emplace_back(p);
             }
         }
+        const auto location = mac_drop_location(self, sender);
         if (!paths.empty() && g_file_drop_handler) {
-            g_file_drop_handler(paths);
+            if (!location) {
+                LOG_WARN("[file-drop] macOS drop rejected count=" +
+                         std::to_string(paths.size()) + " reason=invalid-coordinate");
+            }
+            g_file_drop_handler(paths, WebHost::FileDropContext{location, true});
             return YES;
         }
+        LOG_WARN("[file-drop] macOS drop rejected count=" +
+                 std::to_string(paths.size()) +
+                 " coordinate_valid=" + (location ? "true" : "false") +
+                 " handler=" + (g_file_drop_handler ? "available" : "missing"));
     }
     if (g_orig_perform_drag) return g_orig_perform_drag(self, cmd, sender);
     return NO;
@@ -510,6 +578,9 @@ void install_mac_file_drop(webview::webview& w) {
     if (![view isKindOfClass:[NSView class]]) return;
     Class cls = object_getClass(view);  // WKWebView 实际类
     if (!cls) return;
+    LOG_INFO("[file-drop] macOS installation class=" +
+             std::string(class_getName(cls)) +
+             " handler=" + (g_file_drop_handler ? "available" : "missing"));
 
     // 补注册 fileURL 拖放类型(WKWebView 已注册网页拖放类型,合并而非覆盖)。
     @try {
@@ -972,7 +1043,7 @@ bool win_is_file_uri(const std::wstring& uri) {
 
 void dispatch_file_uri(const std::wstring& uri) {
     if (g_file_drop_handler) {
-        g_file_drop_handler({acecode::wide_to_utf8(uri)});
+        g_file_drop_handler({acecode::wide_to_utf8(uri)}, WebHost::FileDropContext{});
     }
 }
 
@@ -1039,7 +1110,7 @@ void install_win_webview_navigation_handlers(webview::webview& host) {
                ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
                 auto paths = win_web_message_file_paths(args);
                 if (!paths.empty() && g_file_drop_handler) {
-                    g_file_drop_handler(std::move(paths));
+                    g_file_drop_handler(std::move(paths), WebHost::FileDropContext{});
                 }
                 return S_OK;
             })
@@ -2069,6 +2140,32 @@ void WebHost::dispatch(std::function<void()> task) {
     if (!task) return;
     impl_->w->dispatch(std::move(task));
 }
+bool WebHost::focus_after_file_drop() {
+#ifdef _WIN32
+    HWND hwnd = impl_->hwnd();
+    if (!hwnd) return false;
+    const DWORD current_thread = ::GetCurrentThreadId();
+    const DWORD foreground_thread =
+        ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
+    // The drag source owns the last native input. Briefly share its input
+    // queue for this explicit drop, then detach before returning to WebView.
+    const bool attached = foreground_thread && foreground_thread != current_thread &&
+        ::AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    set_visible(true);
+    if (attached) ::AttachThreadInput(current_thread, foreground_thread, FALSE);
+    if (::GetForegroundWindow() != hwnd) return false;
+
+    auto controller_result = impl_->w->browser_controller();
+    if (!controller_result.ok()) return false;
+    auto* controller = static_cast<ICoreWebView2Controller*>(controller_result.value());
+    return controller && SUCCEEDED(
+        controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+#else
+    set_visible(true);
+    return true;
+#endif
+}
+
 bool WebHost::open_dev_tools() {
 #ifdef _WIN32
     auto controller_result = impl_->w->browser_controller();
@@ -2345,6 +2442,61 @@ void WebHost::set_file_drop_handler(FileDropHandler handler) {
     install_mac_file_drop(*impl_->w);
 #endif
     // Linux/WebKitGTK:前端经 text/uri-list 处理,native 不安装拦截。
+}
+acecode::ClipboardPathsReadResult WebHost::read_clipboard_paths() {
+    using Result = acecode::ClipboardPathsReadResult;
+#ifdef _WIN32
+    return acecode::read_system_clipboard_paths();
+#else
+    Result result;
+    result.status = Result::Status::Empty;
+#ifdef __APPLE__
+    NSArray<NSURL*>* urls = [[NSPasteboard generalPasteboard]
+        readObjectsForClasses:@[[NSURL class]]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    for (NSURL* url in urls) {
+        const char* path = [url.path UTF8String];
+        if (path) result.paths.emplace_back(path);
+    }
+#else
+    // WebKitGTK already loads these libraries. Keep GTK types out of the
+    // desktop wrapper's public API, as with the window operations above.
+    auto& api = gtk_window_api();
+    if (!api.load()) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    const auto atom = reinterpret_cast<void* (*)(const char*, int)>(dlsym(api.gdk, "gdk_atom_intern"));
+    const auto clipboard_get = reinterpret_cast<void* (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_get"));
+    const auto read_uris = reinterpret_cast<char** (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_wait_for_uris"));
+    const auto filename = reinterpret_cast<char* (*)(const char*, char**, void**)>(dlsym(api.gtk, "g_filename_from_uri"));
+    const auto free_string = reinterpret_cast<void (*)(void*)>(dlsym(api.gtk, "g_free"));
+    const auto free_strings = reinterpret_cast<void (*)(char**)>(dlsym(api.gtk, "g_strfreev"));
+    if (!atom || !clipboard_get || !read_uris || !filename || !free_string || !free_strings) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    char** uris = read_uris(clipboard_get(atom("CLIPBOARD", 0)));
+    if (uris) {
+        for (char** uri = uris; *uri; ++uri) {
+            char* path = filename(*uri, nullptr, nullptr);
+            if (path) {
+                result.paths.emplace_back(path);
+                free_string(path);
+            }
+        }
+        free_strings(uris);
+    }
+#endif
+    if (result.paths.size() > acecode::kMaxClipboardFilesystemPaths) {
+        result.status = Result::Status::TooMany;
+        result.paths.clear();
+        result.detail = "clipboard contains too many filesystem items";
+    } else if (!result.paths.empty()) result.status = Result::Status::Success;
+    return result;
+#endif
 }
 void WebHost::request_quit() {
 #ifdef _WIN32

@@ -88,12 +88,12 @@ test('SettingsPage renders accessible groups inside the scrollable navigation', 
     new URL('../components/SettingsPage.jsx', import.meta.url),
     'utf8',
   );
-  assert.match(source, /SETTINGS_NAV_GROUPS\.map/);
+  assert.match(source, /navGroups\.map/);
   assert.match(source, /role="group"/);
   assert.match(source, /aria-labelledby=\{headingId\}/);
   assert.match(source, /aria-current=\{active \? 'page' : undefined\}/);
   assert.match(source, /<nav className="[^"]*overflow-y-auto/);
-  assert.match(source, /text-\[11px\] font-medium text-fg-mute/);
+  assert.match(source, /text-\[11px\] font-normal text-fg-mute/);
 });
 
 test('SettingsPage keeps search and labels available with compact content padding', () => {

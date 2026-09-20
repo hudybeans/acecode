@@ -9,6 +9,8 @@
 //     的双击图标行为),然后自己 exit(0)。
 //   - 锁 scope 是 per-user(不是 system-wide):多用户登录同一台机器时各自允许
 //     一个 desktop 实例。
+//   - 开发者配置允许多开时,附加实例可在未持锁的情况下继续启动,但必须使用
+//     私有 daemon 运行目录。主实例仍持有本锁。策略见 instance_startup.hpp。
 //
 // 实现:
 //   - Windows: `CreateMutexW(L"Local\\ACECode-Desktop-Singleton-v1")`(`Local\\`

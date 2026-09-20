@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
 import { useTranslation } from 'react-i18next';
 import * as Diff2Html from 'diff2html';
 import {
@@ -145,6 +147,8 @@ function ChangeReviewFileRow({ row, open, selected, cwd, onToggle, onOpenFile })
 }
 
 export function ChangeReviewDetails({
+  owner: suppliedOwner,
+  viewKey = 'changes',
   rows = [],
   ready = true,
   loading = false,
@@ -172,33 +176,43 @@ export function ChangeReviewDetails({
   ensureDiffRevision = null,
 }) {
   useTranslation();
+  const instanceId = useId();
+  const owner = suppliedOwner || `view:${instanceId}`;
+  const field = `review:${viewKey}`;
   const list = safeRows(rows);
   const pathsKey = list.map((row) => row.path || '').join('\u0000');
   const firstPath = list[0]?.path || '';
   const initialPath = matchingRowPath(list, initialExpandedFile)
     || (!initialExpandedFile && initialOpenFirst ? firstPath : '');
-  const [openFiles, setOpenFiles] = useState(() => new Set(initialPath ? [initialPath] : []));
+  const [openFiles, setOpenFiles] = useWorkbenchState(owner, `${field}:open`, () => new Set(initialPath ? [initialPath] : []));
   const [scrollRequest, setScrollRequest] = useState(0);
-  const [sideBySide, setSideBySide] = useState(false);
-  const [wrapLines, setWrapLines] = useState(true);
+  const [sideBySide, setSideBySide] = useWorkbenchState(owner, `${field}:columns`, false);
+  const [wrapLines, setWrapLines] = useWorkbenchState(owner, `${field}:wrap`, true);
   const outputFormat = sideBySide ? 'side-by-side' : 'line-by-line';
   const fileListRef = useRef(null);
-  const savedScrollTopRef = useRef(0);
+  const savedScrollTopRef = useRef(sessionWorkbench.get(owner, `${field}:scroll`, 0));
   const suppressScrollRecordRef = useRef(false);
   const pendingScrollFileRef = useRef('');
-  const syncedExpandedRequestRef = useRef('');
+  const syncedExpandedRequestRef = useRef(sessionWorkbench.get(owner, `${field}:request`, ''));
+
+  useLayoutEffect(() => () => {
+    sessionWorkbench.set(owner, `${field}:scroll`, savedScrollTopRef.current);
+  }, [owner, field]);
 
   useEffect(() => {
+    if (!ready) return;
+    const initialize = !sessionWorkbench.get(owner, `${field}:initialized`, false);
+    if (pathsKey) sessionWorkbench.set(owner, `${field}:initialized`, true);
     const valid = new Set(pathsKey ? pathsKey.split('\u0000').filter(Boolean) : []);
     setOpenFiles((previousValue) => {
       const previous = previousValue instanceof Set ? previousValue : new Set();
       const next = new Set([...previous].filter((path) => valid.has(path)));
-      if (!initialExpandedFile && initialOpenFirst && next.size === 0 && firstPath) {
+      if (initialize && !initialExpandedFile && initialOpenFirst && next.size === 0 && firstPath) {
         next.add(firstPath);
       }
       return sameSet(previous, next) ? previous : next;
     });
-  }, [firstPath, initialExpandedFile, initialOpenFirst, pathsKey]);
+  }, [ready, firstPath, initialExpandedFile, initialOpenFirst, pathsKey, setOpenFiles]);
 
   useEffect(() => {
     if (!onEnsureDiff) return;
@@ -229,12 +243,14 @@ export function ChangeReviewDetails({
     const requestKey = `${initialExpandedFile}\u0000${initialExpandedFileRevision}`;
     if (!initialExpandedFile) {
       syncedExpandedRequestRef.current = '';
+      sessionWorkbench.set(owner, `${field}:request`, '');
       return;
     }
     if (syncedExpandedRequestRef.current === requestKey) return;
     const path = matchingRowPath(list, initialExpandedFile);
     if (!path) return;
     syncedExpandedRequestRef.current = requestKey;
+    sessionWorkbench.set(owner, `${field}:request`, requestKey);
     pendingScrollFileRef.current = path;
     setOpenFiles((previousValue) => {
       const previous = previousValue instanceof Set ? previousValue : new Set();
@@ -361,7 +377,7 @@ export function ChangeReviewDetails({
               aria-pressed={sideBySide}
               onClick={() => setSideBySide((value) => !value)}
             >
-              <VsIcon name="panelRight" size={14} />
+              <VsIcon name="columns" size={14} />
             </button>
             <button
               type="button"
@@ -392,6 +408,7 @@ export function ChangeReviewDetails({
         onScroll={(event) => {
           if (suppressScrollRecordRef.current) return;
           savedScrollTopRef.current = event.currentTarget.scrollTop;
+          sessionWorkbench.set(owner, `${field}:scroll`, savedScrollTopRef.current);
         }}
       >
         {errorMessage && (

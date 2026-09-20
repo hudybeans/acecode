@@ -1,6 +1,7 @@
 #include "upgrade/macos_bundle.hpp"
 #ifdef __APPLE__
 #include "upgrade/macos_app_installer.hpp"
+#include <unistd.h>
 #endif
 
 #include <gtest/gtest.h>
@@ -108,10 +109,69 @@ TEST(MacosBundleLayout, RejectsIncompleteAmbiguousAndSymlinkedApps) {
     }
 }
 
+TEST(MacosBundleInstallPath, AcceptsRealArbitraryLocation) {
+    TempDir temp("acecode-macos-custom-location");
+    const fs::path installed = fs::canonical(temp.path()) /
+        "My Tools" / "ACECode.app";
+    create_bundle(installed);
+    std::string error;
+    EXPECT_TRUE(acecode::upgrade::macos_app_install_path_is_safe(installed, &error))
+        << error;
+}
+
+TEST(MacosBundleInstallPath, RejectsUnsafeLocations) {
+    TempDir temp("acecode-macos-unsafe-location");
+    const fs::path root = fs::canonical(temp.path());
+    for (const auto& relative : {"Other.app", "Outer.app/ACECode.app",
+                                 "Outer.APP/Tools/ACECode.app",
+                                 "AppTranslocation/id/d/ACECode.app"}) {
+        const fs::path installed = root / relative;
+        create_bundle(installed);
+        EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(installed))
+            << installed;
+    }
+    const fs::path installed = root / "real" / "ACECode.app";
+    create_bundle(installed);
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe({}));
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe("ACECode.app"));
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(root / "ACECode.app"));
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(
+        root / "real" / "." / "ACECode.app"));
+
+    std::error_code ec;
+    fs::create_directory_symlink(installed, root / "ACECode.app", ec);
+    if (ec) GTEST_SKIP() << "directory symlinks unavailable: " << ec.message();
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(root / "ACECode.app"));
+    fs::create_directory_symlink(root / "real", root / "alias", ec);
+    ASSERT_FALSE(ec) << ec.message();
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(
+        root / "alias" / "ACECode.app"));
+    fs::create_directories(root / "real" / "nested");
+    create_bundle(root / "real" / "nested" / "ACECode.app");
+    EXPECT_FALSE(acecode::upgrade::macos_app_install_path_is_safe(
+        root / "alias" / "nested" / "ACECode.app"));
+}
+
 #ifdef __APPLE__
-TEST(MacosBundleInstaller, UnsupportedInstallPathFailsWithoutMutation) {
+TEST(MacosBundleInstaller, UnwritableParentFailsWithoutMutation) {
+    if (::geteuid() == 0) GTEST_SKIP() << "root bypasses directory permissions";
+    TempDir temp("acecode-macos-read-only-parent");
+    const fs::path parent = fs::canonical(temp.path()) / "Read Only";
+    const fs::path installed = parent / "ACECode.app";
+    create_bundle(installed);
+    fs::permissions(parent, fs::perms::owner_read | fs::perms::owner_exec);
+    std::string error;
+    const bool accepted = acecode::upgrade::preflight_macos_app_update(
+        installed, installed, "9.9.9", &error);
+    fs::permissions(parent, fs::perms::owner_all);
+    EXPECT_FALSE(accepted);
+    EXPECT_NE(error.find("cannot modify"), std::string::npos) << error;
+    EXPECT_TRUE(fs::is_directory(installed));
+}
+
+TEST(MacosBundleInstaller, ArbitraryInstallPathStillRequiresSignatureWithoutMutation) {
     TempDir temp("acecode-macos-install-preflight");
-    const fs::path installed = temp.path() / "ACECode.app";
+    const fs::path installed = fs::canonical(temp.path()) / "ACECode.app";
     const fs::path candidate = temp.path() / "candidate" / "ACECode.app";
     create_bundle(installed);
     create_bundle(candidate);
@@ -120,9 +180,7 @@ TEST(MacosBundleInstaller, UnsupportedInstallPathFailsWithoutMutation) {
     std::string error;
     EXPECT_FALSE(acecode::upgrade::preflight_macos_app_update(
         installed, candidate, "9.9.9", &error));
-    EXPECT_NE(error.find("~/Applications/ACECode.app"), std::string::npos);
-    EXPECT_NE(error.find("/Applications/ACECode.app"), std::string::npos);
-    EXPECT_NE(error.find("signed PKG"), std::string::npos);
+    EXPECT_NE(error.find("signature"), std::string::npos) << error;
     EXPECT_TRUE(fs::is_regular_file(installed / "sentinel.txt"));
     EXPECT_TRUE(fs::is_directory(candidate));
 }

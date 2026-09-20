@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <thread>
 
+#include "append_file.hpp"
+
 namespace acecode {
 
 enum class LogLevel { Dbg = 0, Info = 1, Warn = 2, Err = 3 };
@@ -32,8 +34,7 @@ public:
         return inst;
     }
 
-    // TUI / 单文件模式: 写入指定文件,不滚动,不镜像 stderr。
-    // 与原 v1 行为兼容,保持已有调用点(main.cpp 写 acecode.log)零改动。
+    // 兼容单文件模式:写入指定文件,不滚动,不镜像 stderr。
     void init(const std::string& log_file) {
         std::lock_guard<std::mutex> lk(mu_);
         if (ofs_.is_open()) ofs_.close();
@@ -42,11 +43,11 @@ public:
         rotation_dir_.clear();
         rotation_base_.clear();
         last_open_date_.clear();
-        ofs_.open(path_from_utf8_(log_file), std::ios::out | std::ios::app);
+        ofs_.open(path_from_utf8_(log_file));
         enabled_ = ofs_.is_open();
     }
 
-    // daemon 模式: 写入 dir/<base_name>-<YYYY-MM-DD>.log,跨本地午夜
+    // 滚动模式:写入 dir/<base_name>-<YYYY-MM-DD>.log,跨本地午夜
     // 自动滚动到新日期文件。mirror_stderr=true 时每条日志同时写 stderr
     // (foreground 模式)。dir 不存在会被创建。
     void init_with_rotation(const std::string& dir,
@@ -67,7 +68,10 @@ public:
         return enabled_;
     }
 
-    void set_level(LogLevel level) { level_ = level; }
+    void set_level(LogLevel level) {
+        std::lock_guard<std::mutex> lk(mu_);
+        level_ = level;
+    }
 
     // 测试专用: 注入一个返回 "YYYY-MM-DD" 字符串的 callable,用于强制
     // 触发跨日滚动而无需等真实午夜。传空 std::function 还原为真实时钟。
@@ -77,8 +81,8 @@ public:
     }
 
     void log(LogLevel level, const char* file, int line, const std::string& msg) {
-        if (!enabled_ || level < level_) return;
         std::lock_guard<std::mutex> lk(mu_);
+        if (!enabled_ || level < level_) return;
 
         auto now = std::chrono::system_clock::now();
         auto time = std::chrono::system_clock::to_time_t(now);
@@ -126,8 +130,7 @@ public:
         const std::string s = line_oss.str();
 
         if (ofs_.is_open()) {
-            ofs_ << s;
-            ofs_.flush();
+            ofs_.append(s);
         }
         if (mirror_stderr_) {
             std::cerr << s;
@@ -149,7 +152,7 @@ private:
         rotation_dir_ = dir;
         rotation_base_ = base_name;
         std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
+        std::filesystem::create_directories(path_from_utf8_(dir), ec);
         open_rotated_locked_(current_date_string_());
     }
 
@@ -196,12 +199,12 @@ private:
         if (ofs_.is_open()) ofs_.close();
         auto path = path_from_utf8_(rotation_dir_) /
                     (rotation_base_ + "-" + date + ".log");
-        ofs_.open(path, std::ios::out | std::ios::app);
+        ofs_.open(path);
         last_open_date_ = date;
         enabled_ = ofs_.is_open();
     }
 
-    std::ofstream ofs_;
+    AppendFile ofs_;
     std::mutex mu_;
     LogLevel level_ = LogLevel::Dbg;
     bool enabled_ = false;

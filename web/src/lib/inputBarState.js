@@ -4,9 +4,10 @@ export function getInputBarActionState({
   busy = false,
   hasExtras = false,
   submitting = false,
+  canRetryLastUserMessage = false,
 } = {}) {
   const hasText = String(value || '').trim().length > 0;
-  const hasSubmittableContent = hasText || !!hasExtras;
+  const hasSubmittableContent = hasText || !!hasExtras || (!busy && canRetryLastUserMessage);
   const isDisabled = !!disabled;
   const isBusy = !!busy;
   // submitting 只压住「再发一次」这个动作。它绝不能并进 disabled —— disabled

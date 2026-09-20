@@ -19,6 +19,7 @@ const ICONS = {
   code: 'Code',
   command: 'TerminalReadWrite',
   collapseAll: 'CollapseAll',
+  columns: 'Columns',
   computer: 'Computer',
   copy: 'Copy',
   darkTheme: 'DarkTheme',
@@ -160,6 +161,7 @@ export function FileTypeIcon({
   path,
   size = 20,
   className = '',
+  glyphClassName = '',
   fallback = 'file',
   style,
   ...props
@@ -178,6 +180,7 @@ export function FileTypeIcon({
           width: size,
           height: size,
           color: icon.color,
+          '--ace-file-type-color': icon.color,
           ...style,
         }}
         {...props}
@@ -202,11 +205,12 @@ export function FileTypeIcon({
         height: size,
         fontSize: size,
         color: icon.color,
+        '--ace-file-type-color': icon.color,
         ...style,
       }}
       {...props}
     >
-      {icon.glyph}
+      {glyphClassName ? <span className={glyphClassName}>{icon.glyph}</span> : icon.glyph}
     </span>
   );
 }

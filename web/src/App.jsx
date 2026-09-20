@@ -5,7 +5,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, ApiError, createApi } from './lib/api.js';
+import { api, apiConnectionScope, ApiError, createApi } from './lib/api.js';
+import { computerUseSettingsStore } from './lib/computerUseSettings.js';
+import { observeComputerUsePointerTheme } from './lib/computerUsePointerTheme.js';
 import { useTheme } from './theme.jsx';
 import { useThemeDownloads } from './lib/useThemeDownloads.js';
 import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThemeCreation.js';
@@ -17,6 +19,7 @@ import {
   reconcileAgentBrowserPageStore,
 } from './lib/agentBrowserPages.js';
 import { loadUiLocale } from './lib/uiLocale.js';
+import { installNativeFileDropRouter } from './lib/macNativeFileDrag.js';
 import {
   createDesktopNotificationMonitor,
   notificationEventKey,
@@ -36,6 +39,7 @@ import {
   navigationHistoryFromHash,
   normalizeHistory,
   pushNavigation,
+  sameNavigationRef,
   stripNavigationHistoryHash,
 } from './lib/navigationHistory.js';
 import {
@@ -53,7 +57,9 @@ import {
   SESSION_LIST_CHANGED_EVENT,
 } from './lib/sessionListEvents.js';
 import { normalizeRemoteControlSessionSelected } from './lib/remoteControlSessionNavigation.js';
-import { usePreference } from './lib/usePreference.js';
+import { usePreference, mergeNextValue, readWithFallback } from './lib/usePreference.js';
+import { sessionWorkbench } from './lib/sessionWorkbench.js';
+import { useWorkbenchState } from './lib/useWorkbenchState.js';
 import {
   appearanceBootstrapPreferences,
   createAppearancePersistenceController,
@@ -68,6 +74,7 @@ import {
 import {
   DEFAULT_UI_PREFS,
   effectiveFontSize,
+  effectiveMessageAutoCollapse,
   effectiveSidebarSessionTime,
   effectiveSidePanelListCollapsed,
   rightPanelHidden,
@@ -123,6 +130,7 @@ import {
   validateLayoutWidths,
 } from './lib/singleLayout.js';
 import { initInactiveSelection } from './lib/inactiveSelection.js';
+import { runAfterFileApproval } from './lib/unsavedFileGuard.js';
 import {
   desktopOpenSessionUrl,
   openSessionTargetFromSearch,
@@ -224,13 +232,21 @@ export function App() {
   } = useTheme();
   const initialAppearance = useMemo(() => initialAppearancePreferences(), []);
   const bootstrapAppearance = useMemo(() => appearanceBootstrapPreferences(), []);
+  useEffect(() => installNativeFileDropRouter(), []);
+
   const [authState, setAuthState] = useState('checking'); // 'checking' | 'ok' | 'need-token'
+  const computerUseScope = apiConnectionScope(api);
+  useEffect(() => {
+    if (authState !== 'ok') return undefined;
+    return observeComputerUsePointerTheme(computerUseSettingsStore(api));
+  }, [authState, computerUseScope]);
   const [health,    setHealth]    = useState(null);
   const [desktopStartupProgress, setDesktopStartupProgress] = useState(
     () => initialDesktopStartupProgress(),
   );
 
   const [activeRef,    setActiveRef]    = useState(null);
+  const workbenchOwner = sessionWorkbench.ownerFor(activeRef);
   const [sessionTitleTarget, setSessionTitleTarget] = useState(null);
   const [sessionActionsTarget, setSessionActionsTarget] = useState(null);
   const [sidebarSessionLoadState, setSidebarSessionLoadState] = useState(null);
@@ -275,22 +291,39 @@ export function App() {
   const [updateRestarting, setUpdateRestarting] = useState(false);
   const [updateJob, setUpdateJob] = useState(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [singleLayout, setSingleLayout] = usePreference(
-    SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths);
+  const [singleLayout, setSingleLayout] = useWorkbenchState(workbenchOwner, 'layout', () =>
+    readWithFallback(SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths));
   const previewPanelUserSized = previewPanelWidthIsUserSized(singleLayout);
   const initialUiPrefs = useMemo(() => ({
     ...DEFAULT_UI_PREFS,
     fontSize: initialAppearance.fontSize,
     sidebarSessionTime: initialAppearance.sidebarSessionTime,
+    messageAutoCollapse: initialAppearance.messageAutoCollapse,
   }), [initialAppearance]);
-  const [uiPrefs, setUiPrefs] = usePreference(
+  const [globalUiPrefs, setGlobalUiPrefs] = usePreference(
     UI_PREFS_STORAGE_KEY, initialUiPrefs, validateUiPrefs);
-  // 首屏默认收起右侧面板,在绘制前覆盖旧版保存的展开状态;后续手动切换照常生效。
+  const [panelPrefs, setPanelPrefs] = useWorkbenchState(workbenchOwner, 'panels', () => ({
+    sidePanelCollapsed: true, sidePanelListCollapsed: false, sidePanelMaximized: false,
+  }));
+  const uiPrefs = useMemo(() => ({ ...globalUiPrefs, ...panelPrefs }), [globalUiPrefs, panelPrefs]);
+  const setUiPrefs = useCallback((updater) => {
+    const next = mergeNextValue(uiPrefs, updater);
+    const panelKeys = ['sidePanelCollapsed', 'sidePanelListCollapsed', 'sidePanelMaximized'];
+    setPanelPrefs((previous) => panelKeys.some((key) => previous[key] !== next[key])
+      ? Object.fromEntries(panelKeys.map((key) => [key, next[key]])) : previous);
+    const changes = Object.fromEntries(Object.entries(next).filter(([key, value]) => (
+      !panelKeys.includes(key) && value !== uiPrefs[key]
+    )));
+    if (Object.keys(changes).length) setGlobalUiPrefs(changes);
+  }, [uiPrefs, setPanelPrefs, setGlobalUiPrefs]);
   useLayoutEffect(() => {
-    setUiPrefs((prev) => prev.sidePanelCollapsed ? prev : { ...prev, sidePanelCollapsed: true });
-  }, [setUiPrefs]);
-  const [consoleDock, setConsoleDock] = usePreference(
-    CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock);
+    if (bootstrapAppearance) {
+      setUiPrefs({ messageAutoCollapse: bootstrapAppearance.messageAutoCollapse });
+    }
+  }, [bootstrapAppearance, setUiPrefs]);
+  const [consoleDock, setConsoleDock] = useWorkbenchState(workbenchOwner, 'consoleDock', () => ({
+    ...readWithFallback(CONSOLE_DOCK_STORAGE_KEY, DEFAULT_CONSOLE_DOCK, validateConsoleDock), open: false,
+  }));
   const [recentExpertIds, setRecentExpertIds] = usePreference(
     RECENT_EXPERTS_STORAGE_KEY,
     DEFAULT_RECENT_EXPERT_IDS,
@@ -315,14 +348,21 @@ export function App() {
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);
   const sidebarSessionTime = effectiveSidebarSessionTime(uiPrefs);
+  const messageAutoCollapse = effectiveMessageAutoCollapse(uiPrefs);
   const applyAppearance = useCallback((next) => {
     setTheme(next.theme);
     setColorTheme(next.colorTheme);
     setUiPrefs({
       fontSize: next.fontSize,
       sidebarSessionTime: next.sidebarSessionTime,
+      messageAutoCollapse: next.messageAutoCollapse,
     });
   }, [setColorTheme, setTheme, setUiPrefs]);
+  // The persistence controller outlives individual renders. Keep its callback
+  // current so a later appearance choice is compared against the latest UI
+  // preferences rather than the values from the controller's first render.
+  const applyAppearanceRef = useRef(applyAppearance);
+  applyAppearanceRef.current = applyAppearance;
   const appearanceControllerRef = useRef(null);
   if (!appearanceControllerRef.current) {
     appearanceControllerRef.current = createAppearancePersistenceController({
@@ -331,8 +371,9 @@ export function App() {
         colorTheme,
         fontSize,
         sidebarSessionTime,
+        messageAutoCollapse: bootstrapAppearance?.messageAutoCollapse ?? messageAutoCollapse,
       },
-      apply: applyAppearance,
+      apply: (next) => applyAppearanceRef.current(next),
       save: (payload) => api.setUiPreferences(payload),
       onError: (error) => {
         toast({
@@ -361,7 +402,7 @@ export function App() {
   const showAceCodeAvatar = false;
   const singleShellRef = useRef(null);
   const sidebarResizeActiveRef = useRef(false);
-  const [previewPanelVisible, setPreviewPanelVisible] = useState(false);
+  const [previewPanelVisible, setPreviewPanelVisible] = useWorkbenchState(workbenchOwner, '$previewVisible', false);
   const activeRefRef = useRef(activeRef);
   const themeCreationMonitor = useMemo(() => createLiveThemeCreationMonitor({
     onStart: () => themeDownloads.controller.beginCreation(),
@@ -507,28 +548,46 @@ export function App() {
     setSidebarSessionLoadResetSequence((sequence) => sequence + 1);
   }, []);
 
+  const previewLeaveGuardRef = useRef(null);
+  const registerPreviewLeaveGuard = useCallback((guard) => {
+    previewLeaveGuardRef.current = guard;
+    return () => {
+      if (previewLeaveGuardRef.current === guard) previewLeaveGuardRef.current = null;
+    };
+  }, []);
+  const requestPreviewLeave = useCallback((nextRef) => {
+    if (nextRef && sameNavigationRef(activeRefRef.current, nextRef)) return true;
+    return previewLeaveGuardRef.current?.() ?? true;
+  }, []);
+
   const replaceActiveRef = useCallback((nextRefOrUpdater) => {
-    resetSidebarSessionLoading();
     const current = activeRefRef.current;
     const next = typeof nextRefOrUpdater === 'function'
       ? nextRefOrUpdater(current)
       : nextRefOrUpdater;
-    activeRefRef.current = next;
-    setActiveRef(next);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(next), () => {
+      resetSidebarSessionLoading();
+      activeRefRef.current = next;
+      setActiveRef(next);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const navigateToRef = useCallback((nextRefOrUpdater, options = {}) => {
-    if (!options.preserveSidebarSessionLoading) resetSidebarSessionLoading();
     const current = activeRefRef.current;
     const next = typeof nextRefOrUpdater === 'function'
       ? nextRefOrUpdater(current)
       : nextRefOrUpdater;
-    const nextHistory = pushNavigation(navHistoryRef.current, current, next);
-    navHistoryRef.current = nextHistory;
-    activeRefRef.current = next;
-    setNavHistory(nextHistory);
-    setActiveRef(next);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(next), () => {
+      if (!options.preserveSidebarSessionLoading) resetSidebarSessionLoading();
+      const nextHistory = pushNavigation(navHistoryRef.current, current, next);
+      navHistoryRef.current = nextHistory;
+      activeRefRef.current = next;
+      setNavHistory(nextHistory);
+      setActiveRef(next);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const syncActiveRemoteControlBound = useCallback((detail = {}) => {
     const sessionId = String(detail.sessionId || detail.session_id || '').trim();
@@ -565,13 +624,16 @@ export function App() {
   }, [syncActiveRemoteControlBound]);
 
   const replaceNavigationState = useCallback((nextRef, nextHistory) => {
-    resetSidebarSessionLoading();
-    const normalized = normalizeHistory(nextHistory);
-    navHistoryRef.current = normalized;
-    activeRefRef.current = nextRef;
-    setNavHistory(normalized);
-    setActiveRef(nextRef);
-  }, [resetSidebarSessionLoading]);
+    return runAfterFileApproval(requestPreviewLeave(nextRef), () => {
+      resetSidebarSessionLoading();
+      const normalized = normalizeHistory(nextHistory);
+      navHistoryRef.current = normalized;
+      activeRefRef.current = nextRef;
+      setNavHistory(normalized);
+      setActiveRef(nextRef);
+      return true;
+    });
+  }, [requestPreviewLeave, resetSidebarSessionLoading]);
 
   const finishSessionNavigation = useCallback((navigationId) => {
     const timer = sessionNavigationTimersRef.current.get(navigationId);
@@ -619,6 +681,7 @@ export function App() {
   const resumeAndOpenSession = useCallback(async (target, options = {}) => {
     const sessionId = sessionJumpId(target);
     if (!sessionId) return false;
+    if (!await requestPreviewLeave(target)) return false;
     resetSidebarSessionLoading();
     const navigationId = beginSessionNavigation();
     const navigationIsPending = () =>
@@ -717,14 +780,14 @@ export function App() {
     navigateToRef,
     replaceActiveRef,
     replaceNavigationState,
+    requestPreviewLeave,
     resetSidebarSessionLoading,
   ]);
 
   const openHistoryDestination = useCallback((result) => {
     if (!result?.activeRef) return Promise.resolve(false);
     if (!sessionJumpId(result.activeRef)) {
-      replaceNavigationState(result.activeRef, result.history);
-      return Promise.resolve(true);
+      return Promise.resolve(replaceNavigationState(result.activeRef, result.history));
     }
     return resumeAndOpenSession(result.activeRef, {
       forceResume: true,
@@ -801,12 +864,10 @@ export function App() {
     });
     api.getUiPreferences().then((preferences) => {
       appearanceControllerRef.current.restore(preferences);
-      // The daemon owns the durable attempt marker, shared across windows and upgrades.
-      void themeDownloads.controller.applyStartupTheme(preferences);
     }).catch(() => {
       // Older/offline daemons keep the injected or cached appearance usable.
     });
-  }, [authState, themeDownloads.controller]);
+  }, [authState]);
 
   useEffect(() => {
     if (authState !== 'ok') {
@@ -1308,8 +1369,11 @@ export function App() {
   }, [probe]);
 
   const toggleSidePanel = useCallback(() => {
-    setUiPrefs((prev) => toggleRightPanel(prev, previewPanelVisible));
-  }, [previewPanelVisible, setUiPrefs]);
+    const approval = rightPanelHidden(uiPrefs, previewPanelVisible) ? true : requestPreviewLeave();
+    return runAfterFileApproval(approval, () => {
+      setUiPrefs((prev) => toggleRightPanel(prev, previewPanelVisible));
+    });
+  }, [previewPanelVisible, requestPreviewLeave, setUiPrefs, uiPrefs]);
 
   const toggleSidePanelList = useCallback(() => {
     setUiPrefs((prev) => ({
@@ -1707,6 +1771,7 @@ export function App() {
   }, [abortGuidedTour, guidedTourHasActiveSession, guidedTourPreparing, guidedTourRun]);
 
   const createDesktopTraySession = useCallback(async () => {
+    if (!await requestPreviewLeave()) return;
     try {
       const next = await createNewSessionForActiveWorkspace(api, activeRefRef.current, health);
       void refreshWorkspaceGitInfo(createApi(next), next).catch(() => {});
@@ -1728,7 +1793,7 @@ export function App() {
     } catch (e) {
       toast({ kind: 'err', text: '新建会话失败:' + (e.message || '') });
     }
-  }, [health, navigateToRef]);
+  }, [health, navigateToRef, requestPreviewLeave]);
 
   const handleSubagentTasksChange = useCallback((info) => {
     const parentId = info?.parentId || '';
@@ -2062,6 +2127,7 @@ export function App() {
           activeId={activeId}
           activeRef={activeRef}
           onSelect={navigateToRef}
+          onBeforeNavigate={requestPreviewLeave}
           onActiveRemoteControlBoundChange={syncActiveRemoteControlBound}
           onSessionLoadStateChange={setSidebarSessionLoadState}
           sessionLoadResetSequence={sidebarSessionLoadResetSequence}
@@ -2116,6 +2182,7 @@ export function App() {
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}
                 modelProfileRevision={modelProfileRevision}
                 onSessionPromoted={navigateToRef}
+                onRegisterPreviewLeaveGuard={registerPreviewLeaveGuard}
                 onSessionExpertChanged={replaceActiveSessionExpert}
                 onHomeWorkspaceChange={replaceHomeWorkspace}
                 onCommandWorkspaceChange={setCommandWorkspaceHash}
@@ -2141,6 +2208,7 @@ export function App() {
                 sidePanelMaximized={sidePanelMaximized}
                 onToggleSidePanelMaximized={toggleSidePanelMaximized}
                 showAceCodeAvatar={showAceCodeAvatar}
+                messageAutoCollapse={messageAutoCollapse}
                 permissionRequests={visiblePermissionEntries}
                 onPermissionDecision={handlePermissionDecision}
                 questionRequest={visibleQuestionReq}
@@ -2172,6 +2240,7 @@ export function App() {
           </div>
           {consoleAvailable && (
             <ConsoleDock
+              owner={workbenchOwner}
               open={consoleDock.open}
               height={consoleDock.height}
               onHeightChange={setConsoleDockHeight}
@@ -2207,6 +2276,8 @@ export function App() {
             onFontSizeChange={(nextFontSize) => changeAppearance({ fontSize: nextFontSize })}
             sidebarSessionTime={sidebarSessionTime}
             onSidebarSessionTimeChange={(next) => changeAppearance({ sidebarSessionTime: next })}
+            messageAutoCollapse={messageAutoCollapse}
+            onMessageAutoCollapseChange={(next) => changeAppearance({ messageAutoCollapse: next })}
           />
         )}
         <ThemeDownloadFailureDialog failure={themeDownloads.failure} onClose={() => themeDownloads.controller.dismissFailure()} />

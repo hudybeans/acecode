@@ -374,11 +374,11 @@ function AssistantBubble({
   );
 }
 
-function SystemRow({ role, content, metadata }) {
+function SystemRow({ role, content, metadata, messageAutoCollapse }) {
   const isCompactNotice = metadata?.compact_notice === true;
   const isCompletedCompactNotice = isCompactNotice
     && metadata?.compact_notice_complete === true;
-  const [expanded, setExpanded] = useState(
+  const [manuallyExpanded, setExpanded] = useState(
     isCompactNotice && !isCompletedCompactNotice,
   );
   const customLabel = metadata && typeof metadata.compact_label === 'string'
@@ -387,6 +387,8 @@ function SystemRow({ role, content, metadata }) {
       ? (isCompletedCompactNotice ? 'Context compacted' : 'Compacting conversation')
       : '');
   const isToolCompact = role === 'tool_call' || role === 'tool_result' || customLabel === '工具调用 / 返回';
+  const collapsible = messageAutoCollapse || isToolCompact;
+  const expanded = !collapsible || manuallyExpanded;
   const { label, text, preview, lineCount, charCount } = useMemo(
     () => buildCompactMessagePreview({
       role,
@@ -402,7 +404,7 @@ function SystemRow({ role, content, metadata }) {
       'self-stretch bg-surface-alt border border-dashed border-border rounded-md text-fg-2 overflow-hidden',
       isToolCompact ? 'ace-tool-call-text' : 'text-[12px]',
     )}>
-      <button
+      {collapsible ? <button
         type="button"
         className="w-full px-3 py-1.5 flex items-center gap-2 text-left text-fg-mute hover:text-fg hover:bg-surface-hi transition"
         title={text || preview}
@@ -417,7 +419,9 @@ function SystemRow({ role, content, metadata }) {
           {expanded ? '收起' : '展开'}
           <VsIcon name={expanded ? 'glyphUp' : 'glyphDown'} size={9} />
         </span>
-      </button>
+      </button> : (
+        <div className="px-3 py-1.5 text-fg-mute">{label}</div>
+      )}
       {expanded && (
         <CopyableCodeFrame text={text} className="ace-system-copy-frame">
           <div
@@ -479,6 +483,7 @@ export const Message = memo(function Message({
   continuation,
   showFooter = true,
   showAceCodeAvatar = false,
+  messageAutoCollapse = true,
   annotationPresentations = null,
 }) {
   useTranslation();
@@ -526,5 +531,5 @@ export const Message = memo(function Message({
       showFooter={showFooter}
     />;
   }
-  return <SystemRow role={role} content={content} metadata={metadata} />;
+  return <SystemRow role={role} content={content} metadata={metadata} messageAutoCollapse={messageAutoCollapse} />;
 });

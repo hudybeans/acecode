@@ -15,6 +15,15 @@ The domain service owns suggestion state, execution location and startup receipt
 5. GET session suggestions returns persisted records, source/workspace busy and worktree availability. Accept/dismiss POST returns a suggestion envelope. Host lifecycle work handles queued acceptance independently of tab focus; reconnect also recovers interrupted phases. Expected failures are shown on the card with retry against the same target.
 6. A compact non-modal card is attached to the chat's upper right, uses theme tokens, supports keyboard and narrow screens, and never steals focus. Apply the theme's large and ordinary shadow tokens to each card, and reserve padding inside the scrolling container so overflow does not clip the shadow while preserving the visible card position. Side tasks expose a split location action and stay in the source view; continuation starts in the same directory and navigates to its successor. Polling is bounded/single-flight and source-scoped, with stale responses ignored. Unsupported old backends silently omit this optional surface.
 
+### 2026-09-19：建议卡片自动关闭
+
+- 控制器为首次展示的 `pending` 建议记录绝对截止时间（30 秒），使用可注入时钟和定时器；轮询刷新不得重置倒计时，多张卡片各自计时，销毁控制器时清理所有定时器。
+- 到期沿用既有 dismiss 请求持久化关闭，不触发 accept。用户开始任务、手动关闭或建议进入排队／启动／失败状态后停止本次计时，防止到期取消已接受的任务；关闭失败保留卡片和重试操作，不自动反复请求。
+- 倒计时文字位于底部细线左上方，中文严格为“xx秒后关闭”，英文为“Closes in xx s”。进度由满到空，右端以小火苗随剩余长度左移，最后 5 秒略微提亮；火苗保持约 6×9px，以柔和外焰和微亮内芯轻微摆动、伸缩及明暗变化，不添加粒子或扩大光晕。沿用主题 token、原有标题、按钮和关闭图标。减少动态效果时按秒更新长度，关闭平滑移动、火苗闪动与光晕。
+- 倒计时只负责当前展示周期；切换会话销毁旧控制器，重新进入尚未关闭的建议时开始新的 30 秒展示。已成功关闭的建议仍由服务端过滤。
+- 任务位置菜单通过 `AnchoredMenu` 挂载至 `document.body`；调用方必须显式提供主题实底、边框、圆角、内边距、阴影和高于建议卡片的层级，避免选项透底或被卡片遮挡。保持既有定位、键盘选择及焦点恢复行为。
+
+
 ## Risks / Trade-offs
 
 - A shared directory can also be modified by external editors or processes. Serialize known session work and tell the user the location is shared; existing file read guards still apply.

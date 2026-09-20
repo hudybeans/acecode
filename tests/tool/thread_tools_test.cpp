@@ -7,10 +7,13 @@
 #include "session/session_storage.hpp"
 #include "session/thread_service.hpp"
 #include "tool/thread_tools.hpp"
+#include "utils/paths.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <random>
 #include <string>
@@ -36,6 +39,64 @@ std::filesystem::path unique_cwd(const std::string& label) {
     return cwd;
 }
 
+// Global discovery must never scan the developer's real session history.
+class ThreadTools : public testing::Test {
+protected:
+    std::filesystem::path root;
+
+    void SetUp() override {
+        root = unique_cwd("home");
+        if (const char* previous = std::getenv(home_key())) {
+            previous_home_ = previous;
+            had_home_ = true;
+        }
+        set_home(root.string());
+        previous_mode_ = acecode::override_run_mode_for_test(acecode::RunMode::User);
+        acecode::reset_data_dir_cache_for_test();
+    }
+
+    void TearDown() override {
+        if (had_home_) {
+            set_home(previous_home_);
+        } else {
+#ifdef _WIN32
+            _putenv_s(home_key(), "");
+#else
+            unsetenv(home_key());
+#endif
+        }
+        acecode::override_run_mode_for_test(previous_mode_);
+        acecode::reset_data_dir_cache_for_test();
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+
+    std::string workspace(const std::string& name) const {
+        const auto path = root / name;
+        std::filesystem::create_directories(path);
+        return path.string();
+    }
+
+private:
+    static const char* home_key() {
+#ifdef _WIN32
+        return "USERPROFILE";
+#else
+        return "HOME";
+#endif
+    }
+    static void set_home(const std::string& value) {
+#ifdef _WIN32
+        _putenv_s(home_key(), value.c_str());
+#else
+        setenv(home_key(), value.c_str(), 1);
+#endif
+    }
+    std::string previous_home_;
+    bool had_home_ = false;
+    acecode::RunMode previous_mode_ = acecode::RunMode::User;
+};
+
 void persist_thread(const std::string& cwd,
                     const std::string& id,
                     const std::string& parent_id,
@@ -57,7 +118,7 @@ void persist_thread(const std::string& cwd,
 
 } // namespace
 
-TEST(ThreadTools, RegistersCodexAlignedIndependentToolNames) {
+TEST_F(ThreadTools, RegistersCodexAlignedIndependentToolNames) {
     acecode::ToolExecutor tools;
     auto deps = std::make_shared<acecode::ThreadToolDeps>();
     deps->service = std::make_shared<acecode::ThreadService>(
@@ -90,6 +151,7 @@ TEST(ThreadTools, RegistersCodexAlignedIndependentToolNames) {
     EXPECT_TRUE(properties.contains("turnLimit"));
     EXPECT_TRUE(properties.contains("includeOutputs"));
     EXPECT_TRUE(properties.contains("maxOutputCharsPerItem"));
+    EXPECT_TRUE(properties.contains("workspaceHash"));
     EXPECT_FALSE(properties.contains("hostId"));
     EXPECT_FALSE(tools.has_tool("session_query"));
     EXPECT_FALSE(tools.has_tool("session_control"));
@@ -105,7 +167,7 @@ TEST(ThreadTools, RegistersCodexAlignedIndependentToolNames) {
               std::string::npos);
 }
 
-TEST(ThreadTools, ServiceListsPinnedAndReadsBoundedRecentTurns) {
+TEST_F(ThreadTools, ServiceListsPinnedAndReadsBoundedRecentTurns) {
     const auto cwd = unique_cwd("list_read");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
@@ -154,7 +216,215 @@ TEST(ThreadTools, ServiceListsPinnedAndReadsBoundedRecentTurns) {
     std::filesystem::remove_all(cwd);
 }
 
-TEST(ThreadTools, DeleteCascadesToDescendantsAndCleansPins) {
+TEST_F(ThreadTools, ListsAllProjectsWithPinsArchivesAndPaginationThroughTool) {
+    const auto first = workspace("first");
+    const auto hidden = workspace("hidden");
+    const auto standalone = workspace("standalone");
+    const std::string first_pin = "20260918-100000-0001";
+    const std::string hidden_pin = "20260918-100001-0002";
+    const std::string hidden_pin_two = "20260918-100002-0003";
+    const std::string child = "20260918-100003-0004";
+    const std::string no_workspace = "20260918-100004-0005";
+    const std::string archived = "20260918-100005-0006";
+    persist_thread(first, first_pin, {}, "first workspace");
+    persist_thread(hidden, hidden_pin, {}, "hidden workspace");
+    persist_thread(hidden, hidden_pin_two, {}, "second pinned thread");
+    persist_thread(hidden, child, hidden_pin, "child history");
+    persist_thread(standalone, no_workspace, {}, "standalone history");
+    persist_thread(hidden, archived, {}, "archived history");
+    const auto first_project = acecode::SessionStorage::get_project_dir(first);
+    const auto hidden_project = acecode::SessionStorage::get_project_dir(hidden);
+    {
+        std::ofstream marker(std::filesystem::path(hidden_project) / "workspace.json");
+        marker << nlohmann::json{{"cwd", hidden}, {"name", "Hidden project"},
+                                {"desktop_visible", false}};
+    }
+    for (const auto& [cwd, id] : std::vector<std::pair<std::string, std::string>>{
+             {standalone, no_workspace}, {hidden, archived}}) {
+        const auto path = acecode::SessionStorage::meta_path(
+            acecode::SessionStorage::get_project_dir(cwd), id);
+        auto meta = acecode::SessionStorage::read_meta(path);
+        meta.no_workspace = id == no_workspace;
+        meta.archived = id == archived;
+        ASSERT_TRUE(acecode::SessionStorage::write_meta(path, meta));
+    }
+    ASSERT_TRUE(acecode::session_pins::write_pinned_sessions_state(
+        std::filesystem::path(first_project) / "pinned_sessions.json", {{first_pin}}));
+    ASSERT_TRUE(acecode::session_pins::write_pinned_sessions_state(
+        std::filesystem::path(hidden_project) / "pinned_sessions.json",
+        {{hidden_pin_two, hidden_pin, archived}}));
+
+    acecode::ToolExecutor tools;
+    auto deps = std::make_shared<acecode::ThreadToolDeps>();
+    deps->service = std::make_shared<acecode::ThreadService>(acecode::ThreadService::Deps{});
+    acecode::register_codex_thread_tools(tools, deps);
+    acecode::ToolContext context;
+    context.cwd = first;
+    std::string cursor;
+    std::unordered_set<std::string> regular_ids;
+    for (int page = 0; page < 3; ++page) {
+        const auto result = tools.execute("list_threads",
+            nlohmann::json{{"limit", 1}, {"cursor", cursor}}.dump(), context);
+        ASSERT_TRUE(result.success) << result.output;
+        const auto payload = nlohmann::json::parse(result.output);
+        EXPECT_TRUE(payload["errors"].empty());
+        ASSERT_EQ(payload["pinnedThreads"].size(), 3u);
+        std::vector<std::string> hidden_pins;
+        for (const auto& row : payload["pinnedThreads"]) {
+            if (row["cwd"] == hidden) {
+                hidden_pins.push_back(row["threadId"].get<std::string>());
+                EXPECT_EQ(row["workspaceName"], "Hidden project");
+                EXPECT_FALSE(row["workspaceVisible"].get<bool>());
+            }
+        }
+        EXPECT_EQ(hidden_pins, (std::vector<std::string>{hidden_pin_two, hidden_pin}));
+        ASSERT_EQ(payload["threads"].size(), 1u);
+        const auto& row = payload["threads"][0];
+        const auto id = row["threadId"].get<std::string>();
+        EXPECT_TRUE(regular_ids.insert(id).second);
+        EXPECT_FALSE(row["workspaceHash"].get<std::string>().empty());
+        EXPECT_EQ(row["noWorkspace"], id == no_workspace);
+        if (id == child) EXPECT_EQ(row["parentThreadId"], hidden_pin);
+        if (payload["nextCursor"].is_null()) {
+            EXPECT_FALSE(payload["hasMore"].get<bool>());
+            break;
+        }
+        EXPECT_TRUE(payload["hasMore"].get<bool>());
+        cursor = payload["nextCursor"].get<std::string>();
+    }
+    EXPECT_EQ(regular_ids, (std::unordered_set<std::string>{child, no_workspace}));
+
+    // No calling cwd is needed, and includeArchived reaches the stored archive.
+    const auto result = tools.execute("list_threads", R"({"includeArchived":true})");
+    ASSERT_TRUE(result.success) << result.output;
+    const auto payload = nlohmann::json::parse(result.output);
+    ASSERT_EQ(payload["threads"].size(), 3u);
+    const auto archived_row = std::find_if(payload["threads"].begin(),
+        payload["threads"].end(), [&](const auto& row) { return row["threadId"] == archived; });
+    ASSERT_NE(archived_row, payload["threads"].end());
+    EXPECT_TRUE((*archived_row)["archived"].get<bool>());
+    EXPECT_FALSE(tools.execute("list_threads", R"({"cursor":"-1"})").success);
+}
+
+TEST_F(ThreadTools, ReadsArchivedChildAndWorkspaceFreeHistoryAcrossProjects) {
+    const auto source = workspace("source");
+    const auto target = workspace("target");
+    const std::string id = "20260918-110000-0001";
+    persist_thread(target, id, "parent-thread", "history from another workspace");
+    const auto meta_path = acecode::SessionStorage::meta_path(
+        acecode::SessionStorage::get_project_dir(target), id);
+    auto meta = acecode::SessionStorage::read_meta(meta_path);
+    meta.archived = true;
+    meta.no_workspace = true;
+    ASSERT_TRUE(acecode::SessionStorage::write_meta(meta_path, meta));
+
+    acecode::ToolExecutor tools;
+    auto deps = std::make_shared<acecode::ThreadToolDeps>();
+    deps->service = std::make_shared<acecode::ThreadService>(acecode::ThreadService::Deps{});
+    acecode::register_codex_thread_tools(tools, deps);
+    acecode::ToolContext context;
+    context.cwd = source;
+    for (const auto& hash : {std::string{}, acecode::SessionStorage::compute_project_hash(target)}) {
+        const auto result = tools.execute("read_thread", nlohmann::json{
+            {"threadId", id}, {"workspaceHash", hash}}.dump(), context);
+        ASSERT_TRUE(result.success) << result.output;
+        const auto payload = nlohmann::json::parse(result.output);
+        EXPECT_EQ(payload["cwd"], target);
+        EXPECT_TRUE(payload["noWorkspace"].get<bool>());
+        EXPECT_EQ(payload["turns"][0]["items"][0]["content"],
+                  "history from another workspace");
+    }
+    // Known ids work even with no calling workspace.
+    EXPECT_TRUE(tools.execute("read_thread",
+        nlohmann::json{{"threadId", id}}.dump()).success);
+    EXPECT_FALSE(tools.execute("read_thread",
+        R"({"threadId":"../outside"})").success);
+    EXPECT_FALSE(tools.execute("read_thread", nlohmann::json{
+        {"threadId", id}, {"workspaceHash", "../outside"}}.dump()).success);
+}
+
+TEST_F(ThreadTools, DisambiguatesIdenticalIdsUsingReturnedWorkspaceHash) {
+    const auto first = workspace("first");
+    const auto second = workspace("second");
+    const std::string id = "20260918-120000-0001";
+    persist_thread(first, id, {}, "first history");
+    persist_thread(second, id, {}, "second history");
+    acecode::ThreadService service({});
+    acecode::ThreadScope scope;
+    scope.cwd = first;
+    const auto ambiguous = service.read(scope, id);
+    EXPECT_FALSE(ambiguous.success);
+    EXPECT_NE(ambiguous.error.find("workspaceHash"), std::string::npos);
+    const auto listed = service.list(scope);
+    ASSERT_TRUE(listed.success) << listed.error;
+    ASSERT_EQ(listed.value["threads"].size(), 2u);
+    for (const auto& row : listed.value["threads"]) {
+        const auto read = service.read(scope, id, {}, 8, false, 2000,
+            row["workspaceHash"].get<std::string>());
+        ASSERT_TRUE(read.success) << read.error;
+        EXPECT_EQ(read.value["turns"][0]["items"][0]["content"],
+                  row["cwd"] == first ? "first history" : "second history");
+    }
+}
+
+TEST_F(ThreadTools, ReadsAndWaitsForActiveThreadsInAnotherWorkspace) {
+    const auto first = workspace("caller");
+    const auto second = workspace("active-target");
+    acecode::ToolExecutor tools;
+    acecode::PermissionManager permissions;
+    acecode::SessionRegistryDeps registry_deps;
+    registry_deps.provider_accessor = [] { return std::shared_ptr<acecode::LlmProvider>{}; };
+    registry_deps.tools = &tools;
+    registry_deps.cwd = first;
+    registry_deps.template_permissions = &permissions;
+    acecode::SessionRegistry registry(std::move(registry_deps));
+    acecode::LocalSessionClient client(registry);
+    acecode::SessionOptions options;
+    options.cwd = second;
+    const auto id = registry.create(options);
+    auto entry = registry.acquire(id);
+    ASSERT_NE(entry, nullptr);
+    auto deps = std::make_shared<acecode::ThreadToolDeps>();
+    deps->service = std::make_shared<acecode::ThreadService>(
+        acecode::ThreadService::Deps{&registry, &client});
+    acecode::register_codex_thread_tools(tools, deps);
+
+    acecode::ThreadScope scope;
+    scope.cwd = first;
+    const auto listed = deps->service->list(scope);
+    ASSERT_TRUE(listed.success) << listed.error;
+    ASSERT_EQ(listed.value["threads"].size(), 1u);
+    EXPECT_EQ(listed.value["threads"][0]["threadId"], id);
+    EXPECT_TRUE(listed.value["threads"][0]["active"].get<bool>());
+    entry->sm->on_message(message("user", "live history"));
+    const auto read = deps->service->read(scope, id);
+    ASSERT_TRUE(read.success) << read.error;
+    EXPECT_TRUE(read.value["active"].get<bool>());
+    EXPECT_EQ(read.value["turns"][0]["items"][0]["content"], "live history");
+
+    const auto seq = entry->loop->events().emit(
+        acecode::SessionEventKind::Done, {{"outcome", "success"}});
+    acecode::ToolContext context;
+    context.cwd = first;
+    const auto result = tools.execute("wait_threads", nlohmann::json{
+        {"targets", nlohmann::json::array({{
+            {"threadId", id}, {"workspaceHash", entry->workspace_hash},
+            {"afterCursor", "0"}}})}, {"timeoutMs", 0}}.dump(), context);
+    ASSERT_TRUE(result.success) << result.output;
+    const auto payload = nlohmann::json::parse(result.output);
+    ASSERT_EQ(payload["threads"].size(), 1u);
+    EXPECT_TRUE(payload["errors"].empty());
+    EXPECT_TRUE(payload["threads"][0]["active"].get<bool>());
+    EXPECT_EQ(payload["threads"][0]["cursor"], std::to_string(seq));
+    EXPECT_EQ(payload["winnerThreadId"], id);
+
+    scope.cwd = second;
+    scope.caller_thread_id = id;
+    EXPECT_FALSE(deps->service->wait(scope, {{id, 0}}, 0).success);
+    registry.destroy(id);
+}
+
+TEST_F(ThreadTools, DeleteCascadesToDescendantsAndCleansPins) {
     const auto cwd = unique_cwd("delete_tree");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
@@ -200,7 +470,7 @@ TEST(ThreadTools, DeleteCascadesToDescendantsAndCleansPins) {
     std::filesystem::remove_all(cwd);
 }
 
-TEST(ThreadTools, SelfDeleteWaitsForTuiTurnBoundaryBeforePurging) {
+TEST_F(ThreadTools, SelfDeleteWaitsForTuiTurnBoundaryBeforePurging) {
     const auto cwd = unique_cwd("self_delete_tui");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
@@ -248,7 +518,7 @@ TEST(ThreadTools, SelfDeleteWaitsForTuiTurnBoundaryBeforePurging) {
     std::filesystem::remove_all(cwd);
 }
 
-TEST(ThreadTools, RegistrySelfDeleteUsesExternalLifecycleWithEntrySnapshotHeld) {
+TEST_F(ThreadTools, RegistrySelfDeleteUsesExternalLifecycleWithEntrySnapshotHeld) {
     const auto cwd = unique_cwd("self_delete_registry");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
@@ -308,7 +578,7 @@ TEST(ThreadTools, RegistrySelfDeleteUsesExternalLifecycleWithEntrySnapshotHeld) 
     std::filesystem::remove_all(cwd);
 }
 
-TEST(ThreadTools, HealthyThreadCanRepairBlockedInactiveThread) {
+TEST_F(ThreadTools, HealthyThreadCanRepairBlockedInactiveThread) {
     const auto cwd = unique_cwd("repair_inactive");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
@@ -350,7 +620,7 @@ TEST(ThreadTools, HealthyThreadCanRepairBlockedInactiveThread) {
     std::filesystem::remove_all(cwd);
 }
 
-TEST(ThreadTools, HealthyThreadCanRepairBlockedActiveThreadAtQueueBoundary) {
+TEST_F(ThreadTools, HealthyThreadCanRepairBlockedActiveThreadAtQueueBoundary) {
     const auto cwd = unique_cwd("repair_active");
     const std::string cwd_string = cwd.string();
     const std::string project_dir =
