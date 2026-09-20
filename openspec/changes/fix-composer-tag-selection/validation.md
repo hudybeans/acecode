@@ -43,3 +43,5 @@
 - 文件输入浏览器回归 19 项通过，覆盖同文件拖入/粘贴结构与样式相等、Windows/UNC/POSIX 路径、文件夹、图片、多文件、混合选区、零长度附件、一次撤销、连续输入、异步乱序、焦点、清空草稿及任务/工作目录切换。
 - 原有 tag 选择回归 80 项通过；原生文件处理 GoogleTest 7 项通过，当前 Windows WebHost 编译通过；`pnpm test`、`pnpm build`、OpenSpec 严格验证、差异检查及本次组件的 impeccable 检查通过。
 - 配对截图在临时目录 `acecode-file-intake-shots/drop.png`、`paste.png`，逐项样式与结构比较通过。macOS/Linux 尚未实机验证；浏览器中的平台分支使用桥接 fixture。
+- Windows Release 原生支持库与 Desktop 编译、链接通过，使用当前工作树的 Desktop 启动器重新运行；HTTP 返回的开发前端 SHA-256 与 `web/dist/index.html` 一致。相邻 daemon 的 API 无变更，复用现有可运行产物。
+- 功能提交 `9f1a847c`，合入远端 macOS 窗口按钮调整后，以 `b5aee5ba` 推送到 `origin/master`，远端提交哈希回读一致。

@@ -74,3 +74,4 @@ node scripts/test-composer-completion.mjs
 - 扩展后的文件输入脚本 19 项通过，比较拖入与粘贴的结构化内容、文件名、完整路径、样式、混合选区替换与撤销；同时覆盖文本格式互斥、本地保存、纯 Web 上传、错误和异步焦点。`ACE_COMPOSER_DROP_TEST_FILTER` 可过滤用例，`ACE_COMPOSER_TRANSFER_SHOT_DIR` 可保存配对截图。
 - 既有选择回归 80 项通过；`pnpm test`、`pnpm build`、OpenSpec 严格校验及差异检查通过。截图中的拖入与粘贴 tag 外观一致，保留原有圆角与独立矩形选区。
 - Windows 原生文件处理 7 项测试通过，包括中文名称、同名文件独立保存、二进制字节、失败批次回滚与原始大文件引用。macOS/Linux 的桥接由当前平台适配代码实现，路径与入口契约由 Windows 浏览器 fixture 检查，未在这两个系统上实机验证。
+- 本次 Windows Release 原生支持库与 Desktop 已重新编译、链接并启动，实际客户端返回的前端资源与本次构建哈希一致；交互验证使用生产组件 fixture，不操作真实任务草稿。
