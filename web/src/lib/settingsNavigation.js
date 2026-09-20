@@ -53,6 +53,18 @@ const SETTINGS_NAV_INDEX_BY_KEY = new Map(
   SETTINGS_NAV_ITEMS.map((item, index) => [item.key, index]),
 );
 
-export function settingsNavIndexForKey(key) {
+export function getSettingsNavGroups(developerModeUnlocked = false) {
+  if (!developerModeUnlocked) return SETTINGS_NAV_GROUPS;
+  return SETTINGS_NAV_GROUPS.map((group) => group.key === 'support'
+    ? { ...group, items: [...group.items, { key: 'developer', label: '开发者模式', icon: 'terminal' }] }
+    : group);
+}
+
+export function getSettingsNavItems(developerModeUnlocked = false) {
+  return getSettingsNavGroups(developerModeUnlocked).flatMap((group) => group.items);
+}
+
+export function settingsNavIndexForKey(key, developerModeUnlocked = false) {
+  if (key === 'developer' && developerModeUnlocked) return SETTINGS_NAV_ITEMS.length;
   return SETTINGS_NAV_INDEX_BY_KEY.get(key) ?? 0;
 }

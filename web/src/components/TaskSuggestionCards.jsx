@@ -1,10 +1,54 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnchoredMenu } from './AnchoredMenu.jsx';
 import { VsIcon } from './Icon.jsx';
-import { createTaskSuggestionsController, suggestionTargetRef } from '../lib/taskSuggestions.js';
+import { createTaskSuggestionsController, suggestionTargetRef, SUGGESTION_DISMISS_DELAY_MS } from '../lib/taskSuggestions.js';
 import { notifySessionListChanged } from '../lib/sessionListEvents.js';
+import '../styles/task-suggestions.css';
 
 const ACTION_CLASS = 'min-h-8 px-3 py-1.5 rounded-md text-[12px] font-medium hover:bg-surface-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 disabled:cursor-default';
+
+function TaskSuggestionFooter({ deadline, children }) {
+  const active = Number.isFinite(deadline);
+  const [initialRemaining] = useState(() => active ? Math.max(0, deadline - Date.now()) : 0);
+  const [seconds, setSeconds] = useState(() => Math.ceil(initialRemaining / 1000));
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const update = () => setSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    update();
+    const timer = setInterval(update, 250);
+    return () => clearInterval(timer);
+  }, [active, deadline]);
+
+  return (
+    <div
+      className="ace-suggestion-countdown"
+      data-urgent={active && seconds <= 5 ? 'true' : undefined}
+      style={{
+        '--ace-countdown-start': initialRemaining / SUGGESTION_DISMISS_DELAY_MS,
+        '--ace-countdown-step': seconds * 1000 / SUGGESTION_DISMISS_DELAY_MS,
+        '--ace-countdown-duration': `${initialRemaining}ms`,
+      }}
+    >
+      <div className="flex flex-wrap items-end justify-end gap-x-3 gap-y-2">
+        {active && (
+          <span className="ace-suggestion-countdown-label" role="timer" aria-live="off">
+            {`${seconds}秒后关闭`}
+          </span>
+        )}
+        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+          {children}
+        </div>
+      </div>
+      {active && (
+        <div className="ace-suggestion-countdown-track" aria-hidden="true">
+          <div className="ace-suggestion-countdown-fill" />
+          <div className="ace-suggestion-countdown-cursor" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TaskSuggestionCard({ suggestion, state, controller, sourceRef, onOpenSession }) {
   const [location, setLocation] = useState(suggestion.location || 'worktree');
@@ -85,7 +129,10 @@ function TaskSuggestionCard({ suggestion, state, controller, sourceRef, onOpenSe
           <span>{state.errorActions[suggestion.id] === 'dismiss' ? '无法关闭建议：' : '操作未完成：'}</span>{error}
         </p>
       )}
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+      <TaskSuggestionFooter
+        key={state.dismissDeadlines[suggestion.id] ?? 'stopped'}
+        deadline={state.dismissDeadlines[suggestion.id]}
+      >
         {started && target && (
           <button type="button" className={`${ACTION_CLASS} text-accent`} onClick={() => onOpenSession?.(target)}>
             打开会话
@@ -122,7 +169,14 @@ function TaskSuggestionCard({ suggestion, state, controller, sourceRef, onOpenSe
                   <VsIcon name="expandDown" size={12} />
                 </button>
                 {menuOpen && (
-                  <AnchoredMenu anchorRef={menuAnchor} onClose={() => setMenuOpen(false)} width={260} role="menu" aria-label="选择任务位置">
+                  <AnchoredMenu
+                    anchorRef={menuAnchor}
+                    onClose={() => setMenuOpen(false)}
+                    width={260}
+                    role="menu"
+                    aria-label="选择任务位置"
+                    className="z-50 rounded-lg border border-border bg-surface p-1 ace-shadow-lg"
+                  >
                     {[
                       { value: 'worktree', label: '在 worktree 中开始', disabled: !state.worktreeAvailable },
                       { value: 'current_branch', label: '在当前分支开始', disabled: false },
@@ -147,7 +201,7 @@ function TaskSuggestionCard({ suggestion, state, controller, sourceRef, onOpenSe
             )}
           </div>
         )}
-      </div>
+      </TaskSuggestionFooter>
     </section>
   );
 }

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { useWorkbenchScroll } from '../lib/useWorkbenchScroll.js';
 import hljs from 'highlight.js/lib/core';
 import { renderAsync } from 'docx-preview';
 import 'x-data-spreadsheet/dist/xspreadsheet.css';
@@ -61,6 +63,8 @@ async function copyWithToast(text, okText) {
 }
 
 function HighlightedTextEditor({
+  owner,
+  cwd,
   value,
   path,
   wrap,
@@ -127,6 +131,8 @@ function HighlightedTextEditor({
     return () => window.removeEventListener(CLEAR_PREVIEW_SELECTION_EVENT, clear);
   }, [onInactiveSelectionChange]);
 
+  useWorkbenchScroll(owner, `editorScroll:${cwd}:${path}`, textareaRef);
+
   return (
     <textarea
       ref={textareaRef}
@@ -160,6 +166,7 @@ function HighlightedTextEditor({
 }
 
 export function FilePreviewContent({
+  owner,
   api,
   cwd,
   path,
@@ -184,10 +191,11 @@ export function FilePreviewContent({
     contentType: '',
     blob: null,
   });
-  const [markdownSource, setMarkdownSource] = useState(false);
+  const [markdownSource, setMarkdownSource] = useWorkbenchState(owner, `markdownSource:${cwd}:${path}`, false);
   const [imagePreview, setImagePreview] = useState(null);
   const [inactiveSourceSelection, setInactiveSourceSelection] = useState(null);
   const previewScrollRef = useRef(null);
+  useWorkbenchScroll(owner, `fileScroll:${cwd}:${path}`, previewScrollRef, state.status === 'ok');
   const loadedIdentityRef = useRef('');
   const pendingScrollSnapshotRef = useRef(null);
   const handledFocusRequestRef = useRef('');
@@ -260,7 +268,6 @@ export function FilePreviewContent({
     let cancelled = false;
     let objectUrl = '';
     const nextKind = filePreviewKind(path);
-    if (!reloadingSameFile) setMarkdownSource(false);
     setImagePreview(null);
     setState({ status: 'loading', kind: nextKind, text: '', error: null, lang: '', size: 0, previewUrl: '', contentType: '', blob: null });
 
@@ -658,6 +665,8 @@ export function FilePreviewContent({
             />
             {editing && (
               <HighlightedTextEditor
+                owner={owner}
+                cwd={cwd}
                 value={previewText}
                 path={path}
                 wrap={wrapPreview}

@@ -127,16 +127,21 @@ await run('theme consent pins the displayed size, version and checksum', () => {
 });
 
 await run('catalog previews do not download a theme and only completed installs apply it', async () => {
-  const f = fixture();
-  await f.controller.refresh();
-  assert.deepEqual(f.requests, []);
-  await f.controller.install(entry);
-  assert.deepEqual(f.applies, []);
-  f.complete(); await tick();
-  assert.deepEqual(f.prepared, ['eva-01']);
-  assert.deepEqual(f.applies, ['eva-01']);
-  assert.equal(f.controller.state().entry.installed, true);
-  f.controller.dispose();
+  for (const id of ['eva-01', NATIONAL_DAY_THEME_ID]) {
+    const themeEntry = { ...entry, id };
+    const f = fixture(themeEntry);
+    await f.controller.refresh();
+    assert.deepEqual(f.requests, []);
+    assert.deepEqual(f.applies, []);
+    await f.controller.install(themeEntry);
+    assert.deepEqual(f.requests, [{ id, consent: themeDownloadConsent(themeEntry) }]);
+    assert.deepEqual(f.applies, []);
+    f.complete(); await tick();
+    assert.deepEqual(f.prepared, [id]);
+    assert.deepEqual(f.applies, [id]);
+    assert.equal(f.controller.state().entries.find((item) => item.id === id).installed, true);
+    f.controller.dispose();
+  }
 });
 
 await run('a later manual theme choice wins over an in-flight installation', async () => {

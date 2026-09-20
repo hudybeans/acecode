@@ -43,7 +43,7 @@ export function SummaryGenerationSettings({ onCheckUpdates, onModelProfileUpdate
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <div className="text-[13px] font-medium">摘要生成</div>
+            <div className="text-[13px] font-normal">摘要生成</div>
             <span className="ace-help-tip" tabIndex={0} aria-label="摘要生成帮助" aria-describedby="summary-generation-help">
               <VsIcon name="help" size={14} />
               <span id="summary-generation-help" role="tooltip" className="ace-help-tip-bubble">
@@ -53,14 +53,14 @@ export function SummaryGenerationSettings({ onCheckUpdates, onModelProfileUpdate
           </div>
           <div className="text-[11px] text-fg-mute mt-0.5">协助用户总结当前会话的摘要</div>
         </div>
+        <button type="button" className="px-1.5 py-0.5 text-[11px] hover:underline disabled:opacity-50"
+          disabled={!snapshot || loading} aria-expanded={expanded} aria-controls="summary-generation-config"
+          onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : '配置'}</button>
         <Toggle on={!!draft?.enabled} disabled={!snapshot || loading} ariaLabel="启用摘要生成"
           onChange={(enabled) => {
             if (enabled && !hasModel) setExpanded(true);
             update('enabled', enabled);
           }} />
-        <button type="button" className="px-1.5 py-0.5 text-[11px] hover:underline disabled:opacity-50"
-          disabled={!snapshot || loading} aria-expanded={expanded} aria-controls="summary-generation-config"
-          onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : '配置'}</button>
       </div>
 
       {error && <div role="alert" className="px-3.5 pb-3 text-[12px] text-danger">

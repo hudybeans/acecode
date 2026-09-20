@@ -597,12 +597,12 @@ acecode 支持通过 MCP（Model Context Protocol）接入外部工具服务器�
 ```json
 {
   "mcp_servers": {
-    "<stdio 服务器>": {
+    "local-server": {
       "command": "<可执行程序路径>",
       "args": ["<参数1>"],
       "env": { "ENV_VAR": "value" }
     },
-    "<远端 SSE 服务器>": {
+    "remote-server": {
       "transport": "sse",
       "url": "https://mcp.example.com",
       "sse_endpoint": "/sse",
@@ -630,11 +630,40 @@ acecode 支持通过 MCP（Model Context Protocol）接入外部工具服务器�
 | `sse_endpoint` | string | 否 | 端点路径。`sse` 传输默认 `/sse`；`http` 传输默认 `/mcp`（字段名复用，未来若冲突严重可能拆分） |
 | `headers` | object | 否 | 额外请求头（敏感值不会出现在日志里） |
 | `auth_token` | string | 否 | Bearer 令牌（日志仅输出 `auth: present`） |
-| `timeout_seconds` | int | 否 | 请求超时，默认 30 |
+| `timeout_seconds` | int | 否 | 请求超时，默认 30，允许 1–3600 秒 |
 
-> 未含 `transport` 字段的旧版条目仍作为 stdio 处理，行为与先前版本完全一致。
+> 未含 `transport` 字段的旧版条目仍作为 stdio 处理，需要有效的 `command`。
 >
-> 服务器名称会被清理（非字母数字字符替换为 `_`）后作为工具名前缀。例如名称为 `my-tools`，其工具 `search` 会被注册为 `mcp_my_tools_search`。
+> 服务器名称不能为空，也不能包含空白、控制字符或 `/`。公共服务器名称中的非字母数字字符按 `_HH` 编码，项目服务器使用独立的工具名前缀。模型使用工具清单中返回的名称，不应自行拼接名称。
+
+### 公共配置与项目配置
+
+公共配置仍保存在 `~/.acecode/config.json` 的 `mcp_servers` 字段中。项目可在自己的 `.acecode/mcp.json` 中保存以下内容：
+
+```json
+{
+  "mcp_servers": {
+    "project-search": {
+      "command": "node",
+      "args": ["/absolute/path/to/project-search.js"]
+    }
+  }
+}
+```
+
+项目条目与公共配置叠加，同名条目由项目配置完整覆盖。项目条目设为 `"disabled": true` 时，也会覆盖同名公共服务器；删除项目条目后恢复继承公共配置。不同项目的同名服务器分别连接，工具调用不会跨项目串用。
+
+从子目录启动时，ACECode 向上查找已有的项目 MCP 文件，并以最近的 Git 仓库或 worktree 根目录为边界；查找不会越入用户主目录。未找到项目文件时使用 Git 根目录，没有 Git 根目录则使用工作目录。设置页面的 MCP 区域可通过“配置范围”选择公共配置或已登记的项目，JSON 编辑器中只填写服务器名称到配置的映射，不包含文件外层的 `mcp_servers`。
+
+### 校验与自动回退
+
+ACECode 使用内置的配置 JSON Schema 校验原始 JSON。它描述客户端服务器配置；[MCP 2026-07-28 Schema](https://modelcontextprotocol.io/specification/2026-07-28/schema) 描述协议消息。本功能不变更当前 MCP 通信协议版本。
+
+设置编辑器、HTTP API、TUI 配置编辑、通用配置保存，以及内置 Write/Edit/Patch 和网页文件编辑入口都会在写入已知 MCP 配置文件前校验。错误的字段类型、未知字段、传输必填项缺失等会拒绝整次修改，并返回字段路径和完整 Schema。设置页面可展开“查看配置 Schema”；校验失败时保留编辑草稿和已保存的有效配置。
+
+每个配置文件旁保存独立的 `.mcp-last-good` 快照，例如 `.acecode/mcp.json.mcp-last-good`。启动或重新加载前会再次校验；外部编辑导致配置无效时，先重新校验快照，再恢复该范围上次有效的配置。公共配置仅恢复 MCP 部分，其他设置保持原值；无效原文归档到相邻的 `config-backups/invalid/`。没有有效快照时返回校验错误，不启动无效配置中的服务器。快照也可能包含认证信息，不要提交到版本库。
+
+外部程序或 shell 直接写文件无法在写入前由 ACECode 拦截，这类修改由启动或重新加载校验处理。`/mcp enable`、`disable`、`reconnect` 是当前项目的运行时操作；需要持久保存启用状态时使用设置或 MCP 管理界面。
 
 ### 配置示例
 
@@ -720,7 +749,7 @@ acecode 启动时按 transport 连接每个配置的 MCP 服务器：
 [MCP] Connected 2 server(s), registered 8 external tool(s).
 ```
 
-若某个服务器连接失败，可在当前工作目录的 `acecode.log` 中查看详细错误信息。
+若某个服务器连接失败，可在 `<数据目录>/logs/tui-YYYY-MM-DD.log` 中查看详细错误信息（默认数据目录为 `~/.acecode`）。
 
 ### 管理 MCP 连接
 
@@ -856,9 +885,14 @@ OpenAI 兼容网关或 Anthropic 模型如果推理时间很长、连接容易�
 
 ### Q: 日志文件在哪里？
 
-acecode 运行时会在当前工作目录生成 `acecode.log` 文件，记录详细的调试信息。
-Daemon 模式下不再写 `acecode.log`，而是按日期滚动写到
-`<数据目录>/logs/daemon-{YYYY-MM-DD}.log`（详见第 16 章）。
+普通 TUI 运行时会按本地日期滚动写入
+`<数据目录>/logs/tui-YYYY-MM-DD.log`，记录详细的调试信息。默认数据目录为
+`~/.acecode`；若已配置数据目录重定向，则使用重定向后的目录。已有工作区中的
+`acecode.log` 会被保留，但新的 TUI 不再创建或追加该文件。启用 TUI 输入追踪的
+调试构建会将高频鼠标和选区记录另写到
+`<数据目录>/logs/tui-input-trace-YYYY-MM-DD.log`，同样不会写入工作区。
+
+Daemon 模式按日期滚动写到 `<数据目录>/logs/daemon-YYYY-MM-DD.log`（详见第 16 章）。
 
 ---
 

@@ -1,0 +1,121 @@
+.ace-suggestion-countdown {
+  margin-top: 16px;
+}
+
+.ace-suggestion-countdown-label {
+  display: block;
+  margin-right: auto;
+  color: var(--ace-fg-mute);
+  font-size: var(--ace-font-size-11, 11px);
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ace-suggestion-countdown-track {
+  position: relative;
+  margin-top: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ace-border);
+}
+
+.ace-suggestion-countdown-fill,
+.ace-suggestion-countdown-cursor {
+  position: absolute;
+  inset: 0;
+  opacity: 0.75;
+  animation-duration: var(--ace-countdown-duration);
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.ace-suggestion-countdown-fill {
+  border-radius: inherit;
+  background: var(--ace-warn);
+  transform-origin: left center;
+  transform: scaleX(var(--ace-countdown-start));
+  animation-name: ace-suggestion-countdown-shrink;
+}
+
+.ace-suggestion-countdown-cursor {
+  width: 0;
+  left: calc(var(--ace-countdown-start) * 100%);
+  animation-name: ace-suggestion-countdown-travel;
+}
+
+.ace-suggestion-countdown-cursor::before,
+.ace-suggestion-countdown-cursor::after {
+  content: '';
+  position: absolute;
+  transform-origin: center bottom;
+  pointer-events: none;
+}
+
+.ace-suggestion-countdown-cursor::before {
+  left: -3px;
+  top: -7px;
+  width: 6px;
+  height: 9px;
+  border-radius: 65% 35% 55% 45% / 75% 65% 35% 25%;
+  background: linear-gradient(0deg, var(--ace-warn) 20%, rgba(var(--ace-warn-rgb), 0.65) 75%, rgba(var(--ace-warn-rgb), 0.12));
+  box-shadow: 0 0 4px rgba(var(--ace-warn-rgb), 0.45);
+  filter: blur(0.3px);
+  animation: ace-suggestion-flame-sway 1.24s ease-in-out infinite;
+}
+
+.ace-suggestion-countdown-cursor::after {
+  left: -1.5px;
+  top: -3px;
+  width: 3px;
+  height: 5px;
+  border-radius: 55% 45% 50% 50% / 75% 65% 35% 25%;
+  background: var(--ace-warn);
+  filter: brightness(1.7);
+  animation: ace-suggestion-flame-glimmer 0.86s ease-in-out infinite;
+}
+
+.ace-suggestion-countdown[data-urgent='true'] .ace-suggestion-countdown-fill,
+.ace-suggestion-countdown[data-urgent='true'] .ace-suggestion-countdown-cursor {
+  opacity: 1;
+}
+
+@keyframes ace-suggestion-countdown-shrink {
+  to { transform: scaleX(0); }
+}
+
+@keyframes ace-suggestion-countdown-travel {
+  to { left: 0; }
+}
+
+@keyframes ace-suggestion-flame-sway {
+  0%, 100% { transform: rotate(-8deg) scale(0.9, 0.95); opacity: 0.82; }
+  24% { transform: rotate(5deg) scale(1, 0.88); opacity: 0.96; }
+  49% { transform: rotate(-4deg) scale(0.86, 1.08); opacity: 0.88; }
+  76% { transform: rotate(7deg) scale(0.95, 0.98); opacity: 1; }
+}
+
+@keyframes ace-suggestion-flame-glimmer {
+  0%, 100% { transform: scale(0.88, 0.9); opacity: 0.78; }
+  38% { transform: scale(1, 1.06); opacity: 1; }
+  71% { transform: scale(0.92, 0.94); opacity: 0.86; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ace-suggestion-countdown-fill {
+    animation: none;
+    transform: scaleX(var(--ace-countdown-step));
+  }
+
+  .ace-suggestion-countdown-cursor {
+    animation: none;
+    left: calc(var(--ace-countdown-step) * 100%);
+  }
+
+  .ace-suggestion-countdown-cursor::before,
+  .ace-suggestion-countdown-cursor::after {
+    animation: none;
+    transform: none;
+    box-shadow: none;
+  }
+}

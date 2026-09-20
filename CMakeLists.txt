@@ -7,7 +7,7 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.20 LANGUAGES C CXX)
+project(acecode VERSION 0.9.22 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
 
@@ -163,7 +163,9 @@ file(GLOB_RECURSE ACECODE_HEADER_FILES CONFIGURE_DEPENDS
 
 set(ACECODE_TESTABLE_SOURCES ${ACECODE_ALL_SOURCES})
 list(REMOVE_ITEM ACECODE_TESTABLE_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/main.cpp)
+    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/computer_use/helper_main.cpp
+    ${CMAKE_SOURCE_DIR}/src/computer_use/native_windows.cpp)
 list(FILTER ACECODE_TESTABLE_SOURCES EXCLUDE REGEX "/src/(tui|markdown)/")
 
 # winpty_agent_location.cpp 属于 winpty_static(需要 winpty 内部 include 路径),
@@ -175,7 +177,9 @@ list(FILTER ACECODE_TUI_SOURCES INCLUDE REGEX "/src/(tui|markdown)/")
 
 set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/config/config_mutation.cpp
     ${CMAKE_SOURCE_DIR}/src/config/config_recovery.cpp
+    ${CMAKE_SOURCE_DIR}/src/config/mcp_config.cpp
     ${CMAKE_SOURCE_DIR}/src/config/model_provider_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/config/request_headers.cpp
     ${CMAKE_SOURCE_DIR}/src/config/saved_models.cpp
@@ -198,6 +202,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/startup_progress.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/strings.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/workspace_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/append_file.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/clipboard.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/cwd_hash.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/encoding.cpp
@@ -447,6 +452,26 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
+if(WIN32)
+    # UI Automation lives outside the daemon: a hung application must remain
+    # cancellable without terminating a conversation or the desktop shell.
+    add_library(acecode_computer_use_native STATIC
+        src/computer_use/native_windows.cpp
+        src/computer_use/pointer_capture.cpp
+        src/computer_use/pointer_overlay.cpp)
+    target_include_directories(acecode_computer_use_native PUBLIC ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(acecode_computer_use_native PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_link_libraries(acecode_computer_use_native PUBLIC
+        nlohmann_json::nlohmann_json user32 gdi32 ole32 oleaut32
+        uiautomationcore d3d11 dxgi windowscodecs dwmapi shell32 propsys uuid)
+    if(MSVC)
+        target_link_libraries(acecode_computer_use_native PUBLIC windowsapp)
+    endif()
+    add_executable(acecode-computer-use src/computer_use/helper_main.cpp)
+    target_link_libraries(acecode-computer-use PRIVATE acecode_computer_use_native)
+    install(TARGETS acecode-computer-use RUNTIME DESTINATION . COMPONENT computer_use_runtime)
+endif()
+
 add_executable(acecode
     ${CMAKE_SOURCE_DIR}/src/main.cpp
     ${ACECODE_TUI_SOURCES}
@@ -459,6 +484,9 @@ target_link_libraries(acecode PRIVATE
     ftxui::dom
     ftxui::component
 )
+if(WIN32)
+    add_dependencies(acecode acecode-computer-use)
+endif()
 
 add_custom_command(TARGET acecode POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:acecode>/channels/whatsapp"
@@ -504,6 +532,9 @@ endif()
 # desktop shell 子目标(opt-in,默认 OFF)。include 后只有当 ACECODE_BUILD_DESKTOP=ON
 # 才会真添加 acecode-desktop 这个 target,否则文件本身做无操作 return。
 include(${CMAKE_SOURCE_DIR}/cmake/acecode_desktop.cmake)
+if(WIN32 AND TARGET acecode-desktop)
+    add_dependencies(acecode-desktop acecode-computer-use)
+endif()
 
 # tuitest helloworld 子目标(opt-in,默认 OFF)。-DACECODE_BUILD_TUITEST=ON 开启。
 include(${CMAKE_SOURCE_DIR}/cmake/acecode_tuitest.cmake)

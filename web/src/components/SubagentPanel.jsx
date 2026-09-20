@@ -96,7 +96,7 @@ function TaskCard({ task, nowMs, onAbort, onOpenTranscript }) {
   );
 }
 
-function SubagentTranscriptView({ task }) {
+function SubagentTranscriptView({ task, messageAutoCollapse }) {
   const sessionRef = useMemo(() => ({
     sessionId: task.id,
     busy: task.status === SUBAGENT_TASK_STATUS.RUNNING,
@@ -106,11 +106,12 @@ function SubagentTranscriptView({ task }) {
   const running = transcript.busy || task.status === SUBAGENT_TASK_STATUS.RUNNING;
   const items = useMemo(
     () => projectSubagentTranscriptItems(transcript.items, {
+      messageAutoCollapse,
       deferTrailingToolSummary: running,
       ensureLiveActivity: running,
       liveTurnId: `subagent:${task.id}`,
     }),
-    [running, task.id, transcript.items],
+    [messageAutoCollapse, running, task.id, transcript.items],
   );
 
   const [expandedActivityKeys, setExpandedActivityKeys] = useState(() => new Set());
@@ -244,6 +245,7 @@ function SubagentTranscriptView({ task }) {
         )}
         <TranscriptItems
           items={items}
+          messageAutoCollapse={messageAutoCollapse}
           capabilities={READ_ONLY_TRANSCRIPT_CAPABILITIES}
           expandedActivityKeys={expandedActivityKeys}
           collapsedMediaKeys={collapsedMediaKeys}
@@ -260,7 +262,7 @@ function SubagentTranscriptView({ task }) {
   );
 }
 
-export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focus, onClose, tasks, onAbort, onClearSettled }) {
+export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focus, onClose, tasks, onAbort, onClearSettled, messageAutoCollapse = true }) {
   const [transcriptTaskId, setTranscriptTaskId] = useState('');
   const [clearing, setClearing] = useState(false);
 
@@ -343,7 +345,7 @@ export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focu
       </div>
 
       {transcriptTask ? (
-        <SubagentTranscriptView key={transcriptTask.id} task={transcriptTask} />
+        <SubagentTranscriptView key={transcriptTask.id} task={transcriptTask} messageAutoCollapse={messageAutoCollapse} />
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
           {tasks.length === 0 && (

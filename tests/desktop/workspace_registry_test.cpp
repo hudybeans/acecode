@@ -23,6 +23,7 @@ namespace fs = std::filesystem;
 
 using acecode::compute_cwd_hash;
 using acecode::desktop::WorkspaceMeta;
+using acecode::desktop::WorkspaceOrderStatus;
 using acecode::desktop::WorkspaceRegistry;
 using acecode::desktop::default_workspace_name;
 using acecode::desktop::ensure_workspace_metadata;
@@ -488,6 +489,142 @@ TEST(WorkspaceRegistry, ConcurrentSetNameDoesNotCorrupt) {
 TEST(WorkspaceRegistry, GetMissing) {
     WorkspaceRegistry r;
     EXPECT_FALSE(r.get("nope").has_value());
+}
+
+namespace {
+
+std::vector<std::string> workspace_hashes(const WorkspaceRegistry& registry) {
+    std::vector<std::string> hashes;
+    for (const auto& workspace : registry.list()) hashes.push_back(workspace.hash);
+    return hashes;
+}
+
+} // namespace
+
+TEST(WorkspaceRegistryOrder, PersistsAcrossRegistriesAndRename) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry writer;
+    auto first = writer.register_new(tmp.path(), "/order/first");
+    auto second = writer.register_new(tmp.path(), "/order/second");
+    WorkspaceRegistry reader;
+    reader.scan(tmp.path());
+    EXPECT_FALSE(fs::exists(fs::path(tmp.path()) / "workspace_order.json"));
+
+    const std::vector<std::string> expected{second.hash, first.hash};
+    ASSERT_EQ(writer.set_order(tmp.path(), expected), WorkspaceOrderStatus::Saved);
+    EXPECT_EQ(workspace_hashes(writer), expected);
+    reader.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(reader), expected);
+    ASSERT_TRUE(writer.set_name(tmp.path(), first.hash, "renamed"));
+    WorkspaceRegistry restarted;
+    restarted.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(restarted), expected);
+    EXPECT_EQ(restarted.get(first.hash)->name, "renamed");
+}
+
+TEST(WorkspaceRegistryOrder, HiddenSlotsSurviveReorderingAndNewWorkspacesAppend) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry registry;
+    auto first = registry.register_new(tmp.path(), "/order/first");
+    auto hidden = registry.register_new(tmp.path(), "/order/hidden");
+    auto last = registry.register_new(tmp.path(), "/order/last");
+    ASSERT_EQ(registry.set_order(tmp.path(), {first.hash, hidden.hash, last.hash}),
+              WorkspaceOrderStatus::Saved);
+    ASSERT_TRUE(registry.hide(tmp.path(), hidden.hash));
+    ASSERT_EQ(registry.set_order(tmp.path(), {last.hash, first.hash}),
+              WorkspaceOrderStatus::Saved);
+    EXPECT_EQ(workspace_hashes(registry), (std::vector<std::string>{last.hash, first.hash}));
+
+    auto added = registry.register_new(tmp.path(), "/order/new");
+    registry.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(registry),
+              (std::vector<std::string>{last.hash, first.hash, added.hash}));
+    ASSERT_EQ(registry.set_order(tmp.path(), {added.hash, last.hash, first.hash}),
+              WorkspaceOrderStatus::Saved);
+    registry.register_new(tmp.path(), hidden.cwd);
+    WorkspaceRegistry restarted;
+    restarted.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(restarted),
+              (std::vector<std::string>{added.hash, hidden.hash, last.hash, first.hash}));
+}
+
+TEST(WorkspaceRegistryOrder, RejectsInvalidAndStalePermutationsWithoutSaving) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry registry;
+    auto first = registry.register_new(tmp.path(), "/order/first");
+    auto second = registry.register_new(tmp.path(), "/order/second");
+    const std::vector<std::string> expected{first.hash, second.hash};
+    ASSERT_EQ(registry.set_order(tmp.path(), expected), WorkspaceOrderStatus::Saved);
+    EXPECT_EQ(registry.set_order(tmp.path(), {first.hash, first.hash}),
+              WorkspaceOrderStatus::InvalidOrder);
+    EXPECT_EQ(registry.set_order(tmp.path(), {first.hash, ""}),
+              WorkspaceOrderStatus::InvalidOrder);
+    EXPECT_EQ(registry.set_order(tmp.path(), {first.hash}), WorkspaceOrderStatus::Conflict);
+    EXPECT_EQ(registry.set_order(tmp.path(), {first.hash, "unknown"}), WorkspaceOrderStatus::Conflict);
+    EXPECT_EQ(registry.set_order(tmp.path(), {}), WorkspaceOrderStatus::Conflict);
+    WorkspaceRegistry restarted;
+    restarted.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(restarted), expected);
+
+    ASSERT_TRUE(restarted.hide(tmp.path(), second.hash));
+    EXPECT_EQ(registry.set_order(tmp.path(), expected), WorkspaceOrderStatus::Conflict);
+    auto third = restarted.register_new(tmp.path(), "/order/third");
+    EXPECT_EQ(registry.set_order(tmp.path(), {first.hash}), WorkspaceOrderStatus::Conflict);
+    EXPECT_EQ(registry.set_order(tmp.path(), {third.hash, first.hash}), WorkspaceOrderStatus::Saved);
+}
+
+TEST(WorkspaceRegistryOrder, CorruptOrderDoesNotChangeVisibilityOrRewriteOnScan) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry registry;
+    auto workspace = registry.register_new(tmp.path(), "/order/first");
+    const auto path = fs::path(tmp.path()) / "workspace_order.json";
+    for (const std::string raw : {"{broken", "[]", "{}", "{\"hashes\":[1]}",
+                                 "{\"hashes\":[\"a\",\"a\"]}", "{\"hashes\":[\"\"]}"}) {
+        { std::ofstream output(path); output << raw; }
+        registry.scan(tmp.path());
+        EXPECT_EQ(workspace_hashes(registry), (std::vector<std::string>{workspace.hash}));
+        std::ifstream input(path);
+        EXPECT_EQ(std::string(std::istreambuf_iterator<char>(input), {}), raw);
+    }
+    EXPECT_EQ(registry.set_order(tmp.path(), {workspace.hash}), WorkspaceOrderStatus::Saved);
+}
+
+TEST(WorkspaceRegistryOrder, FailedWritePreservesConfirmedOrder) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry registry;
+    auto first = registry.register_new(tmp.path(), "/order/first");
+    auto second = registry.register_new(tmp.path(), "/order/second");
+    const std::vector<std::string> expected{first.hash, second.hash};
+    ASSERT_EQ(registry.set_order(tmp.path(), expected), WorkspaceOrderStatus::Saved);
+    // A directory at the sibling temp-file path fails on every platform.
+    fs::create_directory(fs::path(tmp.path()) / "workspace_order.json.tmp");
+    EXPECT_EQ(registry.set_order(tmp.path(), {second.hash, first.hash}),
+              WorkspaceOrderStatus::WriteFailed);
+    EXPECT_EQ(workspace_hashes(registry), expected);
+    WorkspaceRegistry restarted;
+    restarted.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(restarted), expected);
+}
+
+TEST(WorkspaceRegistryOrder, ConcurrentSavesKeepDiskAndCacheConsistent) {
+    TmpProjectsDir tmp;
+    WorkspaceRegistry registry;
+    auto first = registry.register_new(tmp.path(), "/order/first");
+    auto second = registry.register_new(tmp.path(), "/order/second");
+    std::vector<std::thread> writers;
+    for (int index = 0; index < 8; ++index) {
+        writers.emplace_back([&, index] {
+            const std::vector<std::string> hashes = index % 2
+                ? std::vector<std::string>{first.hash, second.hash}
+                : std::vector<std::string>{second.hash, first.hash};
+            EXPECT_EQ(registry.set_order(tmp.path(), hashes), WorkspaceOrderStatus::Saved);
+        });
+    }
+    for (auto& writer : writers) writer.join();
+    WorkspaceRegistry restarted;
+    restarted.scan(tmp.path());
+    EXPECT_EQ(workspace_hashes(restarted), workspace_hashes(registry));
+    EXPECT_EQ(restarted.list().size(), 2u);
 }
 
 // 触发场景:~/.acecode/projects 下每个用过的 cwd 都留一个 hash 目录,实测

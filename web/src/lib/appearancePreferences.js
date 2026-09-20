@@ -14,6 +14,7 @@ export const DEFAULT_APPEARANCE_PREFERENCES = Object.freeze({
   colorTheme: DEFAULT_COLOR_THEME,
   fontSize: DEFAULT_FONT_SIZE,
   sidebarSessionTime: true,
+  messageAutoCollapse: true,
 });
 
 const FONT_SIZE_SET = new Set(FONT_SIZE_VALUES);
@@ -44,6 +45,10 @@ function inputSidebarSessionTime(value) {
   return (value?.sidebar_session_time ?? value?.sidebarSessionTime) !== false;
 }
 
+function inputMessageAutoCollapse(value) {
+  return (value?.message_auto_collapse ?? value?.messageAutoCollapse) !== false;
+}
+
 export function effectiveAppearanceTheme(value, scope = globalThis) {
   return value === 'light' || value === 'dark'
     ? value
@@ -65,6 +70,7 @@ export function normalizeAppearancePreferences(value, scope = globalThis) {
       ? fontSize
       : DEFAULT_APPEARANCE_PREFERENCES.fontSize,
     sidebarSessionTime: inputSidebarSessionTime(value),
+    messageAutoCollapse: inputMessageAutoCollapse(value),
   };
 }
 
@@ -82,6 +88,7 @@ export function parseAppearancePreferences(value, scope = globalThis) {
     colorTheme,
     fontSize,
     sidebarSessionTime: inputSidebarSessionTime(value),
+    messageAutoCollapse: inputMessageAutoCollapse(value),
   };
 }
 
@@ -102,6 +109,9 @@ export function mergeAppearancePreferences(current, patch, scope = globalThis) {
     sidebarSessionTime: patch?.sidebarSessionTime
       ?? patch?.sidebar_session_time
       ?? current?.sidebarSessionTime,
+    messageAutoCollapse: patch?.messageAutoCollapse
+      ?? patch?.message_auto_collapse
+      ?? current?.messageAutoCollapse,
   }, scope);
 }
 
@@ -113,6 +123,7 @@ export function appearancePreferencesToApi(value, scope = globalThis) {
     color_theme: normalized.colorTheme,
     font_size: normalized.fontSize,
     sidebar_session_time: normalized.sidebarSessionTime,
+    message_auto_collapse: normalized.messageAutoCollapse,
   };
 }
 

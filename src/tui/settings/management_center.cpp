@@ -1,3 +1,4 @@
+#include "../../config/mcp_config.hpp"
 #ifdef _WIN32
 #  ifndef NOMINMAX
 #    define NOMINMAX
@@ -168,14 +169,13 @@ std::string redact_url_value(std::string value) {
 }
 
 std::string safe_mcp_locator(
-    const AppConfig* app_config,
+    const McpManager* manager,
     const McpServerInfo& row) {
-    if (!app_config) return "(configuration unavailable)";
-    const auto found = app_config->mcp_servers.find(row.name);
-    if (found == app_config->mcp_servers.end()) {
+    const auto found = manager ? manager->server_config(row.name) : std::nullopt;
+    if (!found) {
         return "(configuration unavailable)";
     }
-    const auto& config = found->second;
+    const auto& config = *found;
     if (config.transport == McpTransport::Stdio) {
         const std::string command =
             config.command.empty() ? "(command not configured)"
@@ -189,14 +189,12 @@ std::string safe_mcp_locator(
 }
 
 std::string safe_mcp_error(
-    const AppConfig* app_config,
+    const McpManager* manager,
     const McpServerInfo& row) {
-    if (row.error.empty() || !app_config) return row.error;
-    const auto found = app_config->mcp_servers.find(row.name);
-    if (found == app_config->mcp_servers.end()) {
-        return truncate_middle(row.error, 240);
-    }
-    const auto& config = found->second;
+    if (row.error.empty()) return {};
+    const auto found = manager ? manager->server_config(row.name) : std::nullopt;
+    if (!found) return "MCP configuration unavailable";
+    const auto& config = *found;
     std::string safe = row.error;
     for (const auto& [name, secret] : config.env) {
         (void)name;
@@ -381,196 +379,69 @@ nlohmann::json mcp_config_to_safe_json(const McpServerConfig& config) {
     return json;
 }
 
-bool parse_string_map(
-    const nlohmann::json& value,
-    std::map<std::string, std::string>& output,
-    const std::map<std::string, std::string>& existing,
-    std::string& error,
-    const char* field) {
-    if (!value.is_object()) {
-        error = std::string(field) + " must be a JSON object";
-        return false;
-    }
-    output.clear();
-    for (auto it = value.begin(); it != value.end(); ++it) {
-        if (!it.value().is_string()) {
-            error = std::string(field) + " values must be strings";
-            return false;
-        }
-        std::string item = it.value().get<std::string>();
-        if (item == kRedactedSecret) {
-            const auto old = existing.find(it.key());
-            if (old != existing.end()) item = old->second;
-        }
-        output[it.key()] = std::move(item);
-    }
-    return true;
-}
-
 std::optional<McpServerConfig> parse_mcp_editor(
     const std::string& text,
     const McpServerConfig& existing,
     std::string& error) {
     try {
-        const auto json = nlohmann::json::parse(text);
-        if (!json.is_object()) {
-            error = "MCP definition must be a JSON object";
-            return std::nullopt;
-        }
-        McpServerConfig config = existing;
-        const std::string transport =
-            json.value("transport", std::string("stdio"));
-        if (transport == "stdio") {
-            config.transport = McpTransport::Stdio;
-        } else if (transport == "sse") {
-            config.transport = McpTransport::Sse;
-        } else if (transport == "http") {
-            config.transport = McpTransport::Http;
-        } else {
-            error = "transport must be stdio, sse, or http";
-            return std::nullopt;
-        }
-        if (json.contains("command")) {
-            if (!json["command"].is_string()) {
-                error = "command must be a string";
-                return std::nullopt;
-            }
-            config.command = json["command"].get<std::string>();
-        }
-        if (json.contains("args")) {
-            if (!json["args"].is_array()) {
-                error = "args must be an array of strings";
-                return std::nullopt;
-            }
-            config.args.clear();
-            std::size_t index = 0;
-            for (const auto& item : json["args"]) {
-                if (!item.is_string()) {
-                    error = "args must be an array of strings";
-                    return std::nullopt;
+        const auto edited = nlohmann::json::parse(text);
+        require_valid_mcp_config(nlohmann::json{{"server", edited}});
+        // Omitted fields keep their previous values in the single-server TUI
+        // editor. Only placeholder restoration is specific to this surface;
+        // type checks, transport defaults and parsing belong to the service.
+        auto candidate = serialize_mcp_config({{"server", existing}})["server"];
+        for (auto it = edited.begin(); it != edited.end(); ++it)
+            candidate[it.key()] = it.value();
+        candidate["transport"] = edited.value("transport", std::string("stdio"));
+
+        if (edited.contains("args")) {
+            for (std::size_t index = 0; index < edited["args"].size(); ++index) {
+                const auto argument = edited["args"][index].get<std::string>();
+                const std::string marker = std::string("=") + kRedactedSecret;
+                const bool whole = argument == kRedactedSecret;
+                const bool assigned = argument.size() >= marker.size() &&
+                    argument.compare(argument.size() - marker.size(), marker.size(), marker) == 0;
+                if (!whole && !assigned) continue;
+                bool can_restore = index < existing.args.size();
+                if (can_restore && assigned) {
+                    const auto equals = argument.find('=');
+                    const auto old_equals = existing.args[index].find('=');
+                    can_restore = old_equals != std::string::npos &&
+                        argument.substr(0, equals) == existing.args[index].substr(0, old_equals);
                 }
-                std::string argument = item.get<std::string>();
-                const bool whole_value_redacted =
-                    argument == kRedactedSecret;
-                const std::string marker =
-                    std::string("=") + kRedactedSecret;
-                const bool assigned_value_redacted =
-                    argument.size() >= marker.size() &&
-                    argument.compare(
-                        argument.size() - marker.size(),
-                        marker.size(),
-                        marker) == 0;
-                if (whole_value_redacted || assigned_value_redacted) {
-                    if (index >= existing.args.size()) {
-                        error =
-                            "redacted args must keep an existing value";
-                        return std::nullopt;
-                    }
-                    if (whole_value_redacted) {
-                        argument = existing.args[index];
-                    } else {
-                        const std::size_t equals = argument.find('=');
-                        const std::size_t existing_equals =
-                            existing.args[index].find('=');
-                        if (equals == std::string::npos ||
-                            existing_equals == std::string::npos ||
-                            argument.substr(0, equals) !=
-                                existing.args[index].substr(
-                                    0, existing_equals)) {
-                            error =
-                                "redacted args must keep their existing flag";
-                            return std::nullopt;
-                        }
-                        argument = existing.args[index];
-                    }
+                if (!can_restore) {
+                    throw McpConfigError(nlohmann::json::array({{
+                        {"path", "/server/args/" + std::to_string(index)},
+                        {"message", "redacted arguments must keep their existing position and flag"}
+                    }}));
                 }
-                config.args.push_back(std::move(argument));
-                ++index;
+                candidate["args"][index] = existing.args[index];
             }
         }
-        if (json.contains("env") &&
-            !parse_string_map(
-                json["env"], config.env, existing.env, error, "env")) {
-            return std::nullopt;
-        }
-        if (json.contains("url")) {
-            if (!json["url"].is_string()) {
-                error = "url must be a string";
-                return std::nullopt;
+        for (const auto* field : {"env", "headers"}) {
+            if (!edited.contains(field)) continue;
+            const auto& previous = std::string(field) == "env" ? existing.env : existing.headers;
+            for (auto it = edited[field].begin(); it != edited[field].end(); ++it) {
+                const auto found = previous.find(it.key());
+                if (it.value() == kRedactedSecret && found != previous.end())
+                    candidate[field][it.key()] = found->second;
             }
-            const std::string edited =
-                json["url"].get<std::string>();
-            const std::string redacted_existing =
-                redact_url_value(existing.url);
-            config.url =
-                edited == redacted_existing &&
-                    redacted_existing != existing.url
-                ? existing.url
-                : edited;
         }
-        if (json.contains("sse_endpoint")) {
-            if (!json["sse_endpoint"].is_string()) {
-                error = "sse_endpoint must be a string";
-                return std::nullopt;
-            }
-            const std::string edited =
-                json["sse_endpoint"].get<std::string>();
-            const std::string redacted_existing =
-                redact_url_value(existing.sse_endpoint);
-            config.sse_endpoint =
-                edited == redacted_existing &&
-                    redacted_existing != existing.sse_endpoint
-                ? existing.sse_endpoint
-                : edited;
+        for (const auto* field : {"url", "sse_endpoint"}) {
+            if (!edited.contains(field)) continue;
+            const auto& previous = std::string(field) == "url" ? existing.url : existing.sse_endpoint;
+            if (edited[field] == redact_url_value(previous)) candidate[field] = previous;
         }
-        if (json.contains("headers") &&
-            !parse_string_map(
-                json["headers"],
-                config.headers,
-                existing.headers,
-                error,
-                "headers")) {
-            return std::nullopt;
-        }
-        if (json.contains("auth_token")) {
-            if (!json["auth_token"].is_string()) {
-                error = "auth_token must be a string";
-                return std::nullopt;
-            }
-            const std::string token =
-                json["auth_token"].get<std::string>();
-            config.auth_token =
-                token == kRedactedSecret ? existing.auth_token : token;
-        }
-        if (json.contains("timeout_seconds")) {
-            if (!json["timeout_seconds"].is_number_integer()) {
-                error = "timeout_seconds must be an integer";
-                return std::nullopt;
-            }
-            config.timeout_seconds =
-                json["timeout_seconds"].get<int>();
-        }
-        config.disabled = json.value("disabled", config.disabled);
-        if (config.timeout_seconds < 1 ||
-            config.timeout_seconds > 3600) {
-            error = "timeout_seconds must be between 1 and 3600";
-            return std::nullopt;
-        }
-        if (config.transport == McpTransport::Stdio &&
-            trim_ascii(config.command).empty()) {
-            error = "command is required for stdio transport";
-            return std::nullopt;
-        }
-        if (config.transport != McpTransport::Stdio &&
-            trim_ascii(config.url).empty()) {
-            error = "url is required for sse/http transport";
-            return std::nullopt;
-        }
-        return config;
-    } catch (const std::exception& e) {
-        error = std::string("Invalid JSON: ") + e.what();
-        return std::nullopt;
+        if (edited.contains("auth_token") && edited["auth_token"] == kRedactedSecret)
+            candidate["auth_token"] = existing.auth_token;
+        return parse_mcp_config({{"server", candidate}}).at("server");
+    } catch (const McpConfigError& e) {
+        error = e.what();
+    } catch (const nlohmann::json::exception&) {
+        error = McpConfigError(nlohmann::json::array({
+            {{"path", ""}, {"message", "invalid JSON document"}}})).what();
     }
+    return std::nullopt;
 }
 
 } // namespace
@@ -842,8 +713,11 @@ struct ManagementCenter::Impl {
     void rebuild_mcp_entries() {
         visible_mcp_indexes.clear();
         mcp_entries.clear();
+        const auto project_scope = deps.cwd.empty() ? std::string{} : mcp_project_root(deps.cwd);
         for (std::size_t i = 0; i < mcp_rows.size(); ++i) {
             const auto& row = mcp_rows[i];
+            const auto scope = deps.mcp ? deps.mcp->server_scope(row.name) : std::string{};
+            if (!scope.empty() && scope != project_scope) continue;
             const std::string state = mcp_state_name(row.state);
             if (!search_matches(
                     mcp_filter,
@@ -852,7 +726,9 @@ struct ManagementCenter::Impl {
                 continue;
             }
             mcp_entries.push_back(
-                row.name + "  [" + state + "]  " +
+                mcp_server_display_name(row.name) +
+                (deps.mcp && !deps.mcp->server_scope(row.name).empty() ? " (project)" : " (global)") +
+                "  [" + state + "]  " +
                 row.transport + "  tools=" +
                 std::to_string(row.tool_count));
             visible_mcp_indexes.push_back(i);
@@ -877,6 +753,21 @@ struct ManagementCenter::Impl {
     }
 
     bool persist_mcp_disabled(const std::string& name, bool disabled) {
+        const auto scope = deps.mcp ? deps.mcp->server_scope(name) : std::string{};
+        if (!scope.empty()) {
+            try {
+                auto servers = load_project_mcp_config(scope);
+                const auto public_name = mcp_server_display_name(name);
+                auto found = servers.find(public_name);
+                if (found == servers.end()) throw std::runtime_error("MCP server is not present in config");
+                found->second.disabled = disabled;
+                save_project_mcp_config(scope, serialize_mcp_config(servers));
+                return true;
+            } catch (const std::exception& e) {
+                set_status(e.what(), true);
+                return false;
+            }
+        }
         const auto result = mutate(
             [name, disabled](AppConfig& config, std::string& error) {
                 auto it = config.mcp_servers.find(name);
@@ -910,6 +801,7 @@ struct ManagementCenter::Impl {
         const bool changed = enable
             ? deps.mcp->enable(name, *deps.tools)
             : deps.mcp->disable(name, *deps.tools);
+        if (deps.mcp_changed) deps.mcp_changed();
         refresh_mcp();
         set_status(
             changed
@@ -940,13 +832,13 @@ struct ManagementCenter::Impl {
             set_status("Select an MCP server first.", true);
             return;
         }
-        const auto it = deps.config->mcp_servers.find(row->name);
-        if (it == deps.config->mcp_servers.end()) {
+        const auto current = deps.mcp ? deps.mcp->server_config(row->name) : std::nullopt;
+        if (!current) {
             set_status("MCP server is not present in config.", true);
             return;
         }
         mcp_editor_name = row->name;
-        mcp_editor_json = mcp_config_to_safe_json(it->second).dump(2);
+        mcp_editor_json = mcp_config_to_safe_json(*current).dump(2);
         mcp_editor_status.clear();
         mcp_editor_dirty = false;
         mcp_editor_open = true;
@@ -968,37 +860,49 @@ struct ManagementCenter::Impl {
 
     void save_mcp_editor() {
         if (!deps.config) return;
-        const auto current =
-            deps.config->mcp_servers.find(mcp_editor_name);
-        if (current == deps.config->mcp_servers.end()) {
+        const auto current = deps.mcp ? deps.mcp->server_config(mcp_editor_name) : std::nullopt;
+        if (!current) {
             mcp_editor_status = "Server no longer exists.";
             return;
         }
         std::string error;
         const auto parsed =
-            parse_mcp_editor(mcp_editor_json, current->second, error);
+            parse_mcp_editor(mcp_editor_json, *current, error);
         if (!parsed.has_value()) {
             mcp_editor_status = std::move(error);
             return;
         }
         const std::string name = mcp_editor_name;
         const McpServerConfig value = *parsed;
-        const auto result = mutate(
-            [name, value](AppConfig& config, std::string&) {
-                config.mcp_servers[name] = value;
+        const auto scope = deps.mcp->server_scope(name);
+        const auto public_name = mcp_server_display_name(name);
+        if (!scope.empty()) {
+            try {
+                auto servers = load_project_mcp_config(scope);
+                servers[public_name] = value;
+                save_project_mcp_config(scope, serialize_mcp_config(servers));
+                if (deps.tools) deps.mcp->reconcile_scope(scope, servers, *deps.tools);
+            } catch (const std::exception& e) {
+                mcp_editor_status = e.what();
+                return;
+            }
+        } else {
+            const auto result = mutate([public_name, value](AppConfig& config, std::string&) {
+                config.mcp_servers[public_name] = value;
                 return true;
             });
-        if (!result.ok) {
-            mcp_editor_status = result.error;
-            return;
+            if (!result.ok) {
+                mcp_editor_status = result.error;
+                return;
+            }
+            if (deps.tools) deps.mcp->reconcile_scope("", deps.config->mcp_servers, *deps.tools);
         }
+        if (deps.mcp_changed) deps.mcp_changed();
         mcp_editor_dirty = false;
         mcp_editor_open = false;
         refresh_mcp();
         set_status(
-            "Saved MCP definition for " + name +
-            ". Reconnect uses the currently loaded process definition; "
-            "restart ACECode to load structural edits.");
+            "Saved MCP definition for " + mcp_server_display_name(name));
     }
 
     void refresh_connectors() {
@@ -1383,12 +1287,12 @@ struct ManagementCenter::Impl {
             text("Transport  " + row->transport),
             text("Tools      " + std::to_string(row->tool_count)),
             paragraph(
-                "Endpoint   " + safe_mcp_locator(deps.config, *row)),
+                "Endpoint   " + safe_mcp_locator(deps.mcp, *row)),
             row->error.empty()
                 ? text("")
                 : paragraph(
                       "Last error: " +
-                      safe_mcp_error(deps.config, *row)) |
+                      safe_mcp_error(deps.mcp, *row)) |
                       color(theme().semantic.error),
         }) | color(theme().ui.text_muted) | border;
     }

@@ -1,12 +1,11 @@
-// 工具调用块:三态显示
+// 工具调用块:统一保留工具执行行，Shell 仅在展开详情时使用命令/输出卡片。
 //   - 进度模式: tool_start 之后,显示 5-line tail + 状态行(行数/字节/已耗时)
 //   - summary 模式: tool_end 后,绿/红 chip(icon · verb · object · metrics)
 //   - 失败折叠: success=false 时 summary 行下显示前 3 行 stderr,可展开看完整 output
 // 用户点 chip 可切换"展开/收起"。task_complete 用 Done: <summary> 渲染。
 //
 // hunks 字段(file_edit / file_write):新建文件直接展示可复制源码，覆盖和编辑
-// 继续走 diff2html。其余文本展开内容统一套 ToolTextFrame；bash 命令作为
-// `$ <command>` 首行和输出一起进入同一个可复制内容框。
+// 继续走 diff2html。其余普通文本展开内容统一套 ToolTextFrame。
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +20,7 @@ import { fallbackToolSummary } from '../lib/toolSummaryFallback.js';
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { normalizeTaskCompleteMarkdown } from '../lib/taskCompleteSummary.js';
 import { questionFeedbackForTool } from '../lib/questionFeedback.js';
+import { shellCommandPresentation } from '../lib/shellCommandPresentation.js';
 import {
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
@@ -29,6 +29,7 @@ import { AttachmentStrip } from './AttachmentStrip.jsx';
 import { ActivityLine } from './ActivityLine.jsx';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
 import { QuestionFeedbackCard } from './QuestionFeedbackCard.jsx';
+import { ShellCommandCard } from './ShellCommandCard.jsx';
 import { ToolSummaryIcon, VsIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import * as Diff2Html from 'diff2html';
@@ -162,12 +163,6 @@ function joinTooltipParts(...parts) {
   return text || undefined;
 }
 
-function stringArg(args, key) {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
-  const value = args[key];
-  return typeof value === 'string' ? value : '';
-}
-
 function metricText(metrics, label) {
   if (!Array.isArray(metrics)) return '';
   const wanted = String(label || '').toLowerCase();
@@ -255,9 +250,8 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   const liveElapsed = liveProgress && startedAtMs
     ? Math.max(elapsedSeconds, computedElapsed)
     : (elapsedSeconds || (wasLiveProgressRef.current ? computedElapsed : 0));
-  const bashCommand = tool === 'bash' ? stringArg(args, 'command') : '';
-  const bashPrompt = bashCommand || (tool === 'bash' ? displayOverride : '');
-  const expandedInvocationText = bashPrompt ? `$ ${bashPrompt}` : '';
+  const shellPresentation = useMemo(() => shellCommandPresentation(entry), [entry]);
+  const bashCommand = shellPresentation?.command || '';
   const outputPreview = useMemo(
     () => compactOneLinePreview(output || askUserQuestionOutput || currentPartial || tailLines.join('\n') || bashCommand || title || displayOverride || tool),
     [askUserQuestionOutput, bashCommand, currentPartial, displayOverride, output, tailLines, title, tool],
@@ -294,8 +288,8 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   }, [createdFile, diffText]);
 
   const fullOutput = output || askUserQuestionOutput || diffText || tailLines.join('\n') || currentPartial || '';
-  const fullToolOutput = joinTooltipParts(expandedInvocationText, fullOutput) || fullOutput;
-  const visibleOutput = expanded ? fullToolOutput : (outputPreview || currentPartial || tailLines.join('\n') || '');
+  const fullToolOutput = shellPresentation?.copyText ?? fullOutput;
+  const visibleOutput = expanded ? fullToolOutput : (shellPresentation?.command ?? (outputPreview || currentPartial || tailLines.join('\n') || ''));
   const taskCompleteText = isTaskComplete
     ? normalizeTaskCompleteMarkdown(taskCompleteDisplayText(summary, output), '完成')
     : '';
@@ -378,7 +372,20 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     );
   }
 
-  // 完成态与运行态共用 ActivityLine；详情仍由 ToolBlock 自己负责。
+  const shellDetails = shellPresentation && (
+    <ShellCommandCard
+      presentation={shellPresentation}
+      expanded={expanded}
+      onToggle={toggleExpanded}
+      running={liveProgress}
+      failed={isDone && success === false}
+      status={isDone
+        ? <MetricList metrics={completedSummary.metrics} />
+        : <span className="tabular-nums">{formatElapsed(liveElapsed)}</span>}
+    />
+  );
+
+  // 所有工具的完成态与运行态共用 ActivityLine；详情仍由 ToolBlock 自己负责。
   if (isDone) {
     const isAskUserQuestionResult = askUserQuestionResult
       && typeof askUserQuestionResult === 'object'
@@ -433,7 +440,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
         <ActivityLine
           icon={<ToolSummaryIcon icon={completedSummary.icon} ok={ok} className={ok ? 'text-ok' : 'text-danger'} />}
           label={completedSummary.verb || title || tool || '工具完成'}
-          detail={completedSummary.object || ''}
+          detail={bashCommand || completedSummary.object || ''}
           trailing={(
             <>
               <MetricList metrics={completedSummary.metrics} />
@@ -448,9 +455,9 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
           title={buttonTooltip || (expanded ? '收起' : '展开')}
           ariaLabel={expanded ? '收起' : '展开'}
         />
-        {expanded && (createdFile || diffHtml || fullToolOutput) && (
-          <div className="w-full min-w-0 max-w-[88%] pb-2 pt-1">
-            {createdFile ? (
+        {expanded && (shellDetails || createdFile || diffHtml || fullToolOutput) && (
+          <div className={clsx('w-full min-w-0 pb-2 pt-1', !shellDetails && 'max-w-[88%]')}>
+            {shellDetails || (createdFile ? (
               <CreatedFileFrame source={createdFile} />
             ) : diffHtml ? (
               <div
@@ -459,7 +466,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
               />
             ) : (
               <ToolTextFrame text={fullToolOutput} />
-            )}
+            ))}
           </div>
         )}
         {attachmentItems.length > 0 && (
@@ -478,12 +485,11 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
   // 展开区渲染出来只有一圈 padding 的空框(高度就几个像素),观感像 bug。
   // 此时干脆不提供展开:箭头不显示、点击不响应,等有内容后恢复展开能力。
   const progressFrameText = [
-    expandedInvocationText,
     hidden > 0 ? `... +${hidden} 行已折叠` : '',
     tailLines.join('\n'),
     currentPartial,
   ].filter(Boolean).join('\n');
-  const hasExpandableContent = !!progressFrameText;
+  const hasExpandableContent = !!(shellDetails || progressFrameText);
   return (
     <div
       className="ace-tool-activity min-w-0"
@@ -494,7 +500,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
         running
         spinnerStatic={!liveProgress}
         label={genericSummary.verb || title || displayOverride || tool || '正在执行工具'}
-        detail={genericSummary.object || ''}
+        detail={bashCommand || genericSummary.object || ''}
         trailing={(
           <>
             <span>{totalLines} 行</span>
@@ -510,8 +516,8 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
         ariaLabel={hasExpandableContent ? (expanded ? '收起' : '展开') : undefined}
       />
       {expanded && hasExpandableContent && (
-        <div className="w-full min-w-0 max-w-[88%] pb-1.5 pt-1">
-          <ToolTextFrame text={progressFrameText} />
+        <div className={clsx('w-full min-w-0 pb-1.5 pt-1', !shellDetails && 'max-w-[88%]')}>
+          {shellDetails || <ToolTextFrame text={progressFrameText} />}
         </div>
       )}
     </div>

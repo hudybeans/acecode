@@ -337,7 +337,7 @@ export function ProviderCatalogPicker({
             >
               <div
                 id={`model-provider-group-${group.group}`}
-                className="px-2 py-1 text-[10px] font-semibold text-fg-mute"
+                className="px-2 py-1 text-[10px] font-normal text-fg-mute"
               >
                 {PROVIDER_GROUP_LABELS[group.group] || group.group}
               </div>
@@ -359,7 +359,7 @@ export function ProviderCatalogPicker({
                       )}
                     >
                       <ProviderIcon provider={item} active={active} />
-                      <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
+                      <span className="min-w-0 flex-1 truncate text-[11px] font-normal">
                         {providerDisplayName(item)}
                       </span>
                     </button>
@@ -380,7 +380,7 @@ export function ProviderCatalogPicker({
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h4 className="truncate text-[12px] font-semibold text-fg">
+                  <h4 className="truncate text-[12px] font-normal text-fg">
                     {providerDisplayName(provider)}
                   </h4>
                   <span className="rounded border border-border bg-surface-alt px-1.5 py-0.5 text-[10px] text-fg-mute">
@@ -438,7 +438,7 @@ export function ProviderCatalogPicker({
                   <div className="mb-1.5 flex items-center justify-between gap-3">
                     <label
                       htmlFor="custom-openai-model-id"
-                      className="block text-[11px] font-medium text-fg-2"
+                      className="block text-[11px] font-normal text-fg-2"
                     >
                       Model ID
                     </label>
@@ -447,7 +447,7 @@ export function ProviderCatalogPicker({
                         type="button"
                         onClick={openProbeDialog}
                         disabled={!canProbe || probeStatus === 'loading'}
-                        className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[10px] font-medium text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[10px] font-normal text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
                        title={!draft.base_url
                          ? '请先填写 Base URL'
                          : modelResultSource === 'probe' && probeStatus === 'ready'
@@ -505,7 +505,7 @@ export function ProviderCatalogPicker({
                     type="button"
                     onClick={addManualModel}
                     disabled={!manualModel.trim()}
-                    className="h-6 rounded px-2 text-[10px] font-medium text-accent transition hover:bg-accent-bg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
+                    className="h-6 rounded px-2 text-[10px] font-normal text-accent transition hover:bg-accent-bg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-40"
                   >
                     添加
                   </button>
@@ -559,7 +559,7 @@ export function ProviderCatalogPicker({
                           className="h-[17px] w-[17px] shrink-0 accent-accent"
                         />
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[11px] font-medium text-fg">{model.name || model.id}</span>
+                          <span className="block truncate text-[11px] font-normal text-fg">{model.name || model.id}</span>
                           <span className="block truncate text-[10px] text-fg-mute">{model.id}</span>
                           {metadata && (
                             <span className="mt-0.5 block truncate text-[10px] text-fg-mute">

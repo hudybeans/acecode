@@ -102,7 +102,7 @@ export function ActivitySummaryBlock({ item, expanded, onToggle, activity = null
   );
 }
 
-export function MediaGroupBlock({ item, collapsed, onToggle }) {
+export function MediaGroupBlock({ item, collapsed, onToggle, messageAutoCollapse = true }) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : EMPTY_ITEMS;
   if (attachments.length === 0) return null;
   const label = item?.title || `已查看 ${attachments.length} 张图像`;
@@ -112,11 +112,11 @@ export function MediaGroupBlock({ item, collapsed, onToggle }) {
       <ActivityLine
         icon={<VsIcon name="eye" size={13} className="opacity-80" />}
         label={label}
-        expandable
+        expandable={messageAutoCollapse}
         expanded={!collapsed}
-        onToggle={onToggle}
-        title={toggleHint}
-        ariaLabel={toggleHint}
+        onToggle={messageAutoCollapse ? onToggle : undefined}
+        title={messageAutoCollapse ? toggleHint : label}
+        ariaLabel={messageAutoCollapse ? toggleHint : undefined}
       />
       {!collapsed && (
         <div className="mt-1 max-w-[88%]">
@@ -230,6 +230,7 @@ function TranscriptItem({
   onOpenFilePreview,
   onLocateInFileTree,
   showAceCodeAvatar,
+  messageAutoCollapse,
   annotationPresentations,
 }) {
   const renderKind = transcriptRenderKind(item);
@@ -282,7 +283,8 @@ function TranscriptItem({
       >
         <MediaGroupBlock
           item={item}
-          collapsed={collapsedMediaKeys.has(item.id)}
+          collapsed={messageAutoCollapse && collapsedMediaKeys.has(item.id)}
+          messageAutoCollapse={messageAutoCollapse}
           onToggle={(event) => onToggleMedia?.(item.id, event?.currentTarget)}
         />
       </div>
@@ -297,6 +299,7 @@ function TranscriptItem({
       >
         <SubagentGroupBlock
           agents={item.agents}
+          messageAutoCollapse={messageAutoCollapse}
           tasksById={subagentTasksById}
           onOpen={capabilities.openSubagentTranscripts ? onOpenSubagent : undefined}
         />
@@ -338,6 +341,7 @@ function TranscriptItem({
               onOpenFilePreview={onOpenFilePreview}
               onLocateInFileTree={onLocateInFileTree}
               showAceCodeAvatar={showAceCodeAvatar}
+              messageAutoCollapse={messageAutoCollapse}
               annotationPresentations={annotationPresentations}
             />
           </ActivityDetailsReveal>
@@ -394,6 +398,7 @@ function TranscriptItem({
           continuation={continuation}
           showFooter={showFooter}
           showAceCodeAvatar={showAceCodeAvatar}
+          messageAutoCollapse={messageAutoCollapse}
           annotationPresentations={capabilities.showSelectionAnnotations
             ? annotationPresentations
             : undefined}
@@ -423,6 +428,7 @@ export function TranscriptItems({
   onOpenFilePreview,
   onLocateInFileTree,
   showAceCodeAvatar = false,
+  messageAutoCollapse = true,
   annotationPresentations,
   renderBeforeItem,
 }) {
@@ -465,6 +471,7 @@ export function TranscriptItems({
           onOpenFilePreview={onOpenFilePreview}
           onLocateInFileTree={onLocateInFileTree}
           showAceCodeAvatar={showAceCodeAvatar}
+          messageAutoCollapse={messageAutoCollapse}
           annotationPresentations={annotationPresentations}
         />
       </Fragment>

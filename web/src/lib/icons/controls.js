@@ -55,7 +55,7 @@ export const controlIcons = {
   LeftBar: panelLeft,
   List: [p('M7.5 5h9M7.5 10h9M7.5 15h9'), dot(3.5, 5, .65), dot(3.5, 10, .65), dot(3.5, 15, .65)],
   ListPanel: [p('M3 5h10M3 10h14M3 15h8')],
-  NewSession: [p('M9 3H4.5Q3 3 3 4.5v11Q3 17 4.5 17h5M6 7h2M6 10h1'), p('m9 9 6.1-6.1q.6-.6 1.2 0l.8.8q.6.6 0 1.2L11 11l-2.5.5q-.4.1-.3-.3L9 9ZM14 4l2 2M14 12v6M11 15h6')],
+  NewSession: [p('M10 3.5H6.5q-3 0-3 3v7q0 3 3 3h7q3 0 3-3v-2.5'), p('M8.6 9.9 15.1 3.4q.6-.6 1.2 0l.3.3q.6.6 0 1.2L10.1 11.4Q9.5 12 8.72 12.195L7.9 12.4Q7.5 12.5 7.6 12.1L7.805 11.28Q8 10.5 8.6 9.9Z')],
   OpenFile: [p('M8.5 17H5q-1.5 0-1.5-1.5V4q0-1.5 1.5-1.5h6.4q.6 0 1 .4l3.2 3.2q.4.4.4 1V8M11.5 2.8v3.6q0 .9.9.9h3.2'), c(12.4, 12.5, 3), p('m14.6 14.7 2.4 2.4')],
   PanelBottom: [panel, p('M2.5 12.5h15')],
   PanelBottomFilled: [panel, p('M2.5 12.5h15v2.4q0 1.6-1.6 1.6H4.1q-1.6 0-1.6-1.6Z', { fill: 'currentColor', stroke: 'none' }), p('M2.5 12.5h15')],

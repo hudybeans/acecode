@@ -5,6 +5,7 @@
 
 import { getToken } from './auth.js';
 import { createSideChatStream } from './sideChatStream.js';
+import { mcpScopeQuery } from './mcpServers.js';
 
 export class ApiError extends Error {
   constructor(status, body) {
@@ -301,7 +302,8 @@ export function createApi(base = null) {
     modelPoolStatus:  ()             => request('GET',    '/api/model-pool-status', undefined, base),
     // 控制台 PTY(add-console-dock):loopback-only,daemon 端 16 会话上限(429)。
     createPty:        (opts={})      => request('POST',   '/api/pty', opts, base),
-    listPty:          ()             => request('GET',    '/api/pty', undefined, base),
+    listPty:          (owner)        => request('GET', `/api/pty${owner == null ? '' : `?owner_id=${encodeURIComponent(owner)}`}`, undefined, base),
+    transferPtyOwner: (from, to)     => request('POST', '/api/pty/transfer-owner', { from_owner: from, to_owner: to }, base),
     deletePty:        (id)           => request('DELETE', `/api/pty/${encodeURIComponent(id)}`, undefined, base),
     resizePty:        (id, cols, rows) =>
       request('POST', `/api/pty/${encodeURIComponent(id)}/resize`, { cols, rows }, base),
@@ -314,6 +316,7 @@ export function createApi(base = null) {
     listWorkspaces:   (options={})   => request(
       'GET', '/api/workspaces', undefined, base, { signal: options.signal },
     ),
+    setWorkspaceOrder: (hashes)      => request('PUT', '/api/workspaces/order', { hashes }, base),
     listLoops:        ()             => request('GET',    '/api/loops', undefined, base),
     listExperts:      (workspace='') => request('GET',    expertsPath(workspace), undefined, base),
     listExpertCapabilities: (workspace='') =>
@@ -511,10 +514,11 @@ export function createApi(base = null) {
       `/api/skills/${encodeURIComponent(name)}` + (workspaceHash ? '?workspace=' + encodeURIComponent(workspaceHash) : ''),
       {enabled: en}, base),
     getSkillBody:     (name)         => request('GET',    `/api/skills/${encodeURIComponent(name)}/body`, undefined, base),
-    getMcp:           ()             => request('GET',    '/api/mcp', undefined, base),
-    putMcp:           (cfg)          => request('PUT',    '/api/mcp', cfg, base),
-    reloadMcp:        ()             => request('POST',   '/api/mcp/reload', undefined, base),
-    toggleMcpServer:  (name, enabled) => request('POST',  '/api/mcp/toggle', {name, enabled}, base),
+    getMcp:           (workspace = '') => request('GET', '/api/mcp' + mcpScopeQuery(workspace), undefined, base),
+    getMcpSchema:     () => request('GET', '/api/mcp/schema', undefined, base),
+    putMcp:           (cfg, workspace = '') => request('PUT', '/api/mcp' + mcpScopeQuery(workspace), cfg, base),
+    reloadMcp:        (workspace = '') => request('POST', '/api/mcp/reload' + mcpScopeQuery(workspace), undefined, base),
+    toggleMcpServer:  (name, enabled, workspace = '') => request('POST', '/api/mcp/toggle' + mcpScopeQuery(workspace), {name, enabled}, base),
     listHooks:        ()             => request('GET',    '/api/hooks', undefined, base),
     refreshHooks:     ()             => request('POST',   '/api/hooks/refresh', undefined, base),
     trustHook:        (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/trust`, undefined, base),
@@ -555,6 +559,8 @@ export function createApi(base = null) {
     getDefaultPermissionMode: ()     => request('GET',    '/api/config/default-permission-mode', undefined, base),
     setDefaultPermissionMode: (mode) => request('PUT',    '/api/config/default-permission-mode', {mode}, base),
     getDesktopNotifications: ()      => request('GET',    '/api/config/desktop-notifications', undefined, base),
+    getDesktopMultiInstance: ()      => request('GET',    '/api/config/desktop-multi-instance', undefined, base),
+    setDesktopMultiInstance: (enabled) => request('PUT', '/api/config/desktop-multi-instance', {enabled: !!enabled}, base),
     setDesktopNotifications: (enabled) => request('PUT',  '/api/config/desktop-notifications', {enabled: !!enabled}, base),
     getRemoteWeb:     ()             => request('GET',    '/api/config/remote-web', undefined, base),
     setRemoteWeb:     (enabled)      => request('PUT',    '/api/config/remote-web', {enabled: !!enabled}, base),
@@ -598,6 +604,8 @@ export function createApi(base = null) {
     setCustomInstructions: (cfg)     => request('PUT',    '/api/config/custom-instructions', cfg, base),
     getConnectors: ()                => request('GET',    '/api/config/connectors', undefined, base),
     getImageGeneration: ()           => request('GET', '/api/config/image-generation', undefined, base),
+    getComputerUse: ()               => request('GET', '/api/config/computer-use', undefined, base),
+    setComputerUse: (config)         => request('PUT', '/api/config/computer-use', config, base, { keepalive: true }),
     getSummaryGeneration: ()         => request('GET', '/api/config/summary-generation', undefined, base),
     setSummaryGeneration: (config)   => request('PUT', '/api/config/summary-generation', config, base, { keepalive: true }),
     setImageGeneration: (config)     => request('PUT', '/api/config/image-generation', config, base, { keepalive: true }),

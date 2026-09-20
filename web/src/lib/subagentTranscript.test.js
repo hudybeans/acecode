@@ -56,6 +56,17 @@ function toolWrapper(id, role, content, toolCallId) {
   };
 }
 
+run('关闭自动折叠时主会话与子代理都保留过程消息与单个工具', () => {
+  const raw = [user(1), assistant(2, 'checking'), tool(3), tool(4), assistant(5)];
+  const options = { messageAutoCollapse: false };
+  const main = projectCollapsedTranscriptItems(raw, options);
+  const child = projectSubagentTranscriptItems(raw, options);
+  assert.deepEqual(child, main);
+  assert.deepEqual(child.map((item) => item.id), [1, 2, 3, 4, 5]);
+  const question = tool(6, { name: 'AskUserQuestion' });
+  assert.deepEqual(projectSubagentTranscriptItems([...raw, question], options), child);
+});
+
 run('main and sub-agent surfaces project the same completed tool run into one summary row', () => {
   const raw = [user(1), tool(2), tool(3), tool(4), assistant(5)];
   const main = projectCollapsedTranscriptItems(raw);

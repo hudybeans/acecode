@@ -1,3 +1,5 @@
+#include "config/mcp_config.hpp"
+#include "tool/mcp_scope.hpp"
 #include "environment/bootstrap.hpp"
 #include <iostream>
 #include <string>
@@ -3048,7 +3050,13 @@ static void set_startup_terminal_title() {
 }
 
 static void initialize_logger_for_working_dir(const std::string& working_dir) {
-    Logger::instance().init(working_dir + "/acecode.log");
+    const std::string logs_dir = get_logs_dir();
+    Logger::instance().init_with_rotation(logs_dir, "tui", /*mirror_stderr=*/false);
+#ifdef _WIN32
+    _putenv_s("ACECODE_FTXUI_INPUT_TRACE_DIR", logs_dir.c_str());
+#else
+    setenv("ACECODE_FTXUI_INPUT_TRACE_DIR", logs_dir.c_str(), 1);
+#endif
     Logger::instance().set_level(LogLevel::Dbg);
     LOG_INFO("=== acecode started, cwd=" + working_dir + " ===");
 }
@@ -3647,6 +3655,7 @@ static MemoryConfig initialize_tui_tools_and_registries(
     tools.register_tool(create_memory_write_tool(memory_registry));
 
     initialize_mcp_servers(mcp_manager, config);
+    mcp_manager.reconcile_scope(working_dir, load_project_mcp_config(working_dir), tools);
     return runtime_memory_cfg;
 }
 
@@ -5220,7 +5229,7 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
     return root;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) try {
     configure_process_environment();
 
     if (auto exit_code = dispatch_non_tui_command(argc, argv)) {
@@ -5235,6 +5244,11 @@ int main(int argc, char* argv[]) {
     }
 
     return run_interactive_app(cli, argv0_dir);
+} catch (const McpConfigError& error) {
+    // Startup cannot recover an unvalidated scope without a last-good copy.
+    // Return the same structured diagnostic as managed configuration writes.
+    std::cerr << error.what() << std::endl;
+    return 1;
 }
 
 static int run_interactive_app(const InteractiveCliOptions& cli,
@@ -5790,6 +5804,8 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     configure_permissions(permissions, dangerous_mode, config.default_permission_mode);
 
     AgentLoop agent_loop(provider_accessor, tools, callbacks, working_dir, permissions);
+    agent_loop.set_tool_capability_policy(
+        mcp_scope_policy(&config, working_dir, std::nullopt, &mcp_manager, &tools));
     // TUI 侧的 AskUserQuestion 传输。接上之后任何工具都能向用户提问
     // (不只是 AskUserQuestion 工具本身),且行为与 daemon 路径同源。
     agent_loop.set_ask_question_channel(
@@ -6079,6 +6095,7 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         rd.tools = &tools;
         rd.cwd = working_dir;
         rd.config = &config;
+        rd.mcp_manager = &mcp_manager;
         rd.skill_registry = &skill_registry;
         rd.memory_registry = &memory_registry;
         rd.memory_cfg = &runtime_memory_cfg;
@@ -8692,6 +8709,12 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         [&screen]() { screen.PostEvent(Event::Custom); },
         [&screen](std::function<void()> task) {
             screen.Post(std::move(task));
+        },
+        [&]() {
+            mcp_manager.reconcile_scope("", config.mcp_servers, tools);
+            agent_loop.set_tool_capability_policy(
+                mcp_scope_policy(&config, working_dir, std::nullopt, &mcp_manager, &tools));
+            subagent_host.registry().refresh_mcp_policy(config);
         },
     });
 

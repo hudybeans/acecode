@@ -1,0 +1,73 @@
+/* 统一滚动条：细条默认随容器 hover/focus 显现；显式 always 模式常显。
+ * 轨道尺寸固定，透明边框也属于原生拖动区域，hover 不改变内容布局。
+ * 此文件也以 raw 文本用于 PPT iframe，保持纯 CSS、无外部依赖。 */
+:root {
+  --ace-scrollbar-hit-size: 12px;
+  --ace-scrollbar-thin-size: 4px;
+  --ace-scrollbar-hover-size: 8px;
+  --ace-scrollbar-thin-inset: 4px;
+  --ace-scrollbar-hover-inset: 2px;
+  --ace-scrollbar-thick-size: 10px;
+  --ace-scrollbar-thumb-color: rgba(var(--ace-fg-mute-rgb, 150, 150, 150), 0.46);
+  --ace-scrollbar-thumb-hover-color: rgba(var(--ace-fg-mute-rgb, 150, 150, 150), 0.8);
+}
+
+/* 每个元素独立管理显隐，避免祖先 hover 令所有嵌套列表同时显现。
+ * 通过变量更新颜色，确保 Chromium 在首次移入容器时重绘原生滑块。 */
+* { --ace-scrollbar-visible-thumb: transparent; }
+*:hover,
+*:focus-within,
+.ace-scrollbar-always,
+[data-scrollbar-visibility="always"] {
+  --ace-scrollbar-visible-thumb: var(--ace-scrollbar-thumb-color);
+}
+
+::-webkit-scrollbar {
+  width: var(--ace-scrollbar-hit-size);
+  height: var(--ace-scrollbar-hit-size);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--ace-scrollbar-visible-thumb);
+  background-clip: padding-box;
+  border: var(--ace-scrollbar-thin-inset) solid transparent;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--ace-scrollbar-thumb-hover-color);
+  border-width: var(--ace-scrollbar-hover-inset);
+}
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 主 transcript 是唯一默认使用粗条的表面。 */
+.ace-chat-transcript-scroll {
+  --ace-scrollbar-visible-thumb: var(--ace-scrollbar-thumb-color);
+}
+.ace-chat-transcript-scroll::-webkit-scrollbar {
+  width: var(--ace-scrollbar-thick-size);
+  height: var(--ace-scrollbar-thick-size);
+}
+.ace-chat-transcript-scroll::-webkit-scrollbar-thumb {
+  border-width: 1px;
+}
+
+/* 标准属性会覆盖 Chromium 自定义伪元素，仅在无该能力时降级使用。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ace-scrollbar-visible-thumb) transparent;
+  }
+  .ace-chat-transcript-scroll { scrollbar-width: auto; }
+}
+
+@media (hover: none) {
+  * { --ace-scrollbar-visible-thumb: var(--ace-scrollbar-thumb-color); }
+}

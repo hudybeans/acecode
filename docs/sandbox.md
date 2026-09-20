@@ -201,8 +201,13 @@ forbidden > prompt > allow 合并；多段命令须每段都获 allow。
 }
 ```
 
-除 `filesystem.deny` 示例外均为默认值，默认配置保存时不产生 sandbox 段。额外根必须为绝对路径
-或记号。`windows_backend` 取 `restricted-token`（默认）或 `mxc`。
+首次运行包含一次性沙盒迁移的版本时（包括新安装），应用会将 `sandbox.enabled` 设为
+`false`，并同时保存 `migrations.disable_sandbox_once: true`。此迁移只执行一次：之后在
+安全中心重新开启沙盒，重启、保存其他设置及后续升级都会保留开启状态。
+
+上面的示例展示重新开启后的配置。除 `filesystem.deny` 示例外，其余为字段默认值；
+保存时默认字段可省略，迁移完成标记始终保留。迁移不修改网络策略、路径清单或权限模式。
+额外根必须为绝对路径或记号。`windows_backend` 取 `restricted-token`（默认）或 `mxc`。
 `/sandbox` 显示后端、原因、模式、可写/只读/可读路径、deny 名单、会话授权和网络能力。
 `/sandbox off` / `/sandbox on` 只改变当前会话，不写配置；关闭后 Auto 未知命令仍需确认。
 后端准备或启动失败会把本会话的沙盒标记为不可用（状态里显示原因）；修好环境后

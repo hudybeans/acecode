@@ -132,15 +132,15 @@ run('dirty file tabs show a solid dot and every destructive tab action is guarde
   assert.match(preview, /const dirty = previewTabHasUnsavedDraft\(tab\)/);
   assert.match(preview, /ace-preview-details-tab-dirty-dot/);
   assert.match(styles, /\.ace-preview-details-tab-dirty-dot\s*\{[\s\S]*width: 9px;[\s\S]*border-radius: 999px/);
-  assert.match(chat, /previewTabsWithUnsavedDrafts\(affected\)/);
+  assert.match(chat, /requestPreviewApproval\([\s\S]*'close'/);
   for (const kind of ['one', 'all', 'others', 'right']) {
     assert.match(chat, new RegExp(`requestPreviewClose\\('${kind}'`));
   }
-  assert.match(chat, /'保存中\.\.\.' : '保存并关闭'/);
+  assert.match(chat, /'保存中\.\.\.' : '保存'/);
   assert.match(chat, />\s*不保存\s*</);
   assert.match(chat, />\s*取消\s*</);
   assert.match(chat, /saveEditableFileDraftBatch\(api/);
-  assert.match(chat, /保存失败[\s\S]*return;/);
+  assert.match(chat, /if \(!result.ok\)[\s\S]*throw new Error/);
 });
 
 run('editable file details open directly with highlighted source or semantic Markdown', () => {

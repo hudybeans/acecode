@@ -31,6 +31,13 @@ struct WorkspaceMeta {
     bool desktop_visible = false; // true = Desktop startup may list this workspace
 };
 
+enum class WorkspaceOrderStatus {
+    Saved,
+    InvalidOrder,
+    Conflict,
+    WriteFailed,
+};
+
 class WorkspaceRegistry {
 public:
     WorkspaceRegistry() = default;
@@ -58,6 +65,12 @@ public:
 
     // 当前快照。线程安全(内部加锁后 copy)。
     std::vector<WorkspaceMeta> list() const;
+
+    // Persist a complete permutation of the currently visible hashes. Hidden
+    // hashes retain their slots in projects_dir/workspace_order.json. Validation,
+    // atomic write, and cache update are serialized; failures do not save order.
+    WorkspaceOrderStatus set_order(const std::string& projects_dir,
+                                  const std::vector<std::string>& hashes);
 
     // 查指定 hash;不存在返回 nullopt。
     std::optional<WorkspaceMeta> get(const std::string& hash) const;
@@ -93,6 +106,7 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, WorkspaceMeta> entries_;
     std::unordered_map<std::string, DirProbe> dir_probes_;
+    std::vector<std::string> workspace_order_;
 };
 
 // Read one on-disk workspace marker without applying the Desktop visibility

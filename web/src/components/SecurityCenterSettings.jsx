@@ -80,7 +80,7 @@ function RowCard({ title, desc, children, onClick, className }) {
       )}
     >
       <div className="min-w-0">
-        <div className="text-[13px] font-medium">{title}</div>
+        <div className="text-[13px] font-normal">{title}</div>
         {desc && <div className="text-[11px] text-fg-mute mt-0.5">{desc}</div>}
       </div>
       {children}
@@ -367,7 +367,7 @@ function OverviewTab({ sandbox, rules, audit, onNavigate }) {
       {platform && (
         <div className="px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-[13px] font-medium">平台状态</div>
+            <div className="text-[13px] font-normal">平台状态</div>
             <span className="text-[11px] text-fg-mute font-mono">{platform.os} · {platform.backend}</span>
           </div>
           <div className="text-[11px] text-fg-mute mt-0.5">
@@ -396,7 +396,7 @@ function OverviewTab({ sandbox, rules, audit, onNavigate }) {
       <p className="text-[12px] text-fg-mute mb-3">拦截 / 放行记录与日志导出。</p>
       <div className="px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-[13px] font-medium">{`日志(${counts.total} 条)`}</div>
+          <div className="text-[13px] font-normal">{`日志(${counts.total} 条)`}</div>
           <button type="button" className="text-[12px] text-accent hover:underline" onClick={() => onNavigate('audit')}>查看全部</button>
         </div>
         <div className="flex flex-wrap gap-4 mt-1 text-[11px] text-fg-mute">
@@ -413,7 +413,7 @@ function OverviewTab({ sandbox, rules, audit, onNavigate }) {
 function ListEditor({ label, desc, value, onChange, error, disabled, placeholder }) {
   return (
     <div className="px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
-      <div className="text-[13px] font-medium">{label}</div>
+      <div className="text-[13px] font-normal">{label}</div>
       <div className="text-[11px] text-fg-mute mt-0.5 mb-2">{desc}</div>
       <textarea className={textareaClass} value={value} disabled={disabled} placeholder={placeholder}
         spellCheck={false} aria-label={label} aria-invalid={!!error}
@@ -495,7 +495,7 @@ function CommandsTab({ rules }) {
         按命令前缀决定放行、询问或禁止。前缀按空格分词,git status|diff 表示第二个词可以是任一个。「放行(沙箱外)」会跳过沙箱,只给确实需要的命令;解释器、shell、rm、sudo 这类前缀不能放行。
       </p>
       <div className="rounded-md bg-surface border border-border mb-2 overflow-hidden" data-testid="exec-rules-table">
-        <div className="grid grid-cols-[minmax(0,1.4fr)_9rem_minmax(0,1fr)_2rem] gap-3 px-3.5 py-2 text-[11px] font-medium text-fg-mute bg-surface-alt">
+        <div className="grid grid-cols-[minmax(0,1.4fr)_9rem_minmax(0,1fr)_2rem] gap-3 px-3.5 py-2 text-[11px] font-normal text-fg-mute bg-surface-alt">
           <div>命令前缀</div>
           <div>决策</div>
           <div>说明</div>
@@ -549,7 +549,7 @@ function CommandsTab({ rules }) {
           {others.map((file) => (
             <div key={file.name} className="px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-[13px] font-medium font-mono">{file.name}</div>
+                <div className="text-[13px] font-normal font-mono">{file.name}</div>
                 <span className="text-[11px] text-fg-mute truncate" title={file.path}>{file.path}</span>
               </div>
               {file.error ? (

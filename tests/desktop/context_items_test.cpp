@@ -2,6 +2,7 @@
 
 #include "session/attachment_store.hpp"
 #include "utils/utf8_path.hpp"
+#include "utils/base64.hpp"
 
 #include <gtest/gtest.h>
 
@@ -135,6 +136,45 @@ TEST(DesktopContextItems, RejectsRelativeAndMissingPaths) {
     });
     EXPECT_FALSE(missing);
     EXPECT_FALSE(missing.error.empty());
+}
+
+TEST(DesktopContextItems, SavesPathlessDataAsPersistentPathReferences) {
+    ContextItemsTempDir temp;
+    const std::string bytes("png\0bytes", 9);
+    const auto result = acecode::desktop::store_context_data_files(
+        acecode::path_to_utf8(temp.path), {
+            {"截图.png", acecode::base64_encode(bytes)},
+            {"截图.png", acecode::base64_encode("second")},
+            {"..\\outside.txt", acecode::base64_encode("safe")},
+        });
+    ASSERT_TRUE(result) << result.error;
+    ASSERT_EQ(result.items.size(), 3u);
+    EXPECT_EQ(result.items[0].name, "截图.png");
+    EXPECT_TRUE(result.items[0].reference_only);
+    EXPECT_EQ(result.items[0].size_bytes, bytes.size());
+    EXPECT_NE(result.items[0].path, result.items[1].path);
+    EXPECT_EQ(result.items[2].name, "outside.txt");
+    for (const auto& item : result.items) {
+        const auto path = acecode::path_from_utf8(item.path);
+        EXPECT_EQ(path.parent_path().parent_path(), fs::weakly_canonical(temp.path));
+        EXPECT_TRUE(fs::is_regular_file(path));
+    }
+    std::ifstream input(acecode::path_from_utf8(result.items[0].path), std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(input), {}), bytes);
+}
+
+TEST(DesktopContextItems, FailedDataBatchRemovesOnlyItsOwnFiles) {
+    ContextItemsTempDir temp;
+    const auto keep = temp.path / "existing.txt";
+    std::ofstream(keep) << "keep";
+    const auto result = acecode::desktop::store_context_data_files(
+        acecode::path_to_utf8(temp.path), {
+            {"valid.txt", acecode::base64_encode("data")}, {"invalid.txt", "!!!!"},
+        });
+    EXPECT_FALSE(result);
+    EXPECT_TRUE(result.items.empty());
+    EXPECT_TRUE(fs::exists(keep));
+    EXPECT_EQ(std::distance(fs::directory_iterator(temp.path), fs::directory_iterator{}), 1);
 }
 
 } // namespace

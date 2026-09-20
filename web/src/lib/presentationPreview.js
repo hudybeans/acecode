@@ -63,16 +63,18 @@ export function createPresentationPreviewChannel(cryptoApi = globalThis.crypto) 
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function presentationFrameDocument(rendererSource, channel) {
+export function presentationFrameDocument(rendererSource, channel, scrollbarStyles = '') {
   const source = scriptString(PRESENTATION_PREVIEW_SOURCE);
   const frameChannel = scriptString(channel);
   const renderer = escapePresentationRendererSource(rendererSource);
+  const embeddedStyles = String(scrollbarStyles).replace(/<\/style/gi, '<\\/style');
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    ${embeddedStyles}
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #e5e7eb; }
     body { color: #111827; font-family: Arial, sans-serif; }
     #ace-presentation-viewport { position: relative; width: 100%; height: 100%; overflow: auto; }

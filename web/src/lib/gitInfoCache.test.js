@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createApi } from './api.js';
 import { createGitInfoCache, refreshWorkspaceGitInfo } from './gitInfoCache.js';
 import { SESSION_HOVER_GIT_CACHE_TTL_MS } from './sessionHoverDetails.js';
+import { sessionWorkbench } from './sessionWorkbench.js';
 
 async function test(name, fn) {
   try {
@@ -262,6 +263,31 @@ await test('failed Git info loads are evicted and can be retried', async () => {
   await assert.rejects(cache.get(client, '/repo'), /temporary failure/);
   assert.deepEqual(await cache.get(client, '/repo'), { is_repo: false });
   assert.equal(calls, 2);
+});
+
+await test('same cwd owners have independent requests and a late A response cannot replace B', async () => {
+  const releases = [];
+  const client = clientWithGitInfo({ origin: 'http://owner-test', token: '' },
+    () => new Promise((resolve) => releases.push(resolve)));
+  const cache = createGitInfoCache();
+  const a = cache.get(client, '/shared', 'session:a');
+  const b = cache.get(client, '/shared', 'session:b');
+  assert.equal(releases.length, 2);
+  releases[1]({ branch: 'B' });
+  await b;
+  releases[0]({ branch: 'A' });
+  await a;
+  assert.equal(cache.peek(client, '/shared', 'session:a').branch, 'A');
+  assert.equal(cache.peek(client, '/shared', 'session:b').branch, 'B');
+  cache.invalidate(client, '/shared', 'session:a');
+  assert.equal(cache.peek(client, '/shared', 'session:a'), undefined);
+  assert.equal(cache.peek(client, '/shared', 'session:b').branch, 'B');
+  const draft = sessionWorkbench.ownerFor({ hash: 'git-info-transfer' });
+  const pending = cache.get(client, '/shared', draft);
+  assert.equal(sessionWorkbench.transfer(draft, 'session:git-info-transfer'), true);
+  releases[2]({ branch: 'new' });
+  await pending;
+  assert.equal(cache.peek(client, '/shared', 'session:git-info-transfer').branch, 'new');
 });
 
 console.log('gitInfoCache.test.js: all tests passed');

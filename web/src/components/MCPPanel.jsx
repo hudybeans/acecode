@@ -1,7 +1,9 @@
 // MCP 面板:JSON 编辑器 + 客户端校验 + 保存。
-// daemon v1 不支持热重载,保存后给提示需要重启。
+// 保存与校验使用 daemon 的统一 MCP 配置服务。
 
 import { useEffect, useState } from 'react';
+import { McpSchemaDetails } from './McpSchemaDetails.jsx';
+import { mcpConfigErrorMessage } from '../lib/mcpServers.js';
 import { api } from '../lib/api.js';
 import { SlideOver } from './Modal.jsx';
 import { toast } from './Toast.jsx';
@@ -9,6 +11,7 @@ import { clsx } from '../lib/format.js';
 import { VsIcon } from './Icon.jsx';
 
 export function MCPPanel({ onClose }) {
+  const [schema, setSchema] = useState(null);
   const [text,    setText]    = useState('');
   const [err,     setErr]     = useState('');
   const [saving,  setSaving]  = useState(false);
@@ -25,6 +28,7 @@ export function MCPPanel({ onClose }) {
 
   const onChange = (v) => {
     setText(v);
+    setSchema(null);
     try { JSON.parse(v); setErr(''); }
     catch (e) { setErr(e.message || 'JSON 语法错误'); }
   };
@@ -34,10 +38,13 @@ export function MCPPanel({ onClose }) {
     setSaving(true);
     try {
       const obj = JSON.parse(text);
-      await api.putMcp(obj);
-      toast({ kind: 'ok', text: '已保存。需重启 daemon 才能生效' });
+      const result = await api.putMcp(obj);
+      setSchema(null);
+      toast({ kind: 'ok', text: result.reload_required ? '已保存。需重启 daemon 才能生效' : '已保存' });
     } catch (e) {
-      toast({ kind: 'err', text: '保存失败:' + (e.message || '') });
+      setErr(mcpConfigErrorMessage(e));
+      setSchema(e?.body?.schema || null);
+      toast({ kind: 'err', text: '保存失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setSaving(false);
     }
@@ -45,7 +52,7 @@ export function MCPPanel({ onClose }) {
 
   const reload = async () => {
     try { const r = await api.reloadMcp(); toast({ kind: 'ok', text: 'Reload: ' + JSON.stringify(r) }); }
-    catch (e) { toast({ kind: 'err', text: 'v1 不支持热重载,需重启 daemon' }); }
+    catch (e) { setSchema(e?.body?.schema || null); setErr(mcpConfigErrorMessage(e)); }
   };
 
   return (
@@ -74,8 +81,9 @@ export function MCPPanel({ onClose }) {
                 'flex-1 w-full p-3 text-[12px] font-mono leading-[1.55] rounded-md border bg-surface-alt outline-none transition resize-none',
                 err ? 'border-danger focus:border-danger' : 'border-border focus:border-accent',
               )}
-              placeholder={loading ? '加载中…' : '{\n  "mcp_servers": { ... }\n}'}
+              placeholder={loading ? '加载中…' : '{\n  "server-name": { "command": "..." }\n}'}
             />
+            <McpSchemaDetails schema={schema} />
             {err && <div className="text-danger text-[11px]">{err}</div>}
             <div className="flex gap-2">
               <button

@@ -6,7 +6,7 @@
 //
 // 输入布局(与 package.yml 的 Package 步骤产物一致):
 //   extracted/acecode-linux-x64/{acecode,acecode-desktop,share/...}
-//   extracted/acecode-windows-x64/{acecode.exe,acecode-desktop.exe,share/...}
+//   extracted/acecode-windows-x64/{acecode.exe,acecode-desktop.exe,acecode-computer-use.exe,share/...}
 //   extracted/acecode-macos-arm64/{acecode,ACECode.app/...,share/...}
 //
 // 输出布局(发布顺序:先 platform/* 再 cli / desktop):
@@ -56,14 +56,14 @@ const PLATFORMS = [
     ciId: 'windows-x64',
     os: 'win32',
     cpu: 'x64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'acecode-computer-use.exe', 'share', 'channels'],
     executables: [],
   },
   {
     ciId: 'windows-arm64',
     os: 'win32',
     cpu: 'arm64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'acecode-computer-use.exe', 'share', 'channels'],
     executables: [],
   },
   {
@@ -163,6 +163,10 @@ function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
     const dst = path.join(outDir, file);
     if (!fs.existsSync(src)) {
       throw new Error(`平台 ${platform.ciId} 缺少产物文件: ${src}`);
+    }
+    if (file === 'acecode-computer-use.exe' &&
+        (!fs.statSync(src).isFile() || fs.statSync(src).size === 0)) {
+      throw new Error(`平台 ${platform.ciId} 的 Computer Use runtime 无效: ${src}`);
     }
     if (file === 'channels') {
       const channelDir = path.join(outDir, CHANNEL_RELATIVE_DIR);
