@@ -91,15 +91,15 @@ test('reopening a collapsed workspace always restores the compact five-row sessi
   assert.match(sidebar, /loadWorkspaceSessions\(hash, \{\s*full: true,/);
 });
 
-test('workspace folder clicks only disclose and headings have no selected styling', () => {
+test('workspace folder clicks disclose active workspaces or activate inactive ones', () => {
   const sidebar = source('components/Sidebar.jsx');
   const rowStart = sidebar.indexOf('data-desktop-open-in-explorer-kind="workspace"');
   const rowEnd = sidebar.indexOf('data-sidebar-workspace-actions="true"', rowStart);
   assert.ok(rowStart >= 0 && rowEnd > rowStart);
   const row = sidebar.slice(rowStart, rowEnd);
-  assert.match(row, /onClick=\{\(\) => onToggle\(ws\.hash\)\}/);
+  assert.match(row, /onClick=\{\(\) => \(ws\.active \? onToggle\(ws\.hash\) : onActivate\(ws\)\)\}/);
   assert.match(row, /aria-expanded=\{expanded\}/);
-  assert.doesNotMatch(row, /onActivate\(|onNewSession\(|bg-accent-bg|aria-selected|aria-current/);
+  assert.doesNotMatch(row, /aria-selected|aria-current/);
   assert.match(sidebar, /onClick=\{\(e\) => \{ e\.stopPropagation\(\); onNewSession\(ws\); \}\}/);
 });
 
