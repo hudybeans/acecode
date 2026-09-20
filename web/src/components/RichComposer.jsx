@@ -69,6 +69,7 @@ import {
   RICH_COMPOSER_CONTEXT_PASTE_EVENT,
 } from '../lib/richComposerContextPaste.js';
 import { slashCommandKindPresentation } from '../lib/slashCommands.js';
+import { basenameForPath } from '../lib/selectionChatContext.js';
 import { CommandGlyph, FileTypeIcon, VsIcon } from './Icon.jsx';
 
 function withComposerInlineTags(editor) {
@@ -139,7 +140,7 @@ function PathTagElement({ attributes, children, element, selected }) {
         {element?.directory
           ? <VsIcon name="folder" size="1em" className="ace-cmd-token-glyph" />
           : <FileTypeIcon path={path} size="1em" className="ace-cmd-token-glyph" glyphClassName="ace-file-type-glyph" />}
-        <span className="ace-cmd-token-name">{path}</span>
+        <span className="ace-cmd-token-name">{basenameForPath(path)}</span>
       </span>
     </span>
   );
