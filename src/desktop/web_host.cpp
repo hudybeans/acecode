@@ -96,11 +96,58 @@ bool mac_window_is_fullscreen(NSWindow* window) {
            (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
 }
 
+constexpr CGFloat kMacTopbarControlCenterFromTop = 20.0;
+
+void show_and_align_mac_standard_button(NSWindow* window,
+                                        NSWindowButton button,
+                                        CGFloat horizontal_offset) {
+    NSButton* button_view = [window standardWindowButton:button];
+    if (!button_view) return;
+    [button_view setHidden:NO];
+
+    NSView* container = [button_view superview];
+    if (!container) return;
+
+    const NSRect bounds = [container bounds];
+    NSRect frame = [button_view frame];
+    const CGFloat target_center_y = [container isFlipped]
+        ? NSMinY(bounds) + kMacTopbarControlCenterFromTop
+        : NSMaxY(bounds) - kMacTopbarControlCenterFromTop;
+    frame.origin.x += horizontal_offset;
+    frame.origin.y = target_center_y - NSHeight(frame) / 2.0;
+    [button_view setFrame:frame];
+}
+
+void align_mac_standard_buttons(NSWindow* window) {
+    NSButton* close_button =
+        [window standardWindowButton:NSWindowCloseButton];
+    CGFloat horizontal_offset = 0.0;
+    if (close_button && [close_button superview]) {
+        const NSRect container_bounds = [[close_button superview] bounds];
+        const NSRect close_frame = [close_button frame];
+        const CGFloat equal_edge_inset =
+            kMacTopbarControlCenterFromTop - NSHeight(close_frame) / 2.0;
+        const CGFloat target_close_x =
+            NSMinX(container_bounds) + equal_edge_inset;
+        horizontal_offset = target_close_x - NSMinX(close_frame);
+    }
+
+    show_and_align_mac_standard_button(
+        window, NSWindowCloseButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowMiniaturizeButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowZoomButton, horizontal_offset);
+}
+
 void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
     if (!window) return;
     const bool fullscreen = mac_window_is_fullscreen(window);
     if (fullscreen == g_mac_last_known_fullscreen) return;
     g_mac_last_known_fullscreen = fullscreen;
+    if (!fullscreen) {
+        align_mac_standard_buttons(window);
+    }
     if (g_mac_window_fullscreen_handler) {
         g_mac_window_fullscreen_handler(fullscreen);
     }
@@ -117,12 +164,6 @@ id install_mac_window_fullscreen_observer(webview::webview& w,
                 usingBlock:^(__unused NSNotification* note) {
                     notify_mac_window_fullscreen_if_changed(window);
                 }];
-}
-
-void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
-    NSButton* button_view = [window standardWindowButton:button];
-    if (!button_view) return;
-    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -149,11 +190,9 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
-    // retain their standard layout, actions, and full-screen behavior.
-    show_mac_standard_button(window, NSWindowCloseButton);
-    show_mac_standard_button(window, NSWindowMiniaturizeButton);
-    show_mac_standard_button(window, NSWindowZoomButton);
+    // Keep AppKit's hierarchy and actions intact, but align the native traffic
+    // lights with the web top-bar controls and match their top/left edge insets.
+    align_mac_standard_buttons(window);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
     g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
