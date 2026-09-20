@@ -32,7 +32,7 @@ test('workspace new-task actions route to the shared lazy home entry point', () 
   const openFlow = section(
     sidebar,
     'const openNewTaskInWorkspace = useCallback(async (ws) => {',
-    '\n  const onAddWorkspace = async',
+    '\n  const sidebarNavCallbacks = {',
   );
 
   assert.match(app, /onOpenHome=\{openHomeForWorkspace\}/);
