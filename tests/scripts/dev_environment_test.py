@@ -91,7 +91,7 @@ class DevEnvironmentTest(unittest.TestCase):
         self.assertEqual(runtime, root / ".acecode/dev-run/my-project-abcdef123456")
 
     def test_noninteractive_target_selection_fails(self):
-        with patch.object(dev_environment.sys.stdin, "isatty", return_value=False):
+        with patch.object(dev_environment.sys, "stdin", None):
             self.assertIsNone(dev_environment.choose_target(None))
 
     def test_sccache_discovery_prefers_usable_path_and_has_install_hint(self):
@@ -211,11 +211,27 @@ class DevEnvironmentTest(unittest.TestCase):
                 {"hits": 9, "misses": 3, "errors": 8},
             )
 
-    def test_main_refreshes_build_and_web_assets_before_web_start(self):
+    def test_main_starts_quick_web_without_rebuilding_existing_daemon(self):
         candidate = dev_environment.BuildCandidate(
             Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe")
         )
         args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
+        with patch.object(dev_environment, "parse_args", return_value=args), \
+             patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
+             patch.object(dev_environment, "find_compatible_build", return_value=candidate), \
+             patch.object(dev_environment, "launch_quick_web", return_value=0) as launch, \
+             patch.object(dev_environment, "build_target") as build, \
+             patch.object(dev_environment, "refresh_web_assets") as refresh:
+            self.assertEqual(dev_environment.main(), 0)
+        launch.assert_called_once_with(Path("C:/work"), candidate, [])
+        build.assert_not_called()
+        refresh.assert_not_called()
+
+    def test_main_embedded_mode_builds_and_refreshes_assets(self):
+        candidate = dev_environment.BuildCandidate(
+            Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe")
+        )
+        args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": ["--embedded"]})()
         with patch.object(dev_environment, "parse_args", return_value=args), \
              patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
              patch.object(dev_environment, "find_sccache", return_value=None), \
@@ -229,14 +245,127 @@ class DevEnvironmentTest(unittest.TestCase):
         refresh.assert_called_once_with(Path("C:/work"))
         launch.assert_called_once_with(Path("C:/work"), "web", candidate, False, [])
 
+    def test_quick_web_reuses_healthy_daemon_and_passes_its_port_to_vite(self):
+        root = Path("C:/work")
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        run_dir = root / ".acecode/dev-run/test"
+        with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
+             patch.object(dev_environment, "daemon_is_healthy", return_value=True), \
+             patch.object(dev_environment, "daemon_port", return_value=38123), \
+             patch.object(dev_environment, "launch_vite", return_value=0) as vite, \
+             patch.object(dev_environment, "start_quick_web_daemon") as start:
+            self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 0)
+        vite.assert_called_once_with(root, 38123, run_dir, [])
+        start.assert_not_called()
+
+    def test_quick_web_falls_back_to_system_selected_port(self):
+        root = Path("C:/work")
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        run_dir = root / ".acecode/dev-run/test"
+        with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
+             patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
+             patch.object(Path, "exists", return_value=False), \
+             patch.object(dev_environment, "reserve_loopback_port", return_value=38123), \
+             patch.object(dev_environment, "start_quick_web_daemon", side_effect=[None, 38123]) as start, \
+             patch.object(dev_environment, "launch_vite", return_value=0) as vite:
+            self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 0)
+        self.assertEqual([call.args[3] for call in start.call_args_list], [28080, 38123])
+        vite.assert_called_once_with(root, 38123, run_dir, [])
+
+    def test_quick_daemon_start_requires_a_healthy_runtime(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        with patch.object(dev_environment.subprocess, "Popen"), \
+             patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
+             patch.object(dev_environment, "daemon_port", return_value=28080):
+            self.assertIsNone(dev_environment.start_quick_web_daemon(root, candidate, run_dir, 28080))
+
+    def test_healthy_daemon_requires_authenticated_identity_match(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / "runtime"
+            runtime.mkdir()
+            (runtime / "daemon.pid").write_text("42", encoding="utf-8")
+            (runtime / "daemon.port").write_text("38123", encoding="utf-8")
+            (runtime / "token").write_text("secret", encoding="utf-8")
+            response = type("Response", (), {
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, *args: None,
+                "read": lambda self: b'{"pid": 41, "port": 38123}',
+            })()
+            with patch.object(dev_environment.urllib.request, "urlopen", return_value=response) as urlopen:
+                self.assertFalse(dev_environment.daemon_is_healthy(root, candidate, runtime))
+            urlopen.assert_called_once()
+
+    def test_quick_daemon_starts_foreground_worker_with_isolated_runtime(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        with patch.object(dev_environment.subprocess, "Popen") as popen, \
+             patch.object(dev_environment, "daemon_is_healthy", return_value=True), \
+             patch.object(dev_environment, "daemon_port", return_value=28080):
+            self.assertEqual(dev_environment.start_quick_web_daemon(root, candidate, run_dir, 28080), 28080)
+        self.assertEqual(popen.call_args.args[0], [
+            str(candidate.executable), "daemon", "--foreground",
+            "--cwd=C:/work", "--run-dir=C:/work/.acecode/dev-run/test", "--port=28080",
+        ])
+
+    def test_launch_vite_passes_daemon_credentials_only_to_child_environment(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        builder = type("Builder", (), {"ensure_node_and_pnpm": staticmethod(lambda: ("node", "pnpm"))})
+        with patch.object(dev_environment, "load_web_builder", return_value=builder), \
+             patch.object(dev_environment, "daemon_token", return_value="test-token"), \
+             patch.object(Path, "is_dir", return_value=True), \
+             patch.object(dev_environment.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertEqual(dev_environment.launch_vite(root, 38123, run_dir, ["--host", "127.0.0.1"]), 0)
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(command, ["pnpm", "dev", "--host", "127.0.0.1"])
+        self.assertEqual(environment["ACECODE_DAEMON_PORT"], "38123")
+        self.assertEqual(environment["ACECODE_DAEMON_TOKEN"], "test-token")
+
+    def test_vite_options_strip_daemon_runtime_argument(self):
+        self.assertEqual(
+            dev_environment.vite_options(["--run-dir", "runtime", "--host", "127.0.0.1"]),
+            ["--host", "127.0.0.1"],
+        )
+        self.assertEqual(
+            dev_environment.vite_options(["--run-dir=runtime", "--port", "5174"]),
+            ["--port", "5174"],
+        )
+
+    def test_launch_vite_refuses_missing_daemon_token(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        with patch.object(dev_environment, "daemon_token", return_value=None), \
+             patch.object(dev_environment, "load_web_builder") as builder:
+            self.assertEqual(dev_environment.launch_vite(root, 38123, run_dir, []), 1)
+        builder.assert_not_called()
+
+    def test_missing_quick_daemon_refuses_noninteractive_build_without_authorization(self):
+        args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
+        with patch.object(dev_environment, "parse_args", return_value=args), \
+             patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
+             patch.object(dev_environment, "find_compatible_build", return_value=None), \
+             patch.object(dev_environment, "default_preset", return_value="windows-x64-release"), \
+             patch.object(dev_environment.sys, "stdin", None), \
+             patch.object(dev_environment, "configure_and_build") as build:
+            self.assertEqual(dev_environment.main(), 1)
+        build.assert_not_called()
+
     def test_confirmation_eof_refuses_configuration(self):
-        with patch.object(dev_environment.sys.stdin, "isatty", return_value=True), \
+        stdin = type("Stdin", (), {"isatty": staticmethod(lambda: True)})()
+        with patch.object(dev_environment.sys, "stdin", stdin), \
              patch("builtins.input", side_effect=EOFError):
             self.assertFalse(dev_environment.ask_to_build("windows-x64-release", "web", False))
 
     def test_main_retries_failed_sccache_build_without_cache(self):
         candidate = dev_environment.BuildCandidate(Path("C:/work/build"), Path("C:/work"), Path("C:/work/build/acecode.exe"))
-        args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
+        args = type("Args", (), {"target": "web", "build_dir": None, "yes": False, "dry_run": False, "extra": ["--embedded"]})()
         cache = Path("C:/tools/sccache.exe")
         with patch.object(dev_environment, "parse_args", return_value=args), \
              patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
@@ -261,8 +390,13 @@ class DevEnvironmentTest(unittest.TestCase):
             result = dev_environment.launch_surface(Path("C:/work"), "web", candidate, dry_run=True, extra=[])
         self.assertEqual(result, 0)
 
-    def test_windows_target_launchers_auto_approve_initial_configuration(self):
-        for target in ("web", "desktop", "tui"):
+    def test_windows_web_launcher_does_not_auto_approve_native_build(self):
+        wrapper = (ROOT / "scripts/dev_web.bat").read_text(encoding="utf-8")
+        self.assertIn('dev_environment.py" web %*', wrapper)
+        self.assertNotIn('dev_environment.py" web --yes %*', wrapper)
+
+    def test_windows_other_target_launchers_auto_approve_initial_configuration(self):
+        for target in ("desktop", "tui"):
             wrapper = (ROOT / "scripts" / f"dev_{target}.bat").read_text(encoding="utf-8")
             self.assertIn(f'dev_environment.py" {target} --yes %*', wrapper)
 

@@ -6,14 +6,29 @@
 
 ## 开发流程
 
+快速前端开发使用仓库启动器：
+
+```bash
+# Windows
+scripts\dev_web.bat
+
+# macOS / Linux
+./scripts/dev_web.sh
+```
+
+它会复用当前工作树的开发 daemon，或用已有的当前工作树 `acecode` 可执行文件启动一个 daemon，然后在前台运行 Vite。浏览器打开 Vite 地址（默认 `http://127.0.0.1:5173`）才能看到热更新；`/api` 与 `/ws` 自动代理到该 daemon。现有 native 可执行文件和 `web/dist` 不会因前端修改而重建。
+
+首次没有 compatible daemon 可执行文件时，交互式启动器会先显示 native 构建并请求确认；自动化调用必须明确传 `--build-daemon` 才允许构建。
+
+直接运行 Vite 仍然可用：
+
 ```bash
 cd web
 pnpm install         # 一次性安装依赖(也可用 npm / bun)
-pnpm dev             # 起 Vite dev server,默认 http://localhost:5173
-                     # /api 与 /ws 自动代理到 127.0.0.1:28080(本机 daemon)
+pnpm dev             # 默认将 /api 与 /ws 代理到 127.0.0.1:28080
 ```
 
-需要先在另一个终端跑 `acecode daemon --foreground` 让 API 可用。
+这种手动方式需要自行在另一个终端启动 `acecode daemon --foreground --port=28080`。若要验证嵌入 `acecode` 的生产静态资源而非热更新页面，使用 `scripts/dev_web.bat --embedded` 或 `./scripts/dev_web.sh --embedded`；该显式模式会重新构建 `web/dist` 和 native daemon。
 
 ## 全屏热浪快捷键
 

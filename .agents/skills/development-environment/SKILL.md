@@ -35,23 +35,23 @@ On macOS or Linux:
 ./scripts/dev_tui.sh
 ```
 
+`dev_web` defaults to rapid frontend development: it starts or reuses a current-worktree daemon, then keeps Vite running in the foreground. Open the Vite URL (normally `http://127.0.0.1:5173`) rather than the daemon URL to see hot reload changes. It does not rebuild an existing native executable or `web/dist`.
+
+Use `dev_web --embedded` only to rebuild `web/dist`, rebuild the native daemon with embedded assets, and validate the production-like static UI. If quick mode lacks a compatible executable, an interactive terminal asks before compiling; non-interactive callers must explicitly pass `--build-daemon`.
+
 Pass `--build-dir <path>` only when the user explicitly supplies a candidate build directory. Do not copy `acecode`, `acecode-desktop`, DLLs, or other build artifacts between worktrees.
 
 ## Build reuse and rebuild policy
 
 启动器只复用当前工作树内的 CMake 构建，检查源码路径、平台、架构、目标产物及 Desktop 配置。多配置构建会编译并启动同一配置。其他已登记工作树仅可提供经验证的前端产物和编译缓存，不提供本工作树实际运行的程序。
 
-Every launch incrementally builds the verified target, so source changes are incorporated even when the configured build is reused. Web and Desktop also refresh frontend assets when their inputs are newer than `web/dist`.
+Desktop and TUI launches incrementally build their verified targets. Web only refreshes frontend assets and rebuilds its daemon in explicit `--embedded` mode.
 
-If no compatible configured build exists, the launcher reports the platform CMake preset and asks for confirmation before configuration. Preserve that safety boundary:
+If a compatible configured build does not exist, Desktop and TUI report the platform CMake preset and ask for confirmation before configuration. Web quick mode follows its `--build-daemon` authorization rule above; embedded mode follows the normal build confirmation flow. If the user declines, do not configure, compile, or start a surface.
 
-- Windows target-specific batch launchers automatically approve this first configuration so they work when double-clicked.
-- For the shared Python launcher and POSIX target-specific launchers, state that configuration is needed, name the preset, and ask the user for explicit confirmation before adding `--yes`.
-- If the user declines, do not configure, compile, or start a surface.
+The shared launcher calls `scripts/dev_web.py` only to start the Web daemon; quick Web mode then runs Vite with a worktree-isolated daemon runtime directory. Desktop opens its application window; TUI opens a new terminal window.
 
-The shared launcher calls the existing Python surface launchers: `scripts/dev_web.py` for Web and `scripts/dev_desktop.py` for Desktop. Web uses a worktree-isolated runtime directory and opens its resulting local URL; Desktop opens its application window; TUI opens a new terminal window.
-
-Windows 的 MSVC 构建会按 x64 或 ARM64 初始化 VS 环境；有效 MinGW 构建不要求 VS。Web 重建前发现既存 PID 记录时会明确失败并给出检查或停止命令；不要通过删 PID 文件、宽泛终止进程等方式绕过此检查。显式 `--run-dir` 只检查所指定的目录。
+Windows 的 MSVC 构建会按 x64 或 ARM64 初始化 VS 环境；有效 MinGW 构建不要求 VS。Quick Web mode reuses only a healthy daemon in its own runtime directory and never deletes PID files or broadly terminates processes. If port 28080 is unavailable, it reserves an available loopback port, starts the daemon on it, and forwards that port only to the launched Vite process. Explicit `--run-dir` only checks the specified directory.
 
 ## Report outcome
 

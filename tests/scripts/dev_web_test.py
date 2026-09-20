@@ -61,6 +61,30 @@ class DevWebTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIsNone(opened)
 
+    def test_embedded_assets_do_not_require_web_dist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dev_web, "find_project_root", return_value=root), \
+                 patch.object(dev_web, "find_executable", return_value=root / "acecode.exe"), \
+                 patch.object(sys, "argv", ["dev_web.py", "--use-embedded-assets", "--no-browser"]), \
+                 patch.object(dev_web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                 patch.object(dev_web, "_wait_for_port", return_value=12345), \
+                 patch.object(dev_web, "_open_web_ui"):
+                self.assertEqual(dev_web.main(), 0)
+        self.assertFalse(any(argument.startswith("--static-dir=") for argument in run.call_args.args[0]))
+
+    def test_port_zero_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "web/dist/index.html").write_text("test", encoding="utf-8")
+            with patch.object(dev_web, "find_project_root", return_value=root), \
+                 patch.object(dev_web, "find_executable", return_value=root / "acecode.exe"), \
+                 patch.object(sys, "argv", ["dev_web.py", "--port=0", "--no-browser"]), \
+                 patch.object(dev_web.subprocess, "run") as run:
+                self.assertEqual(dev_web.main(), 1)
+        run.assert_not_called()
+
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper")
     def test_batch_falls_back_to_py_and_preserves_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:

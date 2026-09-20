@@ -11,8 +11,12 @@ import platform
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -211,7 +215,7 @@ def ask_to_build(preset: str, target: str, assume_yes: bool) -> bool:
     print(f"[INFO] Proposed build: cmake --build {binary_dir} --target {executable_target}")
     if assume_yes:
         return True
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         print("[ERROR] Refusing to compile without interactive confirmation. Re-run with --yes to confirm.", file=sys.stderr)
         return False
     try:
@@ -477,6 +481,37 @@ def selected_web_runtime_dir(root: Path, extra: list[str]) -> Path:
     return args.run_dir.resolve() if args.run_dir.is_absolute() else (root / args.run_dir).resolve()
 
 
+def web_launcher_options(extra: list[str]) -> tuple[bool, bool, list[str]]:
+    """Return embedded mode, explicit native-build approval, and remaining args."""
+    embedded = False
+    build_daemon = False
+    remaining: list[str] = []
+    for argument in extra:
+        if argument == "--embedded":
+            embedded = True
+        elif argument == "--build-daemon":
+            build_daemon = True
+        else:
+            remaining.append(argument)
+    return embedded, build_daemon, remaining
+
+
+def vite_options(extra: list[str]) -> list[str]:
+    """Strip daemon-only runtime options before forwarding options to Vite."""
+    result: list[str] = []
+    skip_next = False
+    for argument in extra:
+        if skip_next:
+            skip_next = False
+        elif argument == "--run-dir":
+            skip_next = True
+        elif argument.startswith("--run-dir="):
+            continue
+        else:
+            result.append(argument)
+    return result
+
+
 def web_runtime_is_available(root: Path, candidate: BuildCandidate | None, extra: list[str]) -> bool:
     run_dir = selected_web_runtime_dir(root, extra)
     explicit = any(arg == "--run-dir" or arg.startswith("--run-dir=") for arg in extra)
@@ -560,6 +595,124 @@ def tui_command(root: Path, executable: Path, extra: list[str] | None = None) ->
     return None
 
 
+def daemon_port(runtime_dir: Path) -> int | None:
+    try:
+        port = int((runtime_dir / "daemon.port").read_text(encoding="utf-8").strip())
+        return port if 1 <= port <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def daemon_is_healthy(root: Path, candidate: BuildCandidate, run_dir: Path, timeout_seconds: float = 0) -> bool:
+    del root, candidate
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            pid = int((run_dir / "daemon.pid").read_text(encoding="utf-8").strip())
+            port = daemon_port(run_dir)
+            token = daemon_token(run_dir)
+            if pid > 0 and port is not None and token:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/health",
+                    headers={"X-ACECode-Token": token},
+                )
+                with urllib.request.urlopen(request, timeout=1) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                # A stale runtime can point at another daemon already using the
+                # same port. Match the daemon identity from the health payload,
+                # not merely TCP reachability.
+                if int(payload.get("pid", -1)) == pid and int(payload.get("port", -1)) == port:
+                    return True
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError,
+                urllib.error.URLError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def reserve_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def start_quick_web_daemon(root: Path, candidate: BuildCandidate, run_dir: Path, port: int) -> int | None:
+    """Start the worker directly; the detached daemon wrapper rejects token.tmp runtimes."""
+    command = [
+        str(candidate.executable), "daemon", "--foreground",
+        f"--cwd={root.as_posix()}", f"--run-dir={run_dir.as_posix()}", f"--port={port}",
+    ]
+    options = {"cwd": root, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(command, **options)
+    except OSError as error:
+        print(f"[ERROR] Could not start Web daemon: {error}", file=sys.stderr)
+        return None
+    if not daemon_is_healthy(root, candidate, run_dir, timeout_seconds=15):
+        return None
+    return daemon_port(run_dir)
+
+
+def daemon_token(runtime_dir: Path) -> str | None:
+    for name in ("token", "token.tmp"):
+        try:
+            token = (runtime_dir / name).read_text(encoding="utf-8").strip()
+            if token:
+                return token
+        except OSError:
+            pass
+    return None
+
+
+def launch_vite(root: Path, daemon_port_number: int, runtime_dir: Path, extra: list[str]) -> int:
+    token = daemon_token(runtime_dir)
+    if token is None:
+        print(f"[ERROR] Web daemon did not provide an authentication token: {runtime_dir}", file=sys.stderr)
+        return 1
+    builder = load_web_builder(root)
+    if builder is None:
+        print("[ERROR] Cannot load Web development server helper.", file=sys.stderr)
+        return 1
+    try:
+        _, pnpm = builder.ensure_node_and_pnpm()
+    except (OSError, subprocess.SubprocessError, SystemExit):
+        return 1
+    web_dir = root / "web"
+    if not (web_dir / "node_modules").is_dir():
+        print("[INFO] Installing Web dependencies...")
+        if subprocess.run([pnpm, "install"], cwd=web_dir, check=False).returncode != 0:
+            return 1
+    environment = os.environ.copy()
+    environment["ACECODE_DAEMON_PORT"] = str(daemon_port_number)
+    environment["ACECODE_DAEMON_TOKEN"] = token
+    print(f"[INFO] Starting Vite with daemon proxy: http://127.0.0.1:{daemon_port_number}")
+    return subprocess.run([pnpm, "dev", *vite_options(extra)], cwd=web_dir, env=environment, check=False).returncode
+
+
+def launch_quick_web(root: Path, candidate: BuildCandidate, extra: list[str]) -> int:
+    run_dir = selected_web_runtime_dir(root, extra)
+    if daemon_is_healthy(root, candidate, run_dir):
+        port = daemon_port(run_dir)
+        print(f"[INFO] Reusing Web daemon: http://127.0.0.1:{port}")
+        return launch_vite(root, port, run_dir, extra)
+    if (run_dir / "daemon.pid").exists():
+        print(f"[ERROR] Existing Web daemon runtime is unhealthy; inspect it before retrying: {run_dir}", file=sys.stderr)
+        return 1
+    port = start_quick_web_daemon(root, candidate, run_dir, 28080)
+    if port is None:
+        fallback_port = reserve_loopback_port()
+        print(f"[INFO] Standard development port unavailable; retrying on {fallback_port}.")
+        port = start_quick_web_daemon(root, candidate, run_dir, fallback_port)
+    if port is None:
+        print("[ERROR] Web daemon could not be started.", file=sys.stderr)
+        return 1
+    print(f"[INFO] Started Web daemon: http://127.0.0.1:{port}")
+    return launch_vite(root, port, run_dir, extra)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start an ACECode development environment", allow_abbrev=False)
     parser.add_argument("target", nargs="?", choices=TARGETS, help="development surface to start")
@@ -574,7 +727,7 @@ def parse_args() -> argparse.Namespace:
 def choose_target(target: str | None) -> str | None:
     if target:
         return target
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         print("[ERROR] Specify one target: web, desktop, or tui.", file=sys.stderr)
         return None
     selected = input("Choose development target [web/desktop/tui]: ").strip().lower()
@@ -590,6 +743,45 @@ def main() -> int:
     if not target:
         return 2
     root = project_root()
+    embedded, build_daemon, extra = web_launcher_options(args.extra) if target == "web" else (False, False, args.extra)
+    if target == "web" and not embedded:
+        if "--yes" in extra:
+            print("[ERROR] --yes is only available to the embedded validation workflow; use --build-daemon for quick mode.", file=sys.stderr)
+            return 2
+        candidate = find_compatible_build(root, target, args.build_dir)
+        if args.build_dir and candidate is None:
+            print(f"[ERROR] --build-dir does not contain a compatible configured {target} build: {(root / args.build_dir).resolve()}", file=sys.stderr)
+            return 1
+        if candidate is None:
+            preset = default_preset(target)
+            if preset is None:
+                print("[ERROR] No supported CMake preset for this platform and architecture.", file=sys.stderr)
+                return 1
+            if not build_daemon and (sys.stdin is None or not sys.stdin.isatty()):
+                print("[ERROR] No compatible daemon executable was found. Re-run with --build-daemon to authorize its native build.", file=sys.stderr)
+                return 1
+            if not ask_to_build(preset, target, build_daemon):
+                return 1
+            if args.dry_run:
+                print(f"[INFO] Dry run: cmake --preset {preset}")
+                return 0
+            if not ensure_windows_environment(root, None):
+                return 1
+            sccache = find_sccache()
+            built = configure_and_build(root, preset, target, sccache)
+            if not built and sccache:
+                print("[INFO] sccache configuration failed; retrying normal compilation.")
+                built = configure_and_build(root, preset, target, None)
+            if not built:
+                return 1
+            candidate = find_compatible_build(root, target, built)
+            if candidate is None:
+                print("[ERROR] Build completed but did not produce a compatible executable.", file=sys.stderr)
+                return 1
+        if args.dry_run:
+            print(f"[INFO] Dry run: start Vite with {candidate.executable}")
+            return 0
+        return launch_quick_web(root, candidate, extra)
     if target == "desktop" and "--list" in args.extra:
         command = [sys.executable, str(root / "scripts/dev_desktop.py"), *args.extra]
         if args.build_dir:
@@ -607,7 +799,7 @@ def main() -> int:
     if args.build_dir and candidate is None:
         print(f"[ERROR] --build-dir does not contain a compatible configured {target} build: {(root / args.build_dir).resolve()}", file=sys.stderr)
         return 1
-    if not args.dry_run and target == "web" and not web_runtime_is_available(root, candidate, args.extra):
+    if not args.dry_run and target == "web" and not web_runtime_is_available(root, candidate, extra):
         return 1
     if not args.dry_run and not ensure_windows_environment(root, candidate):
         return 1
@@ -620,7 +812,7 @@ def main() -> int:
         if preset is None:
             print("[ERROR] No supported CMake preset for this platform and architecture.", file=sys.stderr)
             return 1
-        if not ask_to_build(preset, target, args.yes):
+        if not ask_to_build(preset, target, args.yes or (target == "web" and embedded and os.name == "nt")):
             return 1
         if args.dry_run:
             print(f"[INFO] Dry run: cmake --preset {preset}")
@@ -649,6 +841,10 @@ def main() -> int:
                     return 1
             else:
                 return 1
+    if not args.dry_run and target == "web":
+        if not refresh_web_assets(root):
+            print("[ERROR] Web asset refresh failed; embedded development environment was not started.", file=sys.stderr)
+            return 1
     if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache, candidate.configuration):
         if sccache:
             preset = default_preset(target)
@@ -662,12 +858,12 @@ def main() -> int:
         else:
             print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
             return 1
-    if target in {"web", "desktop"} and not args.dry_run:
-        refreshed = refresh_web_assets(root, force=True) if target == "desktop" and "--rebuild" in args.extra else refresh_web_assets(root)
+    if target == "desktop" and not args.dry_run:
+        refreshed = refresh_web_assets(root, force=True) if "--rebuild" in args.extra else refresh_web_assets(root)
         if not refreshed:
             print("[ERROR] Web asset refresh failed; development environment was not started.", file=sys.stderr)
             return 1
-    return launch_surface(root, target, candidate, args.dry_run, args.extra)
+    return launch_surface(root, target, candidate, args.dry_run, extra)
 
 
 if __name__ == "__main__":

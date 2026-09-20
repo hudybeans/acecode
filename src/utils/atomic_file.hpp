@@ -57,10 +57,28 @@ inline bool atomic_write_file(const std::string& path,
             fs::remove(tmp, rmec);
             return false;
         }
+#endif
+    }
+
+    fs::rename(tmp, target, ec);
+    if (ec) {
+#ifdef _WIN32
+        if (!::MoveFileExW(tmp.wstring().c_str(),
+                           target.wstring().c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            // Rename failed. Keep tmp present so caller can inspect.
+            return false;
+        }
 #else
-        // Restrict ACL to current user only. Best-effort: failure does not
-        // abort the write since the file is still on a per-user profile path
-        // by convention. Future hardening could fail-hard here.
+        // Rename failed. Keep tmp present so caller can inspect.
+        return false;
+#endif
+    }
+
+#ifdef _WIN32
+    if (restrict_permissions) {
+        // Apply the protected ACL after replacing the target. Applying it to
+        // token.tmp first can prevent the subsequent rename on Windows.
         HANDLE token = nullptr;
         if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
             DWORD len = 0;
@@ -70,8 +88,6 @@ inline bool atomic_write_file(const std::string& path,
                 if (::GetTokenInformation(token, TokenUser, buf.data(), len, &len)) {
                     PSID user_sid = reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid;
                     EXPLICIT_ACCESSW ea{};
-                    // Rename/replacement needs DELETE on the file when the
-                    // parent does not grant FILE_DELETE_CHILD (e.g. Modify).
                     ea.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE | DELETE;
                     ea.grfAccessMode = SET_ACCESS;
                     ea.grfInheritance = NO_INHERITANCE;
@@ -80,9 +96,9 @@ inline bool atomic_write_file(const std::string& path,
                     ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(user_sid);
                     PACL acl = nullptr;
                     if (::SetEntriesInAclW(1, &ea, nullptr, &acl) == ERROR_SUCCESS && acl) {
-                        std::wstring tmp_w = tmp.wstring();
+                        std::wstring target_w = target.wstring();
                         ::SetNamedSecurityInfoW(
-                            const_cast<LPWSTR>(tmp_w.c_str()),
+                            const_cast<LPWSTR>(target_w.c_str()),
                             SE_FILE_OBJECT,
                             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                             nullptr, nullptr, acl, nullptr);
@@ -92,21 +108,8 @@ inline bool atomic_write_file(const std::string& path,
             }
             ::CloseHandle(token);
         }
-#endif
     }
-
-    fs::rename(tmp, target, ec);
-    if (ec) {
-#ifdef _WIN32
-    if (::MoveFileExW(tmp.wstring().c_str(),
-              target.wstring().c_str(),
-              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            return true;
-        }
 #endif
-        // Rename failed. Keep tmp present so caller can inspect.
-        return false;
-    }
     return true;
 }
 

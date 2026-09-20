@@ -1,6 +1,6 @@
 #!/bin/bash
 # ACECode Web development launcher (macOS / Linux)
-# Usage: ./scripts/dev_web.sh [Web daemon options]
+# Usage: ./scripts/dev_web.sh [--embedded] [--build-daemon] [Vite options]
 
 set -e
 
