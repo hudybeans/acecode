@@ -613,7 +613,7 @@ function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpe
         </span>
       </button>
       {expanded && (
-        <div id={listId} className="ace-sidebar-custom-list">
+        <div id={listId} className="ace-sidebar-custom-list flex flex-col gap-0.5">
           {SIDEBAR_CUSTOM_ITEMS.map((item) => (
             <CustomSidebarItem
               key={item.id}
@@ -636,7 +636,7 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
   return (
     <div
       data-sidebar-section={sectionId}
-      className="ace-sidebar-section-header ace-sidebar-section-text group flex h-8 items-center gap-0.5 pl-[19px] pr-3 mt-2 mb-0 text-[13px] font-medium text-fg-mute"
+      className="ace-sidebar-section-header ace-sidebar-section-text group flex h-6 items-center gap-0.5 pl-[19px] pr-3 mt-2 mb-0 text-[13px] font-medium text-fg-mute"
     >
       <button
         type="button"
@@ -652,7 +652,7 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
         >
           <SidebarDisclosure expanded={expanded} />
         </span>
-        <span className={clsx('min-w-0 truncate', (sectionId === SIDEBAR_SECTION_IDS.TASKS || sectionId === SIDEBAR_SECTION_IDS.WORKSPACES) && 'ace-sidebar-section-title text-[11px]')}>
+        <span className={clsx('min-w-0 truncate', (sectionId === SIDEBAR_SECTION_IDS.TASKS || sectionId === SIDEBAR_SECTION_IDS.WORKSPACES) && 'ace-sidebar-section-title text-[12px]')}>
           {title}
         </span>
       </button>
@@ -1644,7 +1644,7 @@ function WorkspaceGroup({
     <div
       data-sidebar-workspace-folder-hash={ws.hash}
       className={clsx(
-        'ace-sidebar-workspace-folder-group my-px',
+        'ace-sidebar-workspace-folder-group',
         ws.active && 'rounded-md',
         folderDragState?.source === ws.hash && 'is-folder-dragging',
       )}
@@ -1669,7 +1669,7 @@ function WorkspaceGroup({
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
         data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
         className={clsx(
-          'ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 pl-[12px] pr-2 py-[3px] rounded-md text-[14px] cursor-pointer transition',
+          'ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid h-8 grid-cols-[24px_minmax(0,1fr)_76px] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-2 rounded-md text-[14px] cursor-pointer transition',
           ws.active ? 'bg-accent-bg text-fg' : 'text-fg hover:bg-surface-hi',
         )}
         role="button"
@@ -1732,7 +1732,7 @@ function WorkspaceGroup({
         </span>
       </div>
       {expanded && (
-        <div className="-mt-1 mb-2">
+        <div className="mt-0.5 mb-2 flex flex-col gap-0.5">
           {sessions.length === 0 ? (
             <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_76px] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-2 py-[4px] text-[13px] text-fg-mute italic">
               <span aria-hidden="true" />
@@ -1802,7 +1802,7 @@ function NoWorkspaceSessionGroup({
   const projectedSessions = sidebarSessionProjection(sessions, sessionListVisibleLimit);
 
   return (
-    <div className="-mt-1 mb-2">
+    <div className="mt-0.5 flex flex-col gap-0.5">
       {sessions.length === 0 ? (
         <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_76px] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-2 py-[4px] text-[13px] text-fg-mute italic">
           <span aria-hidden="true" />
@@ -1831,7 +1831,7 @@ function NoWorkspaceSessionGroup({
               <button
                 type="button"
                 onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY, projectedSessions.action)}
-                className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
+                className="ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
               >
                 {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
               </button>
@@ -3668,7 +3668,7 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-main flex-1 flex flex-col min-h-0">
-          <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto">
+          <div className="ace-sidebar-fixed-nav shrink-0 flex flex-col gap-0.5 overflow-y-auto">
             {SIDEBAR_NAV_ITEMS.map((item) => (
               item.action === 'extensions' ? (
                 <CustomSidebarSection
@@ -3704,7 +3704,7 @@ export function Sidebar({
               onToggle={() => toggleSidebarSection(SIDEBAR_SECTION_IDS.PINNED)}
             />
             {sidebarSectionIsVisible(sectionCounts.pinned) && sectionExpansion.pinned && (
-              <div className="my-1">
+              <div className="mt-0.5 flex flex-col gap-0.5">
                 {pinnedSessions.map((s) => {
                   const pinScope = sessionPinScope(s);
                   const rowKey = sidebarSessionDragKey(pinScope, s.id);
@@ -3765,7 +3765,7 @@ export function Sidebar({
             />
             {sidebarSectionIsVisible(sectionCounts.workspaces) && sectionExpansion.workspaces && (
               <div
-                className="my-1"
+                className="mt-0.5 flex flex-col gap-0.5"
                 ref={folderReorder.listRef}
                 data-sidebar-workspace-folder-list
                 aria-busy={workspaceOrderSaving}
