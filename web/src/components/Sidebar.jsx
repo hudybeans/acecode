@@ -675,11 +675,19 @@ function SessionAttentionIndicator({ attention, meta }) {
       role="status"
       aria-label={meta.label}
     >
-      <span className="ace-session-loading-orbit" aria-hidden="true">
-        <span className="ace-session-loading-dot is-top" />
-        <span className="ace-session-loading-dot is-right" />
-        <span className="ace-session-loading-dot is-bottom" />
-        <span className="ace-session-loading-dot is-left" />
+      <span className="ace-session-loading-matrix" aria-hidden="true">
+        <span className="ace-session-loading-dot is-a-0" />
+        <span className="ace-session-loading-dot is-a-1" />
+        <span className="ace-session-loading-dot is-a-2" />
+        <span className="ace-session-loading-dot is-a-3" />
+        <span className="ace-session-loading-dot is-a-4" />
+        <span className="ace-session-loading-dot is-a-5" />
+        <span className="ace-session-loading-dot is-a-6" />
+        <span className="ace-session-loading-dot is-a-7" />
+        <span className="ace-session-loading-dot is-a-8" />
+        <span className="ace-session-loading-dot is-a-9" />
+        <span className="ace-session-loading-dot is-a-10" />
+        <span className="ace-session-loading-dot is-a-11" />
       </span>
     </span>
   ) : (
