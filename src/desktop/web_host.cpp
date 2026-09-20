@@ -2372,6 +2372,61 @@ void WebHost::set_file_drop_handler(FileDropHandler handler) {
 #endif
     // Linux/WebKitGTK:前端经 text/uri-list 处理,native 不安装拦截。
 }
+acecode::ClipboardPathsReadResult WebHost::read_clipboard_paths() {
+    using Result = acecode::ClipboardPathsReadResult;
+#ifdef _WIN32
+    return acecode::read_system_clipboard_paths();
+#else
+    Result result;
+    result.status = Result::Status::Empty;
+#ifdef __APPLE__
+    NSArray<NSURL*>* urls = [[NSPasteboard generalPasteboard]
+        readObjectsForClasses:@[[NSURL class]]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    for (NSURL* url in urls) {
+        const char* path = [url.path UTF8String];
+        if (path) result.paths.emplace_back(path);
+    }
+#else
+    // WebKitGTK already loads these libraries. Keep GTK types out of the
+    // desktop wrapper's public API, as with the window operations above.
+    auto& api = gtk_window_api();
+    if (!api.load()) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    const auto atom = reinterpret_cast<void* (*)(const char*, int)>(dlsym(api.gdk, "gdk_atom_intern"));
+    const auto clipboard_get = reinterpret_cast<void* (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_get"));
+    const auto read_uris = reinterpret_cast<char** (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_wait_for_uris"));
+    const auto filename = reinterpret_cast<char* (*)(const char*, char**, void**)>(dlsym(api.gtk, "g_filename_from_uri"));
+    const auto free_string = reinterpret_cast<void (*)(void*)>(dlsym(api.gtk, "g_free"));
+    const auto free_strings = reinterpret_cast<void (*)(char**)>(dlsym(api.gtk, "g_strfreev"));
+    if (!atom || !clipboard_get || !read_uris || !filename || !free_string || !free_strings) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    char** uris = read_uris(clipboard_get(atom("CLIPBOARD", 0)));
+    if (uris) {
+        for (char** uri = uris; *uri; ++uri) {
+            char* path = filename(*uri, nullptr, nullptr);
+            if (path) {
+                result.paths.emplace_back(path);
+                free_string(path);
+            }
+        }
+        free_strings(uris);
+    }
+#endif
+    if (result.paths.size() > acecode::kMaxClipboardFilesystemPaths) {
+        result.status = Result::Status::TooMany;
+        result.paths.clear();
+        result.detail = "clipboard contains too many filesystem items";
+    } else if (!result.paths.empty()) result.status = Result::Status::Success;
+    return result;
+#endif
+}
 void WebHost::request_quit() {
 #ifdef _WIN32
     HWND hwnd = impl_->hwnd();

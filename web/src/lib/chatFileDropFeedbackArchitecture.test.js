@@ -46,7 +46,7 @@ run('home and session chat columns delegate file drops to the single InputBar pi
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
 });
 
@@ -76,10 +76,10 @@ run('desktop file drag activates on entry and acceptance without async foregroun
   );
   const dragOver = inputBar.slice(inputBar.indexOf('const handleDragOver ='), inputBar.indexOf('const handleDragLeave ='));
   assert.doesNotMatch(dragOver, /requestDesktopFileDragActivation/);
-  assert.match(inputBar, /addMediaFiles\(files, \{ requestNativeFocus: false \}\)/);
+  assert.match(inputBar, /acceptFileIntake\(\{ source: 'drop', paths: uriPaths, files \}\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
   assert.match(
     desktopMain,
@@ -151,13 +151,10 @@ run('Desktop ordinary-file references bypass image normalization and Base64 uplo
 
 run('Desktop native filesystem items become path references before attachment staging', () => {
   const inputBar = source('components/InputBar.jsx');
-  const start = inputBar.indexOf('const addNativeFilesystemItems = useCallback((');
-  const end = inputBar.indexOf('\n\n  const addMaterializedPaths', start);
-  const nativeFlow = inputBar.slice(start, end);
-
-  assert.match(nativeFlow, /insertAbsolutePathReferences\(currentValue, savedCursor, list\)/);
-  assert.doesNotMatch(nativeFlow, /nativePickedFileToFile|addMediaFiles|onMediaFiles/);
-  assert.match(inputBar, /addNativeFilesystemItems\(picked\.files, savedCursor\)/);
+  assert.match(inputBar, /result\.kind === 'paths'\) transfer\.insertPaths\(result\.items\)/);
+  assert.match(inputBar, /onPasteFilesystemItems=\{handleFilesystemPaste\}/);
+  assert.match(inputBar, /source: 'picker', items: picked\.folder \? \[picked\.folder\] : picked\.files/);
+  assert.doesNotMatch(inputBar, /nativePickedFileToFile/);
 });
 
 run('file-tree Add to conversation inserts a path without reading file contents', () => {

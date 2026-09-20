@@ -1,6 +1,8 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '当前桌面版本无法保存文件，请更新客户端后重试': 'This desktop version cannot save files. Update the app and try again.',
+  '无本地路径的文件数据不能超过 25 MiB': 'File data without a local path cannot exceed 25 MiB.',
   '拖动排序，也可按 Alt+上/下方向键': 'Drag to reorder, or press Alt+Up/Down',
   '工作区列表已变化，请重新拖动排序': 'The workspace list has changed. Drag to reorder again.',
   '保存工作区顺序失败，请重试': 'Could not save workspace order. Please try again.',

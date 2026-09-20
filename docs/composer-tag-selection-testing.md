@@ -66,3 +66,11 @@ node scripts/test-composer-completion.mjs
 - 当前 Windows Release 客户端与 daemon 已增量构建并重新运行；实际客户端检查了启动与所服务开发前端的构建一致性。
 
 复跑浏览器回归：沿用上述 Playwright 环境设置后，在 `web` 中执行 `node scripts/test-composer-file-drop.mjs`。
+
+## 2026-09-20：统一拖入与粘贴文件
+
+- `composerFileIntake` 负责路径、原生剪贴板和浏览器 File 的统一分类；原生文件引用不读取字节，桌面无源路径数据保存在 `composer-files/<uuid>/` 后引用，纯 Web 保留上传。
+- RichComposer 的文件事务持有真实 Slate rangeRef，保留混合选区中的零文本长度附件。批量文件只产生一次撤销；等待期间继续编辑、移动光标、切换任务/工作目录或清空草稿均受保护。多次原生请求即使倒序完成，也按手势顺序插入。
+- 扩展后的文件输入脚本 19 项通过，比较拖入与粘贴的结构化内容、文件名、完整路径、样式、混合选区替换与撤销；同时覆盖文本格式互斥、本地保存、纯 Web 上传、错误和异步焦点。`ACE_COMPOSER_DROP_TEST_FILTER` 可过滤用例，`ACE_COMPOSER_TRANSFER_SHOT_DIR` 可保存配对截图。
+- 既有选择回归 80 项通过；`pnpm test`、`pnpm build`、OpenSpec 严格校验及差异检查通过。截图中的拖入与粘贴 tag 外观一致，保留原有圆角与独立矩形选区。
+- Windows 原生文件处理 7 项测试通过，包括中文名称、同名文件独立保存、二进制字节、失败批次回滚与原始大文件引用。macOS/Linux 的桥接由当前平台适配代码实现，路径与入口契约由 Windows 浏览器 fixture 检查，未在这两个系统上实机验证。

@@ -26,10 +26,15 @@ function Fixture() {
  const [value, setValue] = useState('');
  const [content, setContent] = useState({version:1, parts:[]});
  const [disabled, setDisabled] = useState(false);
- window.fixture = {setDisabled, get value(){return composerContentText(ref.current?.getComposerContent());}};
+ const [sessionId, setSessionId] = useState('first');
+ const [cwd, setCwd] = useState('C:/fixture');
+ const [attachments, setAttachments] = useState([]);
+ window.fixture = {setDisabled, setSessionId, setCwd, seed:text=>ref.current.replaceText(text),
+  seedContent:(content,records)=>{setAttachments(records);ref.current.setComposerContent(content);},
+  content:()=>ref.current.getComposerContent(), get value(){return composerContentText(ref.current?.getComposerContent());}};
  return <main style={{padding:80}}><input id="outside" aria-label="Other input"/>
-  <SlashCommandsProvider><InputBar ref={ref} value={value} composerContent={content} disabled={disabled}
-   onChange={(text,next)=>{setValue(text);setContent(next);}} cwd="C:/fixture"
+  <SlashCommandsProvider><InputBar ref={ref} value={value} composerContent={content} disabled={disabled} attachments={attachments}
+   onChange={(text,next)=>{setValue(text);setContent(next);}} cwd={cwd} currentSessionId={sessionId}
    onMediaFiles={files=>window.uploads.push(files.map(file=>file.name))}/></SlashCommandsProvider>
  </main>;
 }
@@ -37,21 +42,33 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
 `;
 const html = `<html><body><div id="root"></div><script type="module">
 const mode = new URLSearchParams(location.search).get('mode') || 'windows';
-window.__ACECODE_DESKTOP_SHELL__ = true;
+window.__ACECODE_DESKTOP_SHELL__ = mode !== 'browser';
 window.__ACECODE_OS__ = mode === 'browser' ? 'windows' : mode;
 window.__ACECODE_NATIVE_FILE_DROP__ = ['windows','macos'].includes(mode);
 window.focusAttempts = 0; window.nativeActive = false; window.genericFocusAttempts = 0;
 window.uploads = []; window.materializations = []; window.materializeDelay = false;
+window.clipboardPaths = []; window.clipboardError = ''; window.clipboardReads = 0;
+window.savedFiles = []; window.pendingMaterializations = [];
 window.aceDesktop_activateFileDropWindow = async () => {
  window.focusAttempts++; if(window.focusAttempts > 1) window.nativeActive = true;
  return {ok:window.nativeActive};
 };
 window.aceDesktop_focusFileDropWindow = window.aceDesktop_activateFileDropWindow;
 window.aceDesktop_focusWindow = async () => { window.genericFocusAttempts++; };
+const item = path => ({kind:path.endsWith('/')?'folder':'file',path,name:path.split(/[\\\\/]/).filter(Boolean).pop(),reference_only:true,size_bytes:1});
 if(mode !== 'browser') window.aceDesktop_materializeContextItems = async paths => {
  window.materializations.push({paths, activeAtStart:window.nativeActive});
- if(window.materializeDelay) await new Promise(resolve=>window.finishMaterialization=resolve);
- return {ok:true,items:paths.map(path=>({kind:'file',path,name:path.split(/[\\\\/]/).pop(),reference_only:true,size_bytes:1}))};
+ if(window.materializeDelay) await new Promise(resolve=>{window.finishMaterialization=resolve;window.pendingMaterializations.push(resolve);});
+ return {ok:true,items:paths.map(item)};
+};
+if(mode !== 'browser') window.aceDesktop_readClipboardContextItems = async () => {
+ window.clipboardReads++;
+ if(window.clipboardError) return {ok:false,error:window.clipboardError};
+ return window.clipboardPaths.length ? window.aceDesktop_materializeContextItems([...window.clipboardPaths]) : {ok:true,items:[]};
+};
+if(mode !== 'browser') window.aceDesktop_storeContextFiles = async files => {
+ window.savedFiles.push(...files);
+ return {ok:true,items:files.map(file=>item('C:/local-cache/' + file.name))};
 };
 window.chrome.webview = {postMessageWithAdditionalObjects:()=>{window.nativePosted=true;}};
 import RefreshRuntime from '/@react-refresh';
@@ -103,9 +120,28 @@ try {
   }
   const accept = paths => page.evaluate(paths => window.__aceComposerAcceptFileDrop(paths), paths);
   const tags = () => editor.locator('[data-composer-inline-tag="path"]');
+  async function paste({ paths = [], text = '', uri = '', withFile = true } = {}) {
+    await page.evaluate(paths => { window.clipboardPaths = paths; }, paths);
+    await editor.evaluate((element, {text, uri, withFile}) => {
+      const clipboardData = new DataTransfer();
+      if (withFile) clipboardData.items.add(new File(['sample'], 'notes.txt', {type:'text/plain'}));
+      if (text) clipboardData.setData('text/plain', text);
+      if (uri) clipboardData.setData('text/uri-list', uri);
+      element.dispatchEvent(new ClipboardEvent('paste', {bubbles:true,cancelable:true,clipboardData}));
+    }, {text, uri, withFile});
+  }
+  const content = () => page.evaluate(() => window.fixture.content());
+  // Slate's native selectionchange listener is throttled by 100 ms.
+  const settle = () => page.evaluate(() => new Promise(resolve => setTimeout(() => requestAnimationFrame(resolve), 130)));
+  async function seed(text) {
+    await page.evaluate(text => window.fixture.seed(text), text);
+    await editor.click(); await page.keyboard.press('Control+End');
+    await settle();
+  }
   async function run(name, test) {
+    if (process.env.ACE_COMPOSER_DROP_TEST_FILTER && !name.includes(process.env.ACE_COMPOSER_DROP_TEST_FILTER)) return;
     try { await test(); console.log('[pass] ' + name); }
-    catch (error) { failed++; console.error('[FAIL] ' + name + ': ' + error.message); }
+    catch (error) { failed++; console.error('[FAIL] ' + name + ': ' + error.message); console.error(JSON.stringify(await state())); }
   }
   for (const [os, paths] of [
     ['windows', ['C:\\fixture\\notes.txt', 'C:/fixture/another.txt']],
@@ -162,6 +198,116 @@ try {
     assert.equal(result.attempts, 2); assert.deepEqual(result.uploads, [['notes.txt']]);
     await page.keyboard.type('next'); assert.equal((await state()).text, 'next');
   });
+  const samePaths = ['C:\\fixture\\中文 notes.txt', '//server/share/picture.png', 'C:/fixture/folder/'];
+  const visuals = async () => tags().evaluateAll(nodes => nodes.map(node => {
+    const body = node.querySelector('.ace-cmd-token');
+    const style = getComputedStyle(body);
+    return {name:body.textContent, radius:style.borderRadius, padding:style.padding, font:style.fontSize, icon:body.querySelector('svg')?.getBoundingClientRect().width};
+  }));
+  let dropContent, dropVisuals;
+  for (const entry of ['drop', 'paste']) {
+    await run(entry + ' replaces mixed selection in one undo and keeps the full ordered paths', async () => {
+      await reset(); await seed('before @C:/old.txt tail'); await page.keyboard.press('Control+a'); await settle();
+      if (entry === 'drop') { await drag(); await accept(samePaths); }
+      else await paste({paths:samePaths, text:'this is the alternate text representation'});
+      await tags().nth(2).waitFor();
+      const result = await content();
+      assert.deepEqual(result.parts.filter(part=>part.type==='path').map(part=>part.path), ['C:/fixture/中文 notes.txt', '//server/share/picture.png', 'C:/fixture/folder/']);
+      assert.equal((await state()).uploads.length, 0);
+      assert.ok(!(await state()).text.includes('alternate'));
+      if (entry === 'drop') { dropContent=result; dropVisuals=await visuals(); }
+      else { assert.deepEqual(result, dropContent); assert.deepEqual(await visuals(), dropVisuals); }
+      if (process.env.ACE_COMPOSER_TRANSFER_SHOT_DIR) {
+        await page.screenshot({path:path.join(process.env.ACE_COMPOSER_TRANSFER_SHOT_DIR, entry+'.png')});
+      }
+      await page.keyboard.press('Control+z');
+      assert.equal((await state()).text, 'before @C:/old.txt tail');
+      await page.keyboard.press('Control+y'); await settle(); assert.deepEqual(await content(), result);
+      await page.keyboard.press('Control+End'); await settle();
+      await page.keyboard.type('next'); assert.ok((await state()).text.endsWith('next'));
+    });
+  }
+  await run('native paste falls back to plain text only when there are no filesystem items', async () => {
+    await reset(); await seed('hello ');
+    await paste({text:'C:\\ordinary text.txt',withFile:false});
+    assert.equal((await state()).text, 'hello C:\\ordinary text.txt');
+    assert.equal(await tags().count(), 0);
+  });
+  await run('paste failure preserves selection and never inserts text or uploads', async () => {
+    await reset(); await seed('keep me'); await page.keyboard.press('Control+a');
+    await page.evaluate(()=>{window.clipboardError='clipboard locked';});
+    await paste({text:'must not be inserted'});
+    assert.equal((await state()).text, 'keep me'); assert.equal((await state()).uploads.length, 0);
+    assert.equal(await page.evaluate(()=>window.savedFiles.length), 0);
+  });
+  await run('desktop pathless paste saves locally and displays the same filename tag', async () => {
+    await reset(); await paste(); await tags().waitFor();
+    assert.equal((await content()).parts.find(part=>part.type==='path').path, 'C:/local-cache/notes.txt');
+    assert.equal((await state()).uploads.length, 0);
+    assert.equal(await page.evaluate(()=>window.savedFiles[0].name), 'notes.txt');
+    await page.keyboard.type('abc'); assert.ok((await state()).text.endsWith('abc'));
+  });
+  await run('browser file paste excludes alternate text and shares drop upload behavior', async () => {
+    await reset('browser'); await paste({text:'file representation'});
+    assert.deepEqual((await state()).uploads, [['notes.txt']]); assert.equal((await state()).text, '');
+    await page.keyboard.type('next'); assert.equal((await state()).text, 'next');
+  });
+  await run('pending paste follows edits without overwriting new text or moving the new caret', async () => {
+    await reset(); await seed('left right');
+    await page.keyboard.press('Home'); await settle();
+    for(let i=0;i<5;i++) await page.keyboard.press('ArrowRight'); await settle();
+    await page.evaluate(()=>{window.materializeDelay=true;});
+    await paste({paths:['C:/fixture/slow.txt']});
+    await page.keyboard.type('typed '); await settle();
+    await page.keyboard.press('Control+Home'); await settle();
+    await page.evaluate(()=>window.finishMaterialization()); await tags().waitFor();
+    await settle();
+    assert.equal((await state()).text, 'left typed @C:/fixture/slow.txt right');
+    await settle();
+    await page.keyboard.type('start '); assert.ok((await state()).text.startsWith('start left typed '));
+  });
+  await run('pending file IO never restores focus after another control is focused', async () => {
+    await reset(); await page.evaluate(()=>{window.materializeDelay=true;});
+    await paste({paths:['C:/fixture/slow.txt']}); await page.locator('#outside').click();
+    await page.evaluate(()=>window.finishMaterialization()); await tags().waitFor();
+    assert.equal(await page.evaluate(()=>document.activeElement.id), 'outside');
+  });
+  await run('pending results are discarded after a session switch or draft clear', async () => {
+    for (const action of ['session', 'workspace', 'clear']) {
+      await reset(); await seed('old'); await page.evaluate(()=>{window.materializeDelay=true;});
+      await paste({paths:['C:/fixture/stale.txt']});
+      await page.evaluate(action=>{if(action==='session')window.fixture.setSessionId('second');else if(action==='workspace')window.fixture.setCwd('C:/other');else window.fixture.seed('new draft');}, action);
+      await settle();
+      await page.evaluate(()=>window.finishMaterialization());
+      assert.equal(await tags().count(), 0); assert.ok(!(await state()).text.includes('stale'));
+    }
+  });
+  await run('file requests finishing out of order commit in gesture order', async () => {
+    await reset(); await page.evaluate(()=>{window.materializeDelay=true;});
+    await paste({paths:['C:/fixture/first.txt']});
+    await paste({paths:['C:/fixture/second.txt']});
+    await page.evaluate(()=>window.pendingMaterializations[1]());
+    assert.equal(await tags().count(), 0);
+    await page.evaluate(()=>window.pendingMaterializations[0]()); await tags().nth(1).waitFor();
+    assert.deepEqual((await content()).parts.filter(part=>part.type==='path').map(part=>part.path), ['C:/fixture/first.txt','C:/fixture/second.txt']);
+  });
+  for (const entry of ['drop', 'paste']) {
+    await run(entry + ' replaces a selection containing a zero-text attachment and undo restores it', async () => {
+      await reset();
+      await page.evaluate(()=>window.fixture.seedContent({version:1,parts:[
+        {type:'text',text:'before '},
+        {type:'attachment',key:'local-pdf',name:'old.pdf',kind:'file'},
+        {type:'text',text:' after'},
+      ]},[{local_id:'local-pdf',name:'old.pdf',kind:'file'}]));
+      await settle(); await editor.click(); await page.keyboard.press('Control+a'); await settle();
+      const before=await content();
+      if(entry==='drop'){await drag();await accept(['C:/fixture/new.txt']);}
+      else await paste({paths:['C:/fixture/new.txt']});
+      await tags().waitFor();
+      assert.deepEqual((await content()).parts.map(part=>part.type), ['path','text']);
+      await page.keyboard.press('Control+z'); await settle(); assert.deepEqual(await content(),before);
+    });
+  }
   assert.deepEqual(errors, [], 'no browser exceptions');
 } finally {
   await browser?.close(); await server.close();

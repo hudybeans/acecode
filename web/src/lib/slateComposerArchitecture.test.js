@@ -145,7 +145,8 @@ run('composer external sync is composition-safe, generation-aware, and semantic'
 
   assert.ok(effectStart >= 0);
   assert.ok(effectEnd > effectStart);
-  assert.match(inputBar, /syncKey=\{currentSessionId\}/);
+  assert.match(inputBar, /syncKey=\{fileIntakeScope\}/);
+  assert.match(inputBar, /fileIntakeScope = JSON\.stringify\(\[cwd, currentSessionId\]\)/);
   assert.doesNotMatch(inputBar, /<RichComposer[\s\S]*?key=\{currentSessionId\}/);
   assert.match(composer, /syncIdentityRef\.current\.generation \+ 1/);
   assert.match(composer, /documentSyncGenerationRef\.current !== activeSyncGeneration/);
@@ -161,7 +162,7 @@ run('composer external sync is composition-safe, generation-aware, and semantic'
   assert.match(syncEffect, /classifyComposerExternalSync\(\{/);
   assert.match(
     syncEffect,
-    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*commandSignature,\s*editor,\s*externalSignature,\s*hasExternalContent,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
+    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*cancelFileTransfers,\s*commandSignature,\s*editor,\s*externalSignature,\s*hasExternalContent,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
   );
   assert.doesNotMatch(syncEffect, /\[attachmentSignature, attachments/);
   assert.doesNotMatch(syncEffect, /commandSignature, commands/);
@@ -230,11 +231,11 @@ run('image previews retain image rendering, file-link metadata, and existing tra
   assert.match(composer, /data-desktop-attachment-preview-url=\{element\?\.url \|\| undefined\}/);
   assert.match(composer, /onDoubleClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
   assert.match(inputBar, /onPreviewAttachment=\{previewComposerAttachment\}/);
-  assert.match(inputBar, /onPasteFiles=\{addMediaFiles\}/);
+  assert.match(inputBar, /onPasteFilesystemItems=\{handleFilesystemPaste\}/);
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
 });
 

@@ -40,6 +40,7 @@ import {
   composerContentFromDocument,
   composerDocumentFromContent,
   composerSkillTag,
+  composerPathTag,
   composerDocumentFromText,
   composerInlineTagRanges,
   composerPlainTextRangeFromSelection,
@@ -70,6 +71,7 @@ import {
 } from '../lib/richComposerContextPaste.js';
 import { slashCommandKindPresentation } from '../lib/slashCommands.js';
 import { basenameForPath } from '../lib/selectionChatContext.js';
+import { formatPathReference } from '../lib/pathReference.js';
 import { CommandGlyph, FileTypeIcon, VsIcon } from './Icon.jsx';
 
 function withComposerInlineTags(editor) {
@@ -543,6 +545,9 @@ function RichComposerShell({
   const pointerSelectionRef = useRef(null);
   const seenAttachmentKeysRef = useRef(new Set(attachments.map((item, index) => composerAttachmentTag(item, index).attachmentKey)));
   const pendingAttachmentSelectionRef = useRef(null);
+  const pendingFileTransfersRef = useRef(new Set());
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   const latestTextRef = useRef(composerTextFromDocument(initialValueRef.current));
   const documentSyncGenerationRef = useRef(activeSyncGeneration);
   const lastExternalStateRef = useRef({
@@ -757,6 +762,100 @@ function RichComposerShell({
     onComposerContentChange?.(content);
   }, [editor, onChange, onComposerContentChange]);
 
+  const cancelFileTransfers = useCallback(() => {
+    for (const transfer of pendingFileTransfersRef.current) transfer.dispose();
+  }, []);
+  useEffect(() => cancelFileTransfers, [cancelFileTransfers]);
+
+  const beginFileTransfer = useCallback((captured = capturePasteSelection()) => {
+    ensureLegalEditorDocument(editor);
+    const generation = syncIdentityRef.current.generation;
+    const tag = composerSelectedTag(editor);
+    const range = tag ? composerTagSelection(editor, tag[1]) : captured.slateRange
+      || composerSelectionFromPlainTextRange(editor.children, captured.start, captured.end, captured.direction);
+    Transforms.select(editor, range);
+    let saved = Editor.rangeRef(editor, range, { affinity: 'forward' });
+    let originalDocument = editor.children;
+    let disposed = false;
+    const transfer = {
+      isActive: () => !disposed && !disabledRef.current && !!editableRef.current?.isConnected
+        && generation === syncIdentityRef.current.generation && !!saved.current,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        saved.unref();
+        pendingFileTransfersRef.current.delete(transfer);
+      },
+      get range() { return saved.current; },
+      followInsertion(selection, previousDocument) {
+        saved.unref();
+        saved = Editor.rangeRef(editor, selection, { affinity: 'forward' });
+        if (originalDocument === previousDocument) originalDocument = editor.children;
+      },
+      insertPaths(items) {
+        const paths = items.filter(item => ['file', 'folder'].includes(item?.kind) && item.path);
+        if (!paths.length) return false;
+        return insert(() => {
+          const start = currentPlainSelection(editor.children, editor.selection).start;
+          const before = composerTextFromDocument(editor.children).slice(0, start);
+          HistoryEditor.withNewBatch(editor, () => {
+            if (Range.isExpanded(editor.selection)) Transforms.delete(editor);
+            if (before && !/\s$/.test(before)) editor.insertText(' ');
+            for (const item of paths) {
+              const token = formatPathReference(item.path, { directory: item.kind === 'folder', trailingSpace: false });
+              const path = token.startsWith('@"') ? token.slice(2, -1) : token.slice(1);
+              Transforms.insertNodes(editor, composerPathTag(token, path));
+              Transforms.move(editor);
+              editor.insertText(' ');
+            }
+          });
+          return true;
+        });
+      },
+      insertText(text) {
+        if (!text) return false;
+        return insert(() => { insertPlainText(editor, text); return true; });
+      },
+      reserveAttachments() {
+        if (!transfer.isActive()) return false;
+        pendingAttachmentSelectionRef.current?.unref();
+        pendingAttachmentSelectionRef.current = Editor.rangeRef(editor, saved.current, { affinity: 'forward' });
+        return true;
+      },
+    };
+    function insert(action) {
+      if (!transfer.isActive()) return false;
+      // Preserve a caret the user moved or edited while native IO was pending.
+      // rangeRef follows edits without flattening zero-width attachment tags.
+      const selection = capturePasteSelection().slateRange || editor.selection;
+      const keepSelection = selection && (editor.children !== originalDocument
+        || !Range.equals(selection, saved.current));
+      const current = keepSelection ? Editor.rangeRef(editor, selection, { affinity: 'forward' }) : null;
+      const following = [...pendingFileTransfersRef.current].filter(other => (
+        other !== transfer && other.range && Range.equals(other.range, saved.current)
+      ));
+      const previousDocument = editor.children;
+      let changed;
+      try {
+        Transforms.select(editor, saved.current);
+        changed = action();
+        // Inline void insertion leaves the original empty text leaf before
+        // the new tag. Later gestures at that exact point belong after it.
+        if (changed && editor.selection) {
+          for (const other of following) other.followInsertion(editor.selection, previousDocument);
+        }
+      } finally {
+        const restore = current?.unref();
+        if (restore) Transforms.select(editor, restore);
+      }
+      publishDocument();
+      publishSelection(editor.selection);
+      return changed;
+    }
+    pendingFileTransfersRef.current.add(transfer);
+    return transfer;
+  }, [capturePasteSelection, editor, publishDocument, publishSelection]);
+
   useEffect(() => {
     const currentDocument = editor.children;
     const currentText = composerTextFromDocument(currentDocument);
@@ -779,6 +878,7 @@ function RichComposerShell({
     if (decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.DEFER) return;
     const replacesText = decision.action === COMPOSER_EXTERNAL_SYNC_ACTIONS.REPLACE;
     if (replacesText) {
+      cancelFileTransfers();
       localEchoStateRef.current = { generation: activeSyncGeneration, values: [] };
       lastExternalStateRef.current = { generation: activeSyncGeneration, text: externalSignature };
       const document = contentPropRef.current
@@ -832,7 +932,7 @@ function RichComposerShell({
     latestTextRef.current = composerTextFromDocument(editor.children);
     publishSelection(editor.selection);
   }, [
-    activeSyncGeneration, attachmentSignature, commandSignature, editor,
+    activeSyncGeneration, attachmentSignature, cancelFileTransfers, commandSignature, editor,
     externalSignature, hasExternalContent, normalizedValue, publishSelection, syncRevision,
   ]);
 
@@ -956,6 +1056,7 @@ function RichComposerShell({
   }, [disabled, editor]);
 
   useImperativeHandle(ref, () => ({
+    beginFileTransfer,
     focus() {
       const focusEditor = () => {
         if (!editableRef.current?.isConnected) return true;
@@ -1009,6 +1110,7 @@ function RichComposerShell({
       return composerContentFromDocument(editor.children);
     },
     setComposerContent(content, { selectEnd = true } = {}) {
+      cancelFileTransfers();
       const document = composerDocumentFromContent(content, commandsRef.current, attachmentsRef.current);
       replaceEditorDocument(editor, document, { selectEnd, clearHistory: true });
       publishDocument();
@@ -1041,6 +1143,7 @@ function RichComposerShell({
       publishDocument();
     },
     replaceText(next, { selectEnd = true } = {}) {
+      cancelFileTransfers();
       const nextDocument = composerDocumentFromText(
         next,
         commandsRef.current,
@@ -1058,7 +1161,7 @@ function RichComposerShell({
       latestTextRef.current = actualText;
       publishSelection(editor.selection);
     },
-  }), [editor, publishDocument, publishSelection]);
+  }), [beginFileTransfer, cancelFileTransfers, editor, publishDocument, publishSelection]);
 
   const removeAttachment = useCallback((key, element) => {
     let occurrencePath = null;
@@ -1217,9 +1320,22 @@ function RichComposerShell({
     if (handlesFilesystemItems) {
       let uriList = '';
       try { uriList = clipboardData?.getData?.('text/uri-list') || ''; } catch { /* ignored */ }
-      onPasteFilesystemItems({ files, uriList });
+      const transfer = beginFileTransfer(capturedSelection);
+      Promise.resolve(onPasteFilesystemItems({ files, uriList }, transfer))
+        .then(async (handled) => {
+          if (handled || !transfer.isActive()) return;
+          if (text) transfer.insertText(text);
+          else if (!files.length && hasTextFormat) {
+            const fallback = await window.navigator?.clipboard?.readText?.();
+            if (fallback) transfer.insertText(fallback);
+          }
+        })
+        .catch(() => {})
+        .finally(() => transfer.dispose());
+      return true;
     } else if (files.length > 0) {
       onPasteFiles?.(files);
+      return true;
     }
     if (text) {
       applyPlainTextPaste(text, capturedSelection);
@@ -1229,6 +1345,7 @@ function RichComposerShell({
     return true;
   }, [
     applyPlainTextPaste,
+    beginFileTransfer,
     capturePasteSelection,
     disabled,
     editor,
@@ -1313,6 +1430,9 @@ function RichComposerShell({
     ) {
       event.preventDefault();
     }
+    // InputBar owns external files. Do not let Slate independently relocate
+    // the selection to the pointer before the parent captures its transaction.
+    if (files.length || types.includes('Files') || types.includes('text/uri-list')) return true;
   }, [allowNativeFilesystemDrop]);
 
   return (

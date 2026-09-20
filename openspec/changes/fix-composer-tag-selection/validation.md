@@ -36,3 +36,10 @@
 - 使用当前生产 `WebHost` 编译 Windows 隔离窗口，以真实 OLE 文件拖放和系统键盘验证。基线在拒绝第一次拖入激活后仍显示光标，但按键留在来源窗口；新桥接恢复窗口和 WebView2 焦点后，中文输入法候选提交、英文输入、左方向键插入均通过，无需额外点击。
 - `pnpm test`、`pnpm build`、`openspec validate fix-composer-tag-selection --strict` 与 `git diff --check` 通过。没有新增编辑器依赖或修改文件引用协议。
 - Windows Release `acecode-desktop` 及其 daemon 依赖增量构建通过，客户端已通过仓库 Desktop 开发启动器重新运行。原生交互验证在隔离窗口完成，实际客户端验证启动与开发前端资源一致性。
+
+## 2026-09-20：统一拖入与粘贴文件
+
+- 基线 `8a7bf7c5`。桌面原文件、剪贴板文件和选择器共享文件分类与 Slate 插入事务；无源路径数据先保存本地，纯 Web 才上传。原生剪贴板错误不再降级为空结果，普通文本不被猜测为本地文件。
+- 文件输入浏览器回归 19 项通过，覆盖同文件拖入/粘贴结构与样式相等、Windows/UNC/POSIX 路径、文件夹、图片、多文件、混合选区、零长度附件、一次撤销、连续输入、异步乱序、焦点、清空草稿及任务/工作目录切换。
+- 原有 tag 选择回归 80 项通过；原生文件处理 GoogleTest 7 项通过，当前 Windows WebHost 编译通过；`pnpm test`、`pnpm build`、OpenSpec 严格验证、差异检查及本次组件的 impeccable 检查通过。
+- 配对截图在临时目录 `acecode-file-intake-shots/drop.png`、`paste.png`，逐项样式与结构比较通过。macOS/Linux 尚未实机验证；浏览器中的平台分支使用桥接 fixture。
