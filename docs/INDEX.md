@@ -17,6 +17,13 @@
 | Localization | [localization.md](localization.md) | Web/Desktop 文案来源和本地化流程 |
 | User Manual | [user-manual.md](user-manual.md) | 面向用户的功能说明 |
 
+## Desktop Shell 专题备忘
+
+- [desktop-shell/multi-workspace.md](desktop-shell/multi-workspace.md)：多工作区与共享 daemon 行为。
+- [desktop-shell/macos-frameless-titlebar.md](desktop-shell/macos-frameless-titlebar.md)：macOS 无边框标题栏的安全实现边界。
+- [desktop-shell/macos-file-drop.md](desktop-shell/macos-file-drop.md)：macOS Finder 文件拖放的根因、修复架构、平台影响与回归清单。
+- [desktop-shell/macos-file-drop-debug.md](desktop-shell/macos-file-drop-debug.md)：macOS 文件拖放的本地构建与实机验证步骤。
+
 ## 交付计划
 
 - [plan/README.md](plan/README.md)：计划目录约定。

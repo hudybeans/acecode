@@ -37,6 +37,7 @@ import {
 } from '../lib/consoleDock.js';
 import { formatDroppedPaths, parseUriList } from '../lib/consoleDropPaths.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
+import { fileDropDiagnostic } from '../lib/macNativeFileDrag.js';
 import { copyTextToSystemClipboard, readTextFromSystemClipboard } from '../lib/systemClipboard.js';
 import { normalizeShells, buildShellMenuItems } from '../lib/consoleShells.js';
 import { useTheme } from '../theme.jsx';
@@ -573,19 +574,26 @@ export function ConsoleDock({ owner, open, height: preferredHeight, onHeightChan
   useEffect(() => {
     if (!NATIVE_DROP) return undefined;
     window.__aceConsoleAcceptFileDrop = (payload) => {
-      let paths = payload;
+      const coordinateAuthorized = payload?.nativeLocation === true;
+      let paths = coordinateAuthorized ? payload.paths : payload;
       if (typeof payload === 'string') {
         try { paths = JSON.parse(payload); } catch { return; }
       }
       if (!Array.isArray(paths) || paths.length === 0) return;
       const hover = dropHoverRef.current;
-      // 松手落在终端上 → 该 tab 仍是最近悬停且时间戳新鲜(回传通常几十 ms 内到)。
-      // 否则(拖到非终端区)静默忽略,只让 native 吞掉文件导航即可。
-      if (!hover.tabId || Date.now() - hover.ts > 1500) return;
-      const targetId = hover.tabId;
+      // 带原生坐标的 macOS drop 已由顶层 router 命中具体 tab；legacy payload
+      // 仍依赖最近 hover,保持 Windows/旧 bridge 行为。
+      if (!coordinateAuthorized && (!hover.tabId || Date.now() - hover.ts > 1500)) return;
+      const targetId = coordinateAuthorized ? payload.tabId : hover.tabId;
+      if (!targetId) return;
       dropHoverRef.current = { tabId: null, ts: 0 };
       setDropHoverTabId(null);
-      injectTextToTab(targetId, formatDroppedPaths(paths, HOST_OS));
+      const inserted = injectTextToTab(targetId, formatDroppedPaths(paths, HOST_OS));
+      if (coordinateAuthorized) {
+        fileDropDiagnostic('drop-result', {
+          count: paths.length, accepted: inserted, target: 'console', failed: false,
+        });
+      }
     };
     return () => {
       try { delete window.__aceConsoleAcceptFileDrop; }

@@ -78,6 +78,7 @@ import {
 } from '../lib/desktopFilesystemTransfer.js';
 import { resolveComposerFileIntake } from '../lib/composerFileIntake.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
+import { fileDropDiagnostic, registerNativeComposerFileDrop } from '../lib/macNativeFileDrag.js';
 import {
   nextExpertMenuItemIndex,
   placeExpertSubmenu,
@@ -960,26 +961,55 @@ export const InputBar = forwardRef(function InputBar({
   useEffect(() => {
     if (!NATIVE_FILE_DROP || !nativeFilesystemMaterializerAvailable) return undefined;
     const handler = (payload) => {
-      let rawPaths = payload;
+      const coordinateAuthorized = payload?.nativeLocation === true;
+      let rawPaths = coordinateAuthorized ? payload.paths : payload;
       if (typeof rawPaths === 'string') {
-        try { rawPaths = JSON.parse(rawPaths); } catch { return; }
+        try { rawPaths = JSON.parse(rawPaths); } catch {
+          fileDropDiagnostic('composer-rejected', {
+            disabled: !!disabled, hover: false, ageMs: -1, count: 0, invalid: true,
+          });
+          return;
+        }
       }
       const hover = nativeDropHoverRef.current;
-      if (disabled || !onMediaFiles || !Array.isArray(rawPaths) || rawPaths.length === 0 ||
-          !hover.active || Date.now() - hover.ts > 1500) return;
+      const ageMs = hover.ts > 0 ? Math.max(0, Date.now() - hover.ts) : -1;
+      const count = Array.isArray(rawPaths) ? rawPaths.length : 0;
+      if (!Array.isArray(rawPaths) || count === 0 || disabled || !onMediaFiles ||
+          (!coordinateAuthorized && (!hover.active || ageMs > 1500))) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          coordinateAuthorized,
+        });
+        return;
+      }
 
       nativeDropHoverRef.current = { active: false, ts: 0 };
       resetDragState();
       const paths = localPathsFromDropPayload(rawPaths, HOST_OS);
-      if (paths.length === 0) return;
+      if (paths.length === 0) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          normalizedCount: 0,
+          coordinateAuthorized,
+        });
+        return;
+      }
       // Drag-enter activation is best effort: the source window can still
       // own keyboard focus while Slate shows a caret. Retry at acceptance,
       // before async materialization; later completions must not foreground us.
       requestDesktopFileDropFocus();
       acceptFileIntake({ source: 'drop', paths });
     };
+    const unregister = registerNativeComposerFileDrop(rootRef.current, handler);
     window.__aceComposerAcceptFileDrop = handler;
     return () => {
+      unregister();
       if (window.__aceComposerAcceptFileDrop !== handler) return;
       try { delete window.__aceComposerAcceptFileDrop; }
       catch { window.__aceComposerAcceptFileDrop = undefined; }
@@ -1442,6 +1472,7 @@ export const InputBar = forwardRef(function InputBar({
         dragActive && 'is-drag-active',
       )}
       ref={rootRef}
+      data-native-file-drop-disabled={disabled ? 'true' : undefined}
       onPointerDownCapture={(event) => preserveComposerFocusOnPointerDown(event, rootRef.current)}
       onDragEnter={fileDropManagedExternally ? undefined : handleDragEnter}
       onDragOver={fileDropManagedExternally ? undefined : handleDragOver}

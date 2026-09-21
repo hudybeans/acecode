@@ -156,7 +156,7 @@ echo "$current_hash" > "$embed_marker"
 for binary in "$build_dir/acecode" \
     "$build_dir/ACECode.app/Contents/MacOS/ACECode" \
     "$build_dir/ACECode.app/Contents/MacOS/acecode-daemon"; do
-    if [[ ! -x "$binary" ]] || ! "$LIPO_BIN" -verify_arch "$arch" "$binary"; then
+    if [[ ! -x "$binary" ]] || ! "$LIPO_BIN" "$binary" -verify_arch "$arch"; then
         echo "ERROR: missing executable or wrong architecture ($arch): $binary" >&2
         exit 1
     fi

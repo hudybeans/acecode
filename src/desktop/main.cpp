@@ -2193,17 +2193,34 @@ int main(int argc, char** argv) {
     // navigate 前注入 JS: hook console + window 错误事件 → 全部转发回 native。
     // 故意不 hook console.log / console.info,避免噪音(可在前端代码里需要时
     // 显式调 aceDesktop_logFromWeb('info', ...))。
-    // 系统文件拖放。Windows/macOS 的 native 拦截把路径回传给终端和 composer
-    // 两个接收函数；各自用最近 hover 时间戳判定落点，不会互相抢占。Linux 由
-    // 前端 text/uri-list 进入同一个 filesystem-item materialize bridge。
-    host.set_file_drop_handler([&host](std::vector<std::string> paths) {
+    // 系统文件拖放。macOS 附带实际释放坐标,由前端 router 命中唯一目标；
+    // Windows 与旧 bridge 保持路径数组 + 最近 hover 的兼容行为。Linux 由前端
+    // text/uri-list 进入同一个 filesystem-item materialize bridge。
+    host.set_file_drop_handler([&host](
+                                   std::vector<std::string> paths,
+                                   acecode::desktop::WebHost::FileDropContext context) {
         if (paths.empty()) return;
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& p : paths) arr.push_back(p);
+        nlohmann::json payload = {{"paths", paths}};
+        if (context.location) {
+            payload["location"] = {
+                {"xRatio", context.location->x_ratio},
+                {"yRatio", context.location->y_ratio},
+            };
+        }
+        const std::string coordinate_required = context.coordinate_required ? "true" : "false";
         const std::string js =
-            "(function(){var p=" + arr.dump() + ";"
-            "try{if(window.__aceConsoleAcceptFileDrop){window.__aceConsoleAcceptFileDrop(p);}}catch(e){}"
-            "try{if(window.__aceComposerAcceptFileDrop){window.__aceComposerAcceptFileDrop(p);}}catch(e){}"
+            "(function(){var p=" + payload.dump() + ";"
+            "var r=typeof window.__aceRouteNativeFileDrop==='function';"
+            "var c=typeof window.__aceConsoleAcceptFileDrop==='function';"
+            "var m=typeof window.__aceComposerAcceptFileDrop==='function';"
+            "try{if(r&&p.location){window.__aceRouteNativeFileDrop(p);return;}}catch(e){"
+            "try{if(window.aceDesktop_logFromWeb){Promise.resolve(window.aceDesktop_logFromWeb('info',"
+            "'[file-drop] drop-result {\"accepted\":false,\"target\":\"router\",\"reason\":\"receiver-exception\"}')).catch(function(){});}}catch(_){}"
+            "return;}"
+            "if(" + coordinate_required + "){return;}"
+            "var legacy=p.paths;"
+            "try{if(c){window.__aceConsoleAcceptFileDrop(legacy);}}catch(e){}"
+            "try{if(m){window.__aceComposerAcceptFileDrop(legacy);}}catch(e){}"
             "})();";
         host.eval(js);
     });

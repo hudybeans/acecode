@@ -72,6 +72,7 @@ import './desktopPreviewFilePicker.test.js';
 import './desktopFilesystemTransfer.test.js';
 import './desktopNativeFilesystemDrop.test.js';
 import './desktopNativeFilesystemDropArchitecture.test.js';
+import './macNativeFileDrag.test.js';
 import './richComposerModel.test.js';
 import './composerContent.test.js';
 import './composerTranscript.test.js';

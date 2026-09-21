@@ -19,6 +19,7 @@ import {
   reconcileAgentBrowserPageStore,
 } from './lib/agentBrowserPages.js';
 import { loadUiLocale } from './lib/uiLocale.js';
+import { installNativeFileDropRouter } from './lib/macNativeFileDrag.js';
 import {
   createDesktopNotificationMonitor,
   notificationEventKey,
@@ -232,6 +233,8 @@ export function App() {
   } = useTheme();
   const initialAppearance = useMemo(() => initialAppearancePreferences(), []);
   const bootstrapAppearance = useMemo(() => appearanceBootstrapPreferences(), []);
+  useEffect(() => installNativeFileDropRouter(), []);
+
   const [authState, setAuthState] = useState('checking'); // 'checking' | 'ok' | 'need-token'
   const computerUseScope = apiConnectionScope(api);
   useEffect(() => {

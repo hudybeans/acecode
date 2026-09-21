@@ -228,7 +228,7 @@ def preflight(report: Report, repo: Path, cmake: str | None, skip_build: bool,
 
 def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
                   targets: list[str], jobs: int, cmake: str | None,
-                  skip_build: bool) -> None:
+                  ninja: str | None, skip_build: bool) -> None:
     """Describe package verification without creating files or running processes."""
     cmake_command = cmake or "cmake"
     print("DRY RUN: no commands will be executed and no files will be changed.")
@@ -244,8 +244,8 @@ def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
         configure = [cmake_command, "-S", str(repo), "-B", str(build_dir),
                      "-DCMAKE_BUILD_TYPE=MinSizeRel", "-DBUILD_TESTING=OFF",
                      "-DACECODE_BUILD_DESKTOP=ON"]
-        if platform != "windows" and shutil.which("ninja"):
-            configure[4:4] = ["-G", "Ninja"]
+        if platform != "windows" and ninja:
+            configure[1:1] = ["-G", "Ninja"]
         vcpkg_root = os.environ.get("VCPKG_ROOT")
         if vcpkg_root:
             configure.append(
@@ -271,16 +271,16 @@ def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
 
 
 def configure_and_build(report: Report, repo: Path, build_dir: Path, cmake: str,
-                        targets: list[str], platform: str, jobs: int) -> bool:
+                        ninja: str | None, targets: list[str], platform: str,
+                        jobs: int) -> bool:
     if not (build_dir / "CMakeCache.txt").is_file():
         command = [cmake, "-S", str(repo), "-B", str(build_dir),
                    "-DCMAKE_BUILD_TYPE=MinSizeRel", "-DBUILD_TESTING=OFF",
                    "-DACECODE_BUILD_DESKTOP=ON"]
         # A plain Windows shell can have Ninja on PATH without an initialized
         # MSVC environment. Let CMake choose Visual Studio there.
-        if platform != "windows" and shutil.which("ninja"):
-            command.insert(4, "-G")
-            command.insert(5, "Ninja")
+        if platform != "windows" and ninja:
+            command[1:1] = ["-G", "Ninja"]
         vcpkg_root = os.environ.get("VCPKG_ROOT")
         if vcpkg_root:
             toolchain = Path(vcpkg_root) / "scripts" / "buildsystems" / "vcpkg.cmake"
@@ -573,13 +573,14 @@ def main(argv: list[str]) -> int:
         print("verify-package: --jobs must be a positive integer", file=sys.stderr)
         return 2
     cmake = shutil.which("cmake")
+    ninja = shutil.which("ninja")
     targets = ["tui", "desktop"] if args.target == "all" else [args.target]
     print(f"verify-package: repo={repo} build={build_dir} platform={platform} "
           f"target={args.target} skip-build={args.skip_build}")
 
     if args.dry_run:
         print_dry_run(repo, build_dir, staging, platform, targets, jobs, cmake,
-                      args.skip_build)
+                      ninja, args.skip_build)
         return 0
 
     if not preflight(report, repo, cmake, args.skip_build, build_dir):
@@ -591,7 +592,7 @@ def main(argv: list[str]) -> int:
             if not args.skip_build:
                 assert cmake is not None
                 if not configure_and_build(
-                        report, repo, build_dir, cmake, targets, platform, jobs):
+                        report, repo, build_dir, cmake, ninja, targets, platform, jobs):
                     print(f"verify-package: FAIL ({report.failed} check(s) failed)")
                     return 1
             if not stage(report, repo, build_dir, staging, platform, targets, cmake or "cmake"):

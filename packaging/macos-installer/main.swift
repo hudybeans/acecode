@@ -1,5 +1,18 @@
 import AppKit
 
+final class InstallerCardView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let borderRect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let background = NSBezierPath(roundedRect: borderRect, xRadius: 10, yRadius: 10)
+        NSColor.controlBackgroundColor.setFill()
+        background.fill()
+        NSColor.separatorColor.setStroke()
+        background.lineWidth = 1
+        background.stroke()
+    }
+}
+
 final class InstallerUI: NSObject, NSApplicationDelegate {
     let engine = InstallerEngine()
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -21,6 +34,28 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
     var installed: URL?
     var busy = false
     var source: URL { Bundle.main.resourceURL!.appendingPathComponent("ACECode.app") }
+
+    private func hasAmbiguousLayout(in view: NSView) -> Bool {
+        view.hasAmbiguousLayout || view.subviews.contains { hasAmbiguousLayout(in: $0) }
+    }
+
+    private func layoutSnapshot(card: NSView, cardStack: NSView, locationRow: NSView) -> [String: Any] {
+        let stackFrame = card.convert(cardStack.bounds, from: cardStack)
+        let rowFrame = card.convert(locationRow.bounds, from: locationRow)
+        return [
+            "scope": scopePicker.selectedSegment,
+            "cardClass": String(describing: type(of: card)),
+            "cardWidth": card.bounds.width,
+            "cardHeight": card.bounds.height,
+            "contentWidth": cardStack.bounds.width,
+            "contentHeight": cardStack.bounds.height,
+            "contentInsideCard": card.bounds.contains(stackFrame),
+            "rowInsideCard": card.bounds.contains(rowFrame),
+            "ambiguous": hasAmbiguousLayout(in: window.contentView!),
+            "changeHidden": change.isHidden,
+            "path": path.stringValue
+        ]
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -82,10 +117,8 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
         steps.orientation = .vertical; steps.alignment = .leading; steps.spacing = 22
         steps.translatesAutoresizingMaskIntoConstraints = false; sidebar.addSubview(steps)
 
-        let card = NSBox()
-        card.boxType = .custom; card.borderWidth = 1; card.cornerRadius = 10
-        card.borderColor = .separatorColor; card.fillColor = .controlBackgroundColor
-        card.contentViewMargins = NSSize(width: 16, height: 16)
+        let card = InstallerCardView()
+        card.translatesAutoresizingMaskIntoConstraints = false
         let folderIcon = NSImageView(image: NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "个人应用目录")!)
         folderIcon.contentTintColor = .systemBlue
         locationTitle.font = .boldSystemFont(ofSize: 13)
@@ -95,7 +128,7 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
         locationRow.spacing = 12; locationRow.alignment = .centerY
         let cardStack = NSStackView(views: [locationRow, change])
         cardStack.orientation = .vertical; cardStack.alignment = .leading; cardStack.spacing = 12
-        cardStack.translatesAutoresizingMaskIntoConstraints = false; card.contentView!.addSubview(cardStack)
+        cardStack.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(cardStack)
         scopePicker.selectedSegment = 0
         scopePicker.target = self; scopePicker.action = #selector(changeScope)
         let stack = NSStackView(views: [heading, detail, scopePicker, card, status, spinner])
@@ -119,8 +152,8 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 38), stack.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -20),
             card.widthAnchor.constraint(equalTo: stack.widthAnchor), detail.widthAnchor.constraint(equalTo: stack.widthAnchor),
             status.widthAnchor.constraint(equalTo: stack.widthAnchor), spinner.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            cardStack.leadingAnchor.constraint(equalTo: card.contentView!.leadingAnchor), cardStack.trailingAnchor.constraint(equalTo: card.contentView!.trailingAnchor),
-            cardStack.topAnchor.constraint(equalTo: card.contentView!.topAnchor), cardStack.bottomAnchor.constraint(equalTo: card.contentView!.bottomAnchor),
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 16), cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
             locationRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor), folderIcon.widthAnchor.constraint(equalToConstant: 30), folderIcon.heightAnchor.constraint(equalToConstant: 30),
             actions.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -24), actions.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             install.widthAnchor.constraint(greaterThanOrEqualToConstant: 90)
@@ -132,10 +165,31 @@ final class InstallerUI: NSObject, NSApplicationDelegate {
         }
         refreshPath()
         updateStep(0)
+        content.layoutSubtreeIfNeeded()
         engine.isRunning = { target in
             NSWorkspace.shared.runningApplications.contains { $0.bundleURL?.resolvingSymlinksInPath() == target.resolvingSymlinksInPath() }
         }
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if let index = CommandLine.arguments.firstIndex(of: "--layout-report"), CommandLine.arguments.count > index + 1 {
+            let output = CommandLine.arguments[index + 1]
+            var snapshots: [[String: Any]] = []
+            func capture() {
+                content.layoutSubtreeIfNeeded()
+                snapshots.append(layoutSnapshot(card: card, cardStack: cardStack, locationRow: locationRow))
+            }
+            capture()
+            for segment in [1, 2, 0] {
+                scopePicker.selectedSegment = segment
+                changeScope()
+                capture()
+            }
+            if JSONSerialization.isValidJSONObject(snapshots),
+               let data = try? JSONSerialization.data(withJSONObject: snapshots, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: output))
+            }
+            NSApp.terminate(nil)
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
             let output = CommandLine.arguments[index + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
