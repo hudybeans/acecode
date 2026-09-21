@@ -9,6 +9,13 @@ export const QUEUED_INPUT_STATE = Object.freeze({
   CANCELLED: 'cancelled',
 });
 
+// 队列暂停原因。目前只有一种:用户(或其它客户端)中断了正在进行的回合。
+// 中断意味着「停下来」,此时把排队消息自动发出去等于替用户做了决定,
+// 所以队列改为暂停,等用户点「继续」或再次主动发送。
+export const QUEUE_PAUSE_REASON = Object.freeze({
+  INTERRUPTED: 'interrupted',
+});
+
 function normalizeSessionId(sessionId) {
   return String(sessionId || '');
 }
@@ -41,6 +48,12 @@ function cloneItems(state) {
   return Array.isArray(state?.items) ? state.items : [];
 }
 
+// paused: { [sessionId]: { reason, pausedAt } },按会话记录暂停态。
+function clonePaused(state) {
+  const paused = state?.paused;
+  return paused && typeof paused === 'object' && !Array.isArray(paused) ? paused : {};
+}
+
 function nextSequence(state) {
   const next = Number(state?.nextLocalId || 1);
   return Number.isFinite(next) && next > 0 ? next : 1;
@@ -55,6 +68,7 @@ export function createChatInputQueueState(overrides = {}) {
   return {
     nextLocalId: nextSequence(overrides),
     items: cloneItems(overrides),
+    paused: clonePaused(overrides),
   };
 }
 
@@ -121,7 +135,17 @@ function setQueuedInputState(state, id, nextState, extraQueued = {}) {
 }
 
 export function cancelQueuedInput(state, id) {
-  return setQueuedInputState(state, id, QUEUED_INPUT_STATE.CANCELLED);
+  const before = createChatInputQueueState(state);
+  const cancelled = before.items.find((item) => item?.queued?.id === id);
+  const next = setQueuedInputState(state, id, QUEUED_INPUT_STATE.CANCELLED);
+  // 暂停态只对「还有待发送消息」有意义:最后一条被删掉后顺手清掉暂停标记,
+  // 否则之后(比如别的客户端启动回合、用户又排了新消息)会被一个看不见的
+  // 暂停态卡住,横幅却因为没有卡片而不显示。
+  const sid = normalizeSessionId(cancelled?.queued?.sessionId);
+  if (sid && next !== state && queuedInputsForSession(next, sid).length === 0) {
+    return resumeQueuedInput(next, sid);
+  }
+  return next;
 }
 
 export function beginQueuedGuidance(
@@ -326,17 +350,79 @@ export function buildQueuedMessageItems(state, sessionId) {
   return queuedInputsForSession(state, sessionId).map((item) => ({ ...item }));
 }
 
+// ---- 队列暂停 ----------------------------------------------------------
+// 用户中断回合后队列进入暂停:不自动 drain,卡片栈顶部显示「队列已暂停 / 继续」。
+// 解除方式只有用户的明确动作:点「继续」、在空输入框上按发送、再次发送 /
+// 排队一条新消息、重试某条失败消息。
+
+export function queuedInputPause(state, sessionId) {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return null;
+  const entry = clonePaused(state)[sid];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+export function isQueuedInputPaused(state, sessionId) {
+  return queuedInputPause(state, sessionId) !== null;
+}
+
+export function pauseQueuedInput(
+  state,
+  sessionId,
+  { reason = QUEUE_PAUSE_REASON.INTERRUPTED, now = Date.now() } = {},
+) {
+  const sid = normalizeSessionId(sessionId);
+  const current = createChatInputQueueState(state);
+  // 没有待发送消息就没有可暂停的东西;已暂停则保持首次暂停的时间与原因。
+  if (!sid || queuedInputsForSession(current, sid).length === 0) {
+    return state && typeof state === 'object' ? state : current;
+  }
+  if (current.paused[sid]) return state && typeof state === 'object' ? state : current;
+  return {
+    ...current,
+    paused: { ...current.paused, [sid]: { reason: normalizeText(reason) || QUEUE_PAUSE_REASON.INTERRUPTED, pausedAt: now } },
+  };
+}
+
+export function resumeQueuedInput(state, sessionId) {
+  const sid = normalizeSessionId(sessionId);
+  const current = createChatInputQueueState(state);
+  if (!sid || !current.paused[sid]) return state && typeof state === 'object' ? state : current;
+  const paused = { ...current.paused };
+  delete paused[sid];
+  return { ...current, paused };
+}
+
+// 回合以「中断」收尾时队列是否应该转入暂停。
+// 回归(bug 表现):用户排了一堆消息后点停止,busy 一翻 false 自动 drain 就把
+// 下一条排队消息发了出去 —— 用户刚说「停」,界面却替他继续。
+// lastTurnOutcome 来自 transcript reducer:本端点停止(turn_aborted)与远端中断
+// (busy_changed / done 携带 outcome=aborted)都会置成 'aborted'。
+export function shouldPauseQueuedInputAfterAbort({
+  state,
+  sessionId = '',
+  lastTurnOutcome = '',
+} = {}) {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid || lastTurnOutcome !== 'aborted') return false;
+  if (isQueuedInputPaused(state, sid)) return false;
+  return queuedInputsForSession(state, sid).length > 0;
+}
+
 // 是否允许自动 drain 排队消息。
 // 切会话时 useSessionTranscript 会先把 busy 置 false、loadState=loading,
 // 若此时 drain 会把仍在等待的排队卡片立刻发出/消掉。必须等 transcript
 // 真正 loaded 后再根据 busy 决定是否 drain。
+// paused:用户中断回合后的暂停态,同样禁止自动 drain。
 export function shouldDrainQueuedInput({
   sessionId = '',
   busy = false,
   loadState = 'loaded',
+  paused = false,
 } = {}) {
   if (!String(sessionId || '').trim()) return false;
   if (busy) return false;
   if (loadState && loadState !== 'loaded') return false;
+  if (paused) return false;
   return true;
 }

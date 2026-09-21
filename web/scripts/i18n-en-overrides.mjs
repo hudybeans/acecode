@@ -1600,4 +1600,11 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '拒绝调用工具': 'Tool call denied',
   '调用工具': 'Tool called',
   '沙箱:{{p0}}': 'Sandbox: {{p0}}',
+  // 排队卡片栈:用户中断回合后的「队列已暂停 / 继续」横幅与输入栏「继续」按钮
+  '由于你中断了当前响应，队列已暂停': 'Queue paused because you interrupted the current response',
+  '队列已暂停': 'Queue paused',
+  '继续': 'Resume',
+  '继续发送排队的消息': 'Resume sending the queued messages',
+  '继续发送排队的消息 (Enter)': 'Resume sending the queued messages (Enter)',
+  'Enter 继续发送排队的消息 · Shift+Enter 换行 · 上下键切换历史消息': 'Enter to resume the queued messages · Shift+Enter for a new line · Up/Down to browse history',
 });

@@ -82,15 +82,20 @@ import {
   createChatInputQueueState,
   enqueueQueuedInput,
   shouldDrainQueuedInput,
+  shouldPauseQueuedInputAfterAbort,
   finishQueuedGuidance,
   hasSendingQueuedInput,
+  isQueuedInputPaused,
   markQueuedGuidanceAccepted,
   markQueuedInputCompleted,
   markQueuedInputFailed,
   markQueuedInputSending,
   nextQueuedInput,
+  pauseQueuedInput,
   QUEUED_INPUT_STATE,
+  queuedInputPause,
   queuedInputRequestPayload,
+  resumeQueuedInput,
   retryQueuedInput,
   updateQueuedInputContent,
 } from '../lib/chatInputQueue.js';
@@ -609,6 +614,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     loadState: transcriptLoadState,
     streamingId,
     abortPending,
+    lastTurnOutcome,
     trajectoryPartial,
     tokenUsage,
     goal,
@@ -967,6 +973,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   // 排队消息从 transcript 中分离出来,只喂给 InputBar 上方的 QueueCardList。
   // transcript 只渲染后端真实落库的消息,避免把"草稿/未发送"和"已发送"混在一起。
   const visibleQueuedItems = useMemo(() => buildQueuedMessageItems(queueState, sid), [queueState, sid]);
+  // 当前会话的队列暂停态(用户中断回合后置位):卡片栈横幅与输入栏「继续」按钮共用。
+  const queuePause = useMemo(() => queuedInputPause(queueState, sid), [queueState, sid]);
   const draftWorkspaceHash = isRealWorkspaceHash(ref?.workspaceHash) ? ref.workspaceHash : '';
   const draftSessionKey = sid ? `${draftWorkspaceHash}:${sid}` : '';
   const explicitHomeDraftWorkspaceHash = !sid && ref?.homeWorkspaceExplicit
@@ -2772,8 +2780,21 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     updateQueueState((prev) => cancelQueuedInput(prev, queuedId));
   }, [updateQueueState]);
 
+  // 解除「用户中断回合」带来的队列暂停。实际出队仍由下面的 drain effect 在
+  // queueState 变化后接管(busy=false 且不再 paused 才会发),这里只改标记。
+  const resumeQueue = useCallback(() => {
+    const targetSid = sidRef.current;
+    if (!targetSid) return;
+    updateQueueState((prev) => resumeQueuedInput(prev, targetSid));
+  }, [updateQueueState]);
+
   const retryQueued = useCallback((queuedId) => {
-    updateQueueState((prev) => retryQueuedInput(prev, queuedId));
+    // 点「重试」是用户明确要发这条消息,暂停态一并解除,否则按钮按了没反应。
+    updateQueueState((prev) => {
+      const next = retryQueuedInput(prev, queuedId);
+      const sessionId = next.items.find((item) => item?.queued?.id === queuedId)?.queued?.sessionId;
+      return sessionId ? resumeQueuedInput(next, sessionId) : next;
+    });
   }, [updateQueueState]);
 
   const saveQueuedEdit = useCallback((queuedId, text, composerContent) => {
@@ -3224,6 +3245,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       return;
     }
     if (composerSubmitting) return;
+    // 用户再次主动发送 / 排队 = 解除「中断回合」带来的队列暂停:这条新消息先走,
+    // 排队里的旧消息在它之后照常出队(与卡片栈上的「继续」同义)。
+    updateQueueState((prev) => resumeQueuedInput(prev, sid));
     if (busy && !isBuiltin) {
       enqueueInput(payload);
       clearCurrentSessionDraft();
@@ -3275,7 +3299,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, updateQueueState, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -3333,13 +3357,25 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       sessionId: sid,
       busy,
       loadState: transcriptLoadState,
+      paused: isQueuedInputPaused(queueState, sid),
     })) {
+      return;
+    }
+    // 回合是被中断收尾的:排队消息不能替用户「继续」,转入暂停等用户明确操作。
+    // 本端点停止已在 abort() 里先行暂停;这里兜住 TUI / 其它客户端 / IM 通道
+    // 发起的中断 —— 它们只以 outcome=aborted 的 busy_changed / done 到达。
+    if (wasBusy && shouldPauseQueuedInputAfterAbort({
+      state: queueState,
+      sessionId: sid,
+      lastTurnOutcome,
+    })) {
+      updateQueueState((prev) => pauseQueuedInput(prev, sid));
       return;
     }
     if (wasBusy || !hasSendingQueuedInput(queueState, sid)) {
       drainQueuedInput();
     }
-  }, [busy, drainQueuedInput, queueState, sid, transcriptLoadState, updateQueueState]);
+  }, [busy, drainQueuedInput, lastTurnOutcome, queueState, sid, transcriptLoadState, updateQueueState]);
 
   useEffect(() => {
     if (!sid || items.length === 0) return;
@@ -3362,13 +3398,17 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const abort = useCallback(() => {
     if (!sid) return;
+    // 用户点了停止:排队消息不能跟着自动出队。先暂停队列,再让 turn_aborted 把
+    // busy 翻成 false —— 顺序反过来 drain effect 会先看到 busy=false 把下一条发出去。
+    // 回归(bug 表现):排了一堆消息后点停止,下一条排队消息立刻上屏。
+    updateQueueState((prev) => pauseQueuedInput(prev, sid));
     applyEvent({
       type: 'turn_aborted',
       payload: { reason: '用户已终止本轮任务' },
       timestamp_ms: Date.now(),
     }, { emitEffects: false });
     connection.sendAbort(sid);
-  }, [applyEvent, sid]);
+  }, [applyEvent, sid, updateQueueState]);
 
   const stopCurrentWork = useCallback(() => {
     if (!sid || !busy) return;
@@ -5545,6 +5585,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       />
       <QueueCardList
         items={visibleQueuedItems}
+        paused={queuePause}
+        onResume={resumeQueue}
         onCancel={cancelQueued}
         onRetry={retryQueued}
         onGuide={guideQueued}
@@ -5600,6 +5642,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             onFileDragActiveChange={setChatFileDropActive}
             submitting={composerSubmitting || reasoningSwitching}
             canRetryLastUserMessage={!!retryUserMessageId}
+            queuePaused={!!queuePause}
+            onResumeQueue={resumeQueue}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{

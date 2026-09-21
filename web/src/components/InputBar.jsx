@@ -180,6 +180,7 @@ function ComposerBrowserContextCard({ item, onRemove }) {
 
 export const InputBar = forwardRef(function InputBar({
   disabled, submitting = false, canRetryLastUserMessage = false,
+  queuePaused = false, onResumeQueue,
   placeholder = '输入消息或 / 命令…', onSubmit, onAbort, busy, goal = null,
   onGoalEdit, onGoalStatusChange, onGoalClear,
   history = [], historyEntries = [], variant = 'default', attentionRequest = 0,
@@ -544,6 +545,12 @@ export const InputBar = forwardRef(function InputBar({
 
   const submit = () => {
     if (!actionState.canSubmit) return;
+    // 队列暂停 + 空输入框:这一下是「继续」,不是发送 —— 空内容本来也没什么可发。
+    if (actionState.mode === 'resume') {
+      onResumeQueue?.();
+      requestAnimationFrame(() => ta.current?.focus());
+      return;
+    }
     onSubmit?.(serializeComposerGoal(valueRef.current, contentRef.current, goalModeRef.current).text);
     if (!isControlled) updateValue('', composerContentFromText(''), undefined, { goalMode: false });
     setHistPtr(-1);
@@ -1206,7 +1213,7 @@ export const InputBar = forwardRef(function InputBar({
     }
   };
 
-  const actionState = getInputBarActionState({ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage });
+  const actionState = getInputBarActionState({ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused });
   const stopControl = getGoalStopControlState({ busy });
   const composerSpacingClass = isHero ? 'px-4 pt-3 pb-1 text-[14px]' : 'px-3 pt-2 pb-1 text-[13px]';
   const hasInlineContexts = otherContextItems.length > 0;
@@ -1432,6 +1439,8 @@ export const InputBar = forwardRef(function InputBar({
           type="button"
           onClick={submit}
           disabled={!actionState.canSubmit}
+          data-composer-action={actionState.mode}
+          aria-label={actionState.submitLabel}
           className={clsx(
             'ace-composer-send w-7 h-7 rounded-full flex items-center justify-center transition',
             actionState.canSubmit
@@ -1440,7 +1449,13 @@ export const InputBar = forwardRef(function InputBar({
           )}
           title={actionState.submitTitle}
         >
-          <VsIcon name="send" size={14} mono={false} className={actionState.canSubmit ? 'ace-icon-on-accent' : ''} />
+          {/* 队列暂停 + 空输入框:按钮语义是「继续」,图标换成播放三角与横幅上的一致 */}
+          <VsIcon
+            name={actionState.mode === 'resume' ? 'run' : 'send'}
+            size={14}
+            mono={false}
+            className={actionState.canSubmit ? 'ace-icon-on-accent' : ''}
+          />
         </button>
       )}
     </>
