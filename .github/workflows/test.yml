@@ -86,6 +86,9 @@ jobs:
       - name: Run vcpkg
         uses: lukka/run-vcpkg@v11
 
+      - name: Test embedded frontend rebuild dependencies
+        run: python3 tests/scripts/embedded_assets_rebuild_test.py
+
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
