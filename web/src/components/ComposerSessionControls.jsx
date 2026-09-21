@@ -356,7 +356,7 @@ export function ComposerSessionControls({
             aria-label={`取消派遣：${pendingExpertName}`}
             title={`当前轮保持原专家；下一轮派遣${pendingExpertName}`}
           >
-            <span className="mr-1 text-[9px]">下一轮</span>
+            <span className="mr-1">下一轮</span>
             {pendingExpertName}
           </ComposerSelectionTag>
         )}

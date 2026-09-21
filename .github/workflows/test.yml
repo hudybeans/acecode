@@ -57,6 +57,12 @@ jobs:
       - name: Test web UI
         run: pnpm test
 
+      - name: Test development launchers and complete release inventory
+        working-directory: .
+        run: |
+          python3 -m unittest discover -s tests/scripts -p 'dev_*test.py'
+          python3 tests/scripts/verify_release_assets_test.py
+
       - name: Build web UI
         run: pnpm build
 

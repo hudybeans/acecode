@@ -1575,6 +1575,8 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '路径校验失败': 'Path validation failed',
   '安全编辑守卫': 'Safe edit guard',
   '权限被拒': 'Permission denied',
+  '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；可在首页的项目菜单中选择或添加工作区。': 'New task in the sidebar opens the home page without a workspace. It does not create a directory; use the project menu on the home page to select or add a workspace.',
+  '打开项目菜单，选择已有工作区或添加本地代码目录，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。': 'Open the project menu to select an existing workspace or add a local code directory. Choose No workspace for general tasks.',
   '操作不被允许': 'Operation not permitted',
   '只读文件系统': 'Read-only file system',
   '策略拒绝': 'Denied by policy',
