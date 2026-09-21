@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   QUEUED_INPUT_STATE,
+  QUEUE_PAUSE_REASON,
   acceptedQueuedInputEvent,
   beginQueuedGuidance,
   buildQueuedMessageItems,
@@ -9,14 +10,19 @@ import {
   createChatInputQueueState,
   enqueueQueuedInput,
   finishQueuedGuidance,
+  isQueuedInputPaused,
   markQueuedGuidanceAccepted,
   markQueuedInputFailed,
   markQueuedInputSending,
   nextQueuedInput,
+  pauseQueuedInput,
+  queuedInputPause,
   queuedInputRequestPayload,
   queuedInputsForSession,
+  resumeQueuedInput,
   retryQueuedInput,
   shouldDrainQueuedInput,
+  shouldPauseQueuedInputAfterAbort,
   updateQueuedInputContent,
 } from './chatInputQueue.js';
 
@@ -313,4 +319,110 @@ run('shouldDrainQueuedInput: loaded 且非 busy 才允许 drain', () => {
     busy: false,
     loadState: 'loaded',
   }), false);
+});
+
+// ---- 队列暂停(用户中断回合) ------------------------------------------------
+// 回归背景:用户排了一堆消息后点停止,busy 一翻 false 自动 drain 就把下一条排队
+// 消息发了出去 —— 用户刚说「停」,界面却替他继续。修复后中断收尾 → 队列暂停,
+// 只有用户明确操作(继续 / 再次发送 / 重试)才恢复。
+
+// 触发场景:会话 s1 排了两条消息,回合被中断。
+// 期望行为:pauseQueuedInput 记下 {reason, pausedAt};isQueuedInputPaused 为 true;
+// shouldDrainQueuedInput 带 paused 时返回 false;resume 后恢复 drain 并保留全部卡片。
+run('pauseQueuedInput / resumeQueuedInput:暂停期间禁止 drain,恢复后卡片仍在', () => {
+  let state = createChatInputQueueState();
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: '第一条', now: 100 });
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: '第二条', now: 101 });
+  assert.equal(isQueuedInputPaused(state, 's1'), false);
+
+  state = pauseQueuedInput(state, 's1', { now: 200 });
+  assert.equal(isQueuedInputPaused(state, 's1'), true);
+  assert.deepEqual(queuedInputPause(state, 's1'), {
+    reason: QUEUE_PAUSE_REASON.INTERRUPTED,
+    pausedAt: 200,
+  });
+  assert.equal(shouldDrainQueuedInput({
+    sessionId: 's1', busy: false, loadState: 'loaded', paused: isQueuedInputPaused(state, 's1'),
+  }), false, '暂停期间即使 idle + loaded 也不能自动出队');
+  // 暂停不动卡片本身:两条仍是 QUEUED,nextQueuedInput 仍能取到第一条(由调用方决定不取)
+  assert.deepEqual(queuedInputsForSession(state, 's1').map((item) => item.content), ['第一条', '第二条']);
+  assert.equal(nextQueuedInput(state, 's1')?.content, '第一条');
+
+  const resumed = resumeQueuedInput(state, 's1');
+  assert.equal(isQueuedInputPaused(resumed, 's1'), false);
+  assert.equal(queuedInputPause(resumed, 's1'), null);
+  assert.equal(shouldDrainQueuedInput({
+    sessionId: 's1', busy: false, loadState: 'loaded', paused: isQueuedInputPaused(resumed, 's1'),
+  }), true);
+  assert.deepEqual(queuedInputsForSession(resumed, 's1').map((item) => item.content), ['第一条', '第二条']);
+});
+
+// 触发场景:没有待发送消息的会话调用 pause;已暂停的会话再次 pause;
+// 别的会话(s2)有排队消息但没被暂停。
+// 期望行为:无卡片 → 返回原对象(store 不会触发多余渲染);重复 pause 保留首次的
+// pausedAt;暂停按会话隔离,s2 不受影响。
+run('pauseQueuedInput:无排队消息时是 no-op,重复暂停保留首次时间,按会话隔离', () => {
+  const empty = createChatInputQueueState();
+  assert.equal(pauseQueuedInput(empty, 's1'), empty, '没有卡片就没有可暂停的东西');
+  assert.equal(resumeQueuedInput(empty, 's1'), empty, '本来就没暂停,resume 也是 no-op');
+
+  let state = enqueueQueuedInput(empty, { sessionId: 's1', text: 'a', now: 1 });
+  state = enqueueQueuedInput(state, { sessionId: 's2', text: 'b', now: 2 });
+  const paused = pauseQueuedInput(state, 's1', { now: 10 });
+  const pausedAgain = pauseQueuedInput(paused, 's1', { now: 20 });
+  assert.equal(pausedAgain, paused, '重复暂停返回原对象');
+  assert.equal(queuedInputPause(pausedAgain, 's1').pausedAt, 10);
+  assert.equal(isQueuedInputPaused(pausedAgain, 's2'), false, '暂停只作用于中断的那个会话');
+  assert.equal(shouldDrainQueuedInput({ sessionId: 's2', busy: false, loadState: 'loaded', paused: false }), true);
+});
+
+// 触发场景:队列暂停期间用户把卡片逐条删除。
+// 期望行为:删到最后一条时暂停标记一并清除 —— 否则横幅因为没有卡片而消失,
+// 一个看不见的暂停态却还在,之后(别的客户端启动回合、用户再排新消息)会被它卡住。
+run('cancelQueuedInput:删掉最后一条待发送消息时顺带解除暂停', () => {
+  let state = createChatInputQueueState();
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: 'a', now: 1 });
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: 'b', now: 2 });
+  state = pauseQueuedInput(state, 's1', { now: 3 });
+  const [first, second] = queuedInputsForSession(state, 's1');
+
+  state = cancelQueuedInput(state, first.queued.id);
+  assert.equal(isQueuedInputPaused(state, 's1'), true, '还剩一条,暂停继续生效');
+  state = cancelQueuedInput(state, second.queued.id);
+  assert.equal(queuedInputsForSession(state, 's1').length, 0);
+  assert.equal(isQueuedInputPaused(state, 's1'), false, '最后一条删掉后暂停标记清除');
+});
+
+// 触发场景:ChatView 的 drain effect 在 busy→false 那一帧拿到 transcript 的
+// lastTurnOutcome 与队列状态,判断这次收尾要不要转入暂停。
+// 期望行为:只有「中断收尾 + 有待发送消息 + 尚未暂停」三者同时成立才返回 true;
+// 正常完成(completed)/ 出错(error)/ 没有卡片 / 已经暂停都返回 false。
+// 回归:修复前根本没有这条判断,中断收尾与正常收尾一样直接 drain。
+run('shouldPauseQueuedInputAfterAbort:只有中断收尾且有待发送消息才暂停', () => {
+  let state = createChatInputQueueState();
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's1', lastTurnOutcome: 'aborted' }), false, '没有卡片');
+
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: 'a', now: 1 });
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's1', lastTurnOutcome: 'aborted' }), true);
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's1', lastTurnOutcome: 'completed' }), false, '正常完成照常 drain');
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's1', lastTurnOutcome: 'error' }), false, '出错收尾沿用旧行为');
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's1', lastTurnOutcome: '' }), false);
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: '', lastTurnOutcome: 'aborted' }), false, '无会话');
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state, sessionId: 's2', lastTurnOutcome: 'aborted' }), false, '别的会话没有卡片');
+
+  const paused = pauseQueuedInput(state, 's1');
+  assert.equal(shouldPauseQueuedInputAfterAbort({ state: paused, sessionId: 's1', lastTurnOutcome: 'aborted' }), false, '已暂停不重复暂停');
+});
+
+// 触发场景:FAILED 卡片在暂停期间被点「重试」(ChatView 会顺带 resume);
+// 这里只验证纯函数层:retry 不改暂停标记,由调用方决定是否 resume。
+run('retryQueuedInput 不隐式改动暂停标记', () => {
+  let state = createChatInputQueueState();
+  state = enqueueQueuedInput(state, { sessionId: 's1', text: 'a', now: 1 });
+  const id = queuedInputsForSession(state, 's1')[0].queued.id;
+  state = markQueuedInputFailed(state, id, 'boom');
+  state = pauseQueuedInput(state, 's1');
+  const retried = retryQueuedInput(state, id);
+  assert.equal(retried.items[0].queued.state, QUEUED_INPUT_STATE.QUEUED);
+  assert.equal(isQueuedInputPaused(retried, 's1'), true);
 });

@@ -1192,6 +1192,11 @@ export function createTranscriptState(overrides = {}) {
     // openspec/changes/add-windows-wintoast-completion-notifications。
     turnHadAssistantText: false,
     lastAssistantText: '',
+    // 最近一个回合的收尾方式:'' (尚无 / 新回合已开始) | 'completed' | 'error' | 'aborted'。
+    // 供 ChatView 的排队 drain effect 判断「这次 busy→false 是不是中断收尾」:
+    // 中断收尾时排队消息要暂停而不是自动发出。本端点停止(turn_aborted)与
+    // 远端中断(busy_changed / done 携带 outcome=aborted)都会置成 'aborted'。
+    lastTurnOutcome: '',
     ...overrides,
     toolMap: cloneToolMap(overrides.toolMap),
     turnTimings: cloneTurnTimings(overrides.turnTimings),
@@ -1642,12 +1647,16 @@ export function reduceTranscriptEvent(state, msg) {
         next.turnHadAssistantText = false;
         next.lastAssistantText = '';
         next.trajectoryPartial = null;
+        next.lastTurnOutcome = '';
       }
       if (!next.busy) {
         next.activity = null;
         next.trajectoryPartial = null;
         finalizeStreaming(next);
         if (wasBusy) next.turns = (next.turns || 0) + 1;
+        // 只在真正的 busy→false 转换上记收尾方式;本端点停止后服务端补发的
+        // busy_changed(false) 到达时 wasBusy 已是 false,不覆盖 turn_aborted 记下的 aborted。
+        if (wasBusy) next.lastTurnOutcome = outcome || 'completed';
         if (wasBusy && completedOutcome && next.turnHadAssistantText) {
           effects.push({
             type: 'turn_completed',
@@ -1674,6 +1683,7 @@ export function reduceTranscriptEvent(state, msg) {
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      if (wasBusy) next.lastTurnOutcome = outcome || 'completed';
       if (wasBusy && completedOutcome && next.turnHadAssistantText) {
         effects.push({
           type: 'turn_completed',
@@ -1693,6 +1703,7 @@ export function reduceTranscriptEvent(state, msg) {
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      next.lastTurnOutcome = 'error';
       next.turnHadAssistantText = false;
       next.lastAssistantText = '';
       appendTerminationNotice(next, msg, { ...p, source: p.source || 'server' });
@@ -1706,6 +1717,7 @@ export function reduceTranscriptEvent(state, msg) {
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      next.lastTurnOutcome = 'aborted';
       next.turnHadAssistantText = false;
       next.lastAssistantText = '';
       appendTerminationNotice(next, msg, { ...p, source: 'user' });

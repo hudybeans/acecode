@@ -6460,6 +6460,18 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
   color: var(--ace-fg);
   background: rgba(var(--ace-surface-hi-rgb), 0.72);
 }
+/* 队列暂停横幅:与卡片同底,文字压成 mute,右侧「继续」是唯一强调点。 */
+.ace-queue-card-paused-icon,
+.ace-queue-card-paused-text {
+  color: var(--ace-fg-mute);
+}
+.ace-queue-card-resume {
+  color: var(--ace-fg);
+  transition: background-color 0.12s ease;
+}
+.ace-queue-card-resume:hover {
+  background: rgba(var(--ace-surface-hi-rgb), 0.72);
+}
 
 /* App typography scale — align desktop readability with Codex-like UI. */
 .text-\[9px\] { font-size: var(--ace-font-size-9) !important; }

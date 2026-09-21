@@ -9,10 +9,12 @@
 //  - max-height: 30vh + overflow,避免吃掉聊天可见区
 //  - 卡片整体不变色 hover,按钮自身才有 hover
 //  - SENDING 短暂窗口卡片仍渲染但 opacity-60,接力到 transcript 由 WS 帧驱动
+//  - 队列暂停(用户中断了回合)时卡片栈顶部多一条横幅:「由于你中断了当前响应,
+//    队列已暂停」+ 右侧「继续」按钮;横幅只在有卡片时出现,与卡片同栈滚动
 
 import { useEffect, useMemo, useState } from 'react';
 import { clsx } from '../lib/format.js';
-import { buildQueueCardItem } from '../lib/queueCardItem.js';
+import { buildQueueCardItem, buildQueuePausedBanner } from '../lib/queueCardItem.js';
 import { Modal } from './Modal.jsx';
 import { VsIcon } from './Icon.jsx';
 import { RichComposer } from './RichComposer.jsx';
@@ -164,31 +166,62 @@ function QueueCard({ card, onCancel, onRetry, onGuide, onEdit, guideDisabled }) 
   );
 }
 
-export function QueueCardList({ items, onCancel, onRetry, onGuide, onSaveEdit, guideDisabled = false }) {
+function QueuePausedBanner({ banner, onResume }) {
+  return (
+    <div
+      role="status"
+      data-queue-paused={banner.reason}
+      className="ace-queue-card ace-queue-card-paused flex shrink-0 items-center gap-2 pl-3 pr-2 py-2 text-[13px]"
+    >
+      <VsIcon name="Pause" size={12} className="ace-queue-card-paused-icon shrink-0" />
+      <span className="ace-queue-card-paused-text flex-1 min-w-0 truncate" title={banner.message}>
+        {banner.message}
+      </span>
+      <button
+        type="button"
+        aria-label="继续发送排队的消息"
+        onClick={() => onResume?.()}
+        className="ace-queue-card-resume shrink-0 h-6 pl-1.5 pr-2 rounded-md flex items-center gap-1 text-[12px]"
+        title={banner.resumeTitle}
+      >
+        <VsIcon name="run" size={11} />
+        <span>{banner.resumeLabel}</span>
+      </button>
+    </div>
+  );
+}
+
+export function QueueCardList({
+  items, paused = null, onResume, onCancel, onRetry, onGuide, onSaveEdit, guideDisabled = false,
+}) {
   const list = Array.isArray(items) ? items : [];
   const [editingId, setEditingId] = useState('');
   if (list.length === 0) return null;
   const cards = list.map(buildQueueCardItem).filter((c) => c.queuedId);
   if (cards.length === 0) return null;
   const editingCard = cards.find((card) => card.queuedId === editingId && card.canEdit) || null;
+  const pausedBanner = buildQueuePausedBanner(paused);
   return (
     <>
-      <div
-        role="list"
-        aria-label="排队中的待发送消息"
-        className="ace-queue-card-strip flex flex-col gap-1.5 px-2.5 pt-2 pb-1.5 max-h-[30vh] overflow-y-auto"
-      >
-        {cards.map((card) => (
-          <QueueCard
-            key={card.queuedId}
-            card={card}
-            onCancel={onCancel}
-            onRetry={onRetry}
-            onGuide={onGuide}
-            onEdit={setEditingId}
-            guideDisabled={guideDisabled}
-          />
-        ))}
+      <div className="ace-queue-card-strip flex flex-col gap-1.5 px-2.5 pt-2 pb-1.5 max-h-[30vh] overflow-y-auto">
+        {pausedBanner && <QueuePausedBanner banner={pausedBanner} onResume={onResume} />}
+        <div
+          role="list"
+          aria-label="排队中的待发送消息"
+          className="flex flex-col gap-1.5"
+        >
+          {cards.map((card) => (
+            <QueueCard
+              key={card.queuedId}
+              card={card}
+              onCancel={onCancel}
+              onRetry={onRetry}
+              onGuide={onGuide}
+              onEdit={setEditingId}
+              guideDisabled={guideDisabled}
+            />
+          ))}
+        </div>
       </div>
       {editingCard && (
         <QueueCardEditDialog

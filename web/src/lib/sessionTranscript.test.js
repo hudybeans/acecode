@@ -900,6 +900,66 @@ run('session_updated 更新 transcript title', () => {
   assert.equal(state.title, 'New title');
 });
 
+// ---- lastTurnOutcome:回合收尾方式 -------------------------------------------
+// ChatView 的排队 drain effect 靠它区分「中断收尾」与「正常收尾」:中断收尾时排队
+// 消息要暂停而不是自动发出。回归(bug 表现):用户排了一堆消息后点停止,下一条排队
+// 消息立刻上屏 —— 修复前 reducer 里没有任何字段能说明这次 busy→false 是被打断的。
+
+// 触发场景:本端点停止 → 前端先本地应用 turn_aborted,服务端随后补发
+// busy_changed(false, outcome=aborted) 与 done(outcome=aborted)。
+// 期望行为:turn_aborted 当帧就记成 'aborted'(drain effect 正是在这一帧决策);
+// 后续两帧到达时 wasBusy 已是 false,不覆盖;下一回合开始(busy=true)才清空。
+run('lastTurnOutcome:本端点停止在 turn_aborted 当帧记为 aborted,服务端补帧不覆盖', () => {
+  assert.equal(createTranscriptState().lastTurnOutcome, '');
+  let state = reduceMany([
+    { type: 'busy_changed', payload: { busy: true, turn_id: 't1' }, seq: 1 },
+    { type: 'token', payload: { text: 'partial' }, seq: 2 },
+  ]);
+  assert.equal(state.lastTurnOutcome, '', '回合进行中没有收尾方式');
+  state = reduceTranscriptEvent(state, { type: 'turn_aborted', payload: { reason: 'stop' }, seq: 3 }).state;
+  assert.equal(state.busy, false);
+  assert.equal(state.lastTurnOutcome, 'aborted');
+  state = reduceMany([
+    { type: 'busy_changed', payload: { busy: false, outcome: 'aborted', turn_id: 't1' }, seq: 4 },
+    { type: 'done', payload: { outcome: 'aborted' }, seq: 5 },
+  ], state);
+  assert.equal(state.lastTurnOutcome, 'aborted', '服务端补帧到达时仍是 aborted');
+  state = reduceTranscriptEvent(state, { type: 'busy_changed', payload: { busy: true, turn_id: 't2' }, seq: 6 }).state;
+  assert.equal(state.lastTurnOutcome, '', '新回合开始清空上一回合的收尾方式');
+});
+
+// 触发场景:中断来自 TUI / 另一个浏览器标签 / IM 通道 —— 本端没有 turn_aborted,
+// 只收到服务端的 busy_changed(false, outcome=aborted)(或只有 done)。
+// 期望行为:真正的 busy→false 转换上按 outcome 记为 'aborted',drain effect 同样能
+// 识别并暂停队列;正常完成记 'completed'(无 outcome 字段视为 completed),出错记 'error'。
+run('lastTurnOutcome:远端中断经 busy_changed / done 的 outcome 识别;完成与出错各记其名', () => {
+  const remoteAbort = reduceMany([
+    { type: 'busy_changed', payload: { busy: true, turn_id: 't1' }, seq: 1 },
+    { type: 'busy_changed', payload: { busy: false, outcome: 'aborted', turn_id: 't1' }, seq: 2 },
+  ]);
+  assert.equal(remoteAbort.lastTurnOutcome, 'aborted');
+
+  const remoteAbortDoneOnly = reduceMany([
+    { type: 'busy_changed', payload: { busy: true, turn_id: 't1' }, seq: 1 },
+    { type: 'done', payload: { outcome: 'aborted' }, seq: 2 },
+  ]);
+  assert.equal(remoteAbortDoneOnly.lastTurnOutcome, 'aborted', '只收到 done 也能识别');
+
+  const completed = reduceMany([
+    { type: 'busy_changed', payload: { busy: true, turn_id: 't1' }, seq: 1 },
+    { type: 'busy_changed', payload: { busy: false, turn_id: 't1' }, seq: 2 },
+    { type: 'done', payload: {}, seq: 3 },
+  ]);
+  assert.equal(completed.lastTurnOutcome, 'completed', '无 outcome 字段按 completed 处理');
+
+  const errored = reduceMany([
+    { type: 'busy_changed', payload: { busy: true, turn_id: 't1' }, seq: 1 },
+    { type: 'error', payload: { reason: 'boom' }, seq: 2 },
+    { type: 'busy_changed', payload: { busy: false, outcome: 'error', turn_id: 't1' }, seq: 3 },
+  ]);
+  assert.equal(errored.lastTurnOutcome, 'error');
+});
+
 run('用户主动终止追加独立红色提示项', () => {
   const state = reduceMany([
     { type: 'busy_changed', payload: { busy: true }, seq: 1 },
