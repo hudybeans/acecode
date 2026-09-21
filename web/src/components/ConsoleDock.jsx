@@ -14,6 +14,7 @@ import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 import { useWorkbenchState } from '../lib/useWorkbenchState.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { isSearchPaletteShortcut } from '../lib/searchPaletteShortcut.js';
 import '@xterm/xterm/css/xterm.css';
 
 import { createApi } from '../lib/api.js';
@@ -261,9 +262,13 @@ export function ConsoleDock({ owner, open, height: preferredHeight, onHeightChan
     term.open(el);
     // Ctrl+` 必须放行冒泡到 window(useGlobalShortcut),否则终端聚焦时
     // toggle 失灵 — opencode 同款处理,最易踩的坑。
+    // Ctrl+K(搜索面板)同理:xterm 处理过的键会 stopPropagation,不放行的话
+    // 终端聚焦时快捷键静默失效;代价是 shell 里的 Ctrl+K(bash kill-line)
+    // 让位给应用快捷键,与 VS Code 集成终端默认行为一致。
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.ctrlKey && !ev.altKey && !ev.metaKey &&
           (ev.code === 'Backquote' || ev.key === '`')) return false;
+      if (isSearchPaletteShortcut(ev)) return false;
       return true;
     });
     term.onData((data) => {

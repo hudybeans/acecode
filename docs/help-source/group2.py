@@ -83,7 +83,7 @@ PAGES = {
         code("/side 刚才为什么选择这个实现？\n/btw 这个报错中的术语是什么意思？", "示例 · 两个命令分别发送"),
         '''<p><code>/side</code> 与 <code>/btw</code> 是同类旁支问答入口。回答基于当前任务的上下文快照，独立执行一轮，不调用工具，不把这条问题当作主任务的后续修改指令。需要实际读取新文件或执行修改时，把要求发到主对话。</p><p>主任务继续工作后，侧边回答仍对应提问时的上下文；需要最新进展时重新询问。每次问题都应包含清楚的指代，避免只写“它”或“这个”。</p>''',
         figure("UI-07", "侧边聊天与主输入草稿", "同时展示主输入区中未发送的草稿和侧边聊天的问题、回答，强调二者独立，旁支问答不会中断主任务。"))
-], ["docs/user-manual.md", "web/src/components/QueueCardList.jsx", "web/src/lib/inputBarState.js", "web/src/components/SideQuestionComposer.jsx", "web/src/components/ChatView.jsx", "docs/daemon-api.md"]),
+], ["docs/user-manual.md", "web/src/components/QueueCardList.jsx", "web/src/lib/inputBarState.js", "web/src/components/SideChatWindow.jsx", "web/src/components/ChatView.jsx", "docs/daemon-api.md"]),
 
 "workspaces": page("工作区确定要操作的项目位置，任务保存一次持续工作的上下文。先选对范围，再组织和恢复任务。", [
     section("manage", "添加与管理工作区",
@@ -92,7 +92,7 @@ PAGES = {
     section("standalone", "脱离工作区的任务",
         '''<p>在新建任务时选择<strong>不使用工作区</strong>，适合通用问答、文字处理或先讨论方案。此类记录集中在侧边栏<strong>任务</strong>分组，仍可置顶和归档。</p><p>没有工作区时，不会自动获得某个项目的文件树和 Git 上下文。桌面端可以显式引用文件或目录，路径在没有项目根目录时通常显示为绝对路径。需要持续修改某个代码库时，新建对应工作区中的任务更容易确认操作范围。</p>'''),
     section("organize", "恢复、搜索、置顶与归档",
-        '''<ol><li><strong>恢复：</strong>点击侧边栏中的任务，阅读最近结果后继续发送；TUI 使用 <code>/resume</code> 或启动参数。</li><li><strong>搜索：</strong>点击搜索任务，按任务标题或消息线索查找，选择结果回到相应记录。</li><li><strong>置顶：</strong>使用任务旁的置顶按钮或右键菜单；不使用工作区的任务也可以置顶。</li><li><strong>归档：</strong>将暂时不用的任务从日常列表收起。到设置中的已归档会话查找并恢复。</li></ol><p>归档保留记录。已归档页面中的彻底删除会移除本地会话数据，操作前先核对对象；长期保存或分享阅读内容可先导出。</p>'''),
+        '''<ol><li><strong>恢复：</strong>点击侧边栏中的任务，阅读最近结果后继续发送；TUI 使用 <code>/resume</code> 或启动参数。</li><li><strong>搜索：</strong>点击搜索任务或按 <kbd>Ctrl+K</kbd>（macOS <kbd>⌘K</kbd>），按任务标题或消息线索查找，选择结果回到相应记录；同一个搜索框也能查找项目和设置项，选中设置项会打开设置并定位到该项。</li><li><strong>置顶：</strong>使用任务旁的置顶按钮或右键菜单；不使用工作区的任务也可以置顶。</li><li><strong>归档：</strong>将暂时不用的任务从日常列表收起。到设置中的已归档会话查找并恢复。</li></ol><p>归档保留记录。已归档页面中的彻底删除会移除本地会话数据，操作前先核对对象；长期保存或分享阅读内容可先导出。</p>'''),
     section("transfer", "分叉、导入与导出会话",
         '''<p>在支持的消息右键菜单选择<strong>从这里分叉</strong>，会复制截至该消息的对话前缀并打开新任务。新任务不会自动开始执行；输入下一条消息后才继续。原任务保留，磁盘文件不会因为分叉回到过去。</p><p>桌面端任务菜单中的<strong>导出</strong>会保存可见对话为 Markdown。导出文件适合阅读和分享，不等于可直接导入恢复的完整任务备份。</p><p>项目菜单提供<strong>从opencode导入会话</strong>：先预览识别出的记录，勾选需要的会话，再启动导入并查看结果。导入入口针对识别到的 OpenCode 历史，不能把任意 Markdown 文档当作会话包导入。</p>''',
         figure("UI-09", "会话分叉与导入预览", "用两张截图展示消息菜单中的从这里分叉，以及项目菜单打开的 OpenCode 会话预览、选择与导入进度；不展示真实私有对话。"))

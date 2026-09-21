@@ -45,14 +45,55 @@ run('global find closes only when a pointer starts outside the overlay', () => {
   assert.match(overlay, /document\.removeEventListener\('pointerdown', onPointerDown, true\)/);
 });
 
-run('search palette renders task and project groups in one result sequence', () => {
+run('search palette renders task, project and settings groups in one result sequence', () => {
   const palette = source('components/SearchPalette.jsx');
-  assert.match(palette, /buildSearchResultSequence\(taskItems, projectItems\)/);
+  assert.match(palette, /buildSearchResultSequence\(taskItems, projectItems, settingItems\)/);
   assert.match(palette, /<span>任务<\/span>/);
   assert.match(palette, /<span>项目<\/span>/);
-  assert.match(palette, /placeholder="搜索任务或项目"/);
+  assert.match(palette, /<span>设置<\/span>/);
+  assert.match(palette, /placeholder="搜索任务、项目或设置"/);
   assert.match(palette, /onSelectWorkspace\?\.\(item\.value\)/);
+  assert.match(palette, /onSelectSetting\?\.\(item\.value, query\.trim\(\)\)/);
   assert.match(palette, /window\.addEventListener\(SESSION_LIST_CHANGED_EVENT/);
+});
+
+run('settings hits in the palette reuse the settings window index and never call the daemon', () => {
+  // 设置项是本地固定清单:面板只能复用 settingsSearchEntries / rankSettingsForPalette,
+  // 不允许另起一份设置索引或为它发 REST 请求;设置组下标必须接在任务 + 项目之后。
+  const palette = source('components/SearchPalette.jsx');
+  assert.match(palette, /settingsSearchEntries\(loadDeveloperModeUnlocked\(\)\)/);
+  assert.match(palette, /rankSettingsForPalette\(settingsEntries, query\)/);
+  assert.match(palette, /const index = taskItems\.length \+ projectItems\.length \+ settingIndex;/);
+  assert.doesNotMatch(palette, /api\.\w*[sS]ettings?\w*\(/);
+});
+
+run('the search palette shortcut has a single definition shared by every surface', () => {
+  // Ctrl+K 的判定只在 lib/searchPaletteShortcut.js:App 的全局监听、TopBar 提示、
+  // 快捷菜单 kbd、控制台(xterm)放行都引用它,不能各自再写一遍 e.key === 'k'。
+  const app = source('App.jsx');
+  const topBar = source('components/TopBar.jsx');
+  const consoleDock = source('components/ConsoleDock.jsx');
+  const quickActions = source('lib/topBarQuickActions.js');
+  const quickMenu = source('components/SidebarQuickMenu.jsx');
+  assert.match(app, /useGlobalShortcut\(\s*isSearchPaletteShortcut,/);
+  assert.doesNotMatch(app, /toLowerCase\(\) === 'k'/);
+  assert.match(topBar, /withSearchPaletteShortcutHint\('搜索任务'\)/);
+  assert.match(consoleDock, /if \(isSearchPaletteShortcut\(ev\)\) return false;/);
+  assert.match(quickActions, /searchPaletteShortcutLabel\(win\)/);
+  assert.match(quickMenu, /topBarQuickActionShortcutLabel\(action\)/);
+});
+
+run('a settings hit opens the settings window on the same query and result', () => {
+  // App 把面板的原始查询 + 结果 id 作为种子传给 SettingsPage;SettingsPage 用同一份索引重跑,
+  // 按 id 对齐选中项,而且首轮防抖不得把种下的选中项清回 0。
+  const app = source('App.jsx');
+  const settings = source('components/SettingsPage.jsx');
+  assert.match(app, /onSelectSetting=\{handleSelectSetting\}/);
+  assert.match(app, /initialSearch=\{settingsSearchSeed\}/);
+  assert.match(app, /setSettingsSearchSeed\(null\);/);
+  assert.match(settings, /settingsSearchResultIndex\(searchSettings\(searchEntries, query\), initialSearch\)/);
+  assert.match(settings, /if \(appliedSearchTermRef\.current !== searchQuery\) \{\s*appliedSearchTermRef\.current = searchQuery;\s*setSearchIndex\(0\);/);
+  assert.doesNotMatch(settings, /setSearchTerm\(searchQuery\); setSearchIndex\(0\);/);
 });
 
 run('every search palette exit converges on local abort and server cancellation', () => {

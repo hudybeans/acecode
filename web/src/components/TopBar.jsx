@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { clsx } from '../lib/format.js';
 import { shouldInsetMacTopBar } from '../lib/desktopShellMode.js';
+import { withSearchPaletteShortcutHint } from '../lib/searchPaletteShortcut.js';
 import { NavigationArrowIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
 import { isTopBarDragBackdrop, isTopBarDragExcludedTarget, topBarWindowControlAt, topBarWindowDragAction } from '../lib/topBarWindowDrag.js';
 import {
@@ -172,7 +173,7 @@ export function TopBar({
         <QuickBtn title="前进" onClick={onGoForward} disabled={!canGoForward}>
           <NavigationArrowIcon direction="forward" size={16} />
         </QuickBtn>
-        <QuickBtn title="搜索任务" onClick={onOpenSearch}>
+        <QuickBtn title={withSearchPaletteShortcutHint('搜索任务')} onClick={onOpenSearch}>
           <VsIcon name="search" size={16} />
         </QuickBtn>
       </div>

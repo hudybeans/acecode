@@ -195,6 +195,7 @@ import './systemClipboard.test.js';
 import './searchSessions.test.js';
 import './searchExperienceArchitecture.test.js';
 import './useGlobalShortcut.test.js';
+import './searchPaletteShortcut.test.js';
 import './browserCompatibility.test.js';
 import './browserDefaults.test.js';
 import './fullscreenHeatWave.test.js';

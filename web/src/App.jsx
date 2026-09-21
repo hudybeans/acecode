@@ -82,6 +82,7 @@ import {
   validateUiPrefs,
 } from './lib/uiPrefs.js';
 import { useGlobalShortcut } from './lib/useGlobalShortcut.js';
+import { isSearchPaletteShortcut } from './lib/searchPaletteShortcut.js';
 import { TopBar } from './components/TopBar.jsx';
 import { FeedbackForm } from './components/FeedbackForm.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
@@ -260,6 +261,9 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [settingsNavKey, setSettingsNavKey] = useState('general');
+  // 从全局搜索面板(Ctrl+K)跳进设置时携带的搜索种子:{query, resultId, section, nonce}。
+  // 普通打开设置一律清空,否则上一次的搜索会在下次打开时重新出现。
+  const [settingsSearchSeed, setSettingsSearchSeed] = useState(null);
   const [desktopCloseDialogOpen, setDesktopCloseDialogOpen] = useState(false);
   const [rememberDesktopCloseChoice, setRememberDesktopCloseChoice] = useState(false);
   const [desktopCloseBusy, setDesktopCloseBusy] = useState(false);
@@ -803,6 +807,23 @@ export function App() {
 
   const openSettingsSection = useCallback((key = 'general') => {
     setSettingsNavKey(key || 'general');
+    setSettingsSearchSeed(null);
+    setShowSettings(true);
+  }, []);
+
+  // 搜索面板选中一条设置:关面板 → 定位到该设置所在分区 → 让设置窗口以同一个
+  // 查询重跑搜索并选中同一条结果(滚动 + 波浪下划线由 SettingsPage 自己完成)。
+  const handleSelectSetting = useCallback((result, paletteQuery = '') => {
+    if (!result) return;
+    setSearchOpen(false);
+    setSettingsNavKey(result.section || 'general');
+    setSettingsSearchSeed({
+      query: String(paletteQuery || result.label || ''),
+      resultId: result.id || '',
+      section: result.section || '',
+      label: result.label || '',
+      nonce: Date.now(),
+    });
     setShowSettings(true);
   }, []);
 
@@ -1077,9 +1098,10 @@ export function App() {
     return () => connection.removeEventListener('message', handler);
   }, [authState, resumeAndOpenSession]);
 
-  // 全局 Ctrl/Cmd+K 切换搜索面板。matchShortcut 处理大小写与修饰键。
+  // 全局 Ctrl/Cmd+K 切换搜索面板。键位定义、判定与提示文案都收在
+  // lib/searchPaletteShortcut.js,控制台(xterm)也按同一判定放行冒泡。
   useGlobalShortcut(
-    (e) => e.key && e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey),
+    isSearchPaletteShortcut,
     () => setSearchOpen((o) => !o),
     [],
   );
@@ -2256,6 +2278,7 @@ export function App() {
               void checkForUpdates();
             }}
             initialNavKey={settingsNavKey}
+            initialSearch={settingsSearchSeed}
             health={health}
             activeSessionId={activeId}
             onModelProfileUpdated={() => setModelProfileRevision((value) => value + 1)}
@@ -2285,6 +2308,7 @@ export function App() {
           currentWorkspaceHash={activeRef?.workspaceHash || ''}
           onSelectSession={handleSelectSession}
           onSelectWorkspace={handleSelectWorkspace}
+          onSelectSetting={handleSelectSetting}
         />
       </div>
       <FramelessResizeHandles />

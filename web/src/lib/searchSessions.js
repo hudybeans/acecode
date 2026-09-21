@@ -12,6 +12,7 @@
 // 大小写不敏感;CJK 字符按 codepoint 子串匹配。
 
 import { sessionDisplayTitle } from './sessionTitle.js';
+import { searchSettings } from './settingsSearch.js';
 
 function lower(s) {
   return typeof s === 'string' ? s.toLowerCase() : '';
@@ -173,7 +174,20 @@ export function rankWorkspaces(workspaces, query) {
   return scored.map((item) => item.workspace);
 }
 
-export function buildSearchResultSequence(tasks = [], projects = []) {
+// 面板里「设置」分组最多显示的条数:设置项是固定清单、命中通常很集中,
+// 超过这个数说明查询太宽泛,用户会继续输入而不是往下翻。
+export const MAX_SETTING_RESULTS = 8;
+
+// 设置项复用设置窗口自己的索引与打分(settingsSearch.js),这里只做面板的截断;
+// 空查询由 searchSettings 返回 [],所以首页永远不会列出设置。
+export function rankSettingsForPalette(entries, query, limit = MAX_SETTING_RESULTS) {
+  const results = searchSettings(entries || [], query);
+  return limit > 0 ? results.slice(0, limit) : results;
+}
+
+// 三组结果拼成一条键盘导航序列:任务 → 项目 → 设置。索引与渲染顺序一致,
+// SearchPalette 的 selectedIndex 就是这个数组的下标。
+export function buildSearchResultSequence(tasks = [], projects = [], settings = []) {
   return [
     ...(tasks || []).map((task) => ({
       kind: 'task',
@@ -184,6 +198,11 @@ export function buildSearchResultSequence(tasks = [], projects = []) {
       kind: 'project',
       key: `project:${project?.hash || project?.cwd || index}`,
       value: project,
+    })),
+    ...(settings || []).map((setting, index) => ({
+      kind: 'setting',
+      key: `setting:${setting?.id || `${setting?.section || ''}:${setting?.label || index}`}`,
+      value: setting,
     })),
   ];
 }

@@ -90,7 +90,7 @@
       "docs/user-manual.md",
       "web/src/components/QueueCardList.jsx",
       "web/src/lib/inputBarState.js",
-      "web/src/components/SideQuestionComposer.jsx",
+      "web/src/components/SideChatWindow.jsx",
       "web/src/components/ChatView.jsx",
       "docs/daemon-api.md"
     ]

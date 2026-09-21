@@ -3,6 +3,7 @@ import {
   TOPBAR_QUICK_ACTIONS,
   invokeTopBarQuickAction,
   topBarQuickActionNeedsSeparator,
+  topBarQuickActionShortcutLabel,
   topBarQuickActionsMenuWidth,
 } from '../lib/topBarQuickActions.js';
 import { AnchoredMenu } from './AnchoredMenu.jsx';
@@ -63,6 +64,7 @@ export function SidebarQuickMenu({
         >
           {TOPBAR_QUICK_ACTIONS.map((action, index) => {
             const checkingUpdates = action.id === 'check-updates' && updateChecking;
+            const shortcutLabel = topBarQuickActionShortcutLabel(action);
             return (
               <Fragment key={action.id}>
                 {topBarQuickActionNeedsSeparator(index) && (
@@ -79,7 +81,15 @@ export function SidebarQuickMenu({
                   <span className="w-5 shrink-0 flex items-center justify-center">
                     <VsIcon name={action.icon} size={18} className={checkingUpdates ? 'animate-spin' : ''} />
                   </span>
-                  <span>{action.label}</span>
+                  <span className="flex-1 min-w-0 truncate">{action.label}</span>
+                  {shortcutLabel && (
+                    <kbd
+                      aria-label={shortcutLabel}
+                      className="shrink-0 font-sans text-[11px] leading-none text-fg-mute"
+                    >
+                      {shortcutLabel}
+                    </kbd>
+                  )}
                 </button>
               </Fragment>
             );

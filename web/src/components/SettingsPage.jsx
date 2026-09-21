@@ -18,7 +18,7 @@ import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
 import { SettingsSearch } from './SettingsSearch.jsx';
-import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
+import { settingsSearchEntries, searchSettings, locateSetting, settingsSearchResultIndex } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
 import {
@@ -143,6 +143,9 @@ export function SettingsPage({
   onCheckUpdates,
   onReplayGuidedTour,
   initialNavKey = 'general',
+  // 全局搜索面板带来的搜索种子 {query, resultId, section, label, nonce};
+  // nonce 变化即视为一次新的跳转(设置窗口已开着时也能再次定位)。
+  initialSearch = null,
   fontSize = 'medium',
   onThemeChange,
   onColorThemeChange,
@@ -190,11 +193,30 @@ export function SettingsPage({
     if (developerModeUnlocked) developerNavRef.current?.scrollIntoView({ block: 'nearest' });
   }, [developerModeUnlocked]);
 
+  // 防抖提交搜索词。选中项只在搜索词真的变了才回到第 0 条:从全局搜索面板跳进来时
+  // 查询与选中项是一起种下的,首轮防抖若无条件清零会把种下的选中项冲掉。
+  const appliedSearchTermRef = useRef('');
   useEffect(() => {
     if (composing) return undefined;
-    const timer = setTimeout(() => { setSearchTerm(searchQuery); setSearchIndex(0); }, 180);
+    const timer = setTimeout(() => {
+      setSearchTerm(searchQuery);
+      if (appliedSearchTermRef.current !== searchQuery) {
+        appliedSearchTermRef.current = searchQuery;
+        setSearchIndex(0);
+      }
+    }, 180);
     return () => clearTimeout(timer);
   }, [searchQuery, composing]);
+  useEffect(() => {
+    const query = String(initialSearch?.query || '').trim();
+    if (!query) return;
+    appliedSearchTermRef.current = query;
+    setSearchQuery(query);
+    setSearchTerm(query);
+    setSearchIndex(settingsSearchResultIndex(searchSettings(searchEntries, query), initialSearch));
+    setSearchNavigation((value) => value + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSearch?.nonce]);
   useEffect(() => {
     if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section, developerModeUnlocked));
   }, [selectedResult, developerModeUnlocked]);
