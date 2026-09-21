@@ -2,6 +2,8 @@
 
 `.github/workflows/package.yml` 的 `v*` 标签构建必须生成下列 18 个用户下载包。发布任务通过 `scripts/verify_release_assets.py` 检查每个文件只有一个非空副本，并拒绝不属于当前版本的包、未签名包或重名文件；检查失败时不创建 GitHub Release。
 
+各平台打包可以与测试并行。发布任务还必须等待同一提交在 master 上的 `test.yml` 检查全部成功；测试缺失、失败或超时都不能发布。
+
 | 平台 | 架构 | 必需文件 |
 | --- | --- | --- |
 | Windows | x64、arm64 | `acecode-windows-<arch>.zip` |

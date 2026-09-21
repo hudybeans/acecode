@@ -1210,7 +1210,36 @@ jobs:
       - build-and-package
       - build-linux-old-package
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
     steps:
+      - name: Require passing tests for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Packaging can run alongside tests, but publication must wait for
+          # the master push checks of this exact commit to succeed.
+          for attempt in $(seq 1 180); do
+            result="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&event=push" \
+              --jq '.workflow_runs | map(select(.head_branch == "master")) | sort_by(.id) | last | if . == null then "missing pending" else "\(.status) \(.conclusion // "pending")" end')"
+            read -r status conclusion <<< "$result"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Required tests passed for $GITHUB_SHA"
+                exit 0
+              fi
+              echo "::error::Required tests for $GITHUB_SHA ended with $conclusion; refusing publication"
+              exit 1
+            fi
+            echo "Waiting for required tests for $GITHUB_SHA ($status)"
+            sleep 20
+          done
+          echo "::error::Timed out waiting for tests for $GITHUB_SHA"
+          exit 1
+
       - name: Checkout release asset selector
         uses: actions/checkout@v4
 
