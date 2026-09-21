@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -177,12 +178,14 @@ ToolImpl create_counting_write_tool(
 // Fixture:封装 AgentLoop + stub + 消息收集器 + 完成同步。
 class AgentLoopHarness {
 public:
-    explicit AgentLoopHarness(std::string cwd = ".")
+    explicit AgentLoopHarness(std::string cwd = ".",
+        std::function<void(const acecode::TokenUsage&)> on_usage = {})
         : cwd_(std::move(cwd)) {
         tools_.register_tool(create_noop_tool());
         tools_.register_tool(acecode::create_task_complete_tool());
 
         AgentCallbacks cb;
+        cb.on_usage = std::move(on_usage);
         cb.on_message = [this](const std::string& role,
                                const std::string& content, bool is_tool) {
             std::lock_guard<std::mutex> lk(msg_mu_);
@@ -834,6 +837,165 @@ TEST(AgentLoopTermination, TransientRetryResetsProvisionalStateAndReportsProgres
             message.content.find("网络暂时不可用"),
             std::string::npos);
     }
+}
+
+TEST(AgentLoopTermination, RecoveryPreservesAccountedUsageWhenConsumerThrows) {
+    for (bool reported : {true, false}) {
+        SCOPED_TRACE(reported);
+        acecode::TokenUsage accounted;
+        AgentLoopHarness h(".", [&](const acecode::TokenUsage& usage) {
+            accounted = usage;
+            throw std::runtime_error("usage consumer failed");
+        });
+        acecode::StreamEvent delta;
+        delta.type = acecode::StreamEventType::Delta;
+        delta.content = "completed provider response";
+        acecode::StreamEvent usage;
+        usage.type = acecode::StreamEventType::Usage;
+        usage.usage.prompt_tokens = 100;
+        usage.usage.completion_tokens = 20;
+        usage.usage.total_tokens = 120;
+        usage.usage.has_data = reported;
+        acecode::StreamEvent done;
+        done.type = acecode::StreamEventType::Done;
+        h.push_events({delta, usage, done});
+        ASSERT_TRUE(h.submit_and_wait("account before notifying consumers"));
+        ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+        ASSERT_GT(accounted.total_tokens, 0);
+        int terminal_events = 0;
+        for (const auto& event : h.snapshot_events()) {
+            if (event.kind != acecode::SessionEventKind::Done &&
+                !(event.kind == acecode::SessionEventKind::BusyChanged &&
+                  !event.payload.value("busy", true))) continue;
+            ++terminal_events;
+            EXPECT_EQ(event.payload.value("outcome", ""), "error");
+            const auto& total = event.payload.at("usage");
+            EXPECT_EQ(total.at("prompt_tokens"), accounted.prompt_tokens);
+            EXPECT_EQ(total.at("completion_tokens"), accounted.completion_tokens);
+            EXPECT_EQ(total.at("total_tokens"), accounted.total_tokens);
+            EXPECT_EQ(total.at("has_data"), reported);
+        }
+        EXPECT_EQ(terminal_events, 2);
+    }
+}
+
+TEST(AgentLoopTermination, TerminalEventsExposeAggregateTurnUsage) {
+    AgentLoopHarness h;
+
+    acecode::StreamEvent tool_call;
+    tool_call.type = acecode::StreamEventType::ToolCall;
+    tool_call.tool_call = {"usage-call", "noop", "{}"};
+    acecode::StreamEvent first_usage;
+    first_usage.type = acecode::StreamEventType::Usage;
+    first_usage.usage.prompt_tokens = 100;
+    first_usage.usage.completion_tokens = 20;
+    first_usage.usage.total_tokens = 120;
+    first_usage.usage.cache_read_tokens = 60;
+    first_usage.usage.reasoning_tokens = 5;
+    first_usage.usage.has_data = true;
+    acecode::StreamEvent first_done;
+    first_done.type = acecode::StreamEventType::Done;
+    first_done.finish_reason = "tool_calls";
+    h.push_events({tool_call, first_usage, first_done});
+
+    acecode::StreamEvent final_delta;
+    final_delta.type = acecode::StreamEventType::Delta;
+    final_delta.content = "finished";
+    acecode::StreamEvent second_usage;
+    second_usage.type = acecode::StreamEventType::Usage;
+    second_usage.usage.prompt_tokens = 150;
+    second_usage.usage.completion_tokens = 30;
+    second_usage.usage.total_tokens = 180;
+    second_usage.usage.cache_read_tokens = 90;
+    second_usage.usage.cache_write_tokens = 4;
+    second_usage.usage.reasoning_tokens = 7;
+    second_usage.usage.has_data = true;
+    acecode::StreamEvent second_done;
+    second_done.type = acecode::StreamEventType::Done;
+    second_done.finish_reason = "stop";
+    h.push_events({final_delta, second_usage, second_done});
+
+    ASSERT_TRUE(h.submit_and_wait("run two model steps"));
+    ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+
+    int step_usage_events = 0;
+    nlohmann::json terminal_busy;
+    nlohmann::json terminal_done;
+    for (const auto& event : h.snapshot_events()) {
+        if (event.kind == acecode::SessionEventKind::Usage) {
+            ++step_usage_events;
+        } else if (event.kind == acecode::SessionEventKind::BusyChanged &&
+                   event.payload.is_object() &&
+                   !event.payload.value("busy", true)) {
+            terminal_busy = event.payload;
+        } else if (event.kind == acecode::SessionEventKind::Done) {
+            terminal_done = event.payload;
+        }
+    }
+
+    EXPECT_EQ(step_usage_events, 2);
+    ASSERT_TRUE(terminal_busy.is_object());
+    ASSERT_TRUE(terminal_done.is_object());
+    ASSERT_TRUE(terminal_busy.contains("usage"));
+    ASSERT_TRUE(terminal_done.contains("usage"));
+    EXPECT_FALSE(terminal_busy.value("turn_id", std::string{}).empty());
+    EXPECT_EQ(terminal_busy["turn_id"], terminal_done["turn_id"]);
+    EXPECT_EQ(terminal_busy["usage"], terminal_done["usage"]);
+
+    const auto& usage = terminal_done["usage"];
+    EXPECT_EQ(usage.value("prompt_tokens", 0), 250);
+    EXPECT_EQ(usage.value("completion_tokens", 0), 50);
+    EXPECT_EQ(usage.value("total_tokens", 0), 300);
+    EXPECT_EQ(usage.value("cache_read_tokens", 0), 150);
+    EXPECT_EQ(usage.value("cache_write_tokens", 0), 4);
+    EXPECT_EQ(usage.value("reasoning_tokens", 0), 12);
+    EXPECT_TRUE(usage.value("has_data", false));
+}
+
+TEST(AgentLoopTermination, EstimatedStepMarksAggregateTurnUsageAsEstimated) {
+    AgentLoopHarness h;
+
+    acecode::StreamEvent tool_call;
+    tool_call.type = acecode::StreamEventType::ToolCall;
+    tool_call.tool_call = {"estimated-usage-call", "noop", "{}"};
+    acecode::StreamEvent reported_usage;
+    reported_usage.type = acecode::StreamEventType::Usage;
+    reported_usage.usage.prompt_tokens = 10;
+    reported_usage.usage.completion_tokens = 5;
+    reported_usage.usage.total_tokens = 15;
+    reported_usage.usage.has_data = true;
+    acecode::StreamEvent tool_done;
+    tool_done.type = acecode::StreamEventType::Done;
+    tool_done.finish_reason = "tool_calls";
+    h.push_events({tool_call, reported_usage, tool_done});
+    h.push_text("finished without provider usage");
+
+    ASSERT_TRUE(h.submit_and_wait("run estimated model step"));
+    ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+
+    nlohmann::json terminal_done;
+    for (const auto& event : h.snapshot_events()) {
+        if (event.kind == acecode::SessionEventKind::Done) {
+            terminal_done = event.payload;
+        }
+    }
+    ASSERT_TRUE(terminal_done.contains("usage"));
+    const auto& usage = terminal_done["usage"];
+    EXPECT_GT(usage.value("prompt_tokens", 0), 10);
+    EXPECT_GT(usage.value("completion_tokens", 0), 5);
+    EXPECT_GT(usage.value("total_tokens", 0), 15);
+    EXPECT_FALSE(usage.value("has_data", true));
+    ASSERT_TRUE(usage.contains("context_breakdown"));
+    const auto& context = usage["context_breakdown"];
+    const int categorized_prompt =
+        context.value("system_prompt", 0) +
+        context.value("project_rules", 0) +
+        context.value("skills", 0) +
+        context.value("builtin_tools", 0) +
+        context.value("mcp_tools", 0) +
+        context.value("conversation", 0) +
+        context.value("dynamic_context", 0);
+    EXPECT_EQ(categorized_prompt, usage.value("prompt_tokens", 0));
 }
 
 // 场景:任务已进入 20 分钟封顶等待时,stop 必须通知 active provider 的

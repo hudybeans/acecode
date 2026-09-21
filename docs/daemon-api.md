@@ -4349,11 +4349,36 @@ shape is persisted under the tool message's `metadata.tool_hunks`.
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable
 across tool calls, model retries, and accepted steering input. For the terminal
-transition, `busy_changed` includes
-`{"busy":false,"outcome":"completed|error|aborted","turn_id":"..."}`
-and the following `done` frame repeats the same `outcome`. Other busy cycles
-such as compaction may omit it. Clients should only treat `completed` as a
-successful turn.
+transition, `busy_changed` includes the turn-wide usage summary:
+
+```json
+{
+  "busy": false,
+  "outcome": "completed",
+  "turn_id": "initial-user-message-uuid",
+  "usage": {
+    "prompt_tokens": 44100,
+    "completion_tokens": 2100,
+    "total_tokens": 46200,
+    "cache_read_tokens": 32000,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 500,
+    "has_data": true
+  }
+}
+```
+
+The following `done` frame repeats the same `outcome`, `turn_id`, and `usage`.
+The summary adds every accounted model step in the turn, including tool-call
+round trips. It is not another incremental delta to add to preceding `usage`
+or `model_step_finish` events. `has_data` is true only when at least one model
+step was accounted and every included step used provider-reported usage; if
+ACECode estimated any included step, counts still include that estimate but
+`has_data` is false. `context_breakdown`, when present, is also summed across
+included steps.
+
+Other busy cycles such as compaction may omit `outcome`, `turn_id`, and
+`usage`. Clients should only treat `completed` as a successful turn.
 
 Transient pure-sampling failures use `agent_progress` rather than transcript
 messages. While waiting, the payload is:
