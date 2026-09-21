@@ -77,7 +77,7 @@ class VerifyPackageUnitTest(unittest.TestCase):
                 ['cmake', '-S', str(repo), '-B', str(build)], capture_output=True, text=True)
             self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
             self.assertTrue(verify_package.configure_and_build(
-                verify_package.Report(), repo, build, 'cmake', ['tui'],
+                verify_package.Report(), repo, build, 'cmake', None, ['tui'],
                 'windows' if sys.platform == 'win32' else 'linux', jobs=2))
             self.assertTrue((build / 'built.txt').is_file())
 
@@ -96,7 +96,7 @@ class VerifyPackageUnitTest(unittest.TestCase):
             with mock.patch.object(verify_package, "run_tool", side_effect=capture), \
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 result = verify_package.configure_and_build(
-                    verify_package.Report(), repo, build, "cmake",
+                    verify_package.Report(), repo, build, "cmake", None,
                     ["tui", "desktop"], "windows", jobs=4
                 )
 
@@ -124,11 +124,11 @@ class VerifyPackageUnitTest(unittest.TestCase):
             with mock.patch.object(verify_package, "run_tool", side_effect=capture), \
                     mock.patch.object(verify_package.shutil, "which", return_value="ninja"):
                 verify_package.configure_and_build(
-                    verify_package.Report(), repo, build, "cmake", ["tui"], "linux",
+                    verify_package.Report(), repo, build, "cmake", "ninja", ["tui"], "linux",
                     jobs=4
                 )
 
-            self.assertEqual(commands[0][4:6], ["-G", "Ninja"])
+            self.assertEqual(commands[0][1:3], ["-G", "Ninja"])
             self.assertEqual(commands[1][-2:], ["--parallel", "4"])
 
     def test_windows_stages_computer_use_component_for_cli_and_desktop(self) -> None:
@@ -174,7 +174,7 @@ class VerifyPackageUnitTest(unittest.TestCase):
                 output = io.StringIO()
                 with redirect_stdout(output):
                     verify_package.print_dry_run(root, root / "build", root / "staging",
-                                                platform, ["tui"], 2, "cmake", True)
+                                                platform, ["tui"], 2, "cmake", None, True)
                 self.assertEqual("--component computer_use_runtime" in output.getvalue(),
                                  platform == "windows")
 

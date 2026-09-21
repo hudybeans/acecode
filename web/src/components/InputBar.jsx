@@ -4,8 +4,8 @@
 // 底部工具栏单独占一行,提交按钮在右侧;空内容仅在可重试末尾用户消息时允许发送。
 //
 // 斜杠命令:value 以 / 开头且无空白时,SlashDropdown 浮层显示在输入框上方。
-// 选中后插入 `/<name> ` 到输入框,不立即发送(builtin 与 skill 行为统一)。
-// 已识别的首段命令以原子 token 样式在同一 editable layout 内渲染。
+// 目标指令显示在加号旁的标签中；其他已确认命令仍在正文中显示原子 token。
+// 选择命令不立即发送，草稿与发送继续使用原始命令协议。
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -29,6 +29,7 @@ import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHist
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
 import { composerContentWithoutImages, isComposerThumbnailAttachment, withComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { composerDraftEditFingerprint, removeComposerAttachmentReference } from '../lib/composerDraft.js';
+import { projectComposerGoal, serializeComposerGoal } from '../lib/composerGoal.js';
 import { isComposerCompletionSelectionCollapsed } from '../lib/composerDropdownKeyboard.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
@@ -77,6 +78,7 @@ import {
 } from '../lib/desktopFilesystemTransfer.js';
 import { resolveComposerFileIntake } from '../lib/composerFileIntake.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
+import { fileDropDiagnostic, registerNativeComposerFileDrop } from '../lib/macNativeFileDrag.js';
 import {
   nextExpertMenuItemIndex,
   placeExpertSubmenu,
@@ -206,10 +208,15 @@ export const InputBar = forwardRef(function InputBar({
   const isControlled = controlledValue != null;
   const [internalValue, setInternalValue] = useState('');
   const [internalContent, setInternalContent] = useState(null);
-  const composerContent = controlledComposerContent !== undefined ? controlledComposerContent : internalContent;
+  const draftContent = controlledComposerContent !== undefined ? controlledComposerContent : internalContent;
+  const draftValue = isControlled ? String(controlledValue || '') : internalValue;
+  const { goalMode, text: value, content: composerContent } = useMemo(
+    () => projectComposerGoal(draftValue, draftContent), [draftValue, draftContent],
+  );
+  const goalModeRef = useRef(goalMode);
+  goalModeRef.current = goalMode;
   const contentRef = useRef(composerContent);
   contentRef.current = composerContent;
-  const value = isControlled ? String(controlledValue || '') : internalValue;
   const valueRef = useRef(value);
   valueRef.current = value;
   const [histPtr, setHistPtr] = useState(-1);
@@ -305,7 +312,6 @@ export const InputBar = forwardRef(function InputBar({
   const nativeFilesystemMaterializerAvailable = hasNativeFilesystemMaterializer();
   const canChooseLocalContext = !!onMediaFiles || nativeContextPickerAvailable;
   const hasExpertHandlers = !!onSelectExpert || !!onOpenExpertComponents;
-  const hasCapabilityHandlers = !!onSwarmModeChange || canChooseLocalContext || hasExpertHandlers;
   const composerLayoutSignature = useMemo(() => [
     ...attachmentItems.map((item, index) => [
       composerAttachmentKey(item, index),
@@ -326,18 +332,38 @@ export const InputBar = forwardRef(function InputBar({
     setAttachmentPreview({ src, alt: String(item?.name || 'attachment') });
   }, []);
 
-  const updateValue = useCallback((next, content, replacementRange) => {
+  const updateValue = useCallback((next, content, replacementRange, options = {}) => {
     const text = String(next || '');
     const nextContent = content === undefined
       ? mergeEditorContent(ta.current?.replaceTextPreservingReferences?.(text, replacementRange) || composerContentFromText(text))
       : normalizeComposerContent(content);
-    if (valueRef.current === text && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
-    valueRef.current = text;
-    contentRef.current = nextContent;
-    if (!isControlled) setInternalValue(text);
-    if (controlledComposerContent === undefined) setInternalContent(nextContent);
-    onChange?.(text, nextContent);
-    onComposerContentChange?.(nextContent);
+    const nextGoalMode = options.goalMode ?? goalModeRef.current;
+    if (goalModeRef.current === nextGoalMode && valueRef.current === text
+        && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
+    const draft = serializeComposerGoal(text, nextContent, nextGoalMode);
+    const editor = projectComposerGoal(draft.text, draft.content);
+    const newlyConfirmedGoal = options.goalMode === undefined && !goalModeRef.current && editor.goalMode;
+    const selection = newlyConfirmedGoal ? captureComposerTextareaSelection(ta.current) : null;
+    valueRef.current = editor.text;
+    contentRef.current = editor.content;
+    goalModeRef.current = editor.goalMode;
+    if (!isControlled) setInternalValue(draft.text);
+    if (controlledComposerContent === undefined) setInternalContent(draft.content);
+    onChange?.(draft.text, draft.content);
+    onComposerContentChange?.(draft.content);
+    if (newlyConfirmedGoal) {
+      const cursor = Math.max(0, (selection?.end ?? text.length) - editor.prefixLength);
+      const scope = fileIntakeScopeRef.current;
+      // The empty body can match an earlier Slate local echo. Remove the
+      // confirmed token explicitly before another input event can reuse it.
+      queueMicrotask(() => {
+        if (fileIntakeScopeRef.current !== scope || !goalModeRef.current || valueRef.current !== editor.text) return;
+        if (ta.current?.getEditorStateText?.() !== editor.text) {
+          ta.current?.replaceTextPreservingReferences?.(editor.text, { begin: 0, end: editor.prefixLength });
+        }
+        ta.current?.setSelectionRange(cursor, cursor);
+      });
+    }
   }, [isControlled, controlledComposerContent, onChange, onComposerContentChange, mergeEditorContent]);
 
   const removeAttachment = useCallback((key) => {
@@ -501,9 +527,10 @@ export const InputBar = forwardRef(function InputBar({
       cursor = commandQuery.begin + String(item.mention || `$${item.name}`).length + 1;
     } else {
       if (!commandQuery.leading) return;
-      const next = '/' + item.name + ' ' + value.slice(commandQuery.end);
-      updateValue(next, undefined, commandQuery);
-      cursor = item.name.length + 2;
+      const selectedGoal = item.kind === 'builtin' && item.name === 'goal';
+      const next = (selectedGoal ? '' : '/' + item.name + ' ') + value.slice(commandQuery.end);
+      updateValue(next, undefined, commandQuery, { goalMode: selectedGoal });
+      cursor = selectedGoal ? 0 : item.name.length + 2;
     }
     setEditedSinceHistory(true);
     setDropdownClosed(true);
@@ -524,8 +551,8 @@ export const InputBar = forwardRef(function InputBar({
       requestAnimationFrame(() => ta.current?.focus());
       return;
     }
-    onSubmit?.(value);
-    if (!isControlled) updateValue('');
+    onSubmit?.(serializeComposerGoal(valueRef.current, contentRef.current, goalModeRef.current).text);
+    if (!isControlled) updateValue('', composerContentFromText(''), undefined, { goalMode: false });
     setHistPtr(-1);
     setEditedSinceHistory(false);
     setDropdownClosed(false);
@@ -541,6 +568,13 @@ export const InputBar = forwardRef(function InputBar({
       editor?.setSelectionRange?.(cursor, cursor);
     });
   }, []);
+
+  const changeGoalMode = (enabled) => {
+    updateValue(valueRef.current, contentRef.current, undefined, { goalMode: enabled });
+    setEditedSinceHistory(true);
+    setCapabilityOpen(false);
+    requestAnimationFrame(() => ta.current?.focus());
+  };
 
   // `@` reference menu: files keep the existing visible-path behavior, while
   // sessions use a stable inline token that is expanded only when submitted.
@@ -858,20 +892,25 @@ export const InputBar = forwardRef(function InputBar({
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
-    getComposerContent: () => mergeEditorContent(ta.current?.getComposerContent?.() || contentRef.current),
+    getComposerContent: () => serializeComposerGoal(
+      valueRef.current,
+      mergeEditorContent(ta.current?.getComposerContent?.() || contentRef.current),
+      goalModeRef.current,
+    ).content,
     setComposerContent: (content, options) => {
       const normalized = normalizeComposerContent(content) || composerContentFromText('');
-      updateValue(composerContentText(normalized), normalized);
-      ta.current?.setComposerContent?.(composerContentWithoutImages(normalized), options);
+      const editor = projectComposerGoal(composerContentText(normalized), normalized);
+      updateValue(editor.text, editor.content, undefined, { goalMode: editor.goalMode });
+      ta.current?.setComposerContent?.(composerContentWithoutImages(editor.content), options);
     },
     replaceText: (text) => {
-      const content = composerContentFromText(text);
-      updateValue(text, content);
-      ta.current?.setComposerContent?.(content);
+      const editor = projectComposerGoal(text, composerContentFromText(text));
+      updateValue(editor.text, editor.content, undefined, { goalMode: editor.goalMode });
+      ta.current?.setComposerContent?.(editor.content);
     },
     clear: () => {
       const content = composerContentFromText('');
-      updateValue('', content);
+      updateValue('', content, undefined, { goalMode: false });
       ta.current?.setComposerContent?.(content);
       setHistPtr(-1);
       setEditedSinceHistory(false);
@@ -929,26 +968,55 @@ export const InputBar = forwardRef(function InputBar({
   useEffect(() => {
     if (!NATIVE_FILE_DROP || !nativeFilesystemMaterializerAvailable) return undefined;
     const handler = (payload) => {
-      let rawPaths = payload;
+      const coordinateAuthorized = payload?.nativeLocation === true;
+      let rawPaths = coordinateAuthorized ? payload.paths : payload;
       if (typeof rawPaths === 'string') {
-        try { rawPaths = JSON.parse(rawPaths); } catch { return; }
+        try { rawPaths = JSON.parse(rawPaths); } catch {
+          fileDropDiagnostic('composer-rejected', {
+            disabled: !!disabled, hover: false, ageMs: -1, count: 0, invalid: true,
+          });
+          return;
+        }
       }
       const hover = nativeDropHoverRef.current;
-      if (disabled || !onMediaFiles || !Array.isArray(rawPaths) || rawPaths.length === 0 ||
-          !hover.active || Date.now() - hover.ts > 1500) return;
+      const ageMs = hover.ts > 0 ? Math.max(0, Date.now() - hover.ts) : -1;
+      const count = Array.isArray(rawPaths) ? rawPaths.length : 0;
+      if (!Array.isArray(rawPaths) || count === 0 || disabled || !onMediaFiles ||
+          (!coordinateAuthorized && (!hover.active || ageMs > 1500))) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          coordinateAuthorized,
+        });
+        return;
+      }
 
       nativeDropHoverRef.current = { active: false, ts: 0 };
       resetDragState();
       const paths = localPathsFromDropPayload(rawPaths, HOST_OS);
-      if (paths.length === 0) return;
+      if (paths.length === 0) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          normalizedCount: 0,
+          coordinateAuthorized,
+        });
+        return;
+      }
       // Drag-enter activation is best effort: the source window can still
       // own keyboard focus while Slate shows a caret. Retry at acceptance,
       // before async materialization; later completions must not foreground us.
       requestDesktopFileDropFocus();
       acceptFileIntake({ source: 'drop', paths });
     };
+    const unregister = registerNativeComposerFileDrop(rootRef.current, handler);
     window.__aceComposerAcceptFileDrop = handler;
     return () => {
+      unregister();
       if (window.__aceComposerAcceptFileDrop !== handler) return;
       try { delete window.__aceComposerAcceptFileDrop; }
       catch { window.__aceComposerAcceptFileDrop = undefined; }
@@ -962,8 +1030,8 @@ export const InputBar = forwardRef(function InputBar({
   ]);
 
   useEffect(() => {
-    if (!hasCapabilityHandlers && capabilityOpen) setCapabilityOpen(false);
-  }, [capabilityOpen, hasCapabilityHandlers]);
+    if (disabled && capabilityOpen) setCapabilityOpen(false);
+  }, [capabilityOpen, disabled]);
 
   useEffect(() => {
     if (!capabilityOpen) {
@@ -1116,7 +1184,7 @@ export const InputBar = forwardRef(function InputBar({
     // 这里只处理常规情况。
     if (shouldNavigateInputHistory({
       key: e.key,
-      value,
+      value: draftValue,
       editedSinceHistory,
       historyLength: history.length,
       historyPointer: histPtr,
@@ -1133,19 +1201,19 @@ export const InputBar = forwardRef(function InputBar({
       });
       if (next === -1) {
         setHistPtr(-1);
-        updateValue('', composerContentFromText(''));
+        updateValue('', composerContentFromText(''), undefined, { goalMode: false });
       } else {
         setHistPtr(next);
         const entry = historyEntries[next];
         const content = normalizeComposerContent(entry?.composer_content || entry) || composerContentFromText(history[next] || '');
-        updateValue(composerContentText(content), content);
+        updateValue(composerContentText(content), content, undefined, { goalMode: false });
       }
       setEditedSinceHistory(false);
       return;
     }
   };
 
-  const actionState = getInputBarActionState({ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused });
+  const actionState = getInputBarActionState({ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused });
   const stopControl = getGoalStopControlState({ busy });
   const composerSpacingClass = isHero ? 'px-4 pt-3 pb-1 text-[14px]' : 'px-3 pt-2 pb-1 text-[13px]';
   const hasInlineContexts = otherContextItems.length > 0;
@@ -1154,7 +1222,7 @@ export const InputBar = forwardRef(function InputBar({
       <button
         ref={capabilityButtonRef}
         type="button"
-        disabled={disabled || !hasCapabilityHandlers}
+        disabled={disabled}
         className="w-7 h-7 rounded-full flex items-center justify-center text-fg-mute hover:bg-surface-hi hover:text-fg disabled:opacity-50"
         onClick={() => setCapabilityOpen((open) => !open)}
         title="添加能力或上下文"
@@ -1162,13 +1230,27 @@ export const InputBar = forwardRef(function InputBar({
       >
         <VsIcon name="add" size={15} />
       </button>
-      {capabilityOpen && hasCapabilityHandlers && (
+      {capabilityOpen && (
         <div
           data-composer-capability-menu="true"
           data-ace-native-overlay="overlap"
           role="menu"
           className="absolute left-0 bottom-8 z-50 w-52 py-1 rounded-lg border border-border bg-surface ace-shadow"
         >
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={goalMode}
+            className={clsx(
+              'w-full h-8 px-2 flex items-center gap-2 text-left text-[13px] hover:bg-surface-hi',
+              goalMode ? 'bg-accent-bg text-accent' : 'text-fg',
+            )}
+            onPointerEnter={() => closeExpertSubmenu(false)}
+            onClick={() => changeGoalMode(!goalMode)}
+          >
+            <VsIcon name="Goal" size={15} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">目标</span>
+          </button>
           <button
             type="button"
             role="menuitemcheckbox"
@@ -1405,6 +1487,7 @@ export const InputBar = forwardRef(function InputBar({
         dragActive && 'is-drag-active',
       )}
       ref={rootRef}
+      data-native-file-drop-disabled={disabled ? 'true' : undefined}
       onPointerDownCapture={(event) => preserveComposerFocusOnPointerDown(event, rootRef.current)}
       onDragEnter={fileDropManagedExternally ? undefined : handleDragEnter}
       onDragOver={fileDropManagedExternally ? undefined : handleDragOver}
@@ -1576,6 +1659,9 @@ export const InputBar = forwardRef(function InputBar({
           {...(sessionControls || {})}
           className={isHero ? 'px-2.5 pb-2.5' : 'px-1.5 pb-1'}
           addControl={capabilityControl}
+          goalMode={goalMode}
+          goalDisabled={disabled}
+          onDisableGoal={() => changeGoalMode(false)}
           contexts={inlineContextControls}
           actions={submitControls}
           onCaptureComposerSelection={() => {

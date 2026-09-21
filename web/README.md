@@ -6,14 +6,29 @@
 
 ## 开发流程
 
+快速前端开发使用仓库启动器：
+
+```bash
+# Windows
+scripts\dev_web.bat
+
+# macOS / Linux
+./scripts/dev_web.sh
+```
+
+它会复用当前工作树的开发 daemon，或用已有的当前工作树 `acecode` 可执行文件启动一个 daemon，然后在前台运行 Vite。浏览器打开 Vite 地址（默认 `http://127.0.0.1:5173`）才能看到热更新；`/api` 与 `/ws` 自动代理到该 daemon。现有 native 可执行文件和 `web/dist` 不会因前端修改而重建。
+
+首次没有 compatible daemon 可执行文件时，交互式启动器会先显示 native 构建并请求确认；自动化调用必须明确传 `--build-daemon` 才允许构建。
+
+直接运行 Vite 仍然可用：
+
 ```bash
 cd web
 pnpm install         # 一次性安装依赖(也可用 npm / bun)
-pnpm dev             # 起 Vite dev server,默认 http://localhost:5173
-                     # /api 与 /ws 自动代理到 127.0.0.1:28080(本机 daemon)
+pnpm dev             # 默认将 /api 与 /ws 代理到 127.0.0.1:28080
 ```
 
-需要先在另一个终端跑 `acecode daemon --foreground` 让 API 可用。
+这种手动方式需要自行在另一个终端启动 `acecode daemon --foreground --port=28080`。若要验证嵌入 `acecode` 的生产静态资源而非热更新页面，使用 `scripts/dev_web.bat --embedded` 或 `./scripts/dev_web.sh --embedded`；该显式模式会重新构建 `web/dist` 和 native daemon。
 
 ## 全屏热浪快捷键
 
@@ -97,6 +112,13 @@ Tailwind v4 + CSS 变量。`<html data-theme="light|dark">` 切主题,变量值�
 颜色变量:`bg / surface / surface-alt / surface-hi / border / border-soft / fg / fg-2 / fg-mute / accent / accent-bg / accent-soft / ok / ok-bg / ok-border / warn / warn-bg / danger / danger-bg / code-bg / code-fg / code-line`。
 
 新增颜色:在 `globals.css` 的 `@theme inline` + `:root` + `[data-theme="dark"]` 三处都加。
+
+## 操作快捷键提示
+
+保存、提交、引用等操作已有快捷键时，将提示放进对应按钮，紧随动作名称，使用
+`ace-action-shortcut-hint` 统一字号、间距和弱化样式，例如“保存　Ctrl + Enter”。
+目标编辑、排队消息编辑、问答提交和批注引用共用此样式；不再在编辑区下方重复显示操作快捷键。
+换行、导航和输入格式说明继续放在其输入区域。提示应与已有按键行为一致，不为没有快捷键的按钮添加提示。
 
 ## 协议
 

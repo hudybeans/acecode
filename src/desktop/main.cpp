@@ -804,10 +804,31 @@ int main(int argc, char** argv) {
     // Read the global preference before enforcing the singleton. Still acquire
     // it when possible so the primary keeps normal focus/handoff behavior.
     SingleInstance singleton;
+    // Development-only overrides, read from the process environment so they can
+    // never persist into or depend on the user's global configuration. Without
+    // them this behaves exactly as before.
     const std::string desktop_owner_instance = acecode::generate_uuid();
+    std::string injected_instance;
+    if (acecode::getenv_utf8("ACECODE_DESKTOP_INSTANCE_ID", injected_instance)
+        && !injected_instance.empty()) {
+        if (acecode::desktop::is_valid_instance_id(injected_instance)) {
+            LOG_INFO("[desktop] development instance identity: " + injected_instance);
+        } else {
+            injected_instance.clear();
+            LOG_WARN("[desktop] ignoring invalid ACECODE_DESKTOP_INSTANCE_ID override; "
+                     "falling back to a random instance id");
+        }
+    }
+    bool allow_multiple_instances = desktop_cfg.desktop.allow_multiple_instances;
+    std::string allow_override;
+    if (acecode::getenv_utf8("ACECODE_DESKTOP_ALLOW_MULTIPLE_INSTANCES", allow_override)) {
+        allow_multiple_instances = acecode::desktop::parse_allow_multiple_instances(allow_override);
+        LOG_INFO("[desktop] process-level allow_multiple_instances override: " +
+                 std::string(allow_multiple_instances ? "enabled" : "disabled"));
+    }
     const auto instance_plan = plan_instance_startup(
-        desktop_cfg.desktop.allow_multiple_instances,
-        singleton.try_acquire(), desktop_owner_instance);
+        allow_multiple_instances, singleton.try_acquire(), desktop_owner_instance,
+        injected_instance);
     if (!instance_plan.start) {
         if (startup_open_request.has_value()) {
             std::string handoff_error;
@@ -2193,17 +2214,34 @@ int main(int argc, char** argv) {
     // navigate 前注入 JS: hook console + window 错误事件 → 全部转发回 native。
     // 故意不 hook console.log / console.info,避免噪音(可在前端代码里需要时
     // 显式调 aceDesktop_logFromWeb('info', ...))。
-    // 系统文件拖放。Windows/macOS 的 native 拦截把路径回传给终端和 composer
-    // 两个接收函数；各自用最近 hover 时间戳判定落点，不会互相抢占。Linux 由
-    // 前端 text/uri-list 进入同一个 filesystem-item materialize bridge。
-    host.set_file_drop_handler([&host](std::vector<std::string> paths) {
+    // 系统文件拖放。macOS 附带实际释放坐标,由前端 router 命中唯一目标；
+    // Windows 与旧 bridge 保持路径数组 + 最近 hover 的兼容行为。Linux 由前端
+    // text/uri-list 进入同一个 filesystem-item materialize bridge。
+    host.set_file_drop_handler([&host](
+                                   std::vector<std::string> paths,
+                                   acecode::desktop::WebHost::FileDropContext context) {
         if (paths.empty()) return;
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& p : paths) arr.push_back(p);
+        nlohmann::json payload = {{"paths", paths}};
+        if (context.location) {
+            payload["location"] = {
+                {"xRatio", context.location->x_ratio},
+                {"yRatio", context.location->y_ratio},
+            };
+        }
+        const std::string coordinate_required = context.coordinate_required ? "true" : "false";
         const std::string js =
-            "(function(){var p=" + arr.dump() + ";"
-            "try{if(window.__aceConsoleAcceptFileDrop){window.__aceConsoleAcceptFileDrop(p);}}catch(e){}"
-            "try{if(window.__aceComposerAcceptFileDrop){window.__aceComposerAcceptFileDrop(p);}}catch(e){}"
+            "(function(){var p=" + payload.dump() + ";"
+            "var r=typeof window.__aceRouteNativeFileDrop==='function';"
+            "var c=typeof window.__aceConsoleAcceptFileDrop==='function';"
+            "var m=typeof window.__aceComposerAcceptFileDrop==='function';"
+            "try{if(r&&p.location){window.__aceRouteNativeFileDrop(p);return;}}catch(e){"
+            "try{if(window.aceDesktop_logFromWeb){Promise.resolve(window.aceDesktop_logFromWeb('info',"
+            "'[file-drop] drop-result {\"accepted\":false,\"target\":\"router\",\"reason\":\"receiver-exception\"}')).catch(function(){});}}catch(_){}"
+            "return;}"
+            "if(" + coordinate_required + "){return;}"
+            "var legacy=p.paths;"
+            "try{if(c){window.__aceConsoleAcceptFileDrop(legacy);}}catch(e){}"
+            "try{if(m){window.__aceComposerAcceptFileDrop(legacy);}}catch(e){}"
             "})();";
         host.eval(js);
     });

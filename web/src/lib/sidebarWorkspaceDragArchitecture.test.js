@@ -65,7 +65,7 @@ test('workspace drag shares pinned feedback and suppresses the release click', (
   assert.match(sidebar, /Math\.hypot\(dx, dy\) < SESSION_DRAG_START_PX/);
   assert.match(sidebar, /className="ace-sidebar-session-drag-ghost"/);
   assert.match(sidebar, /suppressSessionClickRef\.current = true/);
-  assert.match(styles, /\.ace-sidebar-pinned-session-row,\s*\.ace-sidebar-workspace-session-row\s*\{\s*cursor: grab;/);
+  assert.match(styles, /\.ace-sidebar-pinned-session-row,\s*\.ace-sidebar-workspace-session-row\s*\{\s*cursor: pointer;/);
   assert.match(styles, /\.ace-sidebar-workspace-session-row\.is-drop-before::before/);
   assert.match(styles, /\.ace-sidebar-session-drag-ghost\s*\{/);
 });

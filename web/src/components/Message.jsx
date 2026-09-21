@@ -1,4 +1,4 @@
-// 单条消息渲染:user 气泡(右)/ assistant 正文(左)/ system 灰条。
+// 单条消息渲染:user 气泡(右)/ assistant 正文(左)/ system 信息活动行。
 // assistant 走 markdown-it 渲染(见 lib/markdown.js)。
 //
 // hover actions(codex 风格):user 消息和 assistant run 最后一条消息悬停时浮出
@@ -11,9 +11,10 @@ import { useTranslation } from 'react-i18next';
 import { renderMarkdownBlocks } from '../lib/markdown.js';
 import { codeTextFromCopyButtonTarget, copyTextToClipboard } from '../lib/codeBlockCopy.js';
 import { clsx, relativeTime } from '../lib/format.js';
-import { buildCompactMessagePreview } from '../lib/compactMessagePreview.js';
+import { presentSystemNotice } from '../lib/systemNotice.js';
 import { assistantChromeState } from '../lib/assistantAvatarDisplay.js';
 import { CopyableCodeFrame } from './CopyableCodeFrame.jsx';
+import { ActivityLine } from './ActivityLine.jsx';
 import { VsIcon, CommandGlyph, FileTypeIcon } from './Icon.jsx';
 import { toast } from './Toast.jsx';
 import { resolveLeadingSlashCommand } from '../lib/slashCommands.js';
@@ -105,7 +106,7 @@ function CommandToken({ token, name, kind, description }) {
       onFocus={showTip}
       onBlur={hideTip}
     >
-      <CommandGlyph kind={kind} size={12} className="ace-cmd-token-glyph" />
+      <CommandGlyph kind={kind} command={name} size={12} className="ace-cmd-token-glyph" />
       <span className="ace-cmd-token-name">{displayName}</span>
       {tip
         ? createPortal(
@@ -374,63 +375,39 @@ function AssistantBubble({
   );
 }
 
-function SystemRow({ role, content, metadata, messageAutoCollapse }) {
-  const isCompactNotice = metadata?.compact_notice === true;
-  const isCompletedCompactNotice = isCompactNotice
-    && metadata?.compact_notice_complete === true;
-  const [manuallyExpanded, setExpanded] = useState(
-    isCompactNotice && !isCompletedCompactNotice,
-  );
-  const customLabel = metadata && typeof metadata.compact_label === 'string'
-    ? metadata.compact_label
-    : (isCompactNotice
-      ? (isCompletedCompactNotice ? 'Context compacted' : 'Compacting conversation')
-      : '');
-  const isToolCompact = role === 'tool_call' || role === 'tool_result' || customLabel === '工具调用 / 返回';
-  const collapsible = messageAutoCollapse || isToolCompact;
-  const expanded = !collapsible || manuallyExpanded;
-  const { label, text, preview, lineCount, charCount } = useMemo(
-    () => buildCompactMessagePreview({
-      role,
-      content,
-      label: customLabel,
-      metadata,
-    }),
-    [role, content, customLabel, metadata],
-  );
+function SystemRow({ role, content, metadata }) {
+  const { t } = useTranslation();
+  const [manuallyExpanded, setExpanded] = useState(false);
+  const { title: label, text } = presentSystemNotice({ role, content, metadata }, t);
+  const hasContent = text.trim().length > 0;
+  const expandable = hasContent;
+  const expanded = hasContent && manuallyExpanded;
 
   return (
-    <div className={clsx(
-      'self-stretch bg-surface-alt border border-dashed border-border rounded-md text-fg-2 overflow-hidden',
-      isToolCompact ? 'ace-tool-call-text' : 'text-[12px]',
-    )}>
-      {collapsible ? <button
-        type="button"
-        className="w-full px-3 py-1.5 flex items-center gap-2 text-left text-fg-mute hover:text-fg hover:bg-surface-hi transition"
-        title={text || preview}
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <span className="font-medium shrink-0">{label}</span>
-        <span className="text-[10px] flex-1 truncate" title={text || preview}>{preview}</span>
-        <span className="text-[10px] shrink-0 opacity-70">
-          {lineCount > 1 ? `${lineCount} 行` : `${charCount} 字符`}
-        </span>
-        <span className="text-[10px] shrink-0 flex items-center gap-1">
-          {expanded ? '收起' : '展开'}
-          <VsIcon name={expanded ? 'glyphUp' : 'glyphDown'} size={9} />
-        </span>
-      </button> : (
-        <div className="px-3 py-1.5 text-fg-mute">{label}</div>
-      )}
+    <div className="self-stretch min-w-0" data-system-notice="true">
+      <ActivityLine
+        className="ace-system-activity-line"
+        icon={<VsIcon name="info" size={16} />}
+        label={label}
+        expandable={expandable}
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+        ariaLabel={t(expanded ? 'systemNotice.collapse' : 'systemNotice.expand', { title: label })}
+      />
       {expanded && (
-        <CopyableCodeFrame text={text} className="ace-system-copy-frame">
-          <div
-            className="px-3 pb-2 pt-1 whitespace-pre-wrap break-words"
-            data-code-copy-source="true"
+        <div className="w-full min-w-0 max-w-[88%] pb-1.5 pt-1">
+          <CopyableCodeFrame
+            text={text}
+            className="ace-system-copy-frame overflow-hidden rounded-xl border border-border bg-surface text-fg-2"
           >
-            {text}
-          </div>
-        </CopyableCodeFrame>
+            <div
+              className="whitespace-pre-wrap break-words px-5 py-3 text-[13px] leading-[1.55]"
+              data-code-copy-source="true"
+            >
+              {text}
+            </div>
+          </CopyableCodeFrame>
+        </div>
       )}
     </div>
   );
@@ -531,5 +508,5 @@ export const Message = memo(function Message({
       showFooter={showFooter}
     />;
   }
-  return <SystemRow role={role} content={content} metadata={metadata} messageAutoCollapse={messageAutoCollapse} />;
+  return <SystemRow role={role} content={content} metadata={metadata} />;
 });

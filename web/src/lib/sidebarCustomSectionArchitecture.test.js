@@ -77,8 +77,10 @@ test('extension disclosure supports accessible buttons and a stable hover icon s
   const css = source('styles/globals.css');
   assert.match(sidebar, /aria-expanded=\{expanded\}\s+aria-controls=\{listId\}/);
   assert.match(sidebar, /id=\{listId\} className="ace-sidebar-custom-list/);
-  assert.match(sidebar, /ace-sidebar-extensions-arrow absolute inset-0/);
-  assert.match(css, /\.ace-sidebar-extensions-trigger:is\(:hover, :focus-visible, \[aria-expanded="true"\]\) \.ace-sidebar-extensions-arrow\s*\{\s*opacity: 1;/);
+  assert.match(sidebar, /ace-sidebar-extensions-arrow absolute inset-0 flex items-center justify-end/);
+  assert.match(css, /\.ace-sidebar-extensions-trigger:is\(:hover, :focus-visible\) \.ace-sidebar-extensions-arrow\s*\{\s*opacity: 1;/);
+  assert.doesNotMatch(css, /\.ace-sidebar-extensions-trigger:is\([^)]*:focus-within[^)]*\)/);
+  assert.doesNotMatch(sidebar, /data-sidebar-section-disclosure=.*group-focus-within/);
   assert.match(css, /\.ace-sidebar-fixed-nav\s*\{\s*max-height: 55%;/);
 });
 

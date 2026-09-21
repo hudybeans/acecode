@@ -113,7 +113,7 @@ run('InputBar 把 submitting 只接到提交动作上', () => {
   assert.match(inputBar, /disabled, submitting = false,/);
   assert.match(
     inputBar,
-    /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused \}\)/,
+    /getInputBarActionState\(\{ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused \}\)/,
   );
   // 回车提交也要挡重复提交,否则去掉 disabled 后连点两次会发两条。
   assert.match(

@@ -22,7 +22,7 @@ assert.match(webHost, /acecode:native-filesystem-drop:v1/);
 assert.match(webHost, /ICoreWebView2WebMessageReceivedEventArgs2/);
 assert.match(webHost, /get_AdditionalObjects/);
 assert.match(webHost, /ICoreWebView2File/);
-assert.match(webHost, /g_file_drop_handler\(std::move\(paths\)\)/);
+assert.match(webHost, /g_file_drop_handler\(std::move\(paths\), WebHost::FileDropContext\{\}\)/);
 assert.match(desktopCmake, /set\(_acecode_webview2_sdk_version "1\.0\.4078\.44"\)/);
 assert.match(
   desktopCmake,

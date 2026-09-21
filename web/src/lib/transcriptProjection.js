@@ -8,6 +8,7 @@ import {
 import { isImageAttachment, normalizeAttachmentList } from './messageAttachments.js';
 import { questionFeedbackForItem } from './questionFeedback.js';
 import { isShellCommand } from './shellCommandPresentation.js';
+import { mergeLegacyGoalNotices } from './systemNotice.js';
 
 function isUserMessage(item) {
   return item?.kind === 'msg' && item.role === 'user';
@@ -581,7 +582,11 @@ function collapseCompletedCompactNoticeGroups(items) {
         compact_notice_id: group.id,
         compact_notice_stage: 'complete',
         compact_notice_complete: true,
-        compact_label: 'Context compacted',
+        system_notice: {
+          version: 1,
+          code: 'context_compacted',
+          params: { entries: group.items.map(({ content, metadata }) => ({ content, metadata })) },
+        },
       },
       coveredItemIds: collectCoveredIds(group.items),
       ts: itemTimestamp(first) || Date.now(),
@@ -1343,9 +1348,7 @@ function projectTurn(items, options = {}) {
 
 export function projectCollapsedTranscriptItems(items, options = {}) {
   const raw = Array.isArray(items) ? items : [];
-  const source = options.messageAutoCollapse === false
-    ? raw
-    : collapseCompletedCompactNoticeGroups(raw);
+  const source = collapseCompletedCompactNoticeGroups(mergeLegacyGoalNotices(raw));
   if (source.length === 0) {
     return options.ensureLiveActivity && options.deferTrailingToolSummary
       ? [makeToolSummaryItem([], {

@@ -571,7 +571,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                   className="h-8 px-3 rounded-md text-[12px] bg-accent text-white hover:opacity-90 transition flex items-center gap-1.5 whitespace-nowrap"
                 >
                   {primaryBtnLabel}
-                  <span className="text-[11px] opacity-70 px-1 py-0.5 rounded">
+                  <span className="ace-action-shortcut-hint">
                     {primaryKeyHint}
                   </span>
                 </button>

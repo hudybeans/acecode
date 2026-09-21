@@ -208,6 +208,31 @@ class InstallerReleaseTest(unittest.TestCase):
         check([valid[0], 'nested/' + valid[0]], False)
         check([valid[0], 'ACECode-1.2.3-macos-arm64-unsigned.dmg'], False)
 
+    def test_tagged_release_requires_installer_credentials(self):
+        lines = WORKFLOW.splitlines()
+        start = lines.index('          application_missing=()')
+        end = next(index for index in range(start, len(lines))
+                   if lines[index].startswith('      - name: Configure MSVC'))
+        guard = textwrap.dedent('\n'.join(lines[start:end]))
+        output = self.root / 'github-output'
+        environment = dict(self.env, GITHUB_REF='refs/tags/v1.2.3', GITHUB_OUTPUT=str(output))
+        for name in ('MACOS_CERTIFICATE_BASE64', 'MACOS_CERTIFICATE_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_SPECIFIC_PASSWORD'):
+            environment[name] = 'fixture'
+        bash = os.environ.get('ACECODE_TEST_BASH', 'bash')
+        for certificate, password, success in (('', '', False), ('fixture', '', False),
+                                               ('', 'fixture', False), ('fixture', 'fixture', True)):
+            with self.subTest(certificate=bool(certificate), password=bool(password)):
+                output.unlink(missing_ok=True)
+                environment.update(MACOS_INSTALLER_CERTIFICATE_BASE64=certificate,
+                                   MACOS_INSTALLER_CERTIFICATE_PASSWORD=password)
+                result = subprocess.run([bash, '-eu', '-c', guard], env=environment, capture_output=True)
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                if success:
+                    self.assertIn('pkg_enabled=true', output.read_text())
+                else:
+                    self.assertNotIn('pkg_enabled=true', output.read_text() if output.exists() else '')
+
     def test_updater_selection_excludes_installers(self):
         spec = importlib.util.spec_from_file_location('selector', ROOT / 'scripts/select_macos_update_assets.py')
         module = importlib.util.module_from_spec(spec)

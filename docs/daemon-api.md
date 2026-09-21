@@ -1079,6 +1079,18 @@ When `since=0` or omitted, returns a full snapshot object:
 Hidden file checkpoints, compact checkpoints, and hidden goal context messages
 are filtered from `messages`.
 
+Visible system messages may include `metadata.system_notice` with
+`{ "version": 1, "code": "goal_started", "params": { "goal": { ... } } }`.
+The stable event code and structured parameters describe the notice; Web and
+Desktop localize its title and fixed detail fields at render time. The original
+`content` remains the fallback for older clients and diagnostics. Existing
+metadata (for example `transcript_only`, `goal_audit` and `compact_notice_id`)
+is preserved. Unknown codes or versions must retain the full fallback text.
+Creating a goal emits one visible audit message containing the complete goal
+snapshot, rather than a separate overview followed by a start notice. System
+notices start collapsed independently of the general message-collapse setting;
+unrelated notices are never folded into tool activity summaries.
+
 Compact checkpoints are append-only. Version 2 records the Codex-shaped
 replacement model history together with `window_number`, `first_window_id`,
 `previous_window_id`, and `window_id`. Resume and fork start from the newest
@@ -4337,11 +4349,36 @@ shape is persisted under the tool message's `metadata.tool_hunks`.
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable
 across tool calls, model retries, and accepted steering input. For the terminal
-transition, `busy_changed` includes
-`{"busy":false,"outcome":"completed|error|aborted","turn_id":"..."}`
-and the following `done` frame repeats the same `outcome`. Other busy cycles
-such as compaction may omit it. Clients should only treat `completed` as a
-successful turn.
+transition, `busy_changed` includes the turn-wide usage summary:
+
+```json
+{
+  "busy": false,
+  "outcome": "completed",
+  "turn_id": "initial-user-message-uuid",
+  "usage": {
+    "prompt_tokens": 44100,
+    "completion_tokens": 2100,
+    "total_tokens": 46200,
+    "cache_read_tokens": 32000,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 500,
+    "has_data": true
+  }
+}
+```
+
+The following `done` frame repeats the same `outcome`, `turn_id`, and `usage`.
+The summary adds every accounted model step in the turn, including tool-call
+round trips. It is not another incremental delta to add to preceding `usage`
+or `model_step_finish` events. `has_data` is true only when at least one model
+step was accounted and every included step used provider-reported usage; if
+ACECode estimated any included step, counts still include that estimate but
+`has_data` is false. `context_breakdown`, when present, is also summed across
+included steps.
+
+Other busy cycles such as compaction may omit `outcome`, `turn_id`, and
+`usage`. Clients should only treat `completed` as a successful turn.
 
 Transient pure-sampling failures use `agent_progress` rather than transcript
 messages. While waiting, the payload is:

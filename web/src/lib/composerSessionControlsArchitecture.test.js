@@ -90,8 +90,10 @@ run('composer footer preserves required left-to-right control order', () => {
 
   expectInOrder(footer, [
     'data-composer-control="add-context"',
+    'data-composer-control="goal"',
     'data-composer-control="swarm-mode"',
     'data-composer-control="expert"',
+    'data-composer-control="expert-pending"',
     'data-composer-control="permission"',
     'data-composer-control="selected-contexts"',
     '<ModelLoadIndicator load={modelLoad} />',
@@ -101,10 +103,10 @@ run('composer footer preserves required left-to-right control order', () => {
   ]);
   assert.match(footer, /\{expertName && \(/);
   assert.match(footer, /\{swarmMode && \(/);
-  assert.match(footer, /data-composer-control="swarm-mode"[\s\S]*role="status"/);
-  assert.match(footer, /<SwarmModeIcon size=\{14\}/);
+  assert.match(footer, /data-composer-control="swarm-mode"[\s\S]*status="已开启蜂群模式"/);
+  assert.match(footer, /<SwarmModeIcon size=\{16\}/);
   assert.match(footer, /aria-label="关闭蜂群模式"/);
-  assert.match(footer, /data-composer-control="expert"[\s\S]*role="status"/);
+  assert.match(footer, /data-composer-control="expert"[\s\S]*status=\{`已派遣/);
   assert.match(footer, /当前专家组件：\$\{expertName\}/);
   assert.doesNotMatch(footer, /openMenu === 'expert'|onExpertChange|expertLocked/);
 });
@@ -299,25 +301,37 @@ run('compressed composer controls fall back to one representative SVG icon', () 
   const component = source('components/ComposerSessionControls.jsx');
   const styles = source('styles/globals.css');
 
-  assert.match(component, /ace-composer-swarm-chip/);
-  assert.match(component, /ace-composer-expert-chip/);
+  assert.match(component, /function ComposerSelectionTag/);
   assert.match(component, /<ProviderIcon\s+provider=\{modelMenu\.selectedOption\}\s+size="sm"\s+className="ace-composer-model-glyph"/s);
   assert.match(component, /<ProviderIcon provider=\{item\} size="sm" \/>/);
   assert.match(component, /<span className="min-w-0 flex-1 truncate text-\[12px\]">\{item\.label\}<\/span>[\s\S]*?item\.active && <VsIcon name="ok"/);
   assert.match(component, /ace-composer-adaptive-content ace-composer-permission-label/);
   assert.match(component, /ace-composer-adaptive-content ace-composer-model-label/);
   assert.match(component, /function useAdaptiveComposerControls\(rootRef, measureKey\)[\s\S]*?new ResizeObserver\(schedule\)/s);
-  assert.match(component, /const compactOrder = \['permission', 'expert', 'swarm-mode', 'model'\]/);
+  assert.match(component, /const compactOrder = \['permission', 'expert-pending', 'expert', 'swarm-mode', 'goal', 'model'\]/);
   assert.match(component, /content\.scrollWidth > content\.clientWidth \+ 1/);
   assert.match(component, /root\.setAttribute\('data-ultra-compact', 'true'\)/);
   assert.match(component, /window\.addEventListener\('resize', schedule\)/);
   assert.match(component, /data-adaptive-composer-control="true"\s+data-compact=\{compactControls\.has\('model'\) \? 'true' : 'false'\}\s+data-composer-control="model"/);
   assert.match(styles, /\[data-adaptive-composer-control="true"\]\[data-compact="true"\]\s*\{[^}]*width: 28px !important;[^}]*max-width: 28px !important;/s);
   assert.match(styles, /data-ultra-compact="true"[^}]*data-composer-control="token-budget"[^}]*\{\s*display: none;/s);
-  assert.match(styles, /\.ace-composer-swarm-chip\[data-compact="true"\] \.ace-composer-adaptive-content\s*\{[^}]*display: none;/s);
-  assert.match(styles, /\.ace-composer-expert-chip\[data-compact="true"\] \.ace-composer-adaptive-content\s*\{[^}]*display: none;/s);
+  assert.match(styles, /\.ace-composer-adaptive-chip\[data-compact="true"\] \.ace-composer-adaptive-content\s*\{[^}]*display: none;/s);
   assert.match(styles, /\.ace-composer-permission-control\[data-compact="true"\] \.ace-composer-adaptive-content\s*\{[^}]*display: none;/s);
   assert.match(styles, /\.ace-composer-model-control\[data-compact="true"\] \.ace-composer-adaptive-content\s*\{[^}]*display: none;/s);
   assert.match(styles, /\.ace-composer-model-glyph\s*\{[^}]*display: inline-flex;/s);
   assert.match(styles, /\.ace-composer-model-control\[data-compact="true"\] \.ace-composer-model-glyph\s*\{[^}]*display: inline-flex;/s);
+});
+
+run('removable composer chips share the same icon and label scale', () => {
+  const component = source('components/ComposerSessionControls.jsx');
+  const styles = source('styles/globals.css');
+
+  assert.equal((component.match(/<ComposerSelectionTag\s/g) || []).length, 4);
+  assert.match(component, /<VsIcon name="Goal" size=\{16\}/);
+  assert.match(component, /<SwarmModeIcon size=\{16\}/);
+  assert.match(component, /<VsIcon name="expert" size=\{16\}/);
+  assert.match(component, /<VsIcon name="running" size=\{16\}/);
+  assert.match(styles, /\.ace-composer-adaptive-chip\s*\{[^}]*font-size: 13px;/s);
+  assert.doesNotMatch(component, /\{expertType === 'team' \? '专家团' : '专家'\}\s*<\/span>/);
+  assert.equal((component.match(/<VsIcon name="close" size=\{16\} className="ace-composer-chip-remove"/g) || []).length, 1);
 });

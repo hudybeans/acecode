@@ -239,8 +239,10 @@ export function RefreshIcon({ size = 16, className = '', ...props }) {
 }
 
 // Slash-command badge icon. It inherits currentColor inside the accent badge.
-export function CommandGlyph({ kind = 'skill', size = 12, className = '', ...props }) {
-  const name = kind === 'builtin' ? 'tool' : kind === 'command' ? 'command' : 'lightbulb';
+export function CommandGlyph({ kind = 'skill', command = '', size = 12, className = '', ...props }) {
+  const name = kind === 'builtin'
+    ? (String(command).toLowerCase() === 'goal' ? 'Goal' : 'tool')
+    : kind === 'command' ? 'command' : 'lightbulb';
   return (
     <VsIcon
       name={name}

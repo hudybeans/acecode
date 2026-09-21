@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ACECode Sidebar Spacing Preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #171717;
+      --panel: #202020;
+      --panel-hover: #2b2b2b;
+      --active: #343434;
+      --border: #373737;
+      --text: #e8e8e8;
+      --muted: #999;
+      --faint: #707070;
+      --accent: #d7a85c;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #101010; color: var(--text); }
+    .preview { min-height: 100vh; display: flex; flex-direction: column; }
+    .toolbar { min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: #191919; }
+    .toolbar strong { font-size: 14px; letter-spacing: .02em; }
+    .toolbar span { color: var(--muted); font-size: 12px; }
+    .toolbar button { margin-left: auto; border: 1px solid #555; border-radius: 6px; padding: 7px 11px; color: var(--text); background: #292929; cursor: pointer; }
+    .toolbar button:hover { background: #3a3a3a; }
+    .workspace { flex: 1; display: flex; min-height: 0; }
+    .sidebar { width: 330px; min-height: calc(100vh - 58px); overflow: auto; background: var(--panel); border-right: 1px solid var(--border); padding-bottom: 18px; }
+    .main { flex: 1; padding: 42px; color: var(--muted); }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 12px 18px; height: 62px; border-bottom: 1px solid #2b2b2b; }
+    .brand-mark { width: 24px; height: 24px; border: 2px solid var(--accent); border-radius: 7px; transform: rotate(45deg); }
+    .brand-name { color: var(--text); font-weight: 650; font-size: 15px; }
+    .brand-version { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; }
+    .fixed-nav { display: flex; flex-direction: column; gap: 2px; padding: 10px 0 2px; }
+    .nav-row, .tree-row { height: 32px; display: grid; align-items: center; }
+    .nav-row { grid-template-columns: 24px minmax(0, 1fr); gap: 7px; padding: 0 12px 0 19px; color: var(--text); font-size: 13px; }
+    .nav-row:hover, .tree-row:hover { background: var(--panel-hover); }
+    .icon { color: var(--muted); text-align: center; font-size: 13px; }
+    .section-header { height: 24px; display: flex; align-items: center; gap: 2px; padding: 0 12px 0 19px; margin-top: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .section-header .chevron { width: 24px; margin-right: 0; color: var(--faint); }
+    .section-list { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+    .tree-row { grid-template-columns: 24px minmax(0, 1fr) 76px; column-gap: 7px; margin: 0 6px; padding: 0 8px 0 13px; border-radius: 6px; font-size: 13px; }
+    .tree-row .title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tree-row .meta { min-width: 0; display: flex; justify-content: flex-end; gap: 7px; color: var(--muted); font-size: 11px; }
+    .tree-row.active { background: var(--active); }
+    .subtree { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; margin-bottom: 8px; }
+    .workspace-row .icon { color: #a9c58b; }
+    .session-row .icon { color: #8c8c8c; }
+    .empty { color: var(--faint); font-style: italic; }
+    .show-more { color: #b9b9b9; cursor: pointer; }
+    .show-more:hover { color: white; }
+    .hint { max-width: 630px; line-height: 1.7; }
+    .hint h1 { margin: 0 0 12px; color: var(--text); font-size: 22px; }
+    .hint code { padding: 2px 5px; border-radius: 4px; background: #282828; color: #e0bd7e; }
+    .measure { position: fixed; right: 22px; bottom: 18px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 6px; background: #222; color: var(--muted); font-size: 11px; }
+    @media (max-width: 700px) { .main { display: none; } .sidebar { width: 100%; } .toolbar span { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="preview">
+    <header class="toolbar">
+      <strong>ACECode 侧边栏间距预览</strong>
+      <span>独立预览，不需要访问令牌，不连接 daemon</span>
+      <button id="toggle">折叠工作区</button>
+    </header>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-mark"></div><div><div class="brand-name">ACECode</div><span class="brand-version">Frontend preview</span></div></div>
+        <div class="fixed-nav">
+          <div class="nav-row"><span class="icon">＋</span><span>新建任务</span></div>
+          <div class="nav-row"><span class="icon">◷</span><span>定时任务</span></div>
+          <div class="nav-row"><span class="icon">◇</span><span>扩展</span></div>
+        </div>
+
+        <div class="section-header"><span class="chevron">⌄</span><span>任务 <small>(3)</small></span></div>
+        <div class="section-list">
+          <div class="tree-row active"><span class="icon">●</span><span class="title">调整侧边栏间距</span><span class="meta">刚刚</span></div>
+          <div class="tree-row"><span class="icon">○</span><span class="title">分析 AceCode 与 Trae 页面间距差异</span><span class="meta">2 分钟</span></div>
+          <div class="tree-row"><span class="icon">○</span><span class="title">验证窄窗口下的布局效果</span><span class="meta">昨天</span></div>
+        </div>
+
+        <div class="section-header"><span class="chevron">⌄</span><span>工作区 <small>(3)</small></span></div>
+        <div class="section-list" id="workspace-list">
+          <div class="workspace-group">
+            <div class="tree-row workspace-row"><span class="icon">▾</span><span class="title">acecode</span><span class="meta">⋮ ＋</span></div>
+            <div class="subtree">
+              <div class="tree-row session-row"><span class="icon">○</span><span class="title">侧边栏视觉节奏</span><span class="meta">10:42</span></div>
+              <div class="tree-row session-row"><span class="icon">○</span><span class="title">开发环境启动</span><span class="meta">09:18</span></div>
+              <div class="tree-row session-row"><span class="icon">○</span><span class="title">展开显示</span><span class="meta"></span></div>
+            </div>
+          </div>
+          <div class="workspace-group"><div class="tree-row workspace-row"><span class="icon">▸</span><span class="title">tui-studio-i18n</span><span class="meta">⋮</span></div></div>
+          <div class="workspace-group"><div class="tree-row workspace-row"><span class="icon">▸</span><span class="title">万能服务</span><span class="meta">⋮</span></div></div>
+        </div>
+
+        <div class="section-header"><span class="chevron">⌄</span><span>会话 <small>(2)</small></span></div>
+        <div class="section-list">
+          <div class="tree-row"><span class="icon">○</span><span class="title">无工作区会话示例</span><span class="meta">11:06</span></div>
+          <div class="tree-row"><span class="icon">○</span><span class="title">权限请求状态示例</span><span class="meta">等待</span></div>
+        </div>
+      </aside>
+      <main class="main">
+        <div class="hint">
+          <h1>间距验证预览</h1>
+          <p>左侧使用本次方案的纵向节奏：普通行 <code>32px</code>、组内间距 <code>2px</code>、分组标题 <code>24px</code>、分组间距 <code>8px</code>。</p>
+          <p>横向树形行保持 <code>24px / minmax(0,1fr) / 76px</code>，列间距 <code>7px</code>。点击顶部按钮可以切换工作区内容，观察展开和折叠状态。</p>
+        </div>
+      </main>
+    </div>
+    <div class="measure">PROTOTYPE · no token required</div>
+  </div>
+  <script>
+    const button = document.querySelector('#toggle');
+    const list = document.querySelector('#workspace-list');
+    let expanded = true;
+    button.addEventListener('click', () => {
+      expanded = !expanded;
+      list.querySelector('.subtree').style.display = expanded ? 'flex' : 'none';
+      list.querySelector('.workspace-row .icon').textContent = expanded ? '▾' : '▸';
+      button.textContent = expanded ? '折叠工作区' : '展开工作区';
+    });
+  </script>
+</body>
+</html>

@@ -235,7 +235,8 @@ public:
 
     // Emit a visible system message without adding it to LLM history. Used by
     // daemon-owned builtin commands for TUI-like progress and fallback output.
-    void emit_system_message(const std::string& content);
+    void emit_system_message(const std::string& content,
+                             nlohmann::json metadata = nlohmann::json::object());
     void emit_transcript_system_message(const std::string& content,
                                         nlohmann::json metadata = nlohmann::json::object());
 
@@ -816,6 +817,12 @@ private:
     // Latest server-reported total active-context usage. For providers that do
     // not return total_tokens, prompt_tokens is used as the fallback.
     std::atomic<int> last_api_total_tokens_{0};
+    // Aggregate usage for the regular turn currently owned by the worker.
+    // Kept as worker state (rather than a stack local) so the outer worker
+    // recovery boundary can still publish an accurate terminal summary after
+    // an exception unwinds run_agent_with_input().
+    TokenUsage active_turn_usage_;
+    bool active_turn_usage_initialized_ = false;
     // PA 兜底的 episode 进度(见 run_pa_overflow_rescue)。服务端收下请求即
     // 清零;回合开始也清零。只在回合线程上读写。
     pa::RescueState pa_rescue_state_;

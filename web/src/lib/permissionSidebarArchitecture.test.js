@@ -45,19 +45,19 @@ run('SessionRow uses the AskUserQuestion slot with exact permission wording', ()
   assert.match(row, /onSelect\?\.\(s\)/);
 });
 
-run('running sessions use the four-dot breathing indicator', () => {
+run('running sessions use the abstract A dot-matrix indicator', () => {
   const sidebar = source('components/Sidebar.jsx');
   const styles = source('styles/globals.css');
   const indicator = between(sidebar, 'function SessionAttentionIndicator', 'function SessionHoverCard');
   assert.match(indicator, /if \(attention !== 'in_progress' && attention !== 'unread'\) return null/);
-  assert.equal((indicator.match(/ace-session-loading-dot is-/g) || []).length, 4);
+  assert.equal((indicator.match(/ace-session-loading-dot is-a-/g) || []).length, 12);
+  assert.match(indicator, /ace-session-loading-matrix/);
   assert.match(indicator, /role="status"/);
-  assert.match(styles, /\.ace-session-loading-orbit\s*\{[\s\S]*animation: ace-session-loading-turn 6\.47s linear infinite/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-top/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-right/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-bottom/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-left/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.ace-session-loading-orbit/);
+  assert.match(styles, /@keyframes ace-session-loading-dot-pulse/);
+  assert.match(styles, /\/\* Abstract A: two interrupted strokes joined by a crossbar\. \*\//);
+  assert.match(styles, /\.ace-session-loading-dot\.is-a-0/);
+  assert.match(styles, /\.ace-session-loading-dot\.is-a-11/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.ace-session-loading \.ace-session-loading-dot[\s\S]*opacity: 1/);
 });
 
 run('permission state reaches pinned, no-workspace, and workspace session rows', () => {
