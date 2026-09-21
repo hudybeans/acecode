@@ -804,10 +804,30 @@ int main(int argc, char** argv) {
     // Read the global preference before enforcing the singleton. Still acquire
     // it when possible so the primary keeps normal focus/handoff behavior.
     SingleInstance singleton;
-    const std::string desktop_owner_instance = acecode::generate_uuid();
+    // Development-only overrides, read from the process environment so they can
+    // never persist into or depend on the user's global configuration. Without
+    // them this behaves exactly as before.
+    std::string desktop_owner_instance = acecode::generate_uuid();
+    std::string injected_instance;
+    if (acecode::getenv_utf8("ACECODE_DESKTOP_INSTANCE_ID", injected_instance)
+        && !injected_instance.empty()) {
+        if (acecode::desktop::is_valid_instance_id(injected_instance)) {
+            desktop_owner_instance = injected_instance;
+            LOG_INFO("[desktop] using injected desktop instance id: " + desktop_owner_instance);
+        } else {
+            LOG_WARN("[desktop] ignoring invalid ACECODE_DESKTOP_INSTANCE_ID override; "
+                     "falling back to a random instance id");
+        }
+    }
+    bool allow_multiple_instances = desktop_cfg.desktop.allow_multiple_instances;
+    std::string allow_override;
+    if (acecode::getenv_utf8("ACECODE_DESKTOP_ALLOW_MULTIPLE_INSTANCES", allow_override)) {
+        allow_multiple_instances = acecode::desktop::parse_allow_multiple_instances(allow_override);
+        LOG_INFO("[desktop] process-level allow_multiple_instances override: " +
+                 std::string(allow_multiple_instances ? "enabled" : "disabled"));
+    }
     const auto instance_plan = plan_instance_startup(
-        desktop_cfg.desktop.allow_multiple_instances,
-        singleton.try_acquire(), desktop_owner_instance);
+        allow_multiple_instances, singleton.try_acquire(), desktop_owner_instance);
     if (!instance_plan.start) {
         if (startup_open_request.has_value()) {
             std::string handoff_error;

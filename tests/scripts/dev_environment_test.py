@@ -1,11 +1,15 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import subprocess
 import unittest
+import zlib
 from unittest.mock import patch
 
 
@@ -258,27 +262,291 @@ class DevEnvironmentTest(unittest.TestCase):
         vite.assert_called_once_with(root, 38123, run_dir, [])
         start.assert_not_called()
 
-    def test_quick_web_falls_back_to_system_selected_port(self):
+    def test_quick_web_starts_on_the_identity_derived_port(self):
         root = Path("C:/work")
         candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
-        run_dir = root / ".acecode/dev-run/test"
+        run_dir = root / ".acecode/dev-run/work-abcdef123456"
+        expected = dev_environment.derived_port("work-abcdef123456")
         with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
              patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
              patch.object(Path, "exists", return_value=False), \
-             patch.object(dev_environment, "reserve_loopback_port", return_value=38123), \
-             patch.object(dev_environment, "start_quick_web_daemon", side_effect=[None, 38123]) as start, \
+             patch.object(dev_environment, "port_is_available", return_value=True), \
+             patch.object(dev_environment, "start_quick_web_daemon", return_value=expected) as start, \
              patch.object(dev_environment, "launch_vite", return_value=0) as vite:
             self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 0)
-        self.assertEqual([call.args[3] for call in start.call_args_list], [28080, 38123])
-        vite.assert_called_once_with(root, 38123, run_dir, [])
+        self.assertEqual([call.args[3] for call in start.call_args_list], [expected])
+        vite.assert_called_once_with(root, expected, run_dir, [])
+
+    def test_derived_port_is_stable_across_processes(self):
+        """crc32 keeps the port stable; the built-in hash() would not."""
+        import zlib
+        for identity in ("acecode-f33bbdb9cef6", "my-project-abcdef123456", "dev-0123456789ab"):
+            expected = 28080 + zlib.crc32(identity.encode("utf-8")) % 201
+            self.assertEqual(dev_environment.derived_port(identity), expected)
+            self.assertTrue(28080 <= expected <= 28280)
+        self.assertNotEqual(
+            dev_environment.derived_port("acecode-aaaaaaaaaaaa"),
+            dev_environment.derived_port("acecode-bbbbbbbbbbbb"),
+        )
+
+    def _rotation_order(self, identity: str) -> list[int]:
+        start = dev_environment.derived_port(identity)
+        return [(start - dev_environment.PORT_RANGE_START + offset) % dev_environment.PORT_RANGE_COUNT
+                + dev_environment.PORT_RANGE_START
+                for offset in range(dev_environment.PORT_RANGE_COUNT)]
+
+    def test_derived_port_succeeds_linearly_and_wraps_in_range(self):
+        run_dir = Path("C:/work/.acecode/dev-run/work-abcdef123456")
+        order = self._rotation_order(run_dir.name)
+        busy = set(order)
+        free_port = order[-1]
+        busy.discard(free_port)
+        probed: list[int] = []
+
+        def available(port):
+            probed.append(port)
+            return port not in busy
+
+        with patch.object(dev_environment, "port_is_available", side_effect=available):
+            self.assertEqual(dev_environment.select_runtime_port(run_dir, []), free_port)
+        self.assertEqual(probed, order)
+
+    def test_derived_port_probes_in_order_without_waiting(self):
+        run_dir = Path("C:/work/.acecode/dev-run/work-000000000000")
+        order = self._rotation_order(run_dir.name)
+        busy = set(order[:3])
+        probed: list[int] = []
+
+        def available(port):
+            probed.append(port)
+            return port not in busy
+
+        with patch.object(dev_environment, "port_is_available", side_effect=available):
+            self.assertEqual(dev_environment.select_runtime_port(run_dir, []), order[3])
+        self.assertEqual(probed, order[:4])
+
+    def test_exhausted_port_range_reports_failure(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/work-000000000000"
+        with patch.object(dev_environment, "port_is_available", return_value=False) as probe:
+            with (contextlib.redirect_stderr(io.StringIO()) as output):
+                self.assertIsNone(dev_environment.select_runtime_port(run_dir, []))
+        self.assertIn("28080-28280", output.getvalue())
+        self.assertEqual(probe.call_count, 201)
+
+    def test_explicit_port_is_used_when_free(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/work-000000000000"
+        with patch.object(dev_environment, "port_is_available", return_value=True) as probe:
+            self.assertEqual(dev_environment.select_runtime_port(run_dir, ["--port", "39001"]), 39001)
+        probe.assert_called_once_with(39001)
+
+    def test_explicit_busy_port_fails_without_adjacent_probing(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/work-000000000000"
+        with patch.object(dev_environment, "port_is_available", return_value=False) as probe:
+            with contextlib.redirect_stderr(io.StringIO()) as output:
+                self.assertIsNone(dev_environment.select_runtime_port(run_dir, ["--port", "39001"]))
+        probe.assert_called_once_with(39001)
+        self.assertIn("39001", output.getvalue())
+
+    def test_quick_web_recovers_a_runtime_whose_pid_is_dead(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+            run_dir = root / ".acecode/dev-run/work-000000000000"
+            run_dir.mkdir(parents=True)
+            (run_dir / "daemon.pid").write_text("4242", encoding="utf-8")
+            with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
+                 patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
+                 patch.object(dev_environment, "pid_is_alive", return_value=False) as alive, \
+                 patch.object(dev_environment.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as stop, \
+                 patch.object(dev_environment, "port_is_available", return_value=True), \
+                 patch.object(dev_environment, "start_quick_web_daemon", return_value=28080) as start, \
+                 patch.object(dev_environment, "launch_vite", return_value=0):
+                self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 0)
+            alive.assert_called_once_with(4242)
+            self.assertEqual(stop.call_args.args[0][1:4], ["daemon", "stop", f"--run-dir={run_dir.as_posix()}"])
+            start.assert_called_once()
+
+    def test_quick_web_never_stops_a_live_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+            run_dir = root / ".acecode/dev-run/work-000000000000"
+            run_dir.mkdir(parents=True)
+            (run_dir / "daemon.pid").write_text("4242", encoding="utf-8")
+            with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
+                 patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
+                 patch.object(dev_environment, "pid_is_alive", return_value=True), \
+                 patch.object(dev_environment.subprocess, "run") as stop, \
+                 patch.object(dev_environment, "start_quick_web_daemon") as start:
+                with contextlib.redirect_stderr(io.StringIO()) as output:
+                    self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 1)
+            stop.assert_not_called()
+            start.assert_not_called()
+            self.assertIn("stop it manually", output.getvalue())
+            self.assertIn("still alive", output.getvalue())
+
+    def test_unreadable_pid_file_skips_self_healing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+            run_dir = root / ".acecode/dev-run/work-000000000000"
+            run_dir.mkdir(parents=True)
+            (run_dir / "daemon.pid").write_text("not-a-pid", encoding="utf-8")
+            with patch.object(dev_environment, "selected_web_runtime_dir", return_value=run_dir), \
+                 patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
+                 patch.object(dev_environment, "pid_is_alive") as alive, \
+                 patch.object(dev_environment.subprocess, "run") as stop, \
+                 patch.object(dev_environment, "start_quick_web_daemon") as start:
+                with contextlib.redirect_stderr(io.StringIO()) as output:
+                    self.assertEqual(dev_environment.launch_quick_web(root, candidate, []), 1)
+            alive.assert_not_called()
+            stop.assert_not_called()
+            start.assert_not_called()
+            self.assertIn("unreadable pid file", output.getvalue())
+
+    def test_prune_reports_pruned_skipped_and_totals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dead = root / ".acecode/dev-run/work-000000000000"
+            live = root / ".acecode/dev-run/work-111111111111"
+            unknown = root / ".acecode/dev-run/other-222222222222"
+            for path, pid in ((dead, "100"), (live, "200"), (unknown, None)):
+                path.mkdir(parents=True)
+                if pid:
+                    (path / "daemon.pid").write_text(pid, encoding="utf-8")
+            legacy = root / ".acecode-dev-run"
+            legacy.mkdir()
+            (legacy / "daemon.pid").write_text("300", encoding="utf-8")
+
+            def alive(pid):
+                return pid == 200
+
+            with patch.object(dev_environment, "pid_is_alive", side_effect=alive):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(dev_environment.prune_runtime_tree(root), 0)
+            report = output.getvalue()
+            self.assertFalse(dead.exists())
+            self.assertFalse(legacy.exists())
+            self.assertTrue(live.exists())
+            self.assertTrue(unknown.exists())
+            self.assertIn("dead pid=100", report)
+            self.assertIn("dead pid=300", report)
+            self.assertIn("pid 200 is alive", report)
+            self.assertIn("no readable daemon.pid", report)
+            self.assertIn("Total: pruned 2, skipped 2", report)
+
+    def test_prune_dry_run_deletes_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dead = root / ".acecode/dev-run/work-000000000000"
+            dead.mkdir(parents=True)
+            (dead / "daemon.pid").write_text("100", encoding="utf-8")
+            with patch.object(dev_environment, "pid_is_alive", return_value=False):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(dev_environment.prune_runtime_tree(root, dry_run=True), 0)
+            self.assertTrue(dead.exists())
+
+    def test_startup_prunes_only_dead_sibling_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "work"
+            current = root / ".acecode/dev-run/work-000000000000"
+            stale = root / ".acecode/dev-run/work-111111111111"
+            foreign = root / ".acecode/dev-run/other-222222222222"
+            for path, pid in ((current, "1"), (stale, "2"), (foreign, "3")):
+                path.mkdir(parents=True)
+                (path / "daemon.pid").write_text(pid, encoding="utf-8")
+
+            def alive(pid):
+                return pid in (1, 3)
+
+            with patch.object(dev_environment, "pid_is_alive", side_effect=alive):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(dev_environment.prune_worktree_runtime_dirs(root, current), 1)
+            self.assertTrue(current.exists())
+            self.assertFalse(stale.exists())
+            self.assertTrue(foreign.exists())
+
+    def test_worker_log_header_and_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            command = ["C:/build/acecode.exe", "daemon", "--foreground"]
+            dev_environment.open_worker_log(run_dir, command).close()
+            log = run_dir / "daemon-worker.log"
+            self.assertIn("spawn: C:/build/acecode.exe daemon --foreground", log.read_text(encoding="utf-8"))
+            log.write_text("x" * (dev_environment.WORKER_LOG_MAX_BYTES + 1), encoding="utf-8")
+            dev_environment.open_worker_log(run_dir, command).close()
+            self.assertLess(log.stat().st_size, dev_environment.WORKER_LOG_MAX_BYTES)
+            self.assertTrue((run_dir / "daemon-worker.log.1").exists())
+
+    def test_spawn_redirects_worker_output_into_the_runtime_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "work"
+            run_dir = root / ".acecode/dev-run/test"
+            command = ["C:/build/acecode.exe", "daemon", "--foreground", "--port=28080"]
+            worker = type("Worker", (), {"poll": staticmethod(lambda: None)})()
+            with patch.object(dev_environment.subprocess, "Popen", return_value=worker) as popen:
+                self.assertIs(dev_environment.spawn_daemon_worker(root, run_dir, command), worker)
+            options = popen.call_args.kwargs
+            self.assertEqual(popen.call_args.args[0], command)
+            self.assertEqual(options["stderr"], subprocess.STDOUT)
+            self.assertEqual(Path(options["stdout"].name), run_dir / "daemon-worker.log")
+            self.assertTrue((run_dir / "daemon-worker.log").is_file())
+
+    def test_worker_exit_fails_before_the_health_timeout(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        worker = type("Worker", (), {"poll": staticmethod(lambda: 3)})()
+        started = time.monotonic()
+        self.assertFalse(dev_environment.daemon_is_healthy(root, candidate, run_dir, timeout_seconds=30, worker=worker))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_start_failure_points_at_both_logs(self):
+        root = Path("C:/work")
+        run_dir = root / ".acecode/dev-run/test"
+        candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
+        worker = type("Worker", (), {"poll": staticmethod(lambda: 3)})()
+        with patch.object(dev_environment, "spawn_daemon_worker", return_value=worker), \
+             patch.object(dev_environment, "daemon_port", return_value=28080):
+            with contextlib.redirect_stderr(io.StringIO()) as output:
+                self.assertIsNone(dev_environment.start_quick_web_daemon(root, candidate, run_dir, 28080))
+        self.assertIn("daemon-worker.log", output.getvalue())
+        self.assertIn("daemon-startup.log", output.getvalue())
+
+    def test_pid_is_alive_reads_the_process_table(self):
+        self.assertTrue(dev_environment.pid_is_alive(os.getpid()))
+        self.assertFalse(dev_environment.pid_is_alive(0))
+        self.assertFalse(dev_environment.pid_is_alive(999983))
+
+    def test_runtime_pid_reads_and_tolerates_junk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "daemon.pid").write_text("123", encoding="utf-8")
+            self.assertEqual(dev_environment.runtime_pid(run_dir), 123)
+            (run_dir / "daemon.pid").write_text("junk", encoding="utf-8")
+            self.assertIsNone(dev_environment.runtime_pid(run_dir))
+            self.assertIsNone(dev_environment.runtime_pid(run_dir / "missing"))
+
+    def test_prune_target_runs_without_a_build(self):
+        args = type("Args", (), {"target": "prune", "build_dir": None, "yes": False, "dry_run": False, "extra": []})()
+        with patch.object(dev_environment, "parse_args", return_value=args), \
+             patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
+             patch.object(dev_environment, "prune_runtime_tree", return_value=0) as prune:
+            self.assertEqual(dev_environment.main(), 0)
+        prune.assert_called_once_with(Path("C:/work"), dry_run=False)
 
     def test_quick_daemon_start_requires_a_healthy_runtime(self):
         root = Path("C:/work")
         run_dir = root / ".acecode/dev-run/test"
         candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
-        with patch.object(dev_environment.subprocess, "Popen"), \
+        worker = type("Worker", (), {"poll": staticmethod(lambda: None)})()
+        with patch.object(dev_environment, "spawn_daemon_worker", return_value=worker), \
              patch.object(dev_environment, "daemon_is_healthy", return_value=False), \
-             patch.object(dev_environment, "daemon_port", return_value=28080):
+             patch.object(dev_environment, "daemon_port", return_value=28080), \
+             contextlib.redirect_stderr(io.StringIO()):
             self.assertIsNone(dev_environment.start_quick_web_daemon(root, candidate, run_dir, 28080))
 
     def test_healthy_daemon_requires_authenticated_identity_match(self):
@@ -304,14 +572,15 @@ class DevEnvironmentTest(unittest.TestCase):
         root = Path("C:/work")
         run_dir = root / ".acecode/dev-run/test"
         candidate = dev_environment.BuildCandidate(root / "build", root, root / "build/acecode.exe")
-        with patch.object(dev_environment.subprocess, "Popen") as popen, \
+        worker = type("Worker", (), {"poll": staticmethod(lambda: None)})()
+        with patch.object(dev_environment, "spawn_daemon_worker", return_value=worker) as spawn, \
              patch.object(dev_environment, "daemon_is_healthy", return_value=True), \
              patch.object(dev_environment, "daemon_port", return_value=28080):
             self.assertEqual(dev_environment.start_quick_web_daemon(root, candidate, run_dir, 28080), 28080)
-        self.assertEqual(popen.call_args.args[0], [
+        self.assertEqual(spawn.call_args.args, (root, run_dir, [
             str(candidate.executable), "daemon", "--foreground",
             "--cwd=C:/work", "--run-dir=C:/work/.acecode/dev-run/test", "--port=28080",
-        ])
+        ]))
 
     def test_launch_vite_passes_daemon_credentials_only_to_child_environment(self):
         root = Path("C:/work")
@@ -328,14 +597,18 @@ class DevEnvironmentTest(unittest.TestCase):
         self.assertEqual(environment["ACECODE_DAEMON_PORT"], "38123")
         self.assertEqual(environment["ACECODE_DAEMON_TOKEN"], "test-token")
 
-    def test_vite_options_strip_daemon_runtime_argument(self):
+    def test_vite_options_strip_daemon_runtime_arguments(self):
         self.assertEqual(
             dev_environment.vite_options(["--run-dir", "runtime", "--host", "127.0.0.1"]),
             ["--host", "127.0.0.1"],
         )
         self.assertEqual(
             dev_environment.vite_options(["--run-dir=runtime", "--port", "5174"]),
-            ["--port", "5174"],
+            [],
+        )
+        self.assertEqual(
+            dev_environment.vite_options(["--port=28080", "--run-dir=runtime", "--open"]),
+            ["--open"],
         )
 
     def test_launch_vite_refuses_missing_daemon_token(self):

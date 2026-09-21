@@ -230,12 +230,34 @@ def pick_desktop_build(builds: list[Path], preferred: str | None = None) -> Path
 
 # ─── 启动 Desktop ───────────────────────────────────────────────────────────
 
-def launch_desktop(desktop_path: Path, dev_web_dir: Path) -> None:
-    """启动 desktop app，并设置 ACECODE_DEV_WEB_DIR 环境变量。"""
-    env = os.environ.copy()
-    env["ACECODE_DEV_WEB_DIR"] = str(dev_web_dir.resolve())
+def desktop_instance_identity(project_root: Path) -> str:
+    """Stable `<worktree>-<commit12>` identity, shared with the Web runtime naming."""
+    from dev_environment import current_commit, sanitize_identity
 
+    commit = current_commit(project_root)
+    return sanitize_identity(project_root.name, commit or project_root.name)
+
+
+def desktop_environment(project_root: Path, dev_web_dir: Path) -> tuple[dict, str]:
+    """Development-only process overrides, never persisted to user config."""
+    environment = os.environ.copy()
+    environment["ACECODE_DEV_WEB_DIR"] = str(dev_web_dir.resolve())
+    instance_id = desktop_instance_identity(project_root)
+    environment["ACECODE_DESKTOP_INSTANCE_ID"] = instance_id
+    environment["ACECODE_DESKTOP_ALLOW_MULTIPLE_INSTANCES"] = "1"
+    return environment, instance_id
+
+
+def launch_desktop(desktop_path: Path, dev_web_dir: Path, instance_id: str | None = None,
+                   project_root: Path | None = None, environment: dict | None = None) -> None:
+    """启动 desktop app，并注入开发期进程级覆盖。"""
+    if environment is None:
+        environment, derived = desktop_environment(project_root or find_project_root(), dev_web_dir)
+        instance_id = instance_id or derived
     info(f"ACECODE_DEV_WEB_DIR = {dev_web_dir.resolve()}")
+    info(f"ACECODE_DESKTOP_INSTANCE_ID = {instance_id}")
+    info("进程级覆盖：本实例允许多开（不读写全局配置）")
+    env = environment
 
     if sys.platform == "darwin":
         if desktop_path.suffix == ".app":
@@ -366,7 +388,9 @@ def main() -> None:
     ok(f"Desktop 构建: {display_path(desktop_path, project_root)}")
 
     # 5. 启动 desktop
-    launch_desktop(desktop_path, dev_web_dir)
+    environment, instance_id = desktop_environment(project_root, dev_web_dir)
+    ok(f"Desktop 实例身份: {instance_id}")
+    launch_desktop(desktop_path, dev_web_dir, instance_id=instance_id, environment=environment)
     ok("Desktop 已启动")
 
     # 6. 打印使用提示
