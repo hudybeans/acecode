@@ -133,7 +133,7 @@ class DevelopmentLauncherReviewTest(unittest.TestCase):
         presets = {item["name"] for item in json.loads((ROOT / "CMakePresets.json").read_text(encoding="utf-8"))["configurePresets"]}
         for system in ("Windows", "Darwin", "Linux"):
             for machine in ("amd64", "arm64"):
-                for target in launcher.TARGETS:
+                for target in launcher.LAUNCH_TARGETS:
                     with self.subTest(system=system, machine=machine, target=target), \
                          patch.object(launcher.platform, "system", return_value=system), \
                          patch.object(launcher, "native_machine", return_value=machine):

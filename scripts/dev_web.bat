@@ -1,6 +1,6 @@
 @echo off
 REM ACECode Web development launcher (Windows)
-REM Usage: scripts\dev_web.bat [Web daemon options]
+REM Usage: scripts\dev_web.bat [--embedded] [--build-daemon] [Vite options]
 
 setlocal
 set "SCRIPT_DIR=%~dp0"
@@ -18,5 +18,5 @@ if not errorlevel 1 (
     )
 )
 
-"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" web --yes %*
+"%PYTHON%" "%SCRIPT_DIR%dev_environment.py" web %*
 exit /b %errorlevel%

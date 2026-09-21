@@ -43,6 +43,11 @@ def main() -> int:
         help="Web assets directory; defaults to <project>/web/dist",
     )
     parser.add_argument(
+        "--use-embedded-assets",
+        action="store_true",
+        help="Serve assets embedded in the executable instead of web/dist",
+    )
+    parser.add_argument(
         "--run-dir", default=None, help="Isolate daemon runtime files to this directory"
     )
     parser.add_argument(
@@ -67,14 +72,16 @@ def main() -> int:
         print("        Build the acecode target first, or pass --build-dir.", file=sys.stderr)
         return 1
 
-    static_dir = Path(args.static_dir) if args.static_dir else project_root / "web" / "dist"
-    if not static_dir.is_absolute():
-        static_dir = project_root / static_dir
-    static_dir = static_dir.resolve()
-    if not (static_dir / "index.html").is_file():
-        print(f"[ERROR] Web UI assets not found: {static_dir / 'index.html'}", file=sys.stderr)
-        print("        Run `pnpm --dir web build` first, or pass --static-dir.", file=sys.stderr)
-        return 1
+    static_dir = None
+    if not args.use_embedded_assets:
+        static_dir = Path(args.static_dir) if args.static_dir else project_root / "web" / "dist"
+        if not static_dir.is_absolute():
+            static_dir = project_root / static_dir
+        static_dir = static_dir.resolve()
+        if not (static_dir / "index.html").is_file():
+            print(f"[ERROR] Web UI assets not found: {static_dir / 'index.html'}", file=sys.stderr)
+            print("        Run `pnpm --dir web build` first, pass --static-dir, or use --use-embedded-assets.", file=sys.stderr)
+            return 1
 
     workspace = Path(args.cwd).resolve() if args.cwd else project_root
     if not workspace.is_dir():
@@ -89,7 +96,9 @@ def main() -> int:
             print("[ERROR] --port must be between 1 and 65535", file=sys.stderr)
             return 1
         command.append(f"--port={args.port}")
-    command.extend((f"--cwd={workspace}", f"--static-dir={static_dir}"))
+    command.append(f"--cwd={workspace}")
+    if static_dir is not None:
+        command.append(f"--static-dir={static_dir}")
     if args.run_dir:
         run_dir = Path(args.run_dir)
         if not run_dir.is_absolute():
@@ -99,7 +108,7 @@ def main() -> int:
 
     print(f"[INFO] Starting Web UI daemon: {executable}")
     print(f"[INFO] Workspace: {workspace}")
-    print(f"[INFO] Static assets: {static_dir}")
+    print(f"[INFO] Static assets: {static_dir if static_dir is not None else 'embedded executable assets'}")
     print("[INFO] Desktop GUI is not started.", flush=True)
 
     if args.foreground:

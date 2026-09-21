@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -11,16 +12,29 @@ import platform
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from dev_build_artifacts import find_named_artifacts
 
-TARGETS = ("web", "desktop", "tui")
+LAUNCH_TARGETS = ("web", "desktop", "tui")
+PRUNE_TARGET = "prune"
+TARGETS = (*LAUNCH_TARGETS, PRUNE_TARGET)
 CACHE_MARKER = ".acecode-sccache.json"
+WORKER_LOG_NAME = "daemon-worker.log"
+WORKER_LOG_MAX_BYTES = 1024 * 1024
+PORT_RANGE_START = 28080
+PORT_RANGE_COUNT = 201
+PORT_RANGE_END = PORT_RANGE_START + PORT_RANGE_COUNT - 1
+DAEMON_STARTUP_LOG_NAME = "daemon-startup.log"
 
 
 @dataclass(frozen=True)
@@ -211,7 +225,7 @@ def ask_to_build(preset: str, target: str, assume_yes: bool) -> bool:
     print(f"[INFO] Proposed build: cmake --build {binary_dir} --target {executable_target}")
     if assume_yes:
         return True
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         print("[ERROR] Refusing to compile without interactive confirmation. Re-run with --yes to confirm.", file=sys.stderr)
         return False
     try:
@@ -462,10 +476,26 @@ def refresh_web_assets(root: Path, force: bool = False) -> bool:
     return True
 
 
+def sanitize_identity(name: str, identity: str) -> str:
+    """Build the shared filesystem-safe `<name>-<commit12>` runtime identity."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", f"{name}-{identity[:12]}")
+
+
+def safe_identity(root: Path) -> str:
+    return sanitize_identity(root.name, current_commit(root) or root.name)
+
+
+def runtime_root(root: Path) -> Path:
+    return root / ".acecode" / "dev-run"
+
+
 def worktree_runtime_dir(root: Path) -> Path:
-    identity = current_commit(root) or root.name
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", f"{root.name}-{identity[:12]}")
-    return root / ".acecode" / "dev-run" / safe
+    return runtime_root(root) / safe_identity(root)
+
+
+def worktree_prefix(root: Path) -> str:
+    """Prefix every runtime directory owned by this worktree shares."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", root.name) + "-"
 
 
 def selected_web_runtime_dir(root: Path, extra: list[str]) -> Path:
@@ -477,6 +507,147 @@ def selected_web_runtime_dir(root: Path, extra: list[str]) -> Path:
     return args.run_dir.resolve() if args.run_dir.is_absolute() else (root / args.run_dir).resolve()
 
 
+def selected_web_port(extra: list[str]) -> int | None:
+    """Return the daemon port explicitly requested on the command line, if any."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--port", type=int)
+    args, _ = parser.parse_known_args(extra)
+    return args.port
+
+
+def derived_port(identity: str) -> int:
+    """Derive a stable port from the runtime identity.
+
+    Uses zlib.crc32 because the built-in hash() is salted per process and would
+    hand out a different port on every run.
+    """
+    digest = zlib.crc32(identity.encode("utf-8"))
+    return PORT_RANGE_START + digest % PORT_RANGE_COUNT
+
+
+def port_is_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def select_runtime_port(run_dir: Path, extra: list[str]) -> int | None:
+    """Pick the daemon port: explicit takes precedence, otherwise derive and probe.
+
+    The derivation key is the runtime directory name, so the port changes only
+    when the runtime identity does - the run-dir and its port move together.
+    """
+    explicit = selected_web_port(extra)
+    if explicit is not None:
+        if not 1 <= explicit <= 65535:
+            print("[ERROR] Web daemon port must be between 1 and 65535.", file=sys.stderr)
+            return None
+        if port_is_available(explicit):
+            return explicit
+        print(f"[ERROR] Requested Web daemon port is already bound: {explicit}", file=sys.stderr)
+        print("[INFO] Stop the process using it or start without --port.", file=sys.stderr)
+        return None
+    start = derived_port(run_dir.name)
+    for offset in range(PORT_RANGE_COUNT):
+        candidate = PORT_RANGE_START + (start - PORT_RANGE_START + offset) % PORT_RANGE_COUNT
+        if port_is_available(candidate):
+            return candidate
+    print(f"[ERROR] No free Web daemon port in {PORT_RANGE_START}-{PORT_RANGE_END}.", file=sys.stderr)
+    return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    """Report whether a recorded pid still maps to a live process.
+
+    Never signals the process: POSIX uses signal 0 as a probe and Windows opens
+    it with query-only access.
+    """
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as error:
+            # Permission failures do not prove that the process is dead.
+            return error.errno != errno.ESRCH
+        except OverflowError:
+            return True
+    return windows_pid_is_alive(pid)
+
+
+def windows_pid_is_alive(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    if not 0 < pid <= 0xFFFFFFFF:
+        return True
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # ERROR_INVALID_PARAMETER identifies a nonexistent PID. Access denied
+        # and other probe failures must preserve the possibly live runtime.
+        return ctypes.get_last_error() != 87
+    try:
+        code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return code.value == STILL_ACTIVE
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def runtime_pid(run_dir: Path) -> int | None:
+    try:
+        pid = int((run_dir / "daemon.pid").read_text(encoding="utf-8").strip())
+        return pid if pid > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def web_launcher_options(extra: list[str]) -> tuple[bool, bool, list[str]]:
+    """Return embedded mode, explicit native-build approval, and remaining args."""
+    embedded = False
+    build_daemon = False
+    remaining: list[str] = []
+    for argument in extra:
+        if argument == "--embedded":
+            embedded = True
+        elif argument == "--build-daemon":
+            build_daemon = True
+        else:
+            remaining.append(argument)
+    return embedded, build_daemon, remaining
+
+
+def vite_options(extra: list[str]) -> list[str]:
+    """Strip daemon-only runtime options before forwarding options to Vite."""
+    result: list[str] = []
+    skip_next = False
+    for argument in extra:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument.startswith("--run-dir=") or argument.startswith("--port="):
+            continue
+        if argument in ("--run-dir", "--port"):
+            skip_next = True
+            continue
+        result.append(argument)
+    return result
+
+
 def web_runtime_is_available(root: Path, candidate: BuildCandidate | None, extra: list[str]) -> bool:
     run_dir = selected_web_runtime_dir(root, extra)
     explicit = any(arg == "--run-dir" or arg.startswith("--run-dir=") for arg in extra)
@@ -484,7 +655,7 @@ def web_runtime_is_available(root: Path, candidate: BuildCandidate | None, extra
         # A new commit changes the default run-dir name but an older worker
         # can still hold this build's executable open. Inspect only this
         # worktree's own launcher directories, without stopping any process.
-        prefix = re.sub(r"[^A-Za-z0-9_.-]", "-", root.name + "-")
+        prefix = worktree_prefix(root)
         for previous in sorted(run_dir.parent.iterdir()):
             if previous.name.startswith(prefix) and (previous / "daemon.pid").exists():
                 run_dir = previous
@@ -560,9 +731,285 @@ def tui_command(root: Path, executable: Path, extra: list[str] | None = None) ->
     return None
 
 
+def daemon_port(runtime_dir: Path) -> int | None:
+    try:
+        port = int((runtime_dir / "daemon.port").read_text(encoding="utf-8").strip())
+        return port if 1 <= port <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def daemon_worker_log_path(runtime_dir: Path) -> Path:
+    return runtime_dir / WORKER_LOG_NAME
+
+
+def worker_failure_detail(runtime_dir: Path, reason: str) -> str:
+    return (f"{reason}; see {daemon_worker_log_path(runtime_dir)} and "
+            f"{runtime_dir / DAEMON_STARTUP_LOG_NAME}")
+
+
+def open_worker_log(runtime_dir: Path, command: list[str]):
+    """Open the append-mode worker log, writing a header for this spawn."""
+    log_path = daemon_worker_log_path(runtime_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    previous = log_path.with_name(f"{WORKER_LOG_NAME}.1")
+    try:
+        if log_path.is_file() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
+            previous.unlink(missing_ok=True)
+            log_path.replace(previous)
+    except OSError:
+        pass  # Rotation is best-effort; never block startup on it.
+    handle = log_path.open("ab")
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    # The header carries no token; only paths and the requested port.
+    handle.write(f"\n===== {stamp} spawn: {' '.join(command)} =====\n".encode("utf-8", "replace"))
+    handle.flush()
+    return handle
+
+
+def spawn_daemon_worker(root: Path, runtime_dir: Path, command: list[str]):
+    """Start the daemon worker as the only place this script launches it."""
+    log = open_worker_log(runtime_dir, command)
+    options = {"cwd": root, "stdout": log, "stderr": subprocess.STDOUT}
+    if os.name == "nt":
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        worker = subprocess.Popen(command, **options)
+    except OSError as error:
+        log.close()
+        print(f"[ERROR] Could not start Web daemon: {error}", file=sys.stderr)
+        return None
+    log.close()
+    return worker
+
+
+def daemon_is_healthy(root: Path, candidate: BuildCandidate, run_dir: Path,
+                      timeout_seconds: float = 0, worker=None) -> bool:
+    del root, candidate
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        # A worker that already exited will never answer /api/health; failing
+        # here keeps a crash visible in seconds instead of after the timeout.
+        if worker is not None and worker.poll() is not None:
+            return False
+        try:
+            pid = int((run_dir / "daemon.pid").read_text(encoding="utf-8").strip())
+            port = daemon_port(run_dir)
+            token = daemon_token(run_dir)
+            if pid > 0 and port is not None and token:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/health",
+                    headers={"X-ACECode-Token": token},
+                )
+                with urllib.request.urlopen(request, timeout=1) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                # A stale runtime can point at another daemon already using the
+                # same port. Match the daemon identity from the health payload,
+                # not merely TCP reachability.
+                if int(payload.get("pid", -1)) == pid and int(payload.get("port", -1)) == port:
+                    return True
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError,
+                urllib.error.URLError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def start_quick_web_daemon(root: Path, candidate: BuildCandidate, run_dir: Path, port: int) -> int | None:
+    """Start the worker directly; the detached daemon wrapper rejects token.tmp runtimes."""
+    command = [
+        str(candidate.executable), "daemon", "--foreground",
+        f"--cwd={root.as_posix()}", f"--run-dir={run_dir.as_posix()}", f"--port={port}",
+    ]
+    worker = spawn_daemon_worker(root, run_dir, command)
+    if worker is None:
+        return None
+    if not daemon_is_healthy(root, candidate, run_dir, timeout_seconds=15, worker=worker):
+        exit_code = worker.poll()
+        reason = f"worker exited with code {exit_code}" if exit_code is not None else "health check timed out"
+        print(f"[ERROR] {worker_failure_detail(run_dir, reason)}", file=sys.stderr)
+        return None
+    return daemon_port(run_dir)
+
+
+def stop_stale_runtime(root: Path, candidate: BuildCandidate | None, run_dir: Path) -> bool:
+    """Clear runtime files for a pid already confirmed dead. Never signals it."""
+    if candidate is None:
+        print("[ERROR] No verified executable is available to clean that runtime; check it manually.", file=sys.stderr)
+        return False
+    command = [str(candidate.executable), "daemon", "stop", f"--run-dir={run_dir.as_posix()}"]
+    try:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"[ERROR] Could not clean the stale runtime: {error}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        detail = result.stdout.strip() or result.stderr.strip() or f"exit code {result.returncode}"
+        print(f"[ERROR] Stale runtime cleanup failed: {detail}", file=sys.stderr)
+        return False
+    return True
+
+
+def reconcile_stale_runtime(root: Path, candidate: BuildCandidate | None, run_dir: Path) -> bool:
+    """Self-heal a rejected runtime only when its recorded pid is provably dead."""
+    if not (run_dir / "daemon.pid").exists():
+        return True  # Nothing ever claimed this directory; start fresh.
+    pid = runtime_pid(run_dir)
+    if pid is None:
+        print(f"[ERROR] Web daemon runtime has an unreadable pid file; inspect it before retrying: {run_dir}", file=sys.stderr)
+        return False
+    if pid_is_alive(pid):
+        print(f"[ERROR] Existing Web daemon runtime is unhealthy; stop it manually before retrying: {run_dir}", file=sys.stderr)
+        print(f"[INFO] Its recorded pid {pid} is still alive, so nothing was stopped or removed.", file=sys.stderr)
+        return False
+    print(f"[INFO] Recovering stale runtime whose pid {pid} is dead: {run_dir}")
+    return stop_stale_runtime(root, candidate, run_dir)
+
+
+def daemon_token(runtime_dir: Path) -> str | None:
+    for name in ("token", "token.tmp"):
+        try:
+            token = (runtime_dir / name).read_text(encoding="utf-8").strip()
+            if token:
+                return token
+        except OSError:
+            pass
+    return None
+
+
+def launch_vite(root: Path, daemon_port_number: int, runtime_dir: Path, extra: list[str]) -> int:
+    token = daemon_token(runtime_dir)
+    if token is None:
+        print(f"[ERROR] Web daemon did not provide an authentication token: {runtime_dir}", file=sys.stderr)
+        return 1
+    builder = load_web_builder(root)
+    if builder is None:
+        print("[ERROR] Cannot load Web development server helper.", file=sys.stderr)
+        return 1
+    try:
+        _, pnpm = builder.ensure_node_and_pnpm()
+    except (OSError, subprocess.SubprocessError, SystemExit):
+        return 1
+    web_dir = root / "web"
+    if not (web_dir / "node_modules").is_dir():
+        print("[INFO] Installing Web dependencies...")
+        if subprocess.run([pnpm, "install"], cwd=web_dir, check=False).returncode != 0:
+            return 1
+    environment = os.environ.copy()
+    environment["ACECODE_DAEMON_PORT"] = str(daemon_port_number)
+    environment["ACECODE_DAEMON_TOKEN"] = token
+    print(f"[INFO] Starting Vite with daemon proxy: http://127.0.0.1:{daemon_port_number}")
+    return subprocess.run([pnpm, "dev", *vite_options(extra)], cwd=web_dir, env=environment, check=False).returncode
+
+
+def prune_candidates(root: Path) -> list[Path]:
+    """Runtime directories worth inspecting: the worktree root plus the legacy tree."""
+    candidates: list[Path] = []
+    base = runtime_root(root)
+    if base.is_dir() and base.resolve().is_relative_to(root.resolve()):
+        candidates.extend(sorted(path for path in base.iterdir()))
+    legacy = root / ".acecode-dev-run"
+    if legacy.is_dir() and legacy.resolve().is_relative_to(root.resolve()):
+        candidates.append(legacy)
+    return candidates
+
+
+def classify_runtime_directory(directory: Path) -> tuple[bool, str]:
+    """Return whether the directory can be deleted and the reason why (not)."""
+    if not directory.is_dir():
+        return False, "not a directory"
+    if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
+        return False, "linked runtime directory"
+    if directory.resolve().parent != directory.parent.resolve():
+        return False, "runtime path escapes its parent"
+    pid = runtime_pid(directory)
+    if pid is None:
+        return False, "no readable daemon.pid"
+    if pid_is_alive(pid):
+        return False, f"pid {pid} is alive"
+    return True, str(pid)
+
+
+def prune_runtime_directories(directories: Iterable[Path]) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+    """Delete only directories whose recorded pid is confirmed dead."""
+    pruned: list[tuple[Path, str]] = []
+    skipped: list[tuple[Path, str]] = []
+    for directory in directories:
+        deletable, detail = classify_runtime_directory(directory)
+        if not deletable:
+            skipped.append((directory, detail))
+            continue
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            skipped.append((directory, f"remove failed: {error}"))
+            continue
+        pruned.append((directory, detail))
+    return pruned, skipped
+
+
+def prune_runtime_tree(root: Path, dry_run: bool = False) -> int:
+    candidates = prune_candidates(root)
+    if dry_run:
+        verdicts = [classify_runtime_directory(path) for path in candidates]
+        count = sum(1 for deletable, _ in verdicts if deletable)
+        print(f"[INFO] Dry run: pruning would remove {count} of {len(verdicts)} inspected path(s).")
+        return 0
+    pruned, skipped = prune_runtime_directories(candidates)
+    print("[INFO] Pruned:")
+    for directory, pid in pruned or []:
+        print(f"  {directory} (dead pid={pid})")
+    if not pruned:
+        print("  (none)")
+    print("[INFO] Skipped:")
+    for directory, reason in skipped or []:
+        print(f"  {directory} ({reason})")
+    if not skipped:
+        print("  (none)")
+    print(f"[INFO] Total: pruned {len(pruned)}, skipped {len(skipped)}")
+    return 0
+
+
+def prune_worktree_runtime_dirs(root: Path, current: Path) -> int:
+    """Drop this worktree's own runtime directories left behind by dead pids."""
+    base = runtime_root(root)
+    if not base.is_dir() or not base.resolve().is_relative_to(root.resolve()):
+        return 0
+    prefix = worktree_prefix(root)
+    stale = [
+        previous for previous in sorted(base.iterdir())
+        if previous.is_dir() and previous.name != current.name and previous.name.startswith(prefix)
+    ]
+    pruned, _ = prune_runtime_directories(stale)
+    for directory, pid in pruned:
+        print(f"[INFO] Removed stale runtime for dead pid {pid}: {directory}")
+    return len(pruned)
+
+
+def launch_quick_web(root: Path, candidate: BuildCandidate, extra: list[str]) -> int:
+    run_dir = selected_web_runtime_dir(root, extra)
+    if daemon_is_healthy(root, candidate, run_dir):
+        port = daemon_port(run_dir)
+        print(f"[INFO] Reusing Web daemon: http://127.0.0.1:{port}")
+        return launch_vite(root, port, run_dir, extra)
+    if not reconcile_stale_runtime(root, candidate, run_dir):
+        return 1
+    prune_worktree_runtime_dirs(root, run_dir)
+    port = select_runtime_port(run_dir, extra)
+    if port is None:
+        return 1
+    started = start_quick_web_daemon(root, candidate, run_dir, port)
+    if started is None:
+        print("[ERROR] Web daemon could not be started.", file=sys.stderr)
+        return 1
+    print(f"[INFO] Started Web daemon: http://127.0.0.1:{started}")
+    return launch_vite(root, started, run_dir, extra)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start an ACECode development environment", allow_abbrev=False)
-    parser.add_argument("target", nargs="?", choices=TARGETS, help="development surface to start")
+    parser.add_argument("target", nargs="?", choices=TARGETS, help="development surface to start, or prune to reclaim stale runtimes")
     parser.add_argument("--build-dir", type=Path, help="build directory to validate and use")
     parser.add_argument("--yes", action="store_true", help="confirm a required CMake build")
     parser.add_argument("--dry-run", action="store_true", help="print the selected command without starting it")
@@ -574,7 +1021,7 @@ def parse_args() -> argparse.Namespace:
 def choose_target(target: str | None) -> str | None:
     if target:
         return target
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         print("[ERROR] Specify one target: web, desktop, or tui.", file=sys.stderr)
         return None
     selected = input("Choose development target [web/desktop/tui]: ").strip().lower()
@@ -590,6 +1037,47 @@ def main() -> int:
     if not target:
         return 2
     root = project_root()
+    if target == PRUNE_TARGET:
+        return prune_runtime_tree(root, dry_run=args.dry_run)
+    embedded, build_daemon, extra = web_launcher_options(args.extra) if target == "web" else (False, False, args.extra)
+    if target == "web" and not embedded:
+        if "--yes" in extra:
+            print("[ERROR] --yes is only available to the embedded validation workflow; use --build-daemon for quick mode.", file=sys.stderr)
+            return 2
+        candidate = find_compatible_build(root, target, args.build_dir)
+        if args.build_dir and candidate is None:
+            print(f"[ERROR] --build-dir does not contain a compatible configured {target} build: {(root / args.build_dir).resolve()}", file=sys.stderr)
+            return 1
+        if candidate is None:
+            preset = default_preset(target)
+            if preset is None:
+                print("[ERROR] No supported CMake preset for this platform and architecture.", file=sys.stderr)
+                return 1
+            if not build_daemon and (sys.stdin is None or not sys.stdin.isatty()):
+                print("[ERROR] No compatible daemon executable was found. Re-run with --build-daemon to authorize its native build.", file=sys.stderr)
+                return 1
+            if not ask_to_build(preset, target, build_daemon):
+                return 1
+            if args.dry_run:
+                print(f"[INFO] Dry run: cmake --preset {preset}")
+                return 0
+            if not ensure_windows_environment(root, None):
+                return 1
+            sccache = find_sccache()
+            built = configure_and_build(root, preset, target, sccache)
+            if not built and sccache:
+                print("[INFO] sccache configuration failed; retrying normal compilation.")
+                built = configure_and_build(root, preset, target, None)
+            if not built:
+                return 1
+            candidate = find_compatible_build(root, target, built)
+            if candidate is None:
+                print("[ERROR] Build completed but did not produce a compatible executable.", file=sys.stderr)
+                return 1
+        if args.dry_run:
+            print(f"[INFO] Dry run: start Vite with {candidate.executable}")
+            return 0
+        return launch_quick_web(root, candidate, extra)
     if target == "desktop" and "--list" in args.extra:
         command = [sys.executable, str(root / "scripts/dev_desktop.py"), *args.extra]
         if args.build_dir:
@@ -607,7 +1095,7 @@ def main() -> int:
     if args.build_dir and candidate is None:
         print(f"[ERROR] --build-dir does not contain a compatible configured {target} build: {(root / args.build_dir).resolve()}", file=sys.stderr)
         return 1
-    if not args.dry_run and target == "web" and not web_runtime_is_available(root, candidate, args.extra):
+    if not args.dry_run and target == "web" and not web_runtime_is_available(root, candidate, extra):
         return 1
     if not args.dry_run and not ensure_windows_environment(root, candidate):
         return 1
@@ -620,7 +1108,7 @@ def main() -> int:
         if preset is None:
             print("[ERROR] No supported CMake preset for this platform and architecture.", file=sys.stderr)
             return 1
-        if not ask_to_build(preset, target, args.yes):
+        if not ask_to_build(preset, target, args.yes or (target == "web" and embedded and os.name == "nt")):
             return 1
         if args.dry_run:
             print(f"[INFO] Dry run: cmake --preset {preset}")
@@ -649,6 +1137,10 @@ def main() -> int:
                     return 1
             else:
                 return 1
+    if not args.dry_run and target == "web":
+        if not refresh_web_assets(root):
+            print("[ERROR] Web asset refresh failed; embedded development environment was not started.", file=sys.stderr)
+            return 1
     if not args.dry_run and not build_target(root, candidate.build_dir, target, sccache, candidate.configuration):
         if sccache:
             preset = default_preset(target)
@@ -662,12 +1154,12 @@ def main() -> int:
         else:
             print("[ERROR] Incremental build failed; development environment was not started.", file=sys.stderr)
             return 1
-    if target in {"web", "desktop"} and not args.dry_run:
-        refreshed = refresh_web_assets(root, force=True) if target == "desktop" and "--rebuild" in args.extra else refresh_web_assets(root)
+    if target == "desktop" and not args.dry_run:
+        refreshed = refresh_web_assets(root, force=True) if "--rebuild" in args.extra else refresh_web_assets(root)
         if not refreshed:
             print("[ERROR] Web asset refresh failed; development environment was not started.", file=sys.stderr)
             return 1
-    return launch_surface(root, target, candidate, args.dry_run, args.extra)
+    return launch_surface(root, target, candidate, args.dry_run, extra)
 
 
 if __name__ == "__main__":
