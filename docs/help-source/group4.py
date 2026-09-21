@@ -9,6 +9,24 @@ PAGES = {
     section("save", "修改与生效",
         '''<p>模型页通过保存模型或保存修改提交；个性化文本和 MCP JSON 等控件会在离开编辑区时保存，并显示保存状态。TUI 设置中心的 General、Appearance 开关通常即时保存，配置与模型表单按底部提示使用 <kbd>Ctrl+S</kbd>。</p><p>不同配置有不同生效边界。任务模型和权限使用专门的切换入口；后台连接与运行服务以界面的应用结果为准。出现“重启 daemon 后生效”时，保存正在进行的工作后重启。手动改动任意 JSON 文件，并不等于所有运行中的模块都已经重新加载。</p>''',
         note("配置片段需要合并", "文档中的 JSON 示例只展示相关字段。请合并到现有对象中，不要用片段替换整份配置，否则可能丢失已经保存的模型和其他设置。")),
+    section("tui-ask-user-question", "TUI 问答配置",
+        '''<p>TUI 中的 AskUserQuestion 会在选项较多或说明较长时使用可滚动内容区。以下字段位于配置文件的 <code>tui</code> 对象中：</p>''',
+        table(["字段", "默认值", "有效范围", "说明"], [["<code>question_min_visible_rows</code>", "4", "2–12", "AskUserQuestion 内容区的最小可见行数。内容超出视口后，可使用鼠标滚轮或滚动条查看。"], ["<code>question_selection_feedback_ms</code>", "200", "0–1000", "预设选项提交后保留选中视觉反馈的时长，单位为毫秒。设置为 <code>0</code> 可关闭反馈延迟。"]]),
+        '''<p>例如：</p><pre><code>{
+  "tui": {
+    "question_min_visible_rows": 4,
+    "question_selection_feedback_ms": 200
+  }
+}</code></pre><p>这两个字段会在读取配置时限制在有效范围内。超出范围的整数会自动限制到边界，并记录警告；非整数值会被忽略并继续使用默认值。省略字段时使用默认值，配置保存采用稀疏写入，不会强制写出默认值。</p>'''),
+    section("ask-user-question", "AskUserQuestion 跨端配置",
+        '''<p>TUI 与 Web/Desktop 使用同一个 AskUserQuestion 工具，题目数量和单个问题的选项数量上限由 <code>ask</code> 对象统一控制，对所有运行端生效。以下字段位于配置文件的 <code>ask</code> 对象中：</p>''',
+        table(["字段", "默认值", "有效范围", "说明"], [["<code>max_questions</code>", "10", "1–50", "单次 AskUserQuestion 调用允许的题目数量。"], ["<code>max_options</code>", "6", "4–8", "单个问题允许的选项数量上限。默认 6，可在 4 到 8 之间调整。"]]),
+        '''<p>例如：</p><pre><code>{
+  "ask": {
+    "max_questions": 10,
+    "max_options": 6
+  }
+}</code></pre><p>超出有效范围的整数会自动限制到边界，并记录警告；非整数值会被忽略并继续使用默认值。省略字段时使用默认值，配置保存采用稀疏写入，不会强制写出默认值。</p>'''),
     section("recovery", "手动编辑与错误恢复",
         '''<ol><li>先备份当前有效配置，使用支持 UTF-8 的编辑器打开。</li><li>只修改目标字段，保持正确的 JSON 类型，不加入注释或尾随逗号。</li><li>重新加载相关功能，或按该功能要求重启。</li><li>检查界面实际值和一次小操作，确认修改已生效。</li></ol><p>当前版本会保存有效配置快照。配置损坏且存在有效快照时，会备份错误文件并尝试自动恢复；Web/Desktop 会显示一次<strong>配置已自动回滚</strong>提示。没有可用快照时仍会报告配置错误。按提示查看备份位置并修复目标字段，备份可能含密钥，不要直接公开。</p>''')
 ], ["src/config/config.cpp", "src/config/config.hpp", "docs/user-manual.md", "web/src/components/SettingsPage.jsx"]),

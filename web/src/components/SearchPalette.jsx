@@ -1,19 +1,25 @@
 // 全局会话搜索面板:服务端增量目录 + 有界正文短批次。
 // 每次打开/查询都有独立 request_id；本地 AbortController 与服务端取消
 // 同时执行，因此 Esc、关闭按钮、遮罩、查询替换和卸载都能真正停止工作。
+// 第三组「设置」是纯本地的:复用设置窗口的索引(settingsSearchEntries),
+// 选中后由 App 打开设置窗口并把同一条结果选成当前项。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import {
   buildSearchResultSequence,
   mergeSessionContentMatches,
   rankSessions,
+  rankSettingsForPalette,
   rankWorkspaces,
   searchRelativeTime,
   shouldSearchUserMessages,
   workspaceDisplayName,
 } from '../lib/searchSessions.js';
+import { settingsSearchEntries } from '../lib/settingsSearch.js';
+import { loadDeveloperModeUnlocked } from '../lib/developerMode.js';
 import { sessionDisplayTitle, withNewSessionDisplayTitles } from '../lib/sessionTitle.js';
 import { SESSION_LIST_CHANGED_EVENT } from '../lib/sessionListEvents.js';
 import { clsx } from '../lib/format.js';
@@ -119,7 +125,9 @@ export function SearchPalette({
   currentWorkspaceHash = '',
   onSelectSession,
   onSelectWorkspace,
+  onSelectSetting,
 }) {
+  const { i18n } = useTranslation();
   const [query, setQuery] = useState('');
   const [data, setData] = useState(cache.data);
   const [contentSearch, setContentSearch] = useState({
@@ -307,9 +315,20 @@ export function SearchPalette({
     () => rankWorkspaces(data.workspaces || [], query),
     [data.workspaces, query],
   );
+  // 设置索引的文案随界面语言变;开发者模式解锁与否决定「开发者模式」那组是否可搜,
+  // 每次打开面板重读一次(localStorage 读取很廉价),不必订阅解锁事件。
+  const settingsEntries = useMemo(
+    () => settingsSearchEntries(loadDeveloperModeUnlocked()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [i18n.language, open],
+  );
+  const settingItems = useMemo(
+    () => rankSettingsForPalette(settingsEntries, query),
+    [settingsEntries, query],
+  );
   const items = useMemo(
-    () => buildSearchResultSequence(taskItems, projectItems),
-    [projectItems, taskItems],
+    () => buildSearchResultSequence(taskItems, projectItems, settingItems),
+    [projectItems, settingItems, taskItems],
   );
 
   useEffect(() => {
@@ -336,8 +355,14 @@ export function SearchPalette({
       onSelectWorkspace?.(item.value);
       return;
     }
+    if (item.kind === 'setting') {
+      // 把用户在面板里敲的原始查询一并带走:设置窗口用同一份索引重跑同一个查询,
+      // 结果列表与这里一致,再按 id 把选中项对齐,用户看到的是「同一次搜索」的延续。
+      onSelectSetting?.(item.value, query.trim());
+      return;
+    }
     onSelectSession?.(item.value);
-  }, [items, onSelectSession, onSelectWorkspace]);
+  }, [items, onSelectSession, onSelectWorkspace, onSelectSetting, query]);
 
   const onRootKeyDown = useCallback((event) => {
     const total = items.length;
@@ -430,7 +455,7 @@ export function SearchPalette({
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索任务或项目"
+            placeholder="搜索任务、项目或设置"
             className="flex-1 bg-transparent border-0 outline-none text-[14px] text-fg placeholder:text-fg-mute"
           />
           <button
@@ -562,6 +587,50 @@ export function SearchPalette({
                   ) : null}
                 </span>
                 <span className="text-[12px] text-fg-mute shrink-0">{right}</span>
+              </div>
+            );
+          })}
+          {settingItems.length > 0 && (
+            <div
+              className={clsx(
+                'px-3 py-1.5 flex items-center justify-between border-b border-border bg-surface-alt text-[11px] font-semibold text-fg-mute',
+                // 紧挨着「项目」组头(没有项目命中)时不再补上边线,否则两条 1px 叠成 2px。
+                projectItems.length > 0 && 'border-t',
+              )}
+            >
+              <span>设置</span>
+              <span>{settingItems.length}</span>
+            </div>
+          )}
+          {settingItems.map((setting, settingIndex) => {
+            const index = taskItems.length + projectItems.length + settingIndex;
+            const item = items[index];
+            const selected = index === selectedIndex;
+            const sectionLabel = String(setting.sectionLabel || '').trim();
+            return (
+              <div
+                key={item?.key || `setting:${setting.id || settingIndex}`}
+                ref={(element) => {
+                  if (element) rowRefs.current.set(index, element);
+                  else rowRefs.current.delete(index);
+                }}
+                role="option"
+                aria-selected={selected}
+                onMouseEnter={() => setSelectedIndex(index)}
+                onMouseDown={(event) => { event.preventDefault(); commit(index); }}
+                className={clsx(
+                  'min-h-12 px-3 py-2 flex items-center gap-3 cursor-pointer text-[13px]',
+                  selected ? 'bg-surface-hi text-fg' : 'text-fg hover:bg-surface-hi/60',
+                )}
+              >
+                <VsIcon name="settings" size={16} className="text-fg-mute shrink-0" />
+                <span className="min-w-0 flex-1 flex flex-col gap-0.5">
+                  <span className="truncate">{setting.label}</span>
+                  {sectionLabel && sectionLabel !== setting.label ? (
+                    <span className="truncate text-[11px] text-fg-mute">{sectionLabel}</span>
+                  ) : null}
+                </span>
+                {selected && <span className="text-[12px] text-fg-mute shrink-0">Enter</span>}
               </div>
             );
           })}

@@ -626,6 +626,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '定时任务': 'Scheduled tasks',
   '定时任务，归档': 'Scheduled task, archive',
   '搜索任务': 'Search tasks',
+  '搜索任务、项目或设置': 'Search tasks, projects, or settings',
   '工作区': 'Workspace',
   '当前会话': 'Current session',
   '工作区菜单': 'Workspace menu',

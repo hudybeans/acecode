@@ -82,6 +82,17 @@ export function searchSettings(entries, query) {
   }).filter((entry) => entry.score).sort((a, b) => b.score - a.score).map((entry) => entry.item);
 }
 
+// 全局搜索面板选中某条设置后,设置窗口要把同一条结果选成当前项。
+// 先按 id 对齐(两边用同一份 settingsSearchEntries 生成,id 稳定),
+// 开发者模式解锁状态不一致时 id 可能错位,退回 section+label 匹配;都找不到取 0。
+export function settingsSearchResultIndex(results, target) {
+  if (!Array.isArray(results) || results.length === 0 || !target) return 0;
+  const byId = target.id ? results.findIndex((item) => item.id === target.id) : -1;
+  if (byId >= 0) return byId;
+  const byLabel = results.findIndex((item) => item.section === target.section && item.label === target.label);
+  return byLabel >= 0 ? byLabel : 0;
+}
+
 export function locateSetting(root, result) {
   if (!root || !result) return null;
   const walker = root.ownerDocument.createTreeWalker(root, 4);

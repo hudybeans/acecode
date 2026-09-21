@@ -42,13 +42,17 @@
 <p>具体位置见<a href="reference.html#data">本地配置和数据</a>。复制配置到其他计算机前，检查其中的绝对路径、可执行文件位置和认证信息。</p></section>
 <section aria-labelledby="save"><h2 id="save">修改与生效</h2><p>模型页通过保存模型或保存修改提交；个性化文本和 MCP JSON 等控件会在离开编辑区时保存，并显示保存状态。TUI 设置中心的 General、Appearance 开关通常即时保存，配置与模型表单按底部提示使用 <kbd>Ctrl+S</kbd>。</p><p>不同配置有不同生效边界。任务模型和权限使用专门的切换入口；后台连接与运行服务以界面的应用结果为准。出现“重启 daemon 后生效”时，保存正在进行的工作后重启。手动改动任意 JSON 文件，并不等于所有运行中的模块都已经重新加载。</p>
 <aside class="note"><strong>配置片段需要合并</strong><p>文档中的 JSON 示例只展示相关字段。请合并到现有对象中，不要用片段替换整份配置，否则可能丢失已经保存的模型和其他设置。</p></aside></section>
-<section aria-labelledby="tui-ask-user-question"><h2 id="tui-ask-user-question">TUI 问答配置</h2><p>TUI 中的 AskUserQuestion 会在选项较多或说明较长时使用可滚动内容区。以下字段位于配置文件的 <code>tui</code> 对象中：</p><div class="table-scroll"><table><thead><tr><th scope="col">字段</th><th scope="col">默认值</th><th scope="col">有效范围</th><th scope="col">说明</th></tr></thead><tbody><tr><td><code>question_min_visible_rows</code></td><td>4</td><td>2–12</td><td>AskUserQuestion 内容区的最小可见行数。内容超出视口后，可使用鼠标滚轮或滚动条查看。</td></tr><tr><td><code>question_selection_feedback_ms</code></td><td>200</td><td>0–1000</td><td>预设选项提交后保留选中视觉反馈的时长，单位为毫秒。设置为 <code>0</code> 可关闭反馈延迟。</td></tr></tbody></table></div><p>例如：</p><pre><code>{
+<section aria-labelledby="tui-ask-user-question"><h2 id="tui-ask-user-question">TUI 问答配置</h2><p>TUI 中的 AskUserQuestion 会在选项较多或说明较长时使用可滚动内容区。以下字段位于配置文件的 <code>tui</code> 对象中：</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">字段</th><th scope="col">默认值</th><th scope="col">有效范围</th><th scope="col">说明</th></tr></thead><tbody><tr><td><code>question_min_visible_rows</code></td><td>4</td><td>2–12</td><td>AskUserQuestion 内容区的最小可见行数。内容超出视口后，可使用鼠标滚轮或滚动条查看。</td></tr><tr><td><code>question_selection_feedback_ms</code></td><td>200</td><td>0–1000</td><td>预设选项提交后保留选中视觉反馈的时长，单位为毫秒。设置为 <code>0</code> 可关闭反馈延迟。</td></tr></tbody></table></div>
+<p>例如：</p><pre><code>{
   "tui": {
     "question_min_visible_rows": 4,
     "question_selection_feedback_ms": 200
   }
 }</code></pre><p>这两个字段会在读取配置时限制在有效范围内。超出范围的整数会自动限制到边界，并记录警告；非整数值会被忽略并继续使用默认值。省略字段时使用默认值，配置保存采用稀疏写入，不会强制写出默认值。</p></section>
-<section aria-labelledby="ask-user-question"><h2 id="ask-user-question">AskUserQuestion 跨端配置</h2><p>TUI 与 Web/Desktop 使用同一个 AskUserQuestion 工具，题目数量和单个问题的选项数量上限由 <code>ask</code> 对象统一控制，对所有运行端生效。以下字段位于配置文件的 <code>ask</code> 对象中：</p><div class="table-scroll"><table><thead><tr><th scope="col">字段</th><th scope="col">默认值</th><th scope="col">有效范围</th><th scope="col">说明</th></tr></thead><tbody><tr><td><code>max_questions</code></td><td>10</td><td>1–50</td><td>单次 AskUserQuestion 调用允许的题目数量。</td></tr><tr><td><code>max_options</code></td><td>6</td><td>4–8</td><td>单个问题允许的选项数量上限。默认 6，可在 4 到 8 之间调整。</td></tr></tbody></table></div><p>例如：</p><pre><code>{
+<section aria-labelledby="ask-user-question"><h2 id="ask-user-question">AskUserQuestion 跨端配置</h2><p>TUI 与 Web/Desktop 使用同一个 AskUserQuestion 工具，题目数量和单个问题的选项数量上限由 <code>ask</code> 对象统一控制，对所有运行端生效。以下字段位于配置文件的 <code>ask</code> 对象中：</p>
+<div class="table-scroll"><table><thead><tr><th scope="col">字段</th><th scope="col">默认值</th><th scope="col">有效范围</th><th scope="col">说明</th></tr></thead><tbody><tr><td><code>max_questions</code></td><td>10</td><td>1–50</td><td>单次 AskUserQuestion 调用允许的题目数量。</td></tr><tr><td><code>max_options</code></td><td>6</td><td>4–8</td><td>单个问题允许的选项数量上限。默认 6，可在 4 到 8 之间调整。</td></tr></tbody></table></div>
+<p>例如：</p><pre><code>{
   "ask": {
     "max_questions": 10,
     "max_options": 6
