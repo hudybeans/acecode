@@ -131,7 +131,7 @@ run('slash candidate confirmation commits the command with a trailing space and 
   assert.match(handler, /if \(!commandQuery\.leading\) return/);
   assert.match(handler, /insertSkill\?\.\(item, commandQuery\.begin, commandQuery\.end\)/);
   assert.match(handler, /value\.slice\(commandQuery\.end\)/);
-  assert.match(handler, /updateValue\(next, undefined, commandQuery\)/);
+  assert.match(handler, /updateValue\(next, undefined, commandQuery, \{ goalMode: selectedGoal \}\)/);
   assert.match(handler, /setSelectionRange\(cursor, cursor\)/);
 });
 
@@ -267,7 +267,7 @@ run('rich context paste mutates Slate state while send gating reads the controll
   assert.match(composer, /INSERT_TEXT[\s\S]*applyPlainTextPaste\(detail\.text, detail\.selection\)/);
   assert.match(composer, /const applyPlainTextPaste = useCallback\([\s\S]*ensureLegalEditorDocument\(editor\)[\s\S]*Transforms\.select[\s\S]*insertPlainText\(editor, normalizedText\)/);
   assert.doesNotMatch(composer, /execCommand/);
-  assert.match(inputBar, /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting, canRetryLastUserMessage \}\)/);
+  assert.match(inputBar, /getInputBarActionState\(\{ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage \}\)/);
   assert.match(inputBar, /<RichComposer[\s\S]*onChange=\{handleComposerChange\}/);
   assert.match(chatView, /const handleComposerChange = useCallback\(\(next, content[^)]*\) => \{[\s\S]*setComposerValue\(next, normalized\)/);
 });

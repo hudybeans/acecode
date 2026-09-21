@@ -787,7 +787,7 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
                         "unknown session"};
             }
             auto outcome = rc_binder.execute_command(id, request.args);
-            entry->loop->emit_system_message(outcome.message);
+            entry->loop->emit_system_message(outcome.message, outcome.notice_metadata);
             return {outcome.ok ? acecode::BuiltinCommandStatus::Accepted
                                : acecode::BuiltinCommandStatus::Failed,
                     outcome.message};

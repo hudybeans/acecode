@@ -1,6 +1,7 @@
 // Human-reviewed product terminology and phrases where generic machine
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
+  '取消目标': 'Cancel goal',
   '开发者模式': 'Developer mode',
   '桌面启动': 'Desktop startup',
   '允许多进程启动': 'Allow multiple instances',
@@ -948,7 +949,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '请输入批注内容': 'Enter an annotation',
   '添加批注...': 'Add an annotation…',
   '批注内容': 'Annotation',
-  'Enter 引用 · Shift+Enter 换行': 'Enter to quote · Shift+Enter for a new line',
+  'Shift+Enter 换行': 'Shift+Enter for a new line',
   '引用': 'Quote',
   '选中文本操作': 'Selected text actions',
   '批注': 'Annotate',
@@ -978,7 +979,6 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '已暂停的目标': 'Paused goal',
   '隐藏完整目标': 'Hide full goal',
   '暂停目标': 'Pause goal',
-  'Ctrl+Enter 保存': 'Ctrl+Enter to save',
   '远程 Web 状态读取失败': 'Failed to load remote Web status',
   '远程 Web 模式已开启': 'Remote Web mode enabled',
   '远程 Web 模式已关闭，仅允许本机访问': 'Remote Web mode disabled; local access only',

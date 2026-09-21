@@ -89,7 +89,6 @@ function GoalEditModal({ objective, pending, onCancel, onSave }) {
             }}
             className="min-h-[180px] w-full resize-none rounded-lg border border-border bg-surface-alt px-3 py-2.5 text-[13px] leading-5 text-fg outline-none transition focus:border-accent disabled:opacity-60"
           />
-          <div className="mt-1.5 text-[11px] text-fg-mute">Ctrl+Enter 保存</div>
         </div>
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
           <button
@@ -104,10 +103,11 @@ function GoalEditModal({ objective, pending, onCancel, onSave }) {
             type="submit"
             data-ace-dialog-primary="true"
             disabled={!canSave}
-            className="flex h-8 min-w-[64px] items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-[12px] text-white hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+            className="flex h-8 min-w-[64px] items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-accent px-3 text-[12px] text-white hover:opacity-90 disabled:cursor-default disabled:opacity-50"
           >
             {pending && <span className="ace-spinner text-[12px]" aria-hidden="true" />}
-            保存
+            <span>保存</span>
+            <span className="ace-action-shortcut-hint">Ctrl + Enter</span>
           </button>
         </div>
       </form>

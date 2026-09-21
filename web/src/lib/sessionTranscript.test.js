@@ -120,7 +120,7 @@ run('history load 后完成的压缩通知恢复为一个折叠投影', () => {
 
   const projected = projectLoadedItems(loaded.items);
   assert.equal(projected.length, 1);
-  assert.equal(projected[0].metadata.compact_label, 'Context compacted');
+  assert.equal(projected[0].metadata.system_notice.code, 'context_compacted');
   assert.equal(projected[0].metadata.compact_notice_complete, true);
   assert.match(projected[0].content, /long summary/);
 });
@@ -151,7 +151,7 @@ run('live compact 消息到达完成边界后合并为一个折叠投影', () =>
 
   const projected = projectLoadedItems(live.items);
   assert.equal(projected.length, 1);
-  assert.equal(projected[0].metadata.compact_label, 'Context compacted');
+  assert.equal(projected[0].metadata.system_notice.code, 'context_compacted');
   assert.deepEqual(projected[0].coveredItemIds, [1, 2, 3]);
 });
 

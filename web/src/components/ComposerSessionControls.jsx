@@ -60,7 +60,7 @@ function useAdaptiveComposerControls(rootRef, measureKey) {
           || (rightRect && leftEdge > rightRect.left - 1);
       };
 
-      const compactOrder = ['permission', 'expert', 'swarm-mode', 'model'];
+      const compactOrder = ['permission', 'expert-pending', 'expert', 'swarm-mode', 'goal', 'model'];
       const nextCompact = new Set();
       for (const controlName of compactOrder) {
         if (!isCrowded()) break;
@@ -155,8 +155,31 @@ function ModelLoadIndicator({ load }) {
   );
 }
 
+function ComposerSelectionTag({ icon, compact, status, pending = false, children, ...props }) {
+  return (
+    <button
+      {...props}
+      type="button"
+      data-adaptive-composer-control="true"
+      data-compact={compact ? 'true' : 'false'}
+      onPointerDown={(event) => event.preventDefault()}
+      className={clsx('ace-composer-adaptive-chip', pending && 'ace-composer-pending-chip')}
+    >
+      <span className="ace-composer-chip-icon" aria-hidden="true">
+        <span className="ace-composer-chip-symbol">{icon}</span>
+        <VsIcon name="close" size={16} className="ace-composer-chip-remove" />
+      </span>
+      <span className="ace-composer-adaptive-content min-w-0 truncate">{children}</span>
+      {status && <span role="status" className="sr-only">{status}</span>}
+    </button>
+  );
+}
+
 export function ComposerSessionControls({
   addControl,
+  goalMode = false,
+  goalDisabled = false,
+  onDisableGoal,
   contexts,
   actions,
   className = '',
@@ -200,7 +223,7 @@ export function ComposerSessionControls({
   };
   const compactControls = useAdaptiveComposerControls(
     rootRef,
-    `${swarmMode}|${expertName}|${permissionMode}|${selectedModelName}|${model}|${reasoningOptions?.label || ''}`,
+    `${goalMode}|${swarmMode}|${expertName}|${pendingExpertName}|${permissionMode}|${selectedModelName}|${model}|${reasoningOptions?.label || ''}`,
   );
 
   useEffect(() => {
@@ -275,97 +298,67 @@ export function ComposerSessionControls({
           {addControl}
         </div>
 
-        {swarmMode && (
-          <div
-            data-adaptive-composer-control="true"
-            data-compact={compactControls.has('swarm-mode') ? 'true' : 'false'}
-            data-composer-control="swarm-mode"
-            role="status"
-            aria-label="已开启蜂群模式"
-            title="下一条普通消息将积极派遣子 Agent"
-            className="ace-composer-adaptive-chip ace-composer-swarm-chip flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md bg-accent-bg px-2 text-accent"
+        {goalMode && (
+          <ComposerSelectionTag
+            data-composer-control="goal"
+            compact={compactControls.has('goal')}
+            icon={<VsIcon name="Goal" size={16} />}
+            disabled={goalDisabled}
+            onClick={onDisableGoal}
+            title="取消目标"
+            aria-label="取消目标"
           >
-            <SwarmModeIcon size={14} className="shrink-0" />
-            <span className="ace-composer-adaptive-content text-[11px] font-medium">蜂群模式</span>
-            <button
-              type="button"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={onDisableSwarm}
-              title="关闭蜂群模式"
-              aria-label="关闭蜂群模式"
-              className="ace-composer-adaptive-content flex h-4 w-4 shrink-0 items-center justify-center rounded text-accent opacity-70 hover:bg-accent-bg hover:opacity-100"
-            >
-              <VsIcon name="close" size={11} />
-            </button>
-          </div>
+            目标
+          </ComposerSelectionTag>
+        )}
+
+        {swarmMode && (
+          <ComposerSelectionTag
+            data-composer-control="swarm-mode"
+            compact={compactControls.has('swarm-mode')}
+            icon={<SwarmModeIcon size={16} />}
+            onClick={onDisableSwarm}
+            status="已开启蜂群模式"
+            aria-label="关闭蜂群模式"
+            title="下一条普通消息将积极派遣子 Agent"
+          >
+            蜂群模式
+          </ComposerSelectionTag>
         )}
 
         {expertName && (
-          <div
-            data-adaptive-composer-control="true"
-            data-compact={compactControls.has('expert') ? 'true' : 'false'}
+          <ComposerSelectionTag
             data-composer-control="expert"
+            compact={compactControls.has('expert')}
+            icon={<VsIcon name="expert" size={16} />}
             data-expert-id={expertId || undefined}
             data-expert-type={expertType === 'team' ? 'team' : 'agent'}
+            disabled={expertRemoving}
+            onClick={onRemoveExpert}
+            status={`已派遣${expertType === 'team' ? '专家团' : '专家'}：${expertName}`}
+            aria-label={`解除${expertType === 'team' ? '专家团' : '专家'}：${expertName}`}
             title={`当前专家组件：${expertName}`}
-            className="ace-composer-adaptive-chip ace-composer-expert-chip flex h-7 min-w-0 max-w-[210px] shrink items-center gap-1.5 rounded-md bg-accent-bg px-2 text-accent"
           >
-            <span
-              role="status"
-              aria-label={`已派遣${expertType === 'team' ? '专家团' : '专家'}：${expertName}`}
-              className="flex min-w-0 items-center gap-1.5"
-            >
-              <VsIcon name="expert" size={14} className="shrink-0" />
-              <span className="ace-composer-adaptive-content min-w-0 truncate text-[11px] font-medium">{expertName}</span>
-              <span className="ace-composer-adaptive-content shrink-0 text-[9px] opacity-70">
-                {expertType === 'team' ? '专家团' : '专家'}
-              </span>
-            </span>
-            <button
-              type="button"
-              disabled={expertRemoving}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={onRemoveExpert}
-              title={`解除${expertType === 'team' ? '专家团' : '专家'} ${expertName}`}
-              aria-label={`解除${expertType === 'team' ? '专家团' : '专家'}：${expertName}`}
-              className={clsx(
-                'ace-composer-adaptive-content ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded text-accent opacity-70 hover:bg-accent-bg hover:opacity-100',
-                expertRemoving && 'cursor-wait opacity-50',
-              )}
-            >
-              <VsIcon name="close" size={11} />
-            </button>
-          </div>
+            {expertName}
+          </ComposerSelectionTag>
         )}
 
         {pendingExpertName && (
-          <div
+          <ComposerSelectionTag
             data-composer-control="expert-pending"
+            compact={compactControls.has('expert-pending')}
+            icon={<VsIcon name="running" size={16} mono={false} />}
             data-expert-type={pendingExpertType === 'team' ? 'team' : 'agent'}
-            role="status"
-            aria-live="polite"
-            aria-label={`下一轮派遣${pendingExpertType === 'team' ? '专家团' : '专家'}：${pendingExpertName}`}
+            pending
+            disabled={expertRemoving}
+            onClick={onRemoveExpert}
+            status={`下一轮派遣${pendingExpertType === 'team' ? '专家团' : '专家'}：${pendingExpertName}`}
+            aria-label={`取消派遣：${pendingExpertName}`}
             title={`当前轮保持原专家；下一轮派遣${pendingExpertName}`}
-            className="flex h-7 min-w-0 max-w-[220px] items-center gap-1.5 rounded-md bg-surface-hi px-2 text-warn"
           >
-            <VsIcon name="running" size={13} mono={false} className="shrink-0" />
-            <span className="shrink-0 text-[9px]">下一轮</span>
-            <span className="min-w-0 truncate text-[11px] font-medium">{pendingExpertName}</span>
-            <button
-              type="button"
-              disabled={expertRemoving}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={onRemoveExpert}
-              title={`取消派遣 ${pendingExpertName}`}
-              aria-label={`取消派遣：${pendingExpertName}`}
-              className={clsx(
-                'ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded text-warn opacity-70 hover:bg-surface-alt hover:opacity-100',
-                expertRemoving && 'cursor-wait opacity-50',
-              )}
-            >
-              <VsIcon name="close" size={11} />
-            </button>
-          </div>
+            <span className="mr-1 text-[9px]">下一轮</span>
+            {pendingExpertName}
+          </ComposerSelectionTag>
         )}
 
         <div

@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './composerGoal.test.js';
 import './developerMode.test.js';
 import './workspaceFolderOrder.test.js';
 import './interfaceIcons.test.js';
@@ -152,6 +153,8 @@ import './expertPrefill.test.js';
 import './expertComponentsArchitecture.test.js';
 import './recentExperts.test.js';
 import './compactMessagePreview.test.js';
+import './systemNotice.test.js';
+import './compactNoticeArchitecture.test.js';
 import './permissionMode.test.js';
 import './permissionRequestPresentation.test.js';
 import './permissionRequestQueue.test.js';

@@ -200,6 +200,7 @@ public:
     struct CommandOutcome {
         bool ok = false;
         std::string message;
+        nlohmann::json notice_metadata = nlohmann::json::object();
     };
 
     explicit SessionChannelBinder(SessionChannelBinderDeps deps);

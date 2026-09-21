@@ -15,6 +15,7 @@
 #include "commands/compact.hpp"
 #include "session/compact_checkpoint.hpp"
 #include "session/compact_notice.hpp"
+#include "session/system_notice.hpp"
 #include "session/session_history_recovery.hpp"
 #include "session/tool_metadata_codec.hpp"
 #include "session/tool_result_storage.hpp"
@@ -881,7 +882,8 @@ HookCommonPayloadFields AgentLoop::build_hook_common_fields(
 void AgentLoop::apply_hook_side_effects(const HookAggregateOutcome& outcome,
                                         bool include_additional_context) {
     for (const auto& message : outcome.system_messages) {
-        if (!message.empty()) dispatch_message("system", "[Hook] " + message, false);
+        if (!message.empty()) dispatch_message("system", "[Hook] " + message, false,
+            make_system_notice_metadata("hook_message", {{"text", message}}));
     }
     if (include_additional_context) {
         for (const auto& context : outcome.additional_context) {
@@ -1259,7 +1261,8 @@ bool AgentLoop::complete_task_handoff(
     if (paused_goal) emit_goal_updated(*paused_goal);
     emit_transcript_system_message(
         "Continued in session " + target_session_id + ".",
-        {{"task_handoff", true}, {"target_session_id", target_session_id}});
+        make_system_notice_metadata("session_continued", {{"session", target_session_id}},
+            {{"task_handoff", true}, {"target_session_id", target_session_id}}));
     return true;
 }
 
@@ -1663,8 +1666,8 @@ void AgentLoop::submit_compact() {
     queue_cv_.notify_one();
 }
 
-void AgentLoop::emit_system_message(const std::string& content) {
-    dispatch_message("system", content, false);
+void AgentLoop::emit_system_message(const std::string& content, nlohmann::json metadata) {
+    dispatch_message("system", content, false, std::move(metadata));
 }
 
 void AgentLoop::emit_transcript_system_message(const std::string& content,
@@ -1761,7 +1764,8 @@ void AgentLoop::note_pa_context_rejection(int request_tokens) {
         "[智能压缩] 服务端在约 " + std::to_string(request_tokens) +
         " tokens (最大 " + std::to_string(declared) +
         " tokens) 处拒收了请求，压缩阈值下调至 " + std::to_string(after) +
-        " tokens");
+        " tokens", make_system_notice_metadata("context_threshold_lowered",
+            {{"tokens", request_tokens}, {"declared", declared}, {"threshold", after}}));
 }
 
 void AgentLoop::note_pa_context_accepted(
@@ -1954,7 +1958,7 @@ void AgentLoop::apply_compact_result(
         make_compact_notice_metadata(notice_id, "checkpoint"));
     emit_transcript_system_message(
         "[Conversation summary]\n" + result.summary_text,
-        make_compact_notice_metadata(notice_id, "summary", true));
+        make_compact_notice_metadata(notice_id, "summary", true, {{"summary", result.summary_text}}));
     if (checkpoint_persisted) {
         const auto project_dir = session_manager_->current_project_dir();
         const auto source_id = session_manager_->current_session_id();
@@ -2023,7 +2027,9 @@ bool AgentLoop::run_mechanical_compact_fallback(
         "),已改为丢弃最旧的 " + std::to_string(repair.pruned_groups) +
         " 组历史、清除 " + std::to_string(repair.cleared_tool_outputs) +
         " 条旧工具输出腾出空间,会话继续。",
-        make_compact_notice_metadata(compact_notice_id, "warning"));
+        make_compact_notice_metadata(compact_notice_id, "warning", false,
+            {{"error", summarization_error}, {"groups", repair.pruned_groups},
+             {"outputs", repair.cleared_tool_outputs}}));
     return true;
 }
 
@@ -2050,7 +2056,8 @@ bool AgentLoop::maybe_run_auto_compact() {
         auto outcome = dispatch_codex_hook(kCodexHookEventPreCompact, "auto", payload);
         apply_hook_side_effects(outcome);
         if (outcome.continue_false || outcome.blocked || outcome.denied) {
-            emit_transcript_system_message("[Auto-compact] Stopped by hook.");
+            emit_transcript_system_message("[Auto-compact] Stopped by hook.",
+                make_system_notice_metadata("context_compact_stopped"));
             return false;
         }
     }
@@ -2071,7 +2078,7 @@ bool AgentLoop::maybe_run_auto_compact() {
         LOG_WARN("Auto-compact failed; provider unavailable");
         emit_transcript_system_message(
             "[Auto-compact] provider unavailable for compaction",
-            make_compact_notice_metadata(compact_notice_id, "error"));
+            make_compact_notice_metadata(compact_notice_id, "error", false, {{"provider_unavailable", true}}));
         return false;
     }
 
@@ -2106,7 +2113,7 @@ bool AgentLoop::maybe_run_auto_compact() {
         }
         emit_transcript_system_message(
             "[Auto-compact] " + result.error,
-            make_compact_notice_metadata(compact_notice_id, "error"));
+            make_compact_notice_metadata(compact_notice_id, "error", false, {{"error", result.error}}));
         return false;
     }
 
@@ -2263,7 +2270,8 @@ void AgentLoop::account_goal_usage(std::int64_t token_delta, bool allow_complete
         emit_goal_updated(*result.goal);
         if (budget_notice_goal_id_ != result.goal->goal_id) {
             budget_notice_goal_id_ = result.goal->goal_id;
-            dispatch_message("system", "[Goal] Token budget reached; automatic continuation stopped.", false);
+            dispatch_message("system", "[Goal] Token budget reached; automatic continuation stopped.", false,
+                make_system_notice_metadata("goal_budget_reached", {{"goal", thread_goal_to_json(*result.goal)}}));
             // 让运行中的回合在下一次模型请求前收到 wrap-up 提示(对齐 Codex
             // budget_limit steering):总结进展、指出剩余工作,不再开新活。
             pending_goal_budget_limit_steering_.store(true);
@@ -2533,7 +2541,7 @@ void AgentLoop::stop_active_goal_after_turn_error(const ProviderErrorInfo& info)
         usage_limited
             ? "[Goal] Provider usage limit hit; goal marked usage_limited and automatic continuation stopped. Use /goal resume to continue later."
             : "[Goal] Turn ended with an error; goal marked blocked and automatic continuation stopped. Use /goal resume to retry.",
-        false);
+        false, make_system_notice_metadata(usage_limited ? "goal_usage_limited" : "goal_blocked"));
     LOG_WARN("[goal] stopped active goal after turn error: status=" +
              to_string(next) + " provider_status_code=" +
              std::to_string(info.status_code));
@@ -3727,13 +3735,15 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                 if (!waiting_for_recovery && state.same_request_retries == 1) {
                     emit_transcript_system_message(
                         "[智能压缩] 服务端报「请求上下文过大」，先原样重发确认"
-                        "是否为瞬时故障；确认拒收后才会收缩历史。");
+                        "是否为瞬时故障；确认拒收后才会收缩历史。",
+                        make_system_notice_metadata("context_retrying"));
                 } else if (waiting_for_recovery && state.wait_retries == 1) {
                     emit_transcript_system_message(
                         "[智能压缩] 请求已缩到最小仍被服务端拒收；将按 5 秒起、"
                         "最长 60 秒的间隔反复重试（最多 " +
                         std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
-                        " 次），可随时停止。");
+                        " 次），可随时停止。", make_system_notice_metadata("context_waiting",
+                            {{"attempts", pa::PA_RESCUE_MAX_WAIT_RETRIES}}));
                 }
                 emit_pa_rescue_wait_progress(
                     error, plan, attempt, max_attempts, true);
@@ -3787,7 +3797,9 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                     " 次收缩）：已丢弃最旧的 " +
                     std::to_string(repair.pruned_groups) + " 组历史、清除 " +
                     std::to_string(repair.cleared_tool_outputs) +
-                    " 条旧工具输出后重试。");
+                    " 条旧工具输出后重试。", make_system_notice_metadata("context_history_pruned",
+                        {{"round", state.shrink_rounds}, {"groups", repair.pruned_groups},
+                         {"outputs", repair.cleared_tool_outputs}}));
                 skip_auto_compact_once_ = true;
                 return HandleErrorResult::Continue;
             }
@@ -3801,7 +3813,8 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                     {"label", plan.label},
                     {"detail", "去掉工具定义与注入上下文，仅保留核心工具"},
                 });
-                emit_transcript_system_message("[智能压缩] " + plan.label + "。");
+                emit_transcript_system_message("[智能压缩] " + plan.label + "。",
+                    make_system_notice_metadata("context_emergency"));
                 skip_auto_compact_once_ = true;
                 return HandleErrorResult::Continue;
             }
@@ -5863,7 +5876,10 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                              : u8"无正文也无工具调用") +
                         u8"),自动重试 " +
                         std::to_string(empty_response_retries) + "/" +
-                        std::to_string(kMaxEmptyResponseRetries) + u8"…");
+                        std::to_string(kMaxEmptyResponseRetries) + u8"…",
+                        make_system_notice_metadata("response_empty_retry",
+                            {{"attempt", empty_response_retries}, {"attempts", kMaxEmptyResponseRetries},
+                             {"truncated", truncated_by_length}}));
 
                     if (total_iterations > 0) {
                         --total_iterations; // 空轮不计入 max_iterations
@@ -5913,7 +5929,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                 step_usage);
             if (truncated_by_length) {
                 emit_transcript_system_message(
-                    u8"[输出截断] 本回复因输出 token 上限被截断,内容可能不完整。");
+                    u8"[输出截断] 本回复因输出 token 上限被截断,内容可能不完整。",
+                    make_system_notice_metadata("response_truncated"));
             }
             dispatch_assistant_completed_hook(assistant_msg, provider_snapshot);
             if (maybe_continue_from_stop_hook(provider_result.accumulated.content)) {
@@ -5955,7 +5972,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                std::to_string(max_iter) + ")";
         LOG_WARN(stop_msg);
         turn_timing_status = "error";
-        dispatch_message("system", stop_msg, false);
+        dispatch_message("system", stop_msg, false,
+            make_system_notice_metadata("iteration_limit", {{"limit", max_iter}}));
         {
             // 走的是 system 角色,dispatch_message 的 error 收集点抓不到;
             // 子会话被 cap 截断时父会话同样要拿到原因。
@@ -6003,15 +6021,16 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
     if (abort_requested_) {
         if (interrupted_for_new_turn) {
-            dispatch_message("system", "[Interjected]", false, {{"turn_interrupt", true}});
+            dispatch_message("system", "[Interjected]", false,
+                make_system_notice_metadata("turn_interjected", {}, {{"turn_interrupt", true}}));
         } else {
             const auto* user = trailing_transcript_message(messages_, true);
             // Persist the completed stop, including its exact retry target.
             // This notice stays out of the provider's message history.
-            emit_transcript_system_message("[Interrupted]", {
+            emit_transcript_system_message("[Interrupted]", make_system_notice_metadata("turn_interrupted", {}, {
                 {"user_aborted", true},
                 {"retry_user_message_id", user ? user->uuid : std::string{}},
-            });
+            }));
         }
     }
 
@@ -6104,7 +6123,8 @@ void AgentLoop::run_compact() {
         auto outcome = dispatch_codex_hook(kCodexHookEventPreCompact, "manual", payload);
         apply_hook_side_effects(outcome);
         if (outcome.continue_false || outcome.blocked || outcome.denied) {
-            emit_transcript_system_message("[Compact] Stopped by hook.");
+            emit_transcript_system_message("[Compact] Stopped by hook.",
+                make_system_notice_metadata("context_compact_stopped"));
             finish();
             return;
         }

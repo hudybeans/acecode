@@ -1079,6 +1079,18 @@ When `since=0` or omitted, returns a full snapshot object:
 Hidden file checkpoints, compact checkpoints, and hidden goal context messages
 are filtered from `messages`.
 
+Visible system messages may include `metadata.system_notice` with
+`{ "version": 1, "code": "goal_started", "params": { "goal": { ... } } }`.
+The stable event code and structured parameters describe the notice; Web and
+Desktop localize its title and fixed detail fields at render time. The original
+`content` remains the fallback for older clients and diagnostics. Existing
+metadata (for example `transcript_only`, `goal_audit` and `compact_notice_id`)
+is preserved. Unknown codes or versions must retain the full fallback text.
+Creating a goal emits one visible audit message containing the complete goal
+snapshot, rather than a separate overview followed by a start notice. System
+notices start collapsed independently of the general message-collapse setting;
+unrelated notices are never folded into tool activity summaries.
+
 Compact checkpoints are append-only. Version 2 records the Codex-shaped
 replacement model history together with `window_number`, `first_window_id`,
 `previous_window_id`, and `window_id`. Resume and fork start from the newest

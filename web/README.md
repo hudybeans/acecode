@@ -98,6 +98,13 @@ Tailwind v4 + CSS 变量。`<html data-theme="light|dark">` 切主题,变量值�
 
 新增颜色:在 `globals.css` 的 `@theme inline` + `:root` + `[data-theme="dark"]` 三处都加。
 
+## 操作快捷键提示
+
+保存、提交、引用等操作已有快捷键时，将提示放进对应按钮，紧随动作名称，使用
+`ace-action-shortcut-hint` 统一字号、间距和弱化样式，例如“保存　Ctrl + Enter”。
+目标编辑、排队消息编辑、问答提交和批注引用共用此样式；不再在编辑区下方重复显示操作快捷键。
+换行、导航和输入格式说明继续放在其输入区域。提示应与已有按键行为一致，不为没有快捷键的按钮添加提示。
+
 ## 协议
 
 后端 API 协议见 [`docs/daemon-api.md`](../docs/daemon-api.md);WS envelope 见 `src/web/`(C++ daemon 实现)。

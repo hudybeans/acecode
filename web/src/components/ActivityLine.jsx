@@ -4,7 +4,7 @@ import { clsx } from '../lib/format.js';
 /**
  * 对话流中唯一的被动活动首行。
  *
- * loading、运行/完成工具、工具汇总和处理摘要都复用这一个固定尺寸外壳；
+ * loading、运行/完成工具、工具汇总、处理摘要和系统提示复用这一个固定尺寸外壳；
  * 调用方只替换图标、文案和尾部元数据，避免状态切换时换壳或改变首行高度。
  */
 export function ActivityLine({
@@ -42,6 +42,7 @@ export function ActivityLine({
         ) : icon}
       </span>
       <span className={clsx(
+        'ace-activity-line-label',
         'whitespace-nowrap font-medium text-fg-mute group-hover/activity:text-fg',
         preserveLabel ? 'shrink-0' : 'min-w-0 max-w-[62%] truncate',
         liveCopyClassName,

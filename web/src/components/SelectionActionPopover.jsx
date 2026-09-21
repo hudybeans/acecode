@@ -120,11 +120,14 @@ export function SelectionActionPopover({
           />
           <div className="ace-selection-annotation-footer">
             <span className={error ? 'is-error' : ''}>
-              {error || 'Enter 引用 · Shift+Enter 换行'}
+              {error || 'Shift+Enter 换行'}
             </span>
             <div className="ace-selection-annotation-actions">
               <button type="button" onClick={onCancel}>取消</button>
-              <button type="button" className="is-primary" onClick={submit}>引用</button>
+              <button type="button" className="is-primary" onClick={submit}>
+                <span>引用</span>
+                <span className="ace-action-shortcut-hint">Enter</span>
+              </button>
             </div>
           </div>
         </div>

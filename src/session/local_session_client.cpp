@@ -3,6 +3,7 @@
 
 #include "ask_user_question_prompter.hpp"
 #include "session_storage.hpp"
+#include "system_notice.hpp"
 #include "../utils/logger.hpp"
 
 namespace acecode {
@@ -68,9 +69,11 @@ bool LocalSessionClient::send_input(const std::string& session_id, const UserInp
         if (!reload->ok) {
             LOG_WARN("[client] model profile reload failed; using current provider");
             entry->loop->emit_system_message(
-                "Warning: model profile reload failed; continuing with the current provider.");
+                "Warning: model profile reload failed; continuing with the current provider.",
+                make_system_notice_metadata("model_profile_reload_failed"));
         } else if (!reload->warning.empty()) {
-            entry->loop->emit_system_message("Warning: " + reload->warning);
+            entry->loop->emit_system_message("Warning: " + reload->warning,
+                make_system_notice_metadata("model_profile_warning", {{"text", reload->warning}}));
         }
     }
     registry_.maybe_start_auto_title(session_id, input);

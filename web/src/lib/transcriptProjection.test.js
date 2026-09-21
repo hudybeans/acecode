@@ -135,7 +135,7 @@ run('关闭自动折叠对所有历史轮次生效，继续将调用与返回配
   assert.deepEqual(flat.find((item) => item.id === 7).coveredItemIds, [6, 7, 8]);
 });
 
-run('关闭自动折叠不吞掉实时工具或等待状态，也不合并压缩通知正文', () => {
+run('关闭自动折叠不吞掉实时工具或等待状态，系统通知保持独立规则', () => {
   const options = { messageAutoCollapse: false, ensureLiveActivity: true, deferTrailingToolSummary: true, liveTurnId: 'turn-live' };
   const flat = projectCollapsedTranscriptItems([user(1), tool(2, { isDone: false })], options);
   assert.equal(flat[1].kind, 'tool');
@@ -144,7 +144,9 @@ run('关闭自动折叠不吞掉实时工具或等待状态，也不合并压缩
   assert.deepEqual(flat.at(-1).collapsedItems, []);
   assert.equal(projectCollapsedTranscriptItems([], options)[0].live, true);
   const notices = [compactNotice(3, 'compact-1', 'start', '正在压缩'), compactNotice(4, 'compact-1', 'complete', '压缩完成', true)];
-  assert.deepEqual(projectCollapsedTranscriptItems(notices, { messageAutoCollapse: false }), notices);
+  const result = projectCollapsedTranscriptItems(notices, { messageAutoCollapse: false });
+  assert.deepEqual(result, projectCollapsedTranscriptItems(notices, { messageAutoCollapse: true }));
+  assert.equal(result[0].content, '正在压缩\n\n压缩完成');
 });
 
 function askQuestionTool(id, ts = id * 1000) {
@@ -301,7 +303,7 @@ run('完成的压缩通知投影为一个可展开 Context compacted 消息', ()
   const compacted = projected[1];
   assert.equal(compacted.kind, 'msg');
   assert.equal(compacted.role, 'system');
-  assert.equal(compacted.metadata.compact_label, 'Context compacted');
+  assert.equal(compacted.metadata.system_notice.code, 'context_compacted');
   assert.equal(compacted.metadata.compact_notice_complete, true);
   assert.deepEqual(compacted.coveredItemIds, [2, 3, 4, 5]);
   assert.equal(

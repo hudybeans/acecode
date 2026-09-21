@@ -706,6 +706,7 @@ body {
   min-height: 25px;
   padding: 7px 2px 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -718,10 +719,17 @@ body {
 .ace-selection-annotation-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
   gap: 5px;
 }
 .ace-selection-annotation-actions button {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
   height: 24px;
   padding: 0 9px;
   border: 1px solid var(--ace-border);
@@ -729,6 +737,7 @@ body {
   background: var(--ace-surface);
   color: var(--ace-fg-2);
   font: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 .ace-selection-annotation-actions button:hover,
@@ -1404,8 +1413,56 @@ body {
   overflow: visible;
 }
 .ace-composer-adaptive-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 1;
+  height: 28px;
   min-width: 28px;
+  max-width: 210px;
+  padding: 0 6px;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ace-accent);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
   overflow: hidden;
+}
+.ace-composer-pending-chip {
+  color: var(--ace-warn);
+}
+.ace-composer-adaptive-chip:hover:not(:disabled) {
+  background: var(--ace-surface-hi);
+}
+.ace-composer-adaptive-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.ace-composer-chip-icon {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+.ace-composer-chip-symbol {
+  display: inline-flex;
+}
+.ace-composer-chip-remove {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+.ace-composer-adaptive-chip:not(:disabled):is(:hover, :focus-visible) .ace-composer-chip-symbol {
+  opacity: 0;
+}
+.ace-composer-adaptive-chip:not(:disabled):is(:hover, :focus-visible) .ace-composer-chip-remove {
+  opacity: 1;
 }
 [data-adaptive-composer-control="true"][data-compact="true"] {
   width: 28px !important;
@@ -1413,8 +1470,6 @@ body {
   max-width: 28px !important;
 }
 .ace-composer-adaptive-chip[data-compact="true"] {
-  padding-right: 7px;
-  padding-left: 7px;
   gap: 0;
 }
 .ace-composer-session-footer[data-ultra-compact="true"] [data-composer-control="model-load"],
@@ -1461,6 +1516,7 @@ body {
   background: var(--ace-surface-hi);
 }
 .ace-composer-control-button:focus-visible,
+.ace-composer-adaptive-chip:focus-visible,
 .ace-composer-model-settings:focus-visible,
 .ace-composer-model-refresh:focus-visible {
   outline: 1px solid rgba(var(--ace-accent-rgb), 0.58);
@@ -1469,6 +1525,9 @@ body {
 .ace-composer-permission-button {
   width: 100%;
   max-width: 156px;
+  /* Keep the shield anchored when the label collapses into a 28px button. */
+  padding: 0 6px;
+  justify-content: flex-start;
 }
 .ace-composer-permission-label {
   min-width: 0;
@@ -1492,26 +1551,13 @@ body {
 .ace-composer-model-glyph {
   display: inline-flex;
 }
-.ace-composer-swarm-chip[data-compact="true"] .ace-composer-adaptive-content {
+.ace-composer-adaptive-chip[data-compact="true"] .ace-composer-adaptive-content {
   display: none;
-}
-.ace-composer-swarm-chip[data-compact="true"] > :first-child {
-  margin-right: auto;
-  margin-left: auto;
-}
-.ace-composer-expert-chip[data-compact="true"] .ace-composer-adaptive-content {
-  display: none;
-}
-.ace-composer-expert-chip[data-compact="true"] [role="status"] {
-  width: 100%;
-  justify-content: center;
 }
 .ace-composer-permission-control[data-compact="true"] .ace-composer-adaptive-content {
   display: none;
 }
 .ace-composer-permission-control[data-compact="true"] .ace-composer-permission-button {
-  padding-right: 6px;
-  padding-left: 6px;
   gap: 0;
 }
 .ace-composer-model-control[data-compact="true"] .ace-composer-adaptive-content {
@@ -2447,7 +2493,7 @@ body {
 }
 .ace-sidebar-pinned-session-row,
 .ace-sidebar-workspace-session-row {
-  cursor: grab;
+  cursor: pointer;
   user-select: none;
 }
 .ace-sidebar-pinned-session-row:active,
@@ -2722,6 +2768,17 @@ body {
   /* The dialog's two border pixels are outside the form's scroll budget. */
   max-height: calc(100vh - 34px);
   max-height: calc(100dvh - 34px);
+}
+
+/* Keep action shortcuts beside their label inside the owning button. */
+.ace-action-shortcut-hint {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0.7;
 }
 
 /* Codex-style new task home */
@@ -4621,7 +4678,7 @@ a.ace-thread-link:focus-visible {
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--ace-fg-2);
-  cursor: grab;
+  cursor: pointer;
   user-select: none;
 }
 .ace-preview-details-tab:active,
@@ -6500,6 +6557,15 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 
 .ace-activity-line {
   --ace-tool-call-font-size: var(--ace-font-size-body);
+}
+
+/* Keep informational notices slightly quieter than tool activity in every theme. */
+.ace-system-activity-line {
+  opacity: 0.9;
+}
+
+.ace-system-activity-line .ace-activity-line-label {
+  max-width: 100%;
 }
 
 @keyframes ace-activity-line-shimmer-sweep {

@@ -15,7 +15,8 @@ import * as logoPerformance from './interactiveHomeLogoPerformance.js';
 import { HOME_LOGO_SHADER_ENABLED } from './homeLogoEffectPolicy.js';
 import { renderMarkdownBlocks } from './markdown.js';
 import { assistantChromeState } from './assistantAvatarDisplay.js';
-import { buildCompactMessagePreview } from './compactMessagePreview.js';
+import { presentSystemNotice } from './systemNotice.js';
+import { tr } from '../i18n/index.js';
 import { clsx } from './format.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
@@ -228,11 +229,13 @@ async function compiledComponent(relative, name) {
 const brandComponent = await compiledComponent('../components/BrandLogo.jsx', 'BrandLogo');
 const homeComponent = await compiledComponent('../components/InteractiveHomeLogo.jsx', 'InteractiveHomeLogo');
 const messageComponent = await compiledComponent('../components/Message.jsx', 'Message');
+const activityLineComponent = await compiledComponent('../components/ActivityLine.jsx', 'ActivityLine');
 await run('actual messages restrict custom wallpaper to user text and preserve assistant, attachment and system surfaces', () => {
   const Message = messageComponent({
-    useTranslation: () => ({}), useSlashCommands: () => ({ commands: [] }),
+    useTranslation: () => ({ t: tr }), useSlashCommands: () => ({ commands: [] }),
     resolveLeadingSlashCommand: () => null, renderMarkdownBlocks, assistantChromeState,
-    buildCompactMessagePreview, clsx, VsIcon: () => null,
+    presentSystemNotice, clsx, VsIcon: () => null,
+    ActivityLine: activityLineComponent({ clsx, VsIcon: () => null }),
     AttachmentStrip: ({ align }) => React.createElement('span', { 'data-attachment-align': align }, 'Attachment'),
   });
   const render = (role, content) => renderToStaticMarkup(React.createElement(Message, { role, content, showFooter: false }));
@@ -244,7 +247,13 @@ await run('actual messages restrict custom wallpaper to user text and preserve a
   assert.doesNotMatch(render('user', ''), /ace-user-message-bubble/);
   for (const role of ['assistant', 'system', 'error', 'tool_result']) {
     const markup = render(role, 'A visible message');
-    assert.match(markup, /A visible message/);
+    if (role === 'system' || role === 'tool_result') {
+      assert.match(markup, /data-unified-activity-line="true"/);
+      assert.match(markup, /aria-expanded="false"/);
+      assert.doesNotMatch(markup, /data-code-copy-source/);
+    } else {
+      assert.match(markup, /A visible message/);
+    }
     assert.doesNotMatch(markup, /ace-user-message-bubble/);
   }
 });

@@ -938,6 +938,10 @@ TEST(SessionChannelBinderIntegration, BindRebindOffLifecycle) {
     // off:解绑 + 停服务 + 清持久化 + 插件收到 deactivate。
     auto off = binder.execute_command(s2, "off");
     ASSERT_TRUE(off.ok) << off.message;
+    EXPECT_EQ(off.notice_metadata["system_notice"]["code"], "remote_control_stopped");
+    const auto stopped_again = binder.execute_command(s2, "off");
+    EXPECT_TRUE(stopped_again.ok);
+    EXPECT_EQ(stopped_again.notice_metadata["system_notice"]["code"], "remote_control_not_running");
     EXPECT_FALSE(hx.service.running());
     EXPECT_TRUE(binder.bound_session_id().empty());
     EXPECT_TRUE(hx.cfg.remote_control.bound_session_id.empty());

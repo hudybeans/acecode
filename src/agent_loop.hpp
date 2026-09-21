@@ -235,7 +235,8 @@ public:
 
     // Emit a visible system message without adding it to LLM history. Used by
     // daemon-owned builtin commands for TUI-like progress and fallback output.
-    void emit_system_message(const std::string& content);
+    void emit_system_message(const std::string& content,
+                             nlohmann::json metadata = nlohmann::json::object());
     void emit_transcript_system_message(const std::string& content,
                                         nlohmann::json metadata = nlohmann::json::object());
 

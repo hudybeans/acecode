@@ -117,7 +117,7 @@ function CommandTagElement({ attributes, children, element, selected }) {
     >
       {children}
       <span className="ace-cmd-token">
-        <CommandGlyph kind={element?.kind || 'skill'} size="1em" className="ace-cmd-token-glyph" />
+        <CommandGlyph kind={element?.kind || 'skill'} command={element?.name} size="1em" className="ace-cmd-token-glyph" />
         <span className="ace-cmd-token-name">{displayName}</span>
       </span>
     </span>

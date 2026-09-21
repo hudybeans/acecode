@@ -1,16 +1,23 @@
 #include "compact_notice.hpp"
+#include "system_notice.hpp"
 
 namespace acecode {
 
 nlohmann::json make_compact_notice_metadata(const std::string& id,
                                             const std::string& stage,
-                                            bool complete) {
-    return nlohmann::json{
+                                            bool complete,
+                                            nlohmann::json params) {
+    const std::string code = complete ? "context_compacted"
+        : stage == "error" ? "context_compact_failed"
+        : stage == "warning" ? "context_compact_warning"
+        : stage == "checkpoint" ? "context_checkpoint"
+        : "context_compacting";
+    return make_system_notice_metadata(code, std::move(params), nlohmann::json{
         {kCompactNoticeFlagKey, true},
         {kCompactNoticeIdKey, id},
         {kCompactNoticeStageKey, stage},
         {kCompactNoticeCompleteKey, complete},
-    };
+    });
 }
 
 std::optional<CompactNotice> decode_compact_notice(
