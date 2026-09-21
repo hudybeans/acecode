@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build libwebkit2gtk-4.1-dev
 
       - name: Run vcpkg
         uses: lukka/run-vcpkg@v11
@@ -105,11 +105,12 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-linux \
             -DVCPKG_MANIFEST_FEATURES=tests \
-            -DBUILD_TESTING=ON
+            -DBUILD_TESTING=ON \
+            -DACECODE_BUILD_DESKTOP=ON
 
-      - name: Build CLI and test binary
+      - name: Build CLI, desktop and test binary
         shell: bash
-        run: cmake --build build --target acecode acecode_unit_tests
+        run: cmake --build build --target acecode acecode-desktop acecode_unit_tests
 
       - name: Validate bundled models.dev registry
         shell: bash

@@ -48,6 +48,15 @@
 #  include <objc/runtime.h>
 #endif
 
+// X11 arrives through WebKitGTK and defines these common C++ enum names as
+// macros. Keep them from rewriting the clipboard result type below.
+#ifdef Status
+#  undef Status
+#endif
+#ifdef Success
+#  undef Success
+#endif
+
 namespace acecode::desktop {
 
 namespace {
