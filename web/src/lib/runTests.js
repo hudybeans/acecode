@@ -242,6 +242,7 @@ import './sidebarWorkspaceDragArchitecture.test.js';
 import './sessionCreationActionGuardsArchitecture.test.js';
 import './sidebarSessionRevealArchitecture.test.js';
 import './sidebarCustomSectionArchitecture.test.js';
+import './sidebarAlignmentArchitecture.test.js';
 import './sidebarSessions.test.js';
 import './sidebarWorkspaceSessions.test.js';
 import './sidebarWorkspaceRefresh.test.js';
