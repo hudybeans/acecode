@@ -216,6 +216,33 @@ nlohmann::json model_step_usage_to_json(const TokenUsage& usage) {
     return value;
 }
 
+void accumulate_turn_usage(TokenUsage& aggregate,
+                           bool& initialized,
+                           const TokenUsage& step) {
+    aggregate.prompt_tokens += step.prompt_tokens;
+    aggregate.completion_tokens += step.completion_tokens;
+    aggregate.total_tokens += step.total_tokens;
+    aggregate.cache_read_tokens += step.cache_read_tokens;
+    aggregate.cache_write_tokens += step.cache_write_tokens;
+    aggregate.reasoning_tokens += step.reasoning_tokens;
+
+    auto& total_context = aggregate.context_breakdown;
+    const auto& step_context = step.context_breakdown;
+    total_context.system_prompt += step_context.system_prompt;
+    total_context.project_rules += step_context.project_rules;
+    total_context.skills += step_context.skills;
+    total_context.builtin_tools += step_context.builtin_tools;
+    total_context.mcp_tools += step_context.mcp_tools;
+    total_context.conversation += step_context.conversation;
+    total_context.dynamic_context += step_context.dynamic_context;
+    total_context.has_data = total_context.has_data || step_context.has_data;
+
+    aggregate.has_data = initialized
+        ? aggregate.has_data && step.has_data
+        : step.has_data;
+    initialized = true;
+}
+
 std::string provider_error_summary_for_log(const ProviderErrorInfo& info) {
     std::string message = info.display_message;
     if (message.empty()) message = info.pretty_json;
@@ -1027,6 +1054,10 @@ void AgentLoop::worker_main() {
             worker_task_active_ = true;
             worker_task_kind_ = task.kind;
         }
+        if (task.kind == WorkerTask::Kind::Chat) {
+            active_turn_usage_ = TokenUsage{};
+            active_turn_usage_initialized_ = false;
+        }
         try {
             switch (task.kind) {
             case WorkerTask::Kind::Chat:
@@ -1109,9 +1140,15 @@ void AgentLoop::recover_worker_task_error(const char* detail, bool chat_task) {
     attempt([&] {
         if (chat_task && callbacks_.on_turn_finished) callbacks_.on_turn_finished("error");
     });
-    const nlohmann::json idle = {
+    nlohmann::json idle = {
         {"busy", false}, {"outcome", "error"}, {"turn_id", turn_id}};
-    const nlohmann::json done = {{"outcome", "error"}};
+    nlohmann::json done = {{"outcome", "error"}};
+    if (chat_task) {
+        const auto usage = model_step_usage_to_json(active_turn_usage_);
+        idle["usage"] = usage;
+        done["turn_id"] = turn_id;
+        done["usage"] = usage;
+    }
     attempt([&] { record_terminal_trajectory_events(idle, done); });
     attempt([&] {
         if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
@@ -5399,16 +5436,25 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             if (callbacks_.on_turn_finished) {
                 callbacks_.on_turn_finished("error");
             }
-            record_terminal_trajectory_events(
-                {{"busy", false}, {"outcome", "error"}},
-                {{"outcome", "error"}});
+            const std::string turn_id = generate_uuid();
+            const auto usage = model_step_usage_to_json(active_turn_usage_);
+            const nlohmann::json idle = {
+                {"busy", false},
+                {"outcome", "error"},
+                {"turn_id", turn_id},
+                {"usage", usage},
+            };
+            const nlohmann::json done = {
+                {"outcome", "error"},
+                {"turn_id", turn_id},
+                {"usage", usage},
+            };
+            record_terminal_trajectory_events(idle, done);
             if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
             record_turn_outcome("error");
             busy_ = false;
-            events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
-                {"busy", false}, {"outcome", "error"}});
-            events_.emit(SessionEventKind::Done, nlohmann::json{
-                {"outcome", "error"}});
+            events_.emit(SessionEventKind::BusyChanged, idle);
+            events_.emit(SessionEventKind::Done, done);
             maybe_continue_goal();
             return;
         }
@@ -5789,11 +5835,16 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             estimated_usage.completion_tokens = estimate_message_tokens({estimated_response});
             estimated_usage.total_tokens = estimated_usage.prompt_tokens + estimated_usage.completion_tokens;
             estimated_usage.has_data = false;
+            estimated_usage.context_breakdown = reconcile_context_usage_breakdown(
+                bundle.context_usage_estimate,
+                estimated_usage.prompt_tokens);
             step_usage = estimated_usage;
             account_goal_usage(estimated_usage.total_tokens, false);
             if (callbacks_.on_usage) callbacks_.on_usage(estimated_usage);
             if (session_manager_) session_manager_->record_token_usage(estimated_usage);
         }
+        accumulate_turn_usage(
+            active_turn_usage_, active_turn_usage_initialized_, step_usage);
 
         record_model_response(
             current_model_step, provider_result, step_usage, "completed");
@@ -6019,11 +6070,19 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);
     }
-    record_terminal_trajectory_events(
-        {{"busy", false},
-         {"outcome", turn_timing_status},
-         {"turn_id", turn_info.active_turn_id}},
-        {{"outcome", turn_timing_status}});
+    const auto usage = model_step_usage_to_json(active_turn_usage_);
+    const nlohmann::json idle = {
+        {"busy", false},
+        {"outcome", turn_timing_status},
+        {"turn_id", turn_info.active_turn_id},
+        {"usage", usage},
+    };
+    const nlohmann::json done = {
+        {"outcome", turn_timing_status},
+        {"turn_id", turn_info.active_turn_id},
+        {"usage", usage},
+    };
+    record_terminal_trajectory_events(idle, done);
     if (callbacks_.on_busy_changed) {
         callbacks_.on_busy_changed(false);
     }
@@ -6035,13 +6094,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     }
     record_turn_outcome(turn_timing_status);
     busy_ = false;
-    events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
-        {"busy", false},
-        {"outcome", turn_timing_status},
-        {"turn_id", turn_info.active_turn_id},
-    });
-    events_.emit(SessionEventKind::Done, nlohmann::json{
-        {"outcome", turn_timing_status}});
+    events_.emit(SessionEventKind::BusyChanged, idle);
+    events_.emit(SessionEventKind::Done, done);
     if (terminate_session_after_turn_) {
         // There must be no provider-visible state left for a deleted session.
         // The post-turn action owns writer teardown and persistent cleanup.
