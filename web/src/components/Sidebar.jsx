@@ -511,7 +511,7 @@ function SidebarNavItem({ item, onClick }) {
       data-tour-target={item.id === 'new-task' ? 'sidebar-new-task' : undefined}
       onPointerDown={item.id === 'new-task' ? preserveHomeComposerFocus : undefined}
       onClick={onClick}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
         <VsIcon name={item.icon} size={18} />
@@ -527,26 +527,25 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
   return (
     <div
       data-sidebar-section={sectionId}
-      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center gap-0.5 pl-[23px] pr-3 pt-3 pb-1 text-[13px] font-medium text-fg-mute"
+      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center px-0 pt-[6px] pb-1 text-[13px] font-medium text-fg-mute"
     >
       <button
         type="button"
         onClick={onToggle}
-        className="min-w-0 text-left hover:text-fg transition"
-        aria-expanded={expanded}
-      >
-        <span className="block truncate">{title}</span>
-      </button>
-      <button
-        type="button"
-        onClick={onToggle}
-        data-sidebar-section-disclosure={sectionId}
-        className="w-5 h-6 rounded flex items-center justify-center shrink-0 hover:text-fg hover:bg-surface-hi transition"
+        className="flex min-w-0 flex-1 items-center mx-1.5 pl-[17px] pr-[6px] py-[3px] rounded-md text-left hover:text-fg hover:bg-surface-hi transition"
         title={expanded ? `折叠${title}` : `展开${title}`}
-        aria-label={expanded ? `折叠${title}` : `展开${title}`}
         aria-expanded={expanded}
       >
-        <SidebarDisclosure expanded={expanded} />
+        <span className="inline-flex min-w-0 items-center gap-0.5">
+          <span className="min-w-0 truncate">{title}</span>
+          <span
+            data-sidebar-section-disclosure={sectionId}
+            className="inline-flex w-5 h-6 items-center justify-center shrink-0"
+            aria-hidden="true"
+          >
+            <SidebarDisclosure expanded={expanded} />
+          </span>
+        </span>
       </button>
       {actions && (
         <span data-sidebar-section-actions={sectionId} className="ace-sidebar-section-actions ml-auto flex items-center shrink-0">
@@ -561,19 +560,13 @@ function SessionAttentionIndicator({ attention, meta }) {
   if (attention !== 'in_progress' && attention !== 'unread') return null;
 
   return attention === 'in_progress' ? (
+    // 与对话流 ActivityLine 的运行中图标共用 ace-spinner,两处状态视觉保持一致。
     <span
-      className="ace-session-loading shrink-0"
+      className="ace-spinner h-3 w-3 shrink-0"
       title={meta.label}
       role="status"
       aria-label={meta.label}
-    >
-      <span className="ace-session-loading-orbit" aria-hidden="true">
-        <span className="ace-session-loading-dot is-top" />
-        <span className="ace-session-loading-dot is-right" />
-        <span className="ace-session-loading-dot is-bottom" />
-        <span className="ace-session-loading-dot is-left" />
-      </span>
-    </span>
+    />
   ) : (
     <span className={clsx('w-2 h-2 rounded-full shrink-0 box-border', meta.dot)} title={meta.label} />
   );
@@ -1026,7 +1019,7 @@ function SessionRow({
       data-sidebar-workspace-session-workspace={workspaceReorderable ? workspaceHash || undefined : undefined}
       aria-describedby={hoverCardVisible ? hoverCardId : undefined}
       className={clsx(
-        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 my-px px-2 rounded-md text-[14px] transition',
+        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] ml-1.5 mr-0 my-px pl-[13px] pr-[1px] rounded-md text-[14px] transition',
         pinned && 'ace-sidebar-pinned-session-row',
         workspaceReorderable && 'ace-sidebar-workspace-session-row',
         dragging && 'is-dragging',
@@ -1136,7 +1129,7 @@ function SessionRow({
           aria-label={remoteControlBound
             ? tr('remoteControl.connectedSessionAria', { title: marqueeTitle || title })
             : (marqueeTitle || title)}
-          className="ace-sidebar-session-title-button flex min-w-0 w-full items-center gap-1.5 py-[4.5px] bg-transparent text-left cursor-pointer"
+          className="ace-sidebar-session-title-button ace-sidebar-tree-content flex min-w-0 w-full items-center gap-1.5 px-0 py-[4.5px] bg-transparent text-left cursor-pointer"
         >
           {remoteControlBound && (
             <VsIcon
@@ -1149,7 +1142,7 @@ function SessionRow({
           <SidebarSessionTitle title={marqueeTitle} marqueeReady={marqueeReady} />
         </button>
       )}
-      <span className="flex min-w-0 items-center justify-end gap-1">
+      <span className="flex w-full min-w-0 items-center justify-end gap-0">
         {!editing && pendingPermission ? (
           <span
             data-sidebar-permission-prompt="true"
@@ -1168,7 +1161,7 @@ function SessionRow({
           </span>
         ) : null}
         {showSessionTime && !editing && !pendingPermission && !pendingQuestion && (
-          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text text-[13px] text-fg-mute shrink-0">
+          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text whitespace-nowrap text-right text-[13px] text-fg-mute shrink-0 tabular-nums">
             {relativeTime(s.updated_at || s.created_at)}
           </span>
         )}
@@ -1182,7 +1175,7 @@ function SessionRow({
               onTogglePin?.(s, !pinned);
             }}
             className={clsx(
-              'ace-session-pin-btn ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 transition',
+              'ace-session-pin-btn ace-sidebar-row-hover-action w-[18px] h-7 rounded items-center justify-center shrink-0 transition',
               pinned
                 ? 'flex text-accent'
                 : 'hidden group-hover:flex group-focus-within:flex text-fg-mute hover:text-fg hover:bg-surface-hi',
@@ -1202,7 +1195,7 @@ function SessionRow({
             onArchive?.(s);
           }}
           className={clsx(
-            'ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
+            'ace-sidebar-row-hover-action w-[18px] h-7 rounded items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
             sessionMarker
               ? 'flex'
               : 'hidden group-hover:flex group-focus-within:flex',
@@ -1549,7 +1542,7 @@ function WorkspaceGroup({
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
         data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
-        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 pl-[12px] pr-2 py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
+        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
@@ -1584,7 +1577,7 @@ function WorkspaceGroup({
             className="ace-sidebar-primary-text min-w-0 h-7 px-1 py-0 text-[14px] bg-surface border border-accent rounded outline-none"
           />
         ) : (
-          <span data-sidebar-workspace-folder-label className={clsx('min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
+          <span data-sidebar-workspace-folder-label className={clsx('ace-sidebar-tree-content min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
             {ws.name || ws.hash}
           </span>
         )}
@@ -1612,7 +1605,7 @@ function WorkspaceGroup({
       {expanded && (
         <div className="mt-px mb-[10px]">
           {sessions.length === 0 ? (
-            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
               <span aria-hidden="true" />
               <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
             </div>
@@ -1642,12 +1635,12 @@ function WorkspaceGroup({
                 );
               })}
               {projectedSessions.collapsible && (
-                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px]">
                   <span aria-hidden="true" />
                   <button
                     type="button"
                     onClick={() => onToggleSessionList?.(ws.hash, projectedSessions.action)}
-                    className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
+                    className="ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
                   >
                     {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
                   </button>
@@ -1682,7 +1675,7 @@ function NoWorkspaceSessionGroup({
   return (
     <div className="mt-px mb-[10px]">
       {sessions.length === 0 ? (
-        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
           <span aria-hidden="true" />
           <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
         </div>
@@ -1704,12 +1697,12 @@ function NoWorkspaceSessionGroup({
             />
           ))}
           {projectedSessions.collapsible && (
-            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px]">
               <span aria-hidden="true" />
               <button
                 type="button"
                 onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY, projectedSessions.action)}
-                className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
+                className="ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
               >
                 {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
               </button>
@@ -3559,7 +3552,7 @@ export function Sidebar({
         style={collapsed ? undefined : { width, minWidth: width }}
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
-        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 pl-[23px] pr-[18px] py-3 select-none">
+        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-[7px] pl-[23px] pr-[18px] py-3 select-none">
           <BrandLogo width="20" height="20" className="ace-brand-logo block shrink-0" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
@@ -3760,7 +3753,7 @@ export function Sidebar({
             </div>
           )}
         </div>
-        <div className="ace-sidebar-footer shrink-0 pl-[15px] pr-1.5 py-2 flex items-center gap-1">
+        <div className="ace-sidebar-footer shrink-0 pl-[19px] pr-1.5 py-2 flex items-center gap-1">
           {!collapsed && (
             <SidebarQuickMenu
               data-tour-target="sidebar-settings"

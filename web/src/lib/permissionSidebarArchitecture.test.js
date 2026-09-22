@@ -45,19 +45,18 @@ run('SessionRow uses the AskUserQuestion slot with exact permission wording', ()
   assert.match(row, /onSelect\?\.\(s\)/);
 });
 
-run('running sessions use the four-dot breathing indicator', () => {
+run('running sessions reuse the conversation spinner indicator', () => {
   const sidebar = source('components/Sidebar.jsx');
   const styles = source('styles/globals.css');
   const indicator = between(sidebar, 'function SessionAttentionIndicator', 'function SessionHoverCard');
   assert.match(indicator, /if \(attention !== 'in_progress' && attention !== 'unread'\) return null/);
-  assert.equal((indicator.match(/ace-session-loading-dot is-/g) || []).length, 4);
+  assert.match(indicator, /className="ace-spinner h-3 w-3 shrink-0"/);
   assert.match(indicator, /role="status"/);
-  assert.match(styles, /\.ace-session-loading-orbit\s*\{[\s\S]*animation: ace-session-loading-turn 6\.47s linear infinite/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-top/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-right/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-bottom/);
-  assert.match(styles, /\.ace-session-loading-dot\.is-left/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.ace-session-loading-orbit/);
+  assert.doesNotMatch(indicator, /ace-session-loading/);
+  // 侧栏运行中状态必须复用对话流 ActivityLine 的同一个 spinner。
+  assert.match(source('components/ActivityLine.jsx'), /ace-spinner h-3 w-3/);
+  assert.match(styles, /\.ace-spinner \{[\s\S]*?animation: ace-spin/);
+  assert.doesNotMatch(styles, /ace-session-loading/);
 });
 
 run('permission state reaches pinned, no-workspace, and workspace session rows', () => {

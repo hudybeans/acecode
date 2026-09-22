@@ -48,7 +48,7 @@ export function SidebarQuickMenu({
           if (!open) onBeforeOpen?.();
           setOpen((value) => !value);
         }}
-        className="w-9 h-9 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
+        className="w-6 h-8 shrink-0 flex items-center justify-center rounded-md text-fg-mute hover:text-fg hover:bg-surface-hi transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
       >
         <VsIcon name="settings" size={18} />
       </button>

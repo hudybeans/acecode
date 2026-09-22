@@ -71,7 +71,7 @@ function PinnedExtensionItem({ item, count, onClick }) {
       type="button"
       onClick={onClick}
       data-sidebar-custom-item={item.id}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
         <VsIcon name={item.icon} size={18} className="ace-sidebar-custom-icon" />
@@ -319,7 +319,7 @@ export function SidebarExtensions({ workspaceHash = '', onOpenSettingsSection, o
         aria-expanded={menuOpen}
         aria-controls={menuOpen ? 'sidebar-extensions-menu' : undefined}
         className={clsx(
-          'ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition',
+          'ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition',
           menuOpen && 'bg-surface-hi',
         )}
       >
