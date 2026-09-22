@@ -4478,7 +4478,9 @@ a.ace-thread-link:focus-visible {
   cursor: col-resize;
   touch-action: none;
 }
-.ace-resize-handle::after {
+/* Paint both highlights as filled strips; borders snap differently at fractional DPI. */
+.ace-resize-handle::after,
+.ace-topbar::after {
   content: "";
   position: absolute;
   top: 0;
@@ -4490,16 +4492,25 @@ a.ace-thread-link:focus-visible {
   transition: opacity .12s ease;
   pointer-events: none;
 }
+.ace-topbar::after {
+  left: calc(var(--ace-topbar-sidebar-width, 0px) - 1px);
+  transition: left 250ms ease, opacity .12s ease;
+}
 .ace-resize-handle:hover::after,
-.ace-resize-handle:focus-visible::after { opacity: 1; }
+.ace-resize-handle:focus-visible::after,
+.ace-topbar:has(+ .ace-single-shell > .ace-resize-handle-left:is(:hover, :focus-visible))::after { opacity: 1; }
 .ace-resize-handle:focus-visible { outline: none; }
-.ace-resize-handle:focus-visible::after { width: 2px; left: -1px; }
+.ace-resize-handle:focus-visible::after,
+.ace-topbar:has(+ .ace-single-shell > .ace-resize-handle-left:focus-visible)::after { width: 2px; }
 .ace-resizing,
 .ace-resizing * {
   cursor: col-resize !important;
   user-select: none !important;
 }
-.ace-resizing .ace-sidebar { transition: none !important; }
+/* Follow the pointer immediately while preserving the shared highlight fade. */
+.ace-resizing .ace-sidebar,
+.ace-resizing .ace-topbar::before { transition: none !important; }
+.ace-resizing .ace-topbar::after { transition: opacity .12s ease !important; }
 
 /* Preview/details panel between chat and SidePanel */
 .ace-preview-details-shell {
