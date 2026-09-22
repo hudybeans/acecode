@@ -669,27 +669,13 @@ function SessionAttentionIndicator({ attention, meta }) {
   if (attention !== 'in_progress' && attention !== 'unread') return null;
 
   return attention === 'in_progress' ? (
+    // 与对话流 ActivityLine 的运行中图标共用 ace-spinner,两处状态视觉保持一致。
     <span
-      className="ace-session-loading shrink-0"
+      className="ace-spinner h-3 w-3 shrink-0"
       title={meta.label}
       role="status"
       aria-label={meta.label}
-    >
-      <span className="ace-session-loading-matrix" aria-hidden="true">
-        <span className="ace-session-loading-dot is-a-0" />
-        <span className="ace-session-loading-dot is-a-1" />
-        <span className="ace-session-loading-dot is-a-2" />
-        <span className="ace-session-loading-dot is-a-3" />
-        <span className="ace-session-loading-dot is-a-4" />
-        <span className="ace-session-loading-dot is-a-5" />
-        <span className="ace-session-loading-dot is-a-6" />
-        <span className="ace-session-loading-dot is-a-7" />
-        <span className="ace-session-loading-dot is-a-8" />
-        <span className="ace-session-loading-dot is-a-9" />
-        <span className="ace-session-loading-dot is-a-10" />
-        <span className="ace-session-loading-dot is-a-11" />
-      </span>
-    </span>
+    />
   ) : (
     <span className={clsx('w-2 h-2 rounded-full shrink-0 box-border', meta.dot)} title={meta.label} />
   );

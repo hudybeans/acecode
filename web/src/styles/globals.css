@@ -2593,10 +2593,6 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
-@keyframes ace-session-loading-dot-pulse {
-  0%, 18%, 100% { opacity: 0.24; transform: scale(0.7); }
-  9% { opacity: 1; transform: scale(1); }
-}
 .ace-spinner {
   display: inline-block; width: 1em; height: 1em;
   border: calc(.05em + .2px) solid rgba(var(--ace-fg-mute-rgb), 0.40);
@@ -2608,47 +2604,6 @@ body {
 .ace-spinner-static {
   animation: none;
   border-top-color: rgba(var(--ace-fg-mute-rgb), 0.40);
-}
-.ace-session-loading {
-  position: relative;
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  color: var(--ace-accent);
-}
-.ace-session-loading-matrix {
-  position: absolute;
-  inset: 0;
-}
-.ace-session-loading-dot {
-  position: absolute;
-  width: 2px;
-  height: 2px;
-  border-radius: 9999px;
-  background: currentColor;
-  animation: ace-session-loading-dot-pulse 1.8s cubic-bezier(.65, 0, .35, 1) infinite;
-}
-/* Abstract A: two interrupted strokes joined by a crossbar. */
-.ace-session-loading-dot.is-a-0 { left: 7px; top: 1px; animation-delay: 0ms; }
-.ace-session-loading-dot.is-a-1 { left: 5px; top: 3px; animation-delay: 150ms; }
-.ace-session-loading-dot.is-a-2 { left: 9px; top: 3px; animation-delay: 300ms; }
-.ace-session-loading-dot.is-a-3 { left: 4px; top: 6px; animation-delay: 450ms; }
-.ace-session-loading-dot.is-a-4 { left: 10px; top: 6px; animation-delay: 600ms; }
-.ace-session-loading-dot.is-a-5 { left: 5px; top: 8px; animation-delay: 750ms; }
-.ace-session-loading-dot.is-a-6 { left: 7px; top: 8px; animation-delay: 900ms; }
-.ace-session-loading-dot.is-a-7 { left: 9px; top: 8px; animation-delay: 1050ms; }
-.ace-session-loading-dot.is-a-8 { left: 3px; top: 11px; animation-delay: 1200ms; }
-.ace-session-loading-dot.is-a-9 { left: 11px; top: 11px; animation-delay: 1350ms; }
-.ace-session-loading-dot.is-a-10 { left: 2px; top: 14px; animation-delay: 1500ms; }
-.ace-session-loading-dot.is-a-11 { left: 12px; top: 14px; animation-delay: 1650ms; }
-
-@media (prefers-reduced-motion: reduce) {
-  /* Keep the abstract A visible without movement. */
-  .ace-session-loading .ace-session-loading-dot {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* Upgrade progress is deliberately quicker than the 350ms status polling interval,
