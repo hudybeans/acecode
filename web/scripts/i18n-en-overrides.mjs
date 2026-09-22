@@ -81,6 +81,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   'MCP 配置范围': 'MCP configuration scope',
   '调整 {{p0}} 的顺序': 'Reorder {{p0}}',
   '拖动排序，也可按上下方向键': 'Drag to reorder, or use the up and down arrow keys',
+  '勾选的条目固定显示在侧栏,其余条目收在「扩展」菜单里;拖动行可调整顺序。': 'Checked items stay pinned in the sidebar; the rest live in the Extensions menu. Drag a row to reorder.',
   '模型列表已发生变化，请刷新后重新排序': 'The model list has changed. Refresh it and reorder again.',
   '思考深度': 'Reasoning depth',
   '思考深度：{{p0}}': 'Reasoning depth: {{p0}}',

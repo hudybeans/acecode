@@ -14,6 +14,7 @@ const ICONS = {
   bug: 'Bug',
   chat: 'ChatBubble',
   check: 'Check',
+  sliders: 'Sliders',
   clearAll: 'ClearAll',
   close: 'Close',
   code: 'Code',
