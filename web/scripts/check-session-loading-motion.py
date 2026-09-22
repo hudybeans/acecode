@@ -6,6 +6,7 @@ Optional: --browser PATH adds a legacy Chromium executable to the default browse
 
 import argparse
 import json
+import math
 import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
@@ -65,13 +66,13 @@ process.stdout.write(renderToStaticMarkup(React.createElement(Component, {
 
 SNAPSHOT = '''() => {
   const host = document.querySelector('.ace-session-loading');
+  const orbit = host.querySelector('.ace-session-loading-orbit');
   const dots = [...host.querySelectorAll('.ace-session-loading-dot')];
   const center = node => { const r = node.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2]; };
   return { centers:dots.map(center), hostCenter:center(host),
     diameter:dots.map(node => parseFloat(getComputedStyle(node).width)),
-    slot:[host.offsetWidth, host.offsetHeight],
-    opacity:dots.map(node => parseFloat(getComputedStyle(node).opacity)),
-    transforms:dots.map(node => getComputedStyle(node).transform),
+    slot:[host.offsetWidth, host.offsetHeight], opacity:parseFloat(getComputedStyle(orbit).opacity),
+    transforms:[orbit, ...dots].map(node => getComputedStyle(node).transform),
     label:host.getAttribute('aria-label') };
 }'''
 
@@ -118,18 +119,23 @@ def main():
                         }''', SNAPSHOT)
                         for frame in frames:
                             assert frame['slot'] == [16, 16], frame
-                            assert len(frame['centers']) == 12 and frame['label'] == 'Running'
-                            assert all(abs(d - 2) < 0.01 for d in frame['diameter'])
-                            assert len({tuple(c) for c in frame['centers']}) == 12
+                            assert len(frame['centers']) == 4 and frame['label'] == 'Running'
+                            assert all(abs(d - 4.3) < 0.01 for d in frame['diameter'])
+                            assert all(math.dist(frame['centers'][a], frame['centers'][b]) > 4.3
+                                       for a in range(4) for b in range(a + 1, 4))
+                            centroid = [sum(c[axis] for c in frame['centers']) / 4 for axis in [0, 1]]
+                            assert math.dist(centroid, frame['hostCenter']) < 0.02
                         if motion == 'reduce':
                             assert all(frame['transforms'] == frames[0]['transforms'] for frame in frames)
-                            assert all(opacity == 1 for frame in frames for opacity in frame['opacity'])
+                            opacity = [frame['opacity'] for frame in frames]
+                            assert min(opacity) >= 0.599 and max(opacity) <= 1
+                            assert max(opacity) - min(opacity) > 0.39, 'Reduced motion must retain gentle running feedback'
                         else:
-                            assert any(a['opacity'] != b['opacity']
-                                       for a, b in zip(frames, frames[1:])), 'Dot-matrix animation must not stall'
+                            assert all(math.dist(a['centers'][0], b['centers'][0]) > 0.02
+                                       for a, b in zip(frames, frames[1:])), 'Running motion must not stall'
                         results.append({'browser': browser.version, 'theme': theme, 'width': width, 'motion': motion, 'passed': True})
 
-            # Live preference changes must stop and resume the dot pulse.
+            # Live preference changes must work without manually controlling animations.
             mount()
             for motion in ['no-preference', 'reduce', 'no-preference']:
                 page.emulate_media(reduced_motion=motion)
@@ -138,15 +144,16 @@ def main():
                 last = page.evaluate(SNAPSHOT)
                 if motion == 'reduce':
                     assert first['transforms'] == last['transforms']
-                    assert first['opacity'] == last['opacity'] == [1] * 12
+                    assert abs(first['opacity'] - last['opacity']) > 0.01
                 else:
-                    assert first['opacity'] != last['opacity']
+                    assert first['transforms'] != last['transforms']
 
-            # The resting dot matrix remains an abstract A with twelve distinct points.
+            # Defined resting positions keep all four dots separate before animation starts.
             mount()
-            page.add_style_tag(content='.ace-session-loading * { animation: none !important; opacity: 1 !important; }')
+            page.add_style_tag(content='.ace-session-loading * { animation: none !important; }')
             resting = page.evaluate(SNAPSHOT)
-            assert len({tuple(c) for c in resting['centers']}) == 12
+            assert all(math.dist(c, resting['hostCenter']) > 3.4 for c in resting['centers'])
+            assert len({tuple(c) for c in resting['centers']}) == 4
             if args.screenshot_dir:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                 page.locator('.ace-session-loading').screenshot(

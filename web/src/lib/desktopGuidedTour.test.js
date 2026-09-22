@@ -77,12 +77,13 @@ run('Desktop tour mode and target helpers reject browser and missing targets', (
   assert.equal(desktopGuidedTourTargetsReady({ querySelector: (selector) => present.has(selector) ? {} : null }), false);
 });
 
-run('Desktop tour uses the available home workspace menu and adapts no-model copy', () => {
+run('Desktop tour builds seven ordered stable steps, distinguishes workspace entry points, and adapts no-model copy', () => {
   const configured = buildDesktopGuidedTourSteps({ hasModel: true });
   const missing = buildDesktopGuidedTourSteps({ hasModel: false });
-  assert.equal(configured.length, 6);
+  assert.equal(configured.length, 7);
   assert.deepEqual(configured.map((step) => step.id), [
     'sidebar',
+    'add-project',
     'new-session',
     'workspace',
     'composer',
@@ -91,18 +92,19 @@ run('Desktop tour uses the available home workspace menu and adapts no-model cop
   ]);
   assert.deepEqual(configured.map((step) => step.target), DESKTOP_GUIDED_TOUR_TARGET_LIST);
   assert.equal(configured[0].title, '任务与工作区');
-  assert.equal(configured[1].target, '[data-tour-target="sidebar-new-task"]');
-  assert.equal(configured[1].title, '新建任务');
-  assert.match(configured[1].content, /左侧/);
-  assert.match(configured[1].content, /不会创建工作区目录/);
-  assert.match(configured[1].content, /项目菜单/);
-  assert.equal(configured[2].target, '[data-tour-target="home-workspace"]');
-  assert.match(configured[2].content, /添加本地代码目录/);
-  assert.equal(configured[4].target, '[data-composer-session-controls="true"]');
-  assert.match(configured[4].content, /输入框底部/);
-  assert.doesNotMatch(configured[4].content, /状态栏/);
-  assert.match(missing[4].title, /配置.*模型/);
-  assert.match(missing[5].content, /添加模型/);
+  assert.equal(configured[1].title, '添加工作区');
+  assert.match(configured[1].content, /左侧工作区列表/);
+  assert.match(configured[1].content, /本地代码目录/);
+  assert.equal(configured[2].target, '[data-tour-target="sidebar-new-task"]');
+  assert.equal(configured[2].title, '新建任务');
+  assert.match(configured[2].content, /左侧/);
+  assert.match(configured[2].content, /不会创建工作区目录/);
+  assert.match(configured[2].content, /添加工作区/);
+  assert.equal(configured[5].target, '[data-composer-session-controls="true"]');
+  assert.match(configured[5].content, /输入框底部/);
+  assert.doesNotMatch(configured[5].content, /状态栏/);
+  assert.match(missing[5].title, /配置.*模型/);
+  assert.match(missing[6].content, /添加模型/);
 });
 
 run('Desktop tour terminal actions dismiss and only no-model completion routes to Models', () => {

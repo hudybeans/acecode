@@ -2,6 +2,14 @@
 // translation is ambiguous without ACECode context.
 export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '取消目标': 'Cancel goal',
+  '切换到项目': 'Switch to project',
+  '添加工作区失败:': 'Failed to add workspace:',
+  '展开项目': 'Expand project',
+  '折叠项目': 'Collapse project',
+  '重命名项目': 'Rename project',
+  '点击“工作区”栏右侧的添加按钮，选择已有的本地代码目录，它就会出现在左侧工作区列表中。引导期间只做说明，不会真的打开目录选择器。': 'Click the Add button on the right of the Workspaces heading and select an existing local code folder to add it to the sidebar. The tour only explains this action; it does not open the folder picker.',
+  '选择代码工作区，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。': 'Choose a code workspace so ACECode knows where to start, or choose "No workspace" for general tasks.',
+  '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；要加入本地代码目录，请使用上一步的“添加工作区”。': '"New task" in the sidebar returns to the home page with "No workspace" selected. It does not create a workspace folder; use "Add workspace" from the previous step to add a local code folder.',
   // 工具前言(openspec add-tool-preamble)
   '工具前言': 'Tool preamble',
   '工具前言来源': 'Tool preamble source',

@@ -295,6 +295,8 @@ export function buildDesktopContextMenuItems({
     }
 
     if (workspaceTarget) {
+      addAction(items, DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE, workspaceTarget, { enabled: !workspaceTarget.active });
+      addAction(items, workspaceTarget.expanded ? DESKTOP_CONTEXT_ACTIONS.COLLAPSE_WORKSPACE : DESKTOP_CONTEXT_ACTIONS.EXPAND_WORKSPACE, workspaceTarget);
       addAction(items, DESKTOP_CONTEXT_ACTIONS.NEW_WORKSPACE_SESSION, workspaceTarget);
       if (workspaceTarget.opencodeImportCount > 0) {
         addAction(items, DESKTOP_CONTEXT_ACTIONS.IMPORT_OPENCODE_SESSIONS, workspaceTarget);
@@ -437,7 +439,7 @@ export function buildDesktopContextMenuItems({
     }
   }
 
-  if (!sessionTarget && !sessionPinTarget && !workspaceTarget) {
+  if (!sessionTarget && !sessionPinTarget) {
     addAction(items, DESKTOP_CONTEXT_ACTIONS.SELECT_ALL, null, { group: GROUPS.GENERIC });
   }
   if (hasSelection) addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY, null, { group: GROUPS.GENERIC });

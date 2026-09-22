@@ -1751,9 +1751,8 @@ body {
 .ace-topbar {
   /* Add 5px above and 6px below the original 30px row without enlarging controls. */
   --ace-topbar-control-size: 24px;
-  /* Four controls, three gaps, and the shared 19px sidebar first-column inset. */
+  /* Four controls, three gaps, and the sidebar toggle's 8px left inset. */
   --ace-topbar-navigation-min-width: 116px;
-  --ace-topbar-leading-inset: 19px;
   box-sizing: border-box;
   min-height: var(--ace-topbar-height);
   height: auto;
@@ -1833,13 +1832,10 @@ body {
 .ace-sidebar-extensions-arrow {
   opacity: 0;
 }
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-icon {
-  opacity: 1;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-count {
+.ace-sidebar-extensions-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) .ace-sidebar-extensions-icon {
   opacity: 0;
 }
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-arrow {
+.ace-sidebar-extensions-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) .ace-sidebar-extensions-arrow {
   opacity: 1;
 }
 .ace-desktop-frameless-topbar {
@@ -2238,12 +2234,6 @@ body {
 }
 .ace-sidebar-workspace-action {
   color: var(--ace-fg);
-  opacity: 0;
-  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
-}
-.ace-sidebar-workspace-row:hover .ace-sidebar-workspace-action,
-.ace-sidebar-workspace-row .ace-sidebar-workspace-action:focus-visible {
-  opacity: 1;
 }
 .ace-sidebar-workspace-action:hover,
 .ace-sidebar-workspace-action:focus-visible {
@@ -2593,9 +2583,29 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
-@keyframes ace-session-loading-dot-pulse {
-  0%, 18%, 100% { opacity: 0.24; transform: scale(0.7); }
-  9% { opacity: 1; transform: scale(1); }
+@keyframes ace-session-loading-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes ace-session-loading-fade {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+@keyframes ace-session-loading-dot-top {
+  0%, 100% { transform: translateY(-5px); }
+  50% { transform: translateY(-3.5px); }
+}
+@keyframes ace-session-loading-dot-right {
+  0%, 100% { transform: translateX(5px); }
+  50% { transform: translateX(3.5px); }
+}
+@keyframes ace-session-loading-dot-bottom {
+  0%, 100% { transform: translateY(5px); }
+  50% { transform: translateY(3.5px); }
+}
+@keyframes ace-session-loading-dot-left {
+  0%, 100% { transform: translateX(-5px); }
+  50% { transform: translateX(-3.5px); }
 }
 .ace-spinner {
   display: inline-block; width: 1em; height: 1em;
@@ -2616,38 +2626,53 @@ body {
   height: 16px;
   color: var(--ace-accent);
 }
-.ace-session-loading-matrix {
+.ace-session-loading-orbit {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(0deg);
+  animation: ace-session-loading-turn 6.47s linear infinite;
 }
 .ace-session-loading-dot {
   position: absolute;
-  width: 2px;
-  height: 2px;
+  left: 50%;
+  top: 50%;
+  width: 4.3px;
+  height: 4.3px;
+  margin: -2.15px 0 0 -2.15px;
   border-radius: 9999px;
   background: currentColor;
-  animation: ace-session-loading-dot-pulse 1.8s cubic-bezier(.65, 0, .35, 1) infinite;
+  transform-origin: center;
+  animation-duration: 2.156s;
+  animation-timing-function: cubic-bezier(.65, 0, .35, 1);
+  animation-iteration-count: infinite;
 }
-/* Abstract A: two interrupted strokes joined by a crossbar. */
-.ace-session-loading-dot.is-a-0 { left: 7px; top: 1px; animation-delay: 0ms; }
-.ace-session-loading-dot.is-a-1 { left: 5px; top: 3px; animation-delay: 150ms; }
-.ace-session-loading-dot.is-a-2 { left: 9px; top: 3px; animation-delay: 300ms; }
-.ace-session-loading-dot.is-a-3 { left: 4px; top: 6px; animation-delay: 450ms; }
-.ace-session-loading-dot.is-a-4 { left: 10px; top: 6px; animation-delay: 600ms; }
-.ace-session-loading-dot.is-a-5 { left: 5px; top: 8px; animation-delay: 750ms; }
-.ace-session-loading-dot.is-a-6 { left: 7px; top: 8px; animation-delay: 900ms; }
-.ace-session-loading-dot.is-a-7 { left: 9px; top: 8px; animation-delay: 1050ms; }
-.ace-session-loading-dot.is-a-8 { left: 3px; top: 11px; animation-delay: 1200ms; }
-.ace-session-loading-dot.is-a-9 { left: 11px; top: 11px; animation-delay: 1350ms; }
-.ace-session-loading-dot.is-a-10 { left: 2px; top: 14px; animation-delay: 1500ms; }
-.ace-session-loading-dot.is-a-11 { left: 12px; top: 14px; animation-delay: 1650ms; }
+.ace-session-loading-dot.is-top {
+  transform: translateY(-3.5px);
+  animation-name: ace-session-loading-dot-top;
+}
+.ace-session-loading-dot.is-right {
+  transform: translateX(3.5px);
+  animation-name: ace-session-loading-dot-right;
+}
+.ace-session-loading-dot.is-bottom {
+  transform: translateY(3.5px);
+  animation-name: ace-session-loading-dot-bottom;
+}
+.ace-session-loading-dot.is-left {
+  transform: translateX(-3.5px);
+  animation-name: ace-session-loading-dot-left;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  /* Keep the abstract A visible without movement. */
+  /* Keep running feedback visible when Windows requests reduced motion. */
+  .ace-session-loading-orbit {
+    animation: ace-session-loading-fade 2.4s ease-in-out infinite;
+  }
   .ace-session-loading .ace-session-loading-dot {
     animation: none;
-    opacity: 1;
-    transform: none;
   }
 }
 
@@ -5259,7 +5284,7 @@ a.ace-thread-link:focus-visible {
   transition: opacity .15s ease;
 }
 .ace-sidebar-section-header:hover .ace-sidebar-section-actions,
-.ace-sidebar-section-header:has(.ace-sidebar-section-actions :focus-visible) .ace-sidebar-section-actions {
+.ace-sidebar-section-header:focus-within .ace-sidebar-section-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -6520,12 +6545,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 
 /* Preserve the sidebar's medium baseline while following the user's font size.
    Role selectors still outrank utility classes, but use the shared size tokens. */
-.ace-sidebar .ace-sidebar-section-text {
-  font-size: var(--ace-font-size-13) !important;
-}
-.ace-sidebar .ace-sidebar-section-title {
-  font-size: var(--ace-font-size-12) !important;
-}
+.ace-sidebar .ace-sidebar-section-text,
 .ace-sidebar .ace-sidebar-meta-text {
   font-size: var(--ace-font-size-12) !important;
 }
