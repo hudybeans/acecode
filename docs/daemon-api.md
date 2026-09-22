@@ -379,6 +379,8 @@ update their transcript presentation.
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
 | PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
+| GET | `/api/config/tool-preamble` | read the tool preamble switch, mode and sidecar settings |
+| PUT | `/api/config/tool-preamble` | patch tool preamble settings into `config.json`, push to active sessions |
 | GET | `/api/config/sandbox` | read sandbox switches, filesystem lists, defaults and platform probe |
 | PUT | `/api/config/sandbox` | save sandbox switches / lists to `config.json`, push to active sessions |
 | GET | `/api/security/exec-rules` | list `<data_dir>/rules/*.rules` (managed files editable) |
@@ -3572,6 +3574,44 @@ writes the file atomically, publishes the mapping to the process so the next
 model request uses it, and returns the same shape as GET. Hook matchers accept
 the rewritten names as aliases of the native tool while a rewrite is active.
 
+### Tool preamble (`openspec add-tool-preamble`)
+
+Settings > Developer mode > 工具前言. Off by default. When enabled, every batch
+of tool calls gets a short title (the Codex "Reading registry sections" row)
+that the Web UI shows above the running tools and keeps as the header of the
+collapsed batch afterwards. The title comes from one of three sources, chosen
+by `mode`:
+
+- `prompt`: the system prompt asks the model to start every message that
+  contains tool calls with an 8-12 word preamble line; that line becomes the
+  title (and is folded into the header instead of rendered as a bubble).
+- `reasoning`: the first `**bold**` span of the provider's reasoning summary
+  (OpenAI Responses / Codex app-server / Gemini summaries start with one),
+  falling back to the first sentence of the reasoning. No prompt change, no
+  extra tokens.
+- `sidecar`: a separate small request (`sidecar_model`, empty = the session's
+  model) summarises the user request, the assistant text and the pending tool
+  calls into a 3-8 word label. The daemon waits at most `sidecar_wait_ms`
+  before persisting the assistant message; a later result is delivered as a
+  `tool_preamble` event with `late:true` and is not written to the JSONL.
+
+The title is persisted as `metadata.tool_preamble = {title, source}` on the
+`assistant` message that carries the `tool_calls`, so `GET /messages` and
+resume reproduce the grouping. Live sessions also receive a `tool_preamble`
+event `{batch_id, tool_call_ids, title, source, late}` (`batch_id` is the
+first tool call id of the batch) right before the batch's `tool_start` frames,
+and, in `reasoning` mode, the `agent_progress` frame with `phase:"reasoning"`
+carries the title as its `label` while the model is still streaming.
+
+`GET /api/config/tool-preamble` returns `{enabled, mode, sidecar_model,
+sidecar_wait_ms, modes:["prompt","reasoning","sidecar"], saved_models:[...]}`.
+`PUT /api/config/tool-preamble` is a patch: any subset of `enabled` (bool),
+`mode` (one of `modes`), `sidecar_model` (a saved model name, `""`/`null`
+clears it) and `sidecar_wait_ms` (0-15000). Invalid values return 400
+`BAD_REQUEST` with `message`; success writes `agent_loop.tool_preamble` to
+`config.json`, pushes the new config to every active session and returns the
+GET shape.
+
 ### Security center (`openspec add-security-center`)
 
 Settings > Coding > Security Center is a UI over the sandbox model from
@@ -4316,6 +4356,7 @@ Session event `type` values from `SessionEventKind`:
 - `goal_updated`
 - `goal_cleared`
 - `todo_updated`
+- `tool_preamble`
 - `session_updated`
 - `busy_changed`
 - `done`

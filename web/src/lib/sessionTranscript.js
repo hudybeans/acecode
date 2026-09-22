@@ -8,6 +8,7 @@ import { fallbackToolSummary } from './toolSummaryFallback.js';
 import { normalizeToolInvocationItems } from './transcriptProjection.js';
 import { createSingleWriterStore } from './singleWriterStore.js';
 import { composerContentFromMessage } from './composerContent.js';
+import { normalizeToolPreambleEvent, toolPreambleFromMetadata } from './toolPreamble.js';
 
 function composerContentFields(message, fallback = null) {
   const content = composerContentFromMessage(message) || composerContentFromMessage(fallback);
@@ -39,6 +40,7 @@ const STREAM_NEUTRAL_EVENT_TYPES = new Set([
   'goal_updated',
   'goal_cleared',
   'todo_updated',
+  'tool_preamble',
   'session_updated',
   'permission_request',
   'permission_closed',
@@ -228,6 +230,7 @@ function cloneState(state) {
     todos: cloneTodos(state.todos),
     todoSummary: state.todoSummary && typeof state.todoSummary === 'object' ? { ...state.todoSummary } : null,
     activity: state.activity && typeof state.activity === 'object' ? { ...state.activity } : null,
+    pendingToolPreambles: { ...(state.pendingToolPreambles || {}) },
     trajectoryPartial: state.trajectoryPartial && typeof state.trajectoryPartial === 'object'
       ? {
           ...state.trajectoryPartial,
@@ -822,14 +825,67 @@ function historyItemsFromMessage(next, m, messageIndex) {
   return items;
 }
 
+// 工具前言(add-tool-preamble)的历史还原:标题落盘在 assistant(tool_calls) 消息的
+// metadata.tool_preamble 上,而投影是按工具项分组的,所以这里把它按 tool_call_id
+// 传播到同批次的结果项 —— 结构化结果(kind:tool)挂 tool.preamble,legacy 文本
+// 结果(kind:msg)挂 metadata.tool_preamble;assistant 正文与 tool_call 包装项的
+// metadata 补上 batch_id,让实时与历史两条路径的分组键一致。
+function tagHistoryToolPreambles(produced, message, preambleByCallId) {
+  if (message?.role === 'assistant') {
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const ids = [];
+    for (let i = 0; i < toolCalls.length; i += 1) {
+      const call = normalizePersistedToolCall(toolCalls[i], i);
+      if (call.toolCallId) ids.push(call.toolCallId);
+    }
+    const preamble = ids.length > 0 ? toolPreambleFromMetadata(message.metadata, ids[0]) : null;
+    if (!preamble) return produced;
+    ids.forEach((id) => preambleByCallId.set(id, preamble));
+    return produced.map((item) => {
+      if (item?.kind !== 'msg' || !item.metadata?.tool_preamble) return item;
+      return {
+        ...item,
+        metadata: {
+          ...item.metadata,
+          tool_preamble: { ...item.metadata.tool_preamble, batch_id: preamble.batchId },
+        },
+      };
+    });
+  }
+  if (message?.role !== 'tool') return produced;
+  const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
+  const preamble = toolCallId ? preambleByCallId.get(toolCallId) : null;
+  if (!preamble) return produced;
+  return produced.map((item) => {
+    if (item?.kind === 'tool') {
+      return { ...item, tool: { ...item.tool, preamble } };
+    }
+    if (item?.kind === 'msg') {
+      return {
+        ...item,
+        metadata: {
+          ...(item.metadata && typeof item.metadata === 'object' ? item.metadata : {}),
+          tool_preamble: { title: preamble.title, source: preamble.source, batch_id: preamble.batchId },
+        },
+      };
+    }
+    return item;
+  });
+}
+
 function historyItemsFromMessages(next, messages) {
   const items = [];
   const toolNamesByCallId = new Map();
+  const preambleByCallId = new Map();
   for (let i = 0; i < messages.length; i += 1) {
     const rawMessage = messages[i];
-    if (rawMessage?.role === 'user') toolNamesByCallId.clear();
+    if (rawMessage?.role === 'user') {
+      toolNamesByCallId.clear();
+      preambleByCallId.clear();
+    }
     const message = withPersistedToolName(rawMessage, toolNamesByCallId);
-    items.push(...historyItemsFromMessage(next, message, i));
+    items.push(...tagHistoryToolPreambles(
+      historyItemsFromMessage(next, message, i), message, preambleByCallId));
     if (message?.role === 'tool') {
       const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
       if (toolCallId) toolNamesByCallId.delete(toolCallId);
@@ -1186,6 +1242,9 @@ export function createTranscriptState(overrides = {}) {
     todos: [],
     todoSummary: null,
     activity: null,
+    // 工具前言(add-tool-preamble):tool_preamble 事件先于对应的 tool_start 到达,
+    // 标题先按 tool_call_id 暂存在这里,tool_start 建项时取走挂到 tool.preamble。
+    pendingToolPreambles: {},
     // turnHadAssistantText / lastAssistantText 用于桌面通知:在 busy=true→false
     // 转换且本回合产生过 assistant 文本时,emit turn_completed effect。reducer 之外
     // 的代码不应直接读 / 写它们。见
@@ -1541,6 +1600,15 @@ export function reduceTranscriptEvent(state, msg) {
         metadata: null,
         askUserQuestionResult: null,
       };
+      const pendingPreamble = tool.toolCallId
+        ? (next.pendingToolPreambles || {})[tool.toolCallId]
+        : null;
+      if (pendingPreamble) {
+        tool.preamble = pendingPreamble;
+        const pending = { ...next.pendingToolPreambles };
+        delete pending[tool.toolCallId];
+        next.pendingToolPreambles = pending;
+      }
       next.items = [...next.items, { kind: 'tool', id, tool, ts: eventTs(msg) }];
       break;
     }
@@ -1615,6 +1683,28 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'goal_cleared': {
       next.goal = null;
+      break;
+    }
+    case 'tool_preamble': {
+      // 工具前言(add-tool-preamble):一个工具调用批次的标题。常规顺序是
+      // tool_preamble → (assistant message) → tool_start…,所以还没出现的工具项
+      // 先记进 pendingToolPreambles;sidecar 迟到(late=true)时工具项已经在,
+      // 原地打标即可。投影按 tool.preamble 把批次折成带标题的分组。
+      const preamble = normalizeToolPreambleEvent(p);
+      if (!preamble) break;
+      markTranscriptRunning(next);
+      const tag = { title: preamble.title, source: preamble.source, batchId: preamble.batchId };
+      const remaining = new Set(preamble.ids);
+      next.items = next.items.map((item) => {
+        if (item.kind !== 'tool') return item;
+        const callId = String(item.tool?.toolCallId || '');
+        if (!callId || !remaining.has(callId)) return item;
+        remaining.delete(callId);
+        return { ...item, tool: { ...item.tool, preamble: tag } };
+      });
+      const pending = { ...(next.pendingToolPreambles || {}) };
+      for (const id of remaining) pending[id] = tag;
+      next.pendingToolPreambles = pending;
       break;
     }
     case 'todo_updated': {

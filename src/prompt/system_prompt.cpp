@@ -176,7 +176,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 bool active_model_can_read_images,
                                 const SystemPromptEnvironment* environment,
                                 const SystemPromptSandboxState* sandbox,
-                                const SystemPromptModelState* model) {
+                                const SystemPromptModelState* model,
+                                bool prompt_tool_preamble) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -311,14 +312,28 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     }
     oss << "- Temporary helper scripts belong under ACECODE_TMPDIR, which resolves to .acecode/tmp/session-<id> for active sessions. In shell commands use the platform variable syntax; with file tools use `%ACECODE_TMPDIR%\\helper.ps1`, `$ACECODE_TMPDIR/helper.sh`, or `${ACECODE_TMPDIR}/helper.sh` only as the leading path component. Never embed the alias inside another path.\n"
         << "- Avoid interactive shell programs.\n"
-        << "- When multiple independent tool calls are useful, especially read-only calls, batch them in the same assistant message so they can run in parallel.\n"
-        << "- Do not add a progress sentence before each individual tool call. If a batch is obvious, emit the tool calls without preceding text.\n";
-    if (file_read_allowed) {
-        oss << "  Good: emit `" << file_read_name
-            << "` for several files plus an available search operation in the same assistant message, with no narration before each call.\n"
-            << "  Bad:  \"Let me read this file.\" then exactly one `"
-            << file_read_name
-            << "`, then \"Now let me search.\" then exactly one search.\n";
+        << "- When multiple independent tool calls are useful, especially read-only calls, batch them in the same assistant message so they can run in parallel.\n";
+    if (prompt_tool_preamble) {
+        // 工具前言 · 提示驱动(add-tool-preamble):批次前一句前言是 UI 的状态行,
+        // 逐次叙述仍然禁止。
+        oss << "- Start every assistant message that contains tool calls with one short preamble line describing what the batch is about to do, then emit the tool calls in that same message. One preamble covers the whole batch; do not add a sentence before each individual call.\n";
+        if (file_read_allowed) {
+            oss << "  Good: \"Reading the registry loader and expert config\" followed by `"
+                << file_read_name
+                << "` for several files plus an available search operation in the same assistant message.\n"
+                << "  Bad:  \"Let me read this file.\" then exactly one `"
+                << file_read_name
+                << "`, then \"Now let me search.\" then exactly one search.\n";
+        }
+    } else {
+        oss << "- Do not add a progress sentence before each individual tool call. If a batch is obvious, emit the tool calls without preceding text.\n";
+        if (file_read_allowed) {
+            oss << "  Good: emit `" << file_read_name
+                << "` for several files plus an available search operation in the same assistant message, with no narration before each call.\n"
+                << "  Bad:  \"Let me read this file.\" then exactly one `"
+                << file_read_name
+                << "`, then \"Now let me search.\" then exactly one search.\n";
+        }
     }
     oss << "\n";
 
@@ -352,32 +367,59 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "- Be concise and direct.\n"
         << "- Do not use emojis unless the user explicitly requests them.\n\n";
 
-    oss << "# Sharing progress updates\n\n"
-        << "Do not narrate every tool call. During multi-step work, prefer silent "
-        << "batches of tool calls over alternating short text and one tool call. "
-        << "Only emit a progress update when it helps the user understand a "
-        << "long-running transition, a meaningful phase change, or why you are "
-        << "about to perform a non-obvious action. Keep progress updates "
-        << "**extremely short** - 10 words or fewer:\n\n";
-    if (file_read_allowed) {
-        oss << "  Good: emit several independent `" << file_read_name
-            << "` and available search calls together with no preceding text.\n";
+    if (prompt_tool_preamble) {
+        // 工具前言 · 提示驱动:Codex prompt.md 的 preamble 口径(8~12 词、按逻辑
+        // 批次归组、承接上下文),这句话会被 UI 当作工具批次的标题展示。
+        oss << "# Sharing progress updates\n\n"
+            << "Before making tool calls, send a brief preamble to the user explaining "
+            << "what you are about to do. The UI shows it as the status line above the "
+            << "running tools, so it must be one short line: 8-12 words (or up to 16 "
+            << "Chinese characters), present-participle phrasing, in the user's language, "
+            << "no trailing punctuation. Logically group related actions: several related "
+            << "calls share one preamble instead of a note per call. Build on prior context "
+            << "so consecutive preambles read as a narrative of the work. Skip the preamble "
+            << "only for a trivial single call whose purpose is obvious.\n\n"
+            << "  Good: \"Reading the registry loader and expert config\"\n"
+            << "  Good: \"Checking how sub-agents inherit the turn limit\"\n";
+        if (file_read_allowed) {
+            oss << "  Bad:  \"Let me read this file.\" before every single `"
+                << file_read_name << "`.\n";
+        }
+        oss
+            << "  Bad:  \"I've analyzed the error in src/foo.cpp and determined that the "
+            << "root cause is a null pointer dereference on line 42. Let me fix that.\"\n\n"
+            << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
+            << "any substantive content into mid-turn messages. If you discover something "
+            << "important, hold it — put it in your final message after all tool work "
+            << "is complete.\n\n";
+    } else {
+        oss << "# Sharing progress updates\n\n"
+            << "Do not narrate every tool call. During multi-step work, prefer silent "
+            << "batches of tool calls over alternating short text and one tool call. "
+            << "Only emit a progress update when it helps the user understand a "
+            << "long-running transition, a meaningful phase change, or why you are "
+            << "about to perform a non-obvious action. Keep progress updates "
+            << "**extremely short** - 10 words or fewer:\n\n";
+        if (file_read_allowed) {
+            oss << "  Good: emit several independent `" << file_read_name
+                << "` and available search calls together with no preceding text.\n";
+        }
+        oss
+            << "  Good: \"Checking the test results.\"\n"
+            << "  Good: \"Found the issue, fixing now.\"\n";
+        if (file_read_allowed) {
+            oss << "  Bad:  \"Let me read this file.\" followed by one `"
+                << file_read_name
+                << "`, then another progress sentence before the next read.\n";
+        }
+        oss
+            << "  Bad:  \"I've analyzed the error in src/foo.cpp and determined that the "
+            << "root cause is a null pointer dereference on line 42. Let me fix that.\"\n\n"
+            << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
+            << "any substantive content into mid-turn messages. If you discover something "
+            << "important, hold it — put it in your final message after all tool work "
+            << "is complete.\n\n";
     }
-    oss
-        << "  Good: \"Checking the test results.\"\n"
-        << "  Good: \"Found the issue, fixing now.\"\n";
-    if (file_read_allowed) {
-        oss << "  Bad:  \"Let me read this file.\" followed by one `"
-            << file_read_name
-            << "`, then another progress sentence before the next read.\n";
-    }
-    oss
-        << "  Bad:  \"I've analyzed the error in src/foo.cpp and determined that the "
-        << "root cause is a null pointer dereference on line 42. Let me fix that.\"\n\n"
-        << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
-        << "any substantive content into mid-turn messages. If you discover something "
-        << "important, hold it — put it in your final message after all tool work "
-        << "is complete.\n\n";
 
     oss << "# Presenting your work and final message\n\n"
         << "Your final message in a turn is the only message the user will read in full. ";

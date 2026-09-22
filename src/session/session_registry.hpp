@@ -301,6 +301,16 @@ public:
     std::size_t refresh_sandbox_config(const SandboxConfig& sandbox);
     std::size_t refresh_exec_rules();
 
+    // 工具前言(add-tool-preamble):设置页改了 config.agent_loop.tool_preamble
+    // 之后直接下发到每个活跃会话 —— AgentLoop 每次用时取快照,不必等回合边界。
+    // 返回下发的会话数。
+    std::size_t refresh_tool_preamble_config(const ToolPreambleConfig& cfg);
+    // sidecar 模式的旁路摘要器:按会话当前模型 / 配置里的 sidecar_model 建一次性
+    // provider 出标题;任何一步失败都返回空串(批次退回模板汇总)。跑在
+    // AgentLoop 起的 detached 线程上。
+    std::string summarize_tool_preamble(const std::string& id,
+                                        const tool_preamble::SidecarSummaryInput& input);
+
     // Fire-and-forget hidden title generation for the first visible user input.
     // It never writes to transcript or blocks send_input.
     void maybe_start_auto_title(const std::string& id, const UserInput& input);

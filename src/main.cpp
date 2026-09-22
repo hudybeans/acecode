@@ -125,6 +125,7 @@
 #include "markdown/markdown_formatter.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_auto_title.hpp"
+#include "session/tool_preamble_sidecar.hpp"
 #include "session/session_registry.hpp"
 #include "session/session_resume_restore.hpp"
 #include "worktree/worktree_core.hpp"
@@ -4458,6 +4459,19 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
             }
             message_elements.push_back(
                 tracked_message(i, line | focus_decorator));
+        } else if (msg.role == "preamble") {
+            // 工具前言(add-tool-preamble):工具批次标题伪行 "● 标题",与工具行
+            // 同列对齐、accent 色加粗。显示端专属 role,不进持久化/LLM context
+            // (resume 时由 session_replay 从 metadata.tool_preamble 还原)。
+            auto line = hbox({
+                text(" \xE2\x97\x8F ") | color(tui::theme().ui.accent),
+                paragraph(msg.content) | bold | color(tui::theme().ui.accent) | flex,
+            });
+            if (focused_message) {
+                line = line | focus;
+            }
+            message_elements.push_back(
+                tracked_message(i, line | focus_decorator));
         } else if (msg.role == "error") {
             auto line = hbox({
                 text(" ! ") | bold | color(tui::theme().semantic.error),
@@ -5752,6 +5766,30 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         }
         screen.PostEvent(Event::Custom);
     };
+    // 工具前言(add-tool-preamble):reasoning 模式的加粗标题替换等待动画短语;
+    // 批次标题落定后在 tool_call 行前插一行 "● 标题" 伪行(prompt 来源时把刚
+    // 流完的那条 assistant 正文原地改成标题行,同一句话不显示两遍)。
+    callbacks.on_thinking_title = [&state, &screen](const std::string& title) {
+        if (title.empty()) return;
+        std::lock_guard<std::mutex> lk(state.mu);
+        state.current_thinking_phrase = title;
+        screen.PostEvent(Event::Custom);
+    };
+    callbacks.on_tool_preamble = [&state, &clamp_chat_focus, &screen](
+        const std::string& title, const std::string& source) {
+        if (title.empty()) return;
+        std::lock_guard<std::mutex> lk(state.mu);
+        if (source == "prompt" && !state.conversation.empty() &&
+            state.conversation.back().role == "assistant" &&
+            !state.conversation.back().is_tool) {
+            state.conversation.back().role = "preamble";
+            state.conversation.back().content = title;
+        } else {
+            state.conversation.push_back({"preamble", title, false});
+        }
+        clamp_chat_focus();
+        screen.PostEvent(Event::Custom);
+    };
     callbacks.on_transcript_replace = [&state, &clamp_chat_focus, &screen,
                                        &reset_chat_line_measure_state](
         const std::vector<ChatMessage>& /*messages*/,
@@ -5898,6 +5936,20 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         }
     }
     agent_loop.set_session_manager(&session_manager);
+    // 工具前言 sidecar(add-tool-preamble):与自动标题同款的一次性 provider,
+    // 跑在 AgentLoop 起的 detached 线程上,config / session_manager 都活到进程尾。
+    agent_loop.set_tool_preamble_sidecar_summarizer(
+        [&config, &session_manager, &agent_loop](
+            const acecode::tool_preamble::SidecarSummaryInput& input) -> std::string {
+            auto profile = resolve_tool_preamble_sidecar_profile(
+                config, session_manager.current_model_preset(), agent_loop.cwd());
+            if (!profile.has_value()) return {};
+            auto provider =
+                create_tool_preamble_sidecar_provider(std::move(*profile), config);
+            if (!provider) return {};
+            return generate_tool_preamble_title(*provider, input)
+                .value_or(std::string{});
+        });
 
     std::mutex tui_title_threads_mu;
     std::vector<std::thread> tui_title_threads;

@@ -111,6 +111,10 @@ struct SystemPromptModelState {
 // active_model_can_read_images: 当前模型能否直接看图片附件(来自
 // LlmProvider::supports_vision)。它只在切换模型时变化,所以留在可缓存的静态
 // 前缀里不会打穿 prompt cache。默认 true 是 fail-open,与 provider 基类同口径。
+// prompt_tool_preamble: 工具前言的「提示驱动」模式(openspec add-tool-preamble,
+// config.agent_loop.tool_preamble enabled && mode == "prompt")。为 true 时把
+// 「不要叙述工具调用」的口径换成 Codex 式 preamble:含工具调用的消息先写一句
+// 8~12 词的前言。它只随配置变化,留在静态前缀里;false 时输出逐字节不变。
 std::string build_system_prompt(const ToolExecutor& tools, const std::string& cwd,
                                 const SkillRegistry* skills = nullptr,
                                 const MemoryRegistry* memory = nullptr,
@@ -121,7 +125,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 bool active_model_can_read_images = true,
                                 const SystemPromptEnvironment* environment = nullptr,
                                 const SystemPromptSandboxState* sandbox = nullptr,
-                                const SystemPromptModelState* model = nullptr);
+                                const SystemPromptModelState* model = nullptr,
+                                bool prompt_tool_preamble = false);
 
 // Build provider-visible, session-scoped context blocks. These are assembled
 // for the current API request only and must not be persisted into the visible

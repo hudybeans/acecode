@@ -1854,7 +1854,8 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state, &model_state);
+        &prompt_environment, &sandbox_state, &model_state,
+        tool_preamble_prompt_mode());
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2943,7 +2944,8 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state, &model_state);
+        &prompt_environment, &sandbox_state, &model_state,
+        tool_preamble_prompt_mode());
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -3290,6 +3292,165 @@ void AgentLoop::emit_retry_lifecycle(
         opts);
 }
 
+// ---------------------------------------------------------------------------
+// 工具前言(openspec add-tool-preamble)
+// ---------------------------------------------------------------------------
+
+void AgentLoop::set_tool_preamble_config(const ToolPreambleConfig& cfg) {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    tool_preamble_cfg_ = cfg;
+}
+
+ToolPreambleConfig AgentLoop::tool_preamble_config() const {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    return tool_preamble_cfg_;
+}
+
+void AgentLoop::set_tool_preamble_sidecar_summarizer(
+    ToolPreambleSidecarSummarizer summarizer) {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    tool_preamble_summarizer_ = std::move(summarizer);
+}
+
+bool AgentLoop::tool_preamble_prompt_mode() const {
+    const ToolPreambleConfig cfg = tool_preamble_config();
+    return cfg.enabled && cfg.mode == tool_preamble::kModePrompt;
+}
+
+std::string AgentLoop::last_user_text_for_preamble() const {
+    for (auto it = messages_.rbegin(); it != messages_.rend(); ++it) {
+        if (it->role != "user") continue;
+        if (it->metadata.is_object() &&
+            it->metadata.value("hidden_goal_context", false)) {
+            continue;
+        }
+        if (!it->content.empty()) return it->content;
+    }
+    return {};
+}
+
+void AgentLoop::start_tool_preamble_sidecar(ProviderCallResult& result,
+                                            const std::string& tool_name,
+                                            const std::string& args_preview,
+                                            const std::string& assistant_text) {
+    ToolPreambleSidecarSummarizer summarizer;
+    {
+        std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+        summarizer = tool_preamble_summarizer_;
+    }
+    if (!summarizer) return;
+    auto task = std::make_shared<ToolPreambleSidecarTask>();
+    result.sidecar_task = task;
+
+    tool_preamble::SidecarSummaryInput input;
+    input.user_request = last_user_text_for_preamble();
+    input.assistant_text = assistant_text;
+    input.calls.push_back({tool_name, args_preview});
+
+    // detached:摘要器自带超时;AgentLoop 只轮询 / 有界等待任务对象,永不被它
+    // 回调,所以线程晚于 AgentLoop 结束也不会踩到已析构的 this。
+    std::thread([task, summarizer, input = std::move(input)]() {
+        std::string title;
+        try {
+            title = summarizer(input);
+        } catch (const std::exception& e) {
+            LOG_WARN(std::string("[tool_preamble] sidecar summarizer failed: ") +
+                     e.what());
+        } catch (...) {
+            LOG_WARN("[tool_preamble] sidecar summarizer failed");
+        }
+        {
+            std::lock_guard<std::mutex> lk(task->mu);
+            task->title = std::move(title);
+            task->done = true;
+        }
+        task->cv.notify_all();
+    }).detach();
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
+    ProviderCallResult& result) {
+    ToolPreambleTitle out;
+    const ToolPreambleConfig cfg = tool_preamble_config();
+    const ChatResponse& accumulated = result.accumulated;
+    if (!cfg.enabled || accumulated.tool_calls.empty()) return out;
+    for (const auto& tc : accumulated.tool_calls) {
+        if (!tc.id.empty()) out.tool_call_ids.push_back(tc.id);
+    }
+    if (cfg.mode == tool_preamble::kModePrompt) {
+        out.source = tool_preamble::kModePrompt;
+        out.title = tool_preamble::title_from_assistant_text(accumulated.content);
+    } else if (cfg.mode == tool_preamble::kModeReasoning) {
+        out.source = tool_preamble::kModeReasoning;
+        out.title = result.reasoning_preamble_title.empty()
+            ? tool_preamble::title_from_reasoning(accumulated.reasoning_content)
+            : result.reasoning_preamble_title;
+    } else if (cfg.mode == tool_preamble::kModeSidecar) {
+        out.source = tool_preamble::kModeSidecar;
+        auto task = result.sidecar_task;
+        if (task) {
+            task->tool_call_ids = out.tool_call_ids;
+            const auto deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(cfg.sidecar_wait_ms);
+            std::unique_lock<std::mutex> lk(task->mu);
+            while (!task->done && !abort_requested_.load()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline) break;
+                const auto remaining =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+                task->cv.wait_for(lk, std::min(std::chrono::milliseconds(50), remaining));
+            }
+            if (task->done) {
+                out.title = task->title;
+            } else {
+                // 没等到:先按无标题落盘,工具执行完 / 回合末再补发 late 事件
+                // (只更新界面,不进 JSONL —— 已落盘的消息没有改写入口)。
+                late_sidecar_task_ = task;
+            }
+        }
+    }
+    if (out.title.empty()) {
+        out.source.clear();
+        out.tool_call_ids.clear();
+    }
+    return out;
+}
+
+void AgentLoop::flush_late_tool_preamble(bool turn_ending) {
+    auto task = late_sidecar_task_;
+    if (!task) return;
+    std::string title;
+    {
+        std::lock_guard<std::mutex> lk(task->mu);
+        if (!task->done) {
+            if (turn_ending) late_sidecar_task_.reset();
+            return;
+        }
+        title = task->title;
+    }
+    late_sidecar_task_.reset();
+    if (title.empty()) return;
+    ToolPreambleTitle late;
+    late.title = title;
+    late.source = tool_preamble::kModeSidecar;
+    late.tool_call_ids = task->tool_call_ids;
+    emit_tool_preamble_event(late, true);
+}
+
+void AgentLoop::emit_tool_preamble_event(const ToolPreambleTitle& preamble,
+                                         bool late) {
+    nlohmann::json payload{
+        {"batch_id", preamble.tool_call_ids.empty()
+                         ? std::string{}
+                         : preamble.tool_call_ids.front()},
+        {"tool_call_ids", preamble.tool_call_ids},
+        {"title", preamble.title},
+        {"source", preamble.source},
+        {"late", late},
+    };
+    events_.emit(SessionEventKind::ToolPreamble, std::move(payload));
+}
+
 AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     const std::shared_ptr<LlmProvider>& provider,
     const ApiRequestBundle& bundle,
@@ -3305,10 +3466,19 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     int provider_attempt = 1;
     bool first_output_recorded = false;
 
+    // 工具前言(add-tool-preamble):本次调用期间的配置快照。reasoning 模式在
+    // 推理流里抠第一对加粗标题;sidecar 模式在第一个完整工具调用露头时就启动
+    // 旁路摘要,让它与后续参数流式 / 工具执行并行,尽量不拖长回合。
+    const ToolPreambleConfig preamble_cfg = tool_preamble_config();
+    const bool preamble_reasoning =
+        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeReasoning;
+    const bool preamble_sidecar =
+        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeSidecar;
+
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
-                            model_step_index,
+                            model_step_index, preamble_reasoning, preamble_sidecar,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3348,7 +3518,28 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             reasoning_bytes += evt.content.size();
             reasoning_fragments++;
-            emit_progress("reasoning", "正在推理",
+            if (preamble_reasoning && result.reasoning_preamble_title.empty()) {
+                std::string reasoning_so_far;
+                {
+                    std::lock_guard<std::mutex> lk(resp_mu);
+                    reasoning_so_far = result.accumulated.reasoning_content;
+                }
+                const std::string bold =
+                    tool_preamble::extract_first_bold_span(reasoning_so_far);
+                if (!bold.empty()) {
+                    result.reasoning_preamble_title =
+                        tool_preamble::normalize_title_line(
+                            bold, tool_preamble::kReasoningTitleMaxCodePoints);
+                    if (!result.reasoning_preamble_title.empty() &&
+                        callbacks_.on_thinking_title) {
+                        callbacks_.on_thinking_title(result.reasoning_preamble_title);
+                    }
+                }
+            }
+            emit_progress("reasoning",
+                result.reasoning_preamble_title.empty()
+                    ? std::string("正在推理")
+                    : result.reasoning_preamble_title,
                 "片段 " + std::to_string(reasoning_fragments) + ", " +
                 human_bytes(reasoning_bytes),
                 std::string{}, std::string{}, -1, false);
@@ -3372,8 +3563,12 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
-                emit_progress("tool_planning", label,
-                    format_bytes_detail(evt.tool_call_argument_bytes),
+                // 工具前言:推理阶段已经拿到批次标题时,准备调用的进度行继续显示
+                // 标题(工具名退到 detail),loading 提示不在标题与通用文案之间来回跳。
+                const bool titled = !result.reasoning_preamble_title.empty();
+                emit_progress("tool_planning",
+                    titled ? result.reasoning_preamble_title : label,
+                    titled ? label : format_bytes_detail(evt.tool_call_argument_bytes),
                     tool_name, evt.tool_call.id, evt.tool_index, false);
             }
             break;
@@ -3393,8 +3588,23 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 native_call.function_name =
                     tools_.resolve_model_tool_name_to_native(
                         native_call.function_name);
-                std::lock_guard<std::mutex> lk(resp_mu);
-                result.accumulated.tool_calls.push_back(std::move(native_call));
+                std::string sidecar_tool_name;
+                std::string sidecar_args_preview;
+                std::string sidecar_assistant_text;
+                {
+                    std::lock_guard<std::mutex> lk(resp_mu);
+                    if (preamble_sidecar && !result.sidecar_task) {
+                        sidecar_tool_name = native_call.function_name;
+                        sidecar_args_preview = native_call.function_arguments;
+                        sidecar_assistant_text = result.accumulated.content;
+                    }
+                    result.accumulated.tool_calls.push_back(std::move(native_call));
+                }
+                if (!sidecar_tool_name.empty()) {
+                    start_tool_preamble_sidecar(result, sidecar_tool_name,
+                                                sidecar_args_preview,
+                                                sidecar_assistant_text);
+                }
             }
             break;
         case StreamEventType::Done: {
@@ -3989,9 +4199,27 @@ bool AgentLoop::execute_tool_calls(
     std::string& turn_timing_status) {
     // Record the assistant message with tool_calls in the history
     auto tc_msg = ToolExecutor::format_assistant_tool_calls(accumulated);
+    // 工具前言(add-tool-preamble):标题挂在这条 assistant(tool_calls) 消息的
+    // metadata 上落盘,Web / TUI 回放据此把批次折成带标题的分组;同时发一条
+    // tool_preamble 事件给实时界面 —— 空正文的工具回合没有 Message 帧可搭。
+    const ToolPreambleTitle step_preamble = std::move(current_step_preamble_);
+    current_step_preamble_ = {};
+    nlohmann::json preamble_metadata;
+    if (!step_preamble.title.empty()) {
+        preamble_metadata = {{"title", step_preamble.title},
+                             {"source", step_preamble.source}};
+        if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
+        tc_msg.metadata[tool_preamble::kMetadataKey] = preamble_metadata;
+    }
     messages_.push_back(tc_msg);
     if (session_manager_) session_manager_->on_message(tc_msg);
     dispatch_assistant_completed_hook(tc_msg, provider_snapshot);
+    if (!step_preamble.title.empty()) {
+        emit_tool_preamble_event(step_preamble, false);
+        if (callbacks_.on_tool_preamble) {
+            callbacks_.on_tool_preamble(step_preamble.title, step_preamble.source);
+        }
+    }
 
     // Web: 工具调用回合的 assistant 文本此前只通过 token 流下发,没有一条权威的
     // Message 帧。文本-only 回合靠末尾那条 assistant Message 事件整体替换流式草稿
@@ -4012,6 +4240,10 @@ bool AgentLoop::execute_tool_calls(
         };
         if (accumulated.content_parts.is_array() && !accumulated.content_parts.empty()) {
             assistant_event["content_parts"] = accumulated.content_parts;
+        }
+        if (preamble_metadata.is_object()) {
+            assistant_event["metadata"] = {
+                {tool_preamble::kMetadataKey, preamble_metadata}};
         }
         events_.emit(SessionEventKind::Message, std::move(assistant_event));
     }
@@ -4278,7 +4510,11 @@ bool AgentLoop::execute_tool_calls(
                 SessionEventKind::ToolStart, std::move(start_payload));
         }
 
-        emit_progress("tool_running", "正在调用工具 " + tc.function_name,
+        // 工具前言:批次有标题时 loading 提示显示标题,工具名 / 命令预览退到 detail。
+        emit_progress("tool_running",
+            step_preamble.title.empty()
+                ? "正在调用工具 " + tc.function_name
+                : step_preamble.title,
             cmd_preview, tc.function_name, tc.id, tool_index_int, true);
 
         struct ProgressState {
@@ -5085,7 +5321,10 @@ bool AgentLoop::execute_tool_calls(
                                                                   : security::kAuditDecisionAllow,
                         security::kAuditSourceUser,
                         exec_permission ? exec_permission->decision.reason : "confirmation");
-                    emit_progress("tool_running", "正在调用工具 " + effective_tc.function_name,
+                    emit_progress("tool_running",
+                        step_preamble.title.empty()
+                            ? "正在调用工具 " + effective_tc.function_name
+                            : step_preamble.title,
                         effective_tc.function_name, effective_tc.function_name, effective_tc.id,
                         static_cast<int>(entry.original_index), true);
                     if (perm == PermissionResult::AllowScoped) {
@@ -5999,11 +6238,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // 本轮产出了有效输出(工具调用),连续空回复计数清零。
         empty_response_retries = 0;
 
+        // 工具前言(add-tool-preamble):在 assistant(tool_calls) 消息落盘之前把
+        // 本步标题定下来(sidecar 模式在这里有界等待),execute_tool_calls 开头
+        // 把它挂进 metadata 并发事件;工具执行完再看一眼没等到的旁路结果。
+        current_step_preamble_ = resolve_tool_preamble_for_step(provider_result);
+
         // Phase 5: Execute tool calls
         terminator_fired = execute_tool_calls(
             provider_result.accumulated, provider_snapshot,
             emit_agent_progress, doom_guard, doom_guard_mu,
             turn_timing_status);
+        flush_late_tool_preamble(false);
         emit_model_step_finish(
             current_model_step, provider_result.accumulated.finish_reason,
             step_usage);
@@ -6088,6 +6333,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         }
     }
 
+    // 回合结束:旁路摘要要么现在补发、要么丢弃,不留到下一回合。
+    flush_late_tool_preamble(true);
     computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);

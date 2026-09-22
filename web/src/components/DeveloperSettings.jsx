@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Toggle } from './Modal.jsx';
+import { ToolPreambleSettings } from './ToolPreambleSettings.jsx';
 
 export function DeveloperSettings() {
   const [enabled, setEnabled] = useState(false);
@@ -58,6 +59,8 @@ export function DeveloperSettings() {
             className="ml-2 underline disabled:opacity-50">重试</button>
         </div>
       )}
+      <div className="h-px bg-border my-5" />
+      <ToolPreambleSettings />
     </div>
   );
 }
