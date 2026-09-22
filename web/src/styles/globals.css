@@ -1829,15 +1829,6 @@ body {
 .ace-sidebar-footer {
   border-top: 1px solid var(--ace-border);
 }
-.ace-sidebar-extensions-arrow {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) .ace-sidebar-extensions-icon {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) .ace-sidebar-extensions-arrow {
-  opacity: 1;
-}
 .ace-desktop-frameless-topbar {
   user-select: none;
   /* macOS native fullscreen removes the traffic-light inset after AppKit's

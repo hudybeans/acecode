@@ -99,6 +99,7 @@ export const controlIcons = {
   Restore: [r(3, 6.5, 10.5, 10.5, 1.4), p('M6.5 6.5V4.4Q6.5 3 7.9 3h7.7Q17 3 17 4.4v7.7q0 1.4-1.4 1.4h-2.1')],
   ShieldWarning: [p('M10 2.5Q6.8 4.7 3.5 5v4.1q0 5.1 6.5 8.4 6.5-3.3 6.5-8.4V5Q13.2 4.7 10 2.5ZM10 6.5v4.2'), dot(10, 13.5, .65)],
   Signal: [p('M4 15v-3M8 15V9M12 15V6M16 15V3')],
+  Sliders: [p('M3 6.5h4.5M10.5 6.5H17M3 13.5h7.5M13.5 13.5H17'), c(9, 6.5, 1.6), c(12, 13.5, 1.6)],
   Sparkle: [p('M8 3.5q.6 4.9 5.5 5.5Q8.6 9.6 8 14.5 7.4 9.6 2.5 9 7.4 8.4 8 3.5ZM15 10q.4 3.1 3.5 3.5-3.1.4-3.5 3.5-.4-3.1-3.5-3.5 3.1-.4 3.5-3.5ZM15.5 2.5v4M13.5 4.5h4')],
   Swarm: swarmCenters.map(([x, y], index) => p(softPolygon(Array.from({ length: 6 }, (_, n) => [x + 2.35 * Math.cos(n * Math.PI / 3), y + 2.35 * Math.sin(n * Math.PI / 3)])), index === 0 ? { fill: 'currentColor', fillOpacity: .14 } : {})),
   Upload: [p('M10 12.5V2.8M6.5 6l3.1-3.1q.4-.4.8 0L13.5 6M3 12.5v3q0 1.5 1.5 1.5h11q1.5 0 1.5-1.5v-3')],
