@@ -1751,9 +1751,14 @@ body {
 .ace-topbar {
   /* Add 5px above and 6px below the original 30px row without enlarging controls. */
   --ace-topbar-control-size: 24px;
-  /* Four controls, three gaps, and the shared 19px sidebar first-column inset. */
+  /* Four 24px controls, three 4px gaps, and the topbar's own 8px left padding. */
   --ace-topbar-navigation-min-width: 116px;
-  --ace-topbar-leading-inset: 19px;
+  /* Must equal the topbar's own left padding (px-2 in TopBar.jsx; the macOS
+     frameless override pairs an 80px padding with an 80px inset). The navigation
+     block is sized to end 4px before the sidebar border, and the session title
+     then clears that border with its own left padding. A larger inset keeps the
+     block narrower and pulls the title back onto the border. */
+  --ace-topbar-leading-inset: 8px;
   box-sizing: border-box;
   min-height: var(--ace-topbar-height);
   height: auto;
@@ -1782,6 +1787,8 @@ body {
   max-width: calc(100% - 8px);
   overflow-wrap: anywhere;
 }
+/* 12px minus the 4px the navigation block keeps clear of the sidebar border
+   leaves an 8px gap between that border and the session title. */
 .ace-topbar-session-title { padding-left: 12px; }
 .ace-topbar-controls { gap: 40px; }
 .ace-topbar-controls > .ace-window-controls { margin-left: 0; }

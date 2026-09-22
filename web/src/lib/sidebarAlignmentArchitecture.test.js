@@ -45,4 +45,15 @@ assert.match(sidebar, /ace-sidebar-footer shrink-0 pl-\[19px\]/);
 assert.match(sidebarQuickMenu, /w-6 h-8 shrink-0 flex items-center justify-center/);
 assert.doesNotMatch(sidebarQuickMenu, /w-6 h-8 shrink-0 flex items-center justify-start/);
 
+// 顶栏会话标题必须落在侧栏右边框的右侧。导航块宽度由 --ace-topbar-leading-inset 推出,
+// 它必须等于顶栏自身的左内边距,否则导航块会提前结束、把标题顶到边框上,显得很挤。
+const styles = fs.readFileSync(path.join(srcRoot, 'styles/globals.css'), 'utf8');
+const topbarRule = styles.match(/\.ace-topbar \{[\s\S]*?\n\}/)[0];
+const sessionTitleRule = styles.match(/\.ace-topbar-session-title \{[^}]*\}/)[0];
+const leadingInset = Number(topbarRule.match(/--ace-topbar-leading-inset:\s*(\d+)px/)[1]);
+const topbarPaddingLeft = Number(topbar.match(/ace-topbar (?:px|pl)-(\d+)/)[1]) * 4;
+const sessionTitlePadding = Number(sessionTitleRule.match(/padding-left:\s*(\d+)px/)[1]);
+assert.equal(leadingInset, topbarPaddingLeft);
+assert.ok(sessionTitlePadding > 4, 'session title must clear the sidebar border by its own padding');
+
 console.log('[pass] sidebar alignment and vertical rhythm preserve shared baselines');
