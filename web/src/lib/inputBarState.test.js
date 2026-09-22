@@ -82,3 +82,33 @@ run('busy 排队模式同样受 submitting 约束', () => {
   assert.equal(state.canSubmit, false, '入队请求在途时不重复入队');
   assert.equal(state.canAbort, true, '停止按钮永远不被提交状态挡住');
 });
+
+// ---- 队列暂停(用户中断回合)下的「继续」模式 ----------------------------
+// 触发场景:用户点停止后队列暂停(queuePaused=true),会话 idle,输入框为空。
+// 期望行为:发送按钮变成「继续」(mode=resume),可点击;标题 / 帮助文案跟着换,
+// 与卡片栈横幅的「继续」同义。中断后末尾用户消息往往同时可重试,但用户此刻
+// 看到的是「队列已暂停」横幅,按钮语义必须压过重试。
+run('队列暂停 + 空输入 → 发送按钮变「继续」,压过重试', () => {
+  const state = getInputBarActionState({ value: '', queuePaused: true, canRetryLastUserMessage: true });
+  assert.equal(state.mode, 'resume');
+  assert.equal(state.canSubmit, true, '空输入也允许点击,因为这一下是继续而不是发送');
+  assert.equal(state.submitLabel, '继续');
+  assert.equal(state.submitTitle, '继续发送排队的消息 (Enter)');
+  assert.equal(state.helperText, 'Enter 继续发送排队的消息 · Shift+Enter 换行 · 上下键切换历史消息');
+  assert.equal(state.canAbort, false);
+  assert.equal(getInputBarActionState({ value: '   ', queuePaused: true }).mode, 'resume', '纯空白同样视为空输入');
+});
+
+// 触发场景:队列暂停但用户已经在输入框里打了字 / 挂了附件 / 回合又在跑 / 编辑区被禁用。
+// 期望行为:有内容就回到普通发送(新消息先走,ChatView 提交时顺带解除暂停);
+// busy 时是排队模式;disabled / submitting 仍然压住按钮。
+run('队列暂停时只有空输入才是「继续」,其它情况沿用原语义', () => {
+  assert.equal(getInputBarActionState({ value: 'hello', queuePaused: true }).mode, 'send');
+  assert.equal(getInputBarActionState({ value: 'hello', queuePaused: true }).submitLabel, '发送');
+  assert.equal(getInputBarActionState({ value: '', hasExtras: true, queuePaused: true }).mode, 'send', '附件是可发送内容');
+  assert.equal(getInputBarActionState({ value: '', busy: true, queuePaused: true }).mode, 'queue', '回合运行中不出现继续');
+  assert.equal(getInputBarActionState({ value: '', queuePaused: true, disabled: true }).canSubmit, false);
+  assert.equal(getInputBarActionState({ value: '', queuePaused: true, submitting: true }).canSubmit, false);
+  assert.equal(getInputBarActionState({ value: '', queuePaused: false }).mode, 'send', '未暂停时空输入仍是普通发送(不可点)');
+  assert.equal(getInputBarActionState({ value: '', queuePaused: false }).canSubmit, false);
+});

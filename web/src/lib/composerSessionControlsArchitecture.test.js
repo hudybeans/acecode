@@ -331,7 +331,7 @@ run('removable composer chips share the same icon and label scale', () => {
   assert.match(component, /<SwarmModeIcon size=\{16\}/);
   assert.match(component, /<VsIcon name="expert" size=\{16\}/);
   assert.match(component, /<VsIcon name="running" size=\{16\}/);
-  assert.match(styles, /\.ace-composer-adaptive-chip\s*\{[^}]*font-size: 12px;/s);
+  assert.match(styles, /\.ace-composer-adaptive-chip\s*\{[^}]*font-size: 13px;/s);
   assert.doesNotMatch(component, /\{expertType === 'team' \? '专家团' : '专家'\}\s*<\/span>/);
   assert.equal((component.match(/<VsIcon name="close" size=\{16\} className="ace-composer-chip-remove"/g) || []).length, 1);
 });

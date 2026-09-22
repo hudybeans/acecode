@@ -12,8 +12,8 @@
 //  - buildQueueCardItems 保持 FIFO 顺序
 
 import assert from 'node:assert/strict';
-import { QUEUED_INPUT_STATE } from './chatInputQueue.js';
-import { buildQueueCardItem, buildQueueCardItems } from './queueCardItem.js';
+import { QUEUED_INPUT_STATE, QUEUE_PAUSE_REASON } from './chatInputQueue.js';
+import { buildQueueCardItem, buildQueueCardItems, buildQueuePausedBanner } from './queueCardItem.js';
 
 function run(name, fn) {
   try {
@@ -150,4 +150,27 @@ run('buildQueueCardItem 长文本完整保留,UI 端用 CSS 截断 + title', () 
   // 数据层不截断 — 完整文本传到 DOM,truncation 由 CSS 完成,title 保留全文
   assert.equal(card.content, longText);
   assert.equal(card.content.length, 2000);
+});
+
+// ---- 「队列已暂停」横幅 -------------------------------------------------------
+// 触发场景:用户中断回合后 chatInputQueue 记下 { reason:'interrupted', pausedAt }。
+// 期望行为:横幅文案点明「由于你中断了当前响应」,右侧按钮文案「继续」;
+// 未暂停(null / 非对象)时返回 null,QueueCardList 不渲染横幅。
+run('buildQueuePausedBanner:中断暂停给出说明文案与「继续」按钮', () => {
+  const banner = buildQueuePausedBanner({ reason: QUEUE_PAUSE_REASON.INTERRUPTED, pausedAt: 1 });
+  assert.equal(banner.reason, 'interrupted');
+  assert.equal(banner.message, '由于你中断了当前响应，队列已暂停');
+  assert.equal(banner.resumeLabel, '继续');
+  assert.equal(banner.resumeTitle, '继续发送排队的消息');
+  assert.equal(buildQueuePausedBanner(null), null);
+  assert.equal(buildQueuePausedBanner(undefined), null);
+  assert.equal(buildQueuePausedBanner('interrupted'), null, '只接受对象形态');
+});
+
+// 触发场景:将来出现别的暂停原因(或 reason 缺失)。
+// 期望行为:退回通用文案「队列已暂停」,按钮仍是「继续」,不因未知原因而不渲染。
+run('buildQueuePausedBanner:未知 / 缺失原因退回通用文案', () => {
+  assert.equal(buildQueuePausedBanner({ reason: 'other' }).message, '队列已暂停');
+  assert.equal(buildQueuePausedBanner({ reason: 'other' }).resumeLabel, '继续');
+  assert.equal(buildQueuePausedBanner({}).reason, 'interrupted', '缺失原因按中断处理');
 });

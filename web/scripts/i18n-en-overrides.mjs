@@ -1602,6 +1602,8 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '路径校验失败': 'Path validation failed',
   '安全编辑守卫': 'Safe edit guard',
   '权限被拒': 'Permission denied',
+  '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；可在首页的项目菜单中选择或添加工作区。': 'New task in the sidebar opens the home page without a workspace. It does not create a directory; use the project menu on the home page to select or add a workspace.',
+  '打开项目菜单，选择已有工作区或添加本地代码目录，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。': 'Open the project menu to select an existing workspace or add a local code directory. Choose No workspace for general tasks.',
   '操作不被允许': 'Operation not permitted',
   '只读文件系统': 'Read-only file system',
   '策略拒绝': 'Denied by policy',
@@ -1625,4 +1627,11 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '拒绝调用工具': 'Tool call denied',
   '调用工具': 'Tool called',
   '沙箱:{{p0}}': 'Sandbox: {{p0}}',
+  // 排队卡片栈:用户中断回合后的「队列已暂停 / 继续」横幅与输入栏「继续」按钮
+  '由于你中断了当前响应，队列已暂停': 'Queue paused because you interrupted the current response',
+  '队列已暂停': 'Queue paused',
+  '继续': 'Resume',
+  '继续发送排队的消息': 'Resume sending the queued messages',
+  '继续发送排队的消息 (Enter)': 'Resume sending the queued messages (Enter)',
+  'Enter 继续发送排队的消息 · Shift+Enter 换行 · 上下键切换历史消息': 'Enter to resume the queued messages · Shift+Enter for a new line · Up/Down to browse history',
 });

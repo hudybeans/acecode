@@ -5,8 +5,23 @@
 //   { kind:'msg', id, content, ts, queued: { id, sessionId, state, error, ... } }
 // 输出是给 QueueCardList.jsx 一个稳定的 props 形状。
 
-import { QUEUED_INPUT_STATE } from './chatInputQueue.js';
+import { QUEUED_INPUT_STATE, QUEUE_PAUSE_REASON } from './chatInputQueue.js';
 import { composerContentFromText } from './composerContent.js';
+
+// 卡片栈顶部的「队列已暂停」横幅。输入是 chatInputQueue.js::queuedInputPause
+// 返回的 { reason, pausedAt } 或 null;null 时不渲染横幅。
+export function buildQueuePausedBanner(paused) {
+  if (!paused || typeof paused !== 'object') return null;
+  const reason = String(paused.reason || QUEUE_PAUSE_REASON.INTERRUPTED);
+  return {
+    reason,
+    message: reason === QUEUE_PAUSE_REASON.INTERRUPTED
+      ? '由于你中断了当前响应，队列已暂停'
+      : '队列已暂停',
+    resumeLabel: '继续',
+    resumeTitle: '继续发送排队的消息',
+  };
+}
 
 export function buildQueueCardItem(item) {
   const queued = item?.queued || {};

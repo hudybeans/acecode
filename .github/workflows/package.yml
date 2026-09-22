@@ -229,6 +229,10 @@ jobs:
               echo "pkg_enabled=false" >> "$GITHUB_OUTPUT"
             fi
           else
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Tagged macOS releases require MACOS_INSTALLER_CERTIFICATE_BASE64 and MACOS_INSTALLER_CERTIFICATE_PASSWORD to build both PKGs"
+              exit 1
+            fi
             echo "::notice::macOS PKG creation disabled; Developer ID Installer credentials are not configured"
             echo "pkg_enabled=false" >> "$GITHUB_OUTPUT"
           fi
@@ -1206,7 +1210,36 @@ jobs:
       - build-and-package
       - build-linux-old-package
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
     steps:
+      - name: Require passing tests for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Packaging can run alongside tests, but publication must wait for
+          # the master push checks of this exact commit to succeed.
+          for attempt in $(seq 1 180); do
+            result="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&event=push" \
+              --jq '.workflow_runs | map(select(.head_branch == "master")) | sort_by(.id) | last | if . == null then "missing pending" else "\(.status) \(.conclusion // "pending")" end')"
+            read -r status conclusion <<< "$result"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Required tests passed for $GITHUB_SHA"
+                exit 0
+              fi
+              echo "::error::Required tests for $GITHUB_SHA ended with $conclusion; refusing publication"
+              exit 1
+            fi
+            echo "Waiting for required tests for $GITHUB_SHA ($status)"
+            sleep 20
+          done
+          echo "::error::Timed out waiting for tests for $GITHUB_SHA"
+          exit 1
+
       - name: Checkout release asset selector
         uses: actions/checkout@v4
 
@@ -1222,6 +1255,9 @@ jobs:
           mkdir -p release-assets
 
           release_version="${GITHUB_REF_NAME#v}"
+          # A successful matrix job may still upload no artifact. Require the
+          # complete inventory before copying or publishing any download.
+          python3 scripts/verify_release_assets.py artifacts "$release_version"
           # Only exact update ZIPs may be selected for updater publication.
           python3 scripts/select_macos_update_assets.py artifacts "$release_version"
           dmg_count="$(find artifacts -type f -iname '*.dmg' | wc -l | tr -d '[:space:]')"
@@ -1252,8 +1288,8 @@ jobs:
 
           release_version="${GITHUB_REF_NAME#v}"
           pkg_count="$(find artifacts -type f -name '*.pkg' | wc -l | tr -d '[:space:]')"
-          if [ "$pkg_count" -ne 0 ] && [ "$pkg_count" -ne 2 ]; then
-            echo "::error::Tagged releases allow either zero or two signed macOS PKGs; found $pkg_count"
+          if [ "$pkg_count" -ne 2 ]; then
+            echo "::error::Tagged releases require exactly two signed macOS PKGs; found $pkg_count"
             exit 1
           fi
           if [ "$pkg_count" -eq 2 ]; then
@@ -1265,8 +1301,6 @@ jobs:
                 exit 1
               fi
             done
-          else
-            echo "::notice::No macOS PKGs were produced; publishing the remaining trusted assets"
           fi
 
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.dmg' \) -print0 |
@@ -1278,7 +1312,7 @@ jobs:
             while IFS= read -r -d '' file; do
               relative="${file#artifacts/}"
               artifact_name="${relative%%/*}"
-              cp "$file" "release-assets/[dev_only]${artifact_name}-$(basename "$file")"
+              cp "$file" "release-assets/dev_only.${artifact_name}-$(basename "$file")"
             done
 
           # Package dSYM directories as tar.gz
@@ -1287,7 +1321,7 @@ jobs:
               relative="${dsym#artifacts/}"
               artifact_name="${relative%%/*}"
               dsym_name="$(basename "$dsym")"
-              tar -czf "release-assets/[dev_only]${artifact_name}-${dsym_name}.tar.gz" -C "$(dirname "$dsym")" "$dsym_name"
+              tar -czf "release-assets/dev_only.${artifact_name}-${dsym_name}.tar.gz" -C "$(dirname "$dsym")" "$dsym_name"
             done
 
           (

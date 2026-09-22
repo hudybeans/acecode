@@ -111,11 +111,12 @@ class DevEnvironmentTest(unittest.TestCase):
                 self.assertIsNone(dev_environment.find_compatible_build(root, "web"))
 
     def test_registered_worktrees_parses_porcelain_prefix(self):
-        root = Path("C:/work")
-        output = "worktree C:/work\nHEAD abc\n\nworktree C:/other\nHEAD def\n"
+        root = Path("work").resolve()
+        other = Path("other").resolve()
+        output = f"worktree {root.as_posix()}\nHEAD abc\n\nworktree {other.as_posix()}\nHEAD def\n"
         completed = subprocess.CompletedProcess([], 0, stdout=output)
         with patch.object(dev_environment.subprocess, "run", return_value=completed):
-            self.assertEqual(dev_environment.registered_worktrees(root), [Path("C:/work"), Path("C:/other")])
+            self.assertEqual(dev_environment.registered_worktrees(root), [root, other])
 
     def test_desktop_candidate_requires_desktop_configuration_and_executable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,9 +129,10 @@ class DevEnvironmentTest(unittest.TestCase):
             self.assertTrue((build / dev_environment.native_executable_name("acecode")).exists())
 
     def test_tui_command_uses_new_windows_terminal(self):
+        root = Path("C:/work")
         executable = Path("C:/work/build/acecode.exe")
         with patch.object(dev_environment.os, "name", "nt"):
-            command = dev_environment.tui_command(Path("C:/work"), executable)
+            command = dev_environment.tui_command(root, executable)
         self.assertEqual(command, [str(executable)])
 
     def test_runtime_directory_is_scoped_to_worktree(self):
@@ -148,7 +150,7 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment.shutil, "which", return_value="C:/tools/sccache.exe"), \
              patch.object(Path, "is_file", return_value=True), \
              patch.object(dev_environment.subprocess, "run", return_value=completed):
-            self.assertEqual(dev_environment.find_sccache(), Path("C:/tools/sccache.exe"))
+            self.assertEqual(dev_environment.find_sccache(), Path("C:/tools/sccache.exe").resolve())
         self.assertIn("sccache", dev_environment.sccache_install_hint())
 
     def test_sccache_discovery_rejects_unusable_file(self):
@@ -688,6 +690,7 @@ class DevEnvironmentTest(unittest.TestCase):
         with patch.object(dev_environment, "parse_args", return_value=args), \
              patch.object(dev_environment, "project_root", return_value=Path("C:/work")), \
              patch.object(dev_environment, "find_sccache", return_value=cache), \
+             patch.object(dev_environment, "default_preset", return_value="windows-x64-release"), \
              patch.object(dev_environment, "sccache_disabled_for_build", return_value=False), \
              patch.object(dev_environment, "find_compatible_build", return_value=candidate), \
              patch.object(dev_environment, "cache_state_changed", return_value=False), \
