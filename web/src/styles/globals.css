@@ -1778,8 +1778,12 @@ body {
   margin-top: 3px;
 }
 .ace-topbar-navigation {
+  /* 这块留白唯一的作用就是把会话标题顶到侧栏右边框之外,所以宽度必须严格等于
+     侧栏宽度减去 inset 和 4px。任何按视口计算的上限(例如从前的 max-width: 35vw)
+     或按视口收窄的断点,都会在窗口变窄时提前结束这块留白,把标题拽回边框左侧。
+     真正放不下时由 min-width 保住按钮尺寸、由 flex-shrink 让位给右侧控件,
+     那时标题已经缩到 0,不会再出现压线。 */
   width: max(var(--ace-topbar-navigation-min-width), calc(var(--ace-topbar-sidebar-width) - var(--ace-topbar-leading-inset, 8px) - 4px));
-  max-width: 35vw;
   min-width: var(--ace-topbar-navigation-min-width);
   flex-shrink: 1;
 }
@@ -1799,10 +1803,6 @@ body {
 .ace-topbar .ace-session-title-actions > button {
   width: var(--ace-topbar-control-size);
   height: var(--ace-topbar-control-size);
-}
-@media (max-width: 640px) {
-  .ace-topbar-navigation { width: var(--ace-topbar-navigation-min-width); }
-  .ace-topbar-session-title { padding-left: 0; }
 }
 .ace-topbar-update-button {
   height: var(--ace-topbar-control-size);

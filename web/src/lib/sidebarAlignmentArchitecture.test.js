@@ -49,11 +49,20 @@ assert.doesNotMatch(sidebarQuickMenu, /w-6 h-8 shrink-0 flex items-center justif
 // 它必须等于顶栏自身的左内边距,否则导航块会提前结束、把标题顶到边框上,显得很挤。
 const styles = fs.readFileSync(path.join(srcRoot, 'styles/globals.css'), 'utf8');
 const topbarRule = styles.match(/\.ace-topbar \{[\s\S]*?\n\}/)[0];
+const navigationRule = styles.match(/\.ace-topbar-navigation \{[\s\S]*?\n\}/)[0];
 const sessionTitleRule = styles.match(/\.ace-topbar-session-title \{[^}]*\}/)[0];
 const leadingInset = Number(topbarRule.match(/--ace-topbar-leading-inset:\s*(\d+)px/)[1]);
 const topbarPaddingLeft = Number(topbar.match(/ace-topbar (?:px|pl)-(\d+)/)[1]) * 4;
 const sessionTitlePadding = Number(sessionTitleRule.match(/padding-left:\s*(\d+)px/)[1]);
 assert.equal(leadingInset, topbarPaddingLeft);
 assert.ok(sessionTitlePadding > 4, 'session title must clear the sidebar border by its own padding');
+// 导航块的宽度只能由侧栏宽度推出。按视口加的上限或断点会在窗口变窄时提前结束留白,
+// 把标题重新拽回边框左侧。
+assert.doesNotMatch(navigationRule.replace(/\/\*[\s\S]*?\*\//g, ''), /max-width/);
+assert.equal(
+  (styles.match(/\.ace-topbar-session-title \{[^}]*\}/g) || []).length,
+  1,
+  'only one .ace-topbar-session-title rule may exist',
+);
 
 console.log('[pass] sidebar alignment and vertical rhythm preserve shared baselines');
