@@ -636,12 +636,12 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
   return (
     <div
       data-sidebar-section={sectionId}
-      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center px-0 pt-3 pb-1 text-[13px] font-medium text-fg-mute"
+      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center px-0 pt-[6px] pb-1 text-[13px] font-medium text-fg-mute"
     >
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full min-w-0 items-center pl-[23px] pr-3 rounded text-left hover:text-fg hover:bg-surface-hi transition"
+        className="flex min-w-0 flex-1 items-center mx-1.5 pl-[17px] pr-[6px] py-[3px] rounded-md text-left hover:text-fg hover:bg-surface-hi transition"
         title={expanded ? `折叠${title}` : `展开${title}`}
         aria-expanded={expanded}
       >

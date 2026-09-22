@@ -25,8 +25,9 @@ assert.match(sidebar, /ace-sidebar-session-title-button ace-sidebar-tree-content
 assert.match(sidebar, /ace-sidebar-tree-content min-w-0 truncate/);
 assert.match(sidebar, /ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-\[5px\]/);
 assert.doesNotMatch(topbar, /className="ml-\[8px\]"/);
-assert.match(sidebar, /SidebarSectionHeader[\s\S]*?px-0 pt-3 pb-1/);
-assert.match(sidebar, /SidebarSectionHeader[\s\S]*?flex w-full min-w-0 items-center pl-\[23px\] pr-3/);
+assert.match(sidebar, /SidebarSectionHeader[\s\S]*?px-0 pt-\[6px\] pb-1/);
+// 分节标题的 hover 色块必须与工作区行同宽同高:同样的 mx-1.5 内缩、py-[3px] 行高、rounded-md 圆角。
+assert.match(sidebar, /SidebarSectionHeader[\s\S]*?flex min-w-0 flex-1 items-center mx-1\.5 pl-\[17px\] pr-\[6px\] py-\[3px\] rounded-md/);
 assert.match(sidebar, /SidebarSectionHeader[\s\S]*?inline-flex min-w-0 items-center gap-0\.5/);
 assert.match(sidebar, /data-sidebar-section-disclosure=\{sectionId\}[\s\S]*?inline-flex w-5 h-6/);
 const sectionHeader = sidebar.match(/function SidebarSectionHeader[\s\S]*?\r?\n}\r?\n/)[0];

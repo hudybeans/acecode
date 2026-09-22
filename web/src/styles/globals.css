@@ -1826,6 +1826,10 @@ body {
     transparent 100%);
   padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
   scroll-padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
+  /* 稳定滚动条槽位:列表内容高度越过视口时自定义滚动条(--ace-scrollbar-hit-size:
+     12px)会挤掉 12px 内容宽度,切会话触发 reveal 展开时列表会明显左右抖一下。
+     常驻槽位让宽度与是否溢出无关。轨道默认透明,短列表时右侧空槽不可见。 */
+  scrollbar-gutter: stable;
   -webkit-mask-image: var(--ace-list-edge-mask);
   mask-image: var(--ace-list-edge-mask);
 }
