@@ -11,6 +11,7 @@
 #include "session/permission_prompter.hpp"
 #include "session/ask_user_question_prompter.hpp"
 #include "config/config.hpp"
+#include "tool_preamble/tool_preamble.hpp"
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
 #include "pa/pa_overflow_rescue.hpp"
@@ -142,6 +143,16 @@ struct AgentCallbacks {
     // Called when TodoWrite publishes or reads the current visible checklist.
     // The payload shape matches the todo_updated session event.
     std::function<void(const nlohmann::json& payload)> on_todo_updated;
+
+    // 工具前言(add-tool-preamble):模型步的标题定下来之后、工具执行之前回调
+    // (title, source ∈ prompt|reasoning|sidecar)。TUI 据此在该批次的 tool_call
+    // 行之前插入标题伪行;prompt 来源时把刚流完的那条 assistant 正文原地改成
+    // 标题行,避免同一句话显示两遍。
+    std::function<void(const std::string& title, const std::string& source)> on_tool_preamble;
+
+    // reasoning 模式:推理摘要的加粗标题在流式期间就绪时回调,TUI 用它替换
+    // 等待动画里的随机短语("Thinking" → "Reading registry sections")。
+    std::function<void(const std::string& title)> on_thinking_title;
 
     // Legacy display observer for replacement-style transcript updates. Normal
     // compact success appends marker messages and no longer calls this hook.
@@ -379,7 +390,21 @@ public:
     // Install / update the agent-loop termination policy. Called once from
     // main.cpp at startup (and could be called again if config reloads).
     // A fresh-default AgentLoopConfig is used when this setter is never called.
-    void set_agent_loop_config(AgentLoopConfig cfg) { loop_cfg_ = cfg; }
+    void set_agent_loop_config(AgentLoopConfig cfg) {
+        loop_cfg_ = cfg;
+        set_tool_preamble_config(cfg.tool_preamble);
+    }
+
+    // 工具前言(add-tool-preamble)。配置可在设置页动态改,所以单独一把锁、
+    // 每次用时取快照;sidecar 摘要器由入口注入(SessionRegistry / main.cpp),
+    // AgentLoop 只知道「给材料、拿标题」,不关心 provider 怎么来的。摘要器在
+    // 独立线程里被调用,必须自带超时并可以并发调用。
+    void set_tool_preamble_config(const ToolPreambleConfig& cfg);
+    ToolPreambleConfig tool_preamble_config() const;
+    using ToolPreambleSidecarSummarizer =
+        std::function<std::string(const tool_preamble::SidecarSummaryInput& input)>;
+    void set_tool_preamble_sidecar_summarizer(ToolPreambleSidecarSummarizer summarizer);
+
     void set_task_suggestion_compact_threshold(int threshold) {
         task_suggestion_compact_threshold_.store(
             threshold > 0 ? threshold : 0, std::memory_order_relaxed);
@@ -657,6 +682,22 @@ private:
     void publish_side_question_context(
         const std::vector<ChatMessage>& messages_with_system);
 
+    // 工具前言 sidecar 任务(add-tool-preamble):detached 线程把结果写进来,
+    // AgentLoop 只轮询 / 有界等待,永不被它回调 —— 线程晚于 AgentLoop 结束也
+    // 不会踩到已析构的 this。tool_call_ids 由 loop 线程在等待前填。
+    struct ToolPreambleSidecarTask {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false;
+        std::string title;
+        std::vector<std::string> tool_call_ids;
+    };
+    struct ToolPreambleTitle {
+        std::string title;
+        std::string source;
+        std::vector<std::string> tool_call_ids;
+    };
+
     // Phase 3: Stream provider response and accumulate.
     struct ProviderCallResult {
         ChatResponse accumulated;
@@ -664,7 +705,20 @@ private:
         ProviderErrorInfo provider_error_info;
         std::shared_ptr<LlmProvider> provider_snapshot;
         int provider_attempt = 1;
+        // 工具前言:reasoning 模式下流式期间抠到的加粗标题;sidecar 模式下
+        // 已启动的旁路摘要任务(可能仍在跑)。
+        std::string reasoning_preamble_title;
+        std::shared_ptr<ToolPreambleSidecarTask> sidecar_task;
     };
+    bool tool_preamble_prompt_mode() const;
+    ToolPreambleTitle resolve_tool_preamble_for_step(ProviderCallResult& result);
+    void start_tool_preamble_sidecar(ProviderCallResult& result,
+                                     const std::string& tool_name,
+                                     const std::string& args_preview,
+                                     const std::string& assistant_text);
+    void flush_late_tool_preamble(bool turn_ending);
+    std::string last_user_text_for_preamble() const;
+    void emit_tool_preamble_event(const ToolPreambleTitle& preamble, bool late);
     ProviderCallResult call_provider_and_collect(
         const std::shared_ptr<LlmProvider>& provider,
         const ApiRequestBundle& bundle,
@@ -801,6 +855,16 @@ private:
     // agent_loop termination policy. Fresh defaults come from AgentLoopConfig
     // until set_agent_loop_config is called from main.cpp.
     AgentLoopConfig loop_cfg_;
+    // 工具前言(add-tool-preamble)状态。配置 / 摘要器受 tool_preamble_mu_ 保护
+    // (设置页可在回合中途改);其余两项只在 worker 线程上读写。
+    mutable std::mutex tool_preamble_mu_;
+    ToolPreambleConfig tool_preamble_cfg_;
+    ToolPreambleSidecarSummarizer tool_preamble_summarizer_;
+    // 本模型步解析出的标题:run_agent_with_input 在 Phase 5 之前填,
+    // execute_tool_calls 开头消费(挂 metadata + 发事件)后清空。
+    ToolPreambleTitle current_step_preamble_;
+    // 落盘前没等到结果的旁路任务:工具执行完再看一眼,到了就补发 late 事件。
+    std::shared_ptr<ToolPreambleSidecarTask> late_sidecar_task_;
     LoopExecutionPolicy loop_execution_policy_;
     // spawn_subagent 透传的父会话写边界根;见 write_root()。
     std::string inherited_write_root_;

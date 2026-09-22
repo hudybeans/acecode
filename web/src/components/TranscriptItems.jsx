@@ -72,11 +72,16 @@ export function ActivitySummaryBlock({ item, expanded, onToggle, activity = null
   }
 
   const parallelCount = Number(item?.runningToolCount) || 0;
-  const label = live && parallelCount > 1
-    ? `正在运行 ${parallelCount} 个工具`
-    : (live ? (activity?.label || item?.title || '正在处理请求') : (item?.title || '已处理'));
+  // 工具前言(add-tool-preamble):批次有标题时标题优先于实时阶段文案与
+  // 并行计数,后者退到 detail 里;没有标题时保持原有文案。
+  const preambleTitle = String(item?.preamble?.title || '').trim();
+  const label = preambleTitle
+    || (live && parallelCount > 1
+      ? `正在运行 ${parallelCount} 个工具`
+      : (live ? (activity?.label || item?.title || '正在处理请求') : (item?.title || '已处理')));
   const detail = live
     ? [
+        preambleTitle && parallelCount > 1 ? `正在运行 ${parallelCount} 个工具` : '',
         activity?.detail || '',
         activityKind !== CONVERSATION_ACTIVITY_KIND.BACKGROUND
           && activity?.backgroundCount > 0

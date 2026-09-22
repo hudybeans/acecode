@@ -217,8 +217,33 @@ struct InputHistoryConfig {
 //
 // `AskUserQuestion` is NEVER a terminator (its tool_result feeds back to
 // the model and the loop continues, exactly like any other tool).
+
+// 工具前言(openspec add-tool-preamble,设置 > 开发者模式 > 工具前言)。
+// 默认关闭。开启后每个工具调用批次配一条短标题,来源由 mode 决定:
+//   "prompt"    提示驱动:系统提示要求模型在工具调用前先写一句 8~12 词的前言。
+//   "reasoning" 推理服务内置摘要:从 provider 推理摘要里抠第一对 **加粗**,
+//               没有则取推理首句。不改提示词、不多花 token。
+//   "sidecar"   旁路模型摘要:用 sidecar_model(空 = 沿用会话模型)对本步材料
+//               单独发一次小请求出标签;落盘前最多等 sidecar_wait_ms。
+// 非法 mode 在 load_config 归一化为 "prompt";sidecar_wait_ms clamp [0, 15000]。
+struct ToolPreambleConfig {
+    bool enabled = false;
+    std::string mode = "prompt";
+    std::string sidecar_model;
+    int sidecar_wait_ms = 2000;
+
+    bool operator==(const ToolPreambleConfig& other) const {
+        return enabled == other.enabled && mode == other.mode &&
+               sidecar_model == other.sidecar_model &&
+               sidecar_wait_ms == other.sidecar_wait_ms;
+    }
+    bool operator!=(const ToolPreambleConfig& other) const { return !(*this == other); }
+};
+
 struct AgentLoopConfig {
     int max_iterations = 0; // 0 = unlimited; positive values cap total LLM turns per run()
+
+    ToolPreambleConfig tool_preamble;
 
     // AskUserQuestion 应答策略(openspec/changes/add-ask-question-policy)。
     //   "ask"     = 默认。正常弹 UI 无限期等用户回答。

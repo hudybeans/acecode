@@ -102,8 +102,28 @@ std::vector<TuiState::Message> replay_session_messages(
         if (msg.role == "assistant") {
             // 文本前奏(若有)先 push,顺序与运行时 on_delta+on_message 累积一致。
             flush_pending_calls();
-            if (!msg.content.empty()) {
+            // 工具前言(add-tool-preamble):metadata.tool_preamble 还原成
+            // "preamble" 标题伪行,排在该批次的 tool_call 行之前。prompt 来源的
+            // 前言就是那句正文,标题行已经承载它,不再重复推一行正文。
+            std::string preamble_title;
+            std::string preamble_source;
+            if (msg.metadata.is_object() &&
+                msg.metadata.contains("tool_preamble") &&
+                msg.metadata["tool_preamble"].is_object()) {
+                const auto& tp = msg.metadata["tool_preamble"];
+                preamble_title = tp.value("title", std::string{});
+                preamble_source = tp.value("source", std::string{});
+            }
+            const bool has_tool_calls =
+                msg.tool_calls.is_array() && !msg.tool_calls.empty();
+            const bool preamble_row = !preamble_title.empty() && has_tool_calls;
+            const bool text_folded_into_preamble =
+                preamble_row && preamble_source == "prompt";
+            if (!msg.content.empty() && !text_folded_into_preamble) {
                 out.push_back({"assistant", msg.content, /*is_tool=*/false});
+            }
+            if (preamble_row) {
+                out.push_back({"preamble", preamble_title, /*is_tool=*/false});
             }
             // 每个 tool_call 单独成一行,先攒进 pending 等结果配对。
             // display_override 用 build_tool_call_preview 现算,失败

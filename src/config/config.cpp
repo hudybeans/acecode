@@ -1761,6 +1761,39 @@ static AppConfig load_config_from_path_once(
                     }
                     cfg.agent_loop.question_timeout_seconds = v;
                 }
+                // 工具前言(add-tool-preamble):默认关闭;mode 非法归一化为
+                // "prompt";sidecar_wait_ms clamp [0, 15000]。
+                if (alj.contains("tool_preamble") && alj["tool_preamble"].is_object()) {
+                    const auto& tpj = alj["tool_preamble"];
+                    auto& tp = cfg.agent_loop.tool_preamble;
+                    if (tpj.contains("enabled") && tpj["enabled"].is_boolean()) {
+                        tp.enabled = tpj["enabled"].get<bool>();
+                    }
+                    if (tpj.contains("mode") && tpj["mode"].is_string()) {
+                        const std::string mode = tpj["mode"].get<std::string>();
+                        if (mode == "prompt" || mode == "reasoning" || mode == "sidecar") {
+                            tp.mode = mode;
+                        } else {
+                            LOG_WARN("[config] agent_loop.tool_preamble.mode=\"" + mode +
+                                     "\" is invalid (expected prompt|reasoning|sidecar); using \"prompt\"");
+                            tp.mode = "prompt";
+                        }
+                    }
+                    if (tpj.contains("sidecar_model") && tpj["sidecar_model"].is_string()) {
+                        tp.sidecar_model = tpj["sidecar_model"].get<std::string>();
+                    }
+                    if (tpj.contains("sidecar_wait_ms") &&
+                        tpj["sidecar_wait_ms"].is_number_integer()) {
+                        int v = tpj["sidecar_wait_ms"].get<int>();
+                        if (v < 0 || v > 15000) {
+                            LOG_WARN("[config] agent_loop.tool_preamble.sidecar_wait_ms=" +
+                                     std::to_string(v) +
+                                     " is out of range [0, 15000]; clamping");
+                            v = v < 0 ? 0 : 15000;
+                        }
+                        tp.sidecar_wait_ms = v;
+                    }
+                }
                 // Legacy keys (auto_continue, max_consecutive_empty_iterations)
                 // from the just-rolled-back agentic-loop-terminator change are
                 // silently ignored — see align-loop-with-hermes.
@@ -2398,6 +2431,16 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             alj["question_policy"] = cfg.agent_loop.question_policy;
         if (cfg.agent_loop.question_timeout_seconds != al_d.question_timeout_seconds)
             alj["question_timeout_seconds"] = cfg.agent_loop.question_timeout_seconds;
+        {
+            const ToolPreambleConfig tp_d;
+            const auto& tp = cfg.agent_loop.tool_preamble;
+            nlohmann::json tpj = nlohmann::json::object();
+            if (tp.enabled != tp_d.enabled) tpj["enabled"] = tp.enabled;
+            if (tp.mode != tp_d.mode) tpj["mode"] = tp.mode;
+            if (tp.sidecar_model != tp_d.sidecar_model) tpj["sidecar_model"] = tp.sidecar_model;
+            if (tp.sidecar_wait_ms != tp_d.sidecar_wait_ms) tpj["sidecar_wait_ms"] = tp.sidecar_wait_ms;
+            if (!tpj.empty()) alj["tool_preamble"] = tpj;
+        }
         if (!alj.empty()) j["agent_loop"] = alj;
 
         AskConfig ask_d;

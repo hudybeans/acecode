@@ -5,6 +5,7 @@
 #include "session_resume_restore.hpp"
 #include "session_storage.hpp"
 #include "session_auto_title.hpp"
+#include "tool_preamble_sidecar.hpp"
 #include "thread_goal_store.hpp"
 #include "system_notice.hpp"
 #include "tool_result_storage.hpp"
@@ -1089,6 +1090,13 @@ SessionRegistry::make_entry_locked(const std::string& id,
             entry_config->task_suggestion_compact_threshold);
         entry->loop->set_sandbox_config(entry_config->sandbox);
     }
+    // 工具前言 sidecar(add-tool-preamble):摘要器只捕获会话 id,跑在 AgentLoop
+    // 的 detached 线程上,执行时再 acquire 会话与配置快照。
+    entry->loop->set_tool_preamble_sidecar_summarizer(
+        [this, session_id = entry->id](
+            const tool_preamble::SidecarSummaryInput& input) {
+            return summarize_tool_preamble(session_id, input);
+        });
     if (opts.loop_execution) {
         LoopExecutionPolicy policy;
         policy.active = true;
@@ -1672,6 +1680,41 @@ std::size_t SessionRegistry::refresh_sandbox_config(const SandboxConfig& sandbox
         ++queued;
     }
     return queued;
+}
+
+std::size_t SessionRegistry::refresh_tool_preamble_config(const ToolPreambleConfig& cfg) {
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    for (const auto& entry : targets) {
+        entry->loop->set_tool_preamble_config(cfg);
+    }
+    return targets.size();
+}
+
+std::string SessionRegistry::summarize_tool_preamble(
+    const std::string& id,
+    const tool_preamble::SidecarSummaryInput& input) {
+    if (shutting_down_.load()) return {};
+    const auto cfg = snapshot_model_config(deps_).config;
+    if (!cfg) return {};
+    auto entry = acquire(id);
+    if (!entry) return {};
+    const auto model_state = entry->model_binding
+        ? entry->model_binding->state_snapshot()
+        : SessionModelState{};
+    auto profile = resolve_tool_preamble_sidecar_profile(
+        *cfg, model_state.name, entry->cwd);
+    if (!profile.has_value()) return {};
+    auto provider = create_tool_preamble_sidecar_provider(std::move(*profile), *cfg);
+    if (!provider) return {};
+    return generate_tool_preamble_title(*provider, input).value_or(std::string{});
 }
 
 std::size_t SessionRegistry::refresh_exec_rules() {

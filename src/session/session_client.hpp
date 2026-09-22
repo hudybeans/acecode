@@ -56,6 +56,10 @@ enum class SessionEventKind {
     GoalUpdated,       // payload: {"session_id":"...", "goal": {...}}
     GoalCleared,       // payload: {"session_id":"..."}
     TodoUpdated,       // payload: {"session_id":"...", "todos": [...], "summary": {...}}
+    // 工具前言(add-tool-preamble):一个工具调用批次的标题。batch_id = 批次里
+    // 第一个 tool_call_id;late=true 表示旁路摘要在 assistant 消息落盘后才到,
+    // 只更新界面、不在 JSONL 里。
+    ToolPreamble,      // payload: {"batch_id":"...", "tool_call_ids":[...], "title":"...", "source":"prompt|reasoning|sidecar", "late":bool}
     SessionUpdated,    // payload: {"session_id":"...", "title":"...", ...}
     BusyChanged,       // payload: {"busy":bool,"outcome"?:...,"turn_id"?:...,"usage"?:{...}}
     Done,              // regular turn: {"outcome":...,"turn_id":"...","usage":{...}}
@@ -473,6 +477,7 @@ inline const char* to_string(SessionEventKind k) {
         case SessionEventKind::GoalUpdated:       return "goal_updated";
         case SessionEventKind::GoalCleared:       return "goal_cleared";
         case SessionEventKind::TodoUpdated:       return "todo_updated";
+        case SessionEventKind::ToolPreamble:      return "tool_preamble";
         case SessionEventKind::SessionUpdated:    return "session_updated";
         case SessionEventKind::BusyChanged:       return "busy_changed";
         case SessionEventKind::Done:              return "done";
