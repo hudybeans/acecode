@@ -1,5 +1,6 @@
 export const DESKTOP_GUIDED_TOUR_TARGETS = Object.freeze({
   sidebar: '[data-tour-target="sidebar"]',
+  addProject: '[data-tour-target="sidebar-add-project"]',
   newSession: '[data-tour-target="sidebar-new-task"]',
   workspace: '[data-tour-target="home-workspace"]',
   composer: '[data-tour-target="home-composer"]',
@@ -80,18 +81,25 @@ export function buildDesktopGuidedTourSteps({ hasModel = true } = {}) {
       content: '这里可以新建和搜索任务、继续历史任务，并在工作区之间切换。',
     },
     {
+      id: 'add-project',
+      target: DESKTOP_GUIDED_TOUR_TARGETS.addProject,
+      placement: 'right-start',
+      title: '添加工作区',
+      content: '点击“工作区”栏右侧的添加按钮，选择已有的本地代码目录，它就会出现在左侧工作区列表中。引导期间只做说明，不会真的打开目录选择器。',
+    },
+    {
       id: 'new-session',
       target: DESKTOP_GUIDED_TOUR_TARGETS.newSession,
       placement: 'right-start',
       title: '新建任务',
-      content: '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；可在首页的项目菜单中选择或添加工作区。',
+      content: '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；要加入本地代码目录，请使用上一步的“添加工作区”。',
     },
     {
       id: 'workspace',
       target: DESKTOP_GUIDED_TOUR_TARGETS.workspace,
       placement: 'top-start',
       title: '选择任务范围',
-      content: '打开项目菜单，选择已有工作区或添加本地代码目录，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。',
+      content: '选择代码工作区，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。',
     },
     {
       id: 'composer',

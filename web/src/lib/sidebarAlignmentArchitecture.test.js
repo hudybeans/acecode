@@ -5,14 +5,15 @@ import { fileURLToPath } from 'node:url';
 
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sidebar = fs.readFileSync(path.join(srcRoot, 'components/Sidebar.jsx'), 'utf8');
+const extensions = fs.readFileSync(path.join(srcRoot, 'components/SidebarExtensions.jsx'), 'utf8');
 const sidebarQuickMenu = fs.readFileSync(path.join(srcRoot, 'components/SidebarQuickMenu.jsx'), 'utf8');
 const topbar = fs.readFileSync(path.join(srcRoot, 'components/TopBar.jsx'), 'utf8');
 
 assert.match(sidebar, /SidebarNavItem[\s\S]*?pl-\[19px\] pr-\[13px\] py-\[3px\]/);
-assert.match(sidebar, /CustomSidebarItem[\s\S]*?pl-\[19px\] pr-\[13px\] py-\[3px\]/);
+assert.match(extensions, /PinnedExtensionItem[\s\S]*?pl-\[19px\] pr-\[13px\] py-\[3px\]/);
 assert.match(sidebar, /SidebarNavItem[\s\S]*?items-center justify-center shrink-0/);
-assert.match(sidebar, /CustomSidebarItem[\s\S]*?items-center justify-center shrink-0/);
-assert.match(sidebar, /ace-sidebar-meta-text text-right text-\[13px\] text-fg-mute shrink-0 tabular-nums/);
+assert.match(extensions, /PinnedExtensionItem[\s\S]*?items-center justify-center shrink-0/);
+assert.match(sidebar, /ace-sidebar-meta-text whitespace-nowrap text-right text-\[13px\] text-fg-mute shrink-0 tabular-nums/);
 assert.doesNotMatch(sidebar, /ace-sidebar-meta-text w-\[76px\] text-right text-\[13px\]/);
 assert.match(sidebar, /grid-cols-\[24px_minmax\(0,1fr\)_auto\][\s\S]*?gap-x-\[7px\] ml-1\.5 mr-0 my-px pl-\[13px\] pr-\[1px\]/);
 assert.match(sidebar, /ace-sidebar-row-idle-slot ace-sidebar-meta-text[^\n]*text-right/);
@@ -35,8 +36,7 @@ assert.equal((sectionHeader.match(/<button/g) || []).length, 1);
 assert.doesNotMatch(sectionHeader, /opacity-0/);
 assert.doesNotMatch(sidebar, /ace-sidebar-section-title text-\[12px\]/);
 assert.match(sidebar, /ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2/);
-assert.match(sidebar, /ace-sidebar-custom-list/);
-assert.doesNotMatch(sidebar, /ace-sidebar-custom-list my-1/);
+assert.match(sidebar, /<SidebarExtensions/);
 assert.match(sidebar, /mt-px mb-\[10px\]/);
 assert.match(sidebar, /my-1/);
 assert.doesNotMatch(sidebar, /-mt-1/);

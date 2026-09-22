@@ -43,7 +43,7 @@ test('all workspace-backed new-task entry points refresh without changing generi
   const expertTask = section(app, 'const dispatchExpertToNewTask =', 'const consumeInitialDraftText =');
   const trayTask = section(app, 'const createDesktopTraySession =', 'const handleSubagentTasksChange =');
   const homeTask = section(chat, 'const createHomeComposerSession =', 'const stageMediaFiles =');
-  const sidebarTask = section(sidebar, 'const openNewTaskInWorkspace =', 'const sidebarNavCallbacks = {');
+  const sidebarTask = section(sidebar, 'const openNewTaskInWorkspace =', 'const onAddWorkspace =');
   const genericNavigation = section(app, 'const navigateToRef =', 'const replaceNavigationState =');
 
   assert.match(expertTask, /refreshWorkspaceGitInfo\(createApi\(base\), base\)/);

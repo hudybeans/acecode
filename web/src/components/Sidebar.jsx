@@ -20,6 +20,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { SidebarQuickMenu } from './SidebarQuickMenu.jsx';
+import { SidebarExtensions } from './SidebarExtensions.jsx';
 import { Modal } from './Modal.jsx';
 import BrandLogo from './BrandLogo.jsx';
 import { api } from '../lib/api.js';
@@ -61,6 +62,7 @@ import {
 } from '../lib/sessionListEvents.js';
 import { sessionHasPendingQuestion } from '../lib/pendingQuestions.js';
 import { sessionHasPendingPermission } from '../lib/permissionRequestQueue.js';
+import { pickExistingWorkspace } from '../lib/workspacePicker.js';
 import {
   applyStatusSnapshot,
   applyStatusUpdate,
@@ -76,6 +78,7 @@ import {
   applyRemoteControlSessionSelection,
   clearRemoteControlSessionBindings,
   completeRemoteControlSurgeRequest,
+  expandedSessionListsAfterWorkspaceCollapseAll,
   expandedSessionListsAfterWorkspaceDisclosure,
   nextRemoteControlSurgeRequest,
   reorderSidebarWorkspaceSession,
@@ -129,13 +132,10 @@ import {
 import { gitInfoCache } from '../lib/gitInfoCache.js';
 import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 import {
-  DEFAULT_SIDEBAR_CUSTOM_EXPANDED,
   DEFAULT_SIDEBAR_SECTION_EXPANSION,
-  SIDEBAR_CUSTOM_ITEMS,
   SIDEBAR_DISCLOSURE_ICON,
   SIDEBAR_NAV_ITEMS,
   SIDEBAR_SECTION_IDS,
-  sidebarCustomTotalCount,
   sidebarSectionCounts,
   sidebarSectionIsVisible,
   sidebarSectionTitle,
@@ -155,7 +155,6 @@ import { toast } from './Toast.jsx';
 import { VsIcon } from './Icon.jsx';
 
 const SIDEBAR_SECTIONS_STORAGE_KEY = 'acecode.sidebarSectionsExpanded.v1';
-const SIDEBAR_CUSTOM_STORAGE_KEY = 'acecode.sidebarCustomSectionExpanded.v2';
 const SESSION_DRAG_START_PX = 5;
 const SESSION_DRAG_EDGE_SCROLL_PX = 34;
 const SESSION_DRAG_EDGE_SCROLL_STEP = 16;
@@ -519,114 +518,6 @@ function SidebarNavItem({ item, onClick }) {
       </span>
       <span className="flex-1 min-w-0 truncate">{item.label}</span>
     </button>
-  );
-}
-
-function validateBooleanPreference(value) {
-  return typeof value === 'boolean';
-}
-
-function countObjectKeys(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
-  return Object.keys(value).length;
-}
-
-function CustomSidebarIcon({ icon }) {
-  return <VsIcon name={icon} size={18} className="ace-sidebar-custom-icon" />;
-}
-
-function CustomSidebarItem({ item, count, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-sidebar-custom-item={item.id}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] text-[14px] text-fg hover:bg-surface-hi transition text-left"
-    >
-      <span className="w-6 h-6 flex items-center justify-center shrink-0">
-        <CustomSidebarIcon icon={item.icon} />
-      </span>
-      <span className="flex-1 min-w-0 truncate">{item.label}</span>
-      {Number.isFinite(count) && (
-        <span className="ace-sidebar-meta-text text-right text-[13px] text-fg-mute shrink-0 tabular-nums">{count}</span>
-      )}
-    </button>
-  );
-}
-
-function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpenExpertComponents }) {
-  const listId = useId();
-  const [expanded, setExpanded] = usePreference(
-    SIDEBAR_CUSTOM_STORAGE_KEY,
-    DEFAULT_SIDEBAR_CUSTOM_EXPANDED,
-    validateBooleanPreference,
-  );
-  const [counts, setCounts] = useState({ models: null, skills: null, mcp: null, experts: null });
-
-  const refreshCounts = useCallback(async () => {
-    const [models, skills, mcp, experts] = await Promise.allSettled([
-      api.listModels(),
-      api.listSkills(),
-      api.getMcp(),
-      api.listExperts(workspaceHash || '__local__'),
-    ]);
-    setCounts((previous) => ({
-      models: models.status === 'fulfilled' && Array.isArray(models.value)
-        ? models.value.length
-        : previous.models,
-      skills: skills.status === 'fulfilled' && Array.isArray(skills.value)
-        ? skills.value.length
-        : previous.skills,
-      mcp: mcp.status === 'fulfilled' ? countObjectKeys(mcp.value) : previous.mcp,
-      experts: experts.status === 'fulfilled'
-        ? (Array.isArray(experts.value?.experts) ? experts.value.experts.length : 0)
-        : previous.experts,
-    }));
-  }, [workspaceHash]);
-
-  useEffect(() => {
-    refreshCounts().catch(() => {});
-    const timer = window.setInterval(() => refreshCounts().catch(() => {}), 15000);
-    return () => window.clearInterval(timer);
-  }, [refreshCounts]);
-
-  const totalCount = sidebarCustomTotalCount(counts);
-  return (
-    <div className="ace-sidebar-custom-section">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        data-sidebar-custom-section="true"
-        className="ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition"
-        aria-expanded={expanded}
-        aria-controls={listId}
-      >
-        <span className="w-6 h-6 flex items-center justify-center shrink-0">
-          <span className="ace-sidebar-extensions-icon flex"><VsIcon name="extension" size={18} /></span>
-        </span>
-        <span className="flex-1 min-w-0 text-left truncate">扩展</span>
-        <span className="relative w-6 h-6 flex items-center justify-end shrink-0">
-          {totalCount != null && (
-            <span className="ace-sidebar-extensions-count ace-sidebar-meta-text text-right text-[13px] text-fg-mute tabular-nums">{totalCount}</span>
-          )}
-          <span className="ace-sidebar-extensions-arrow absolute inset-0 flex items-center justify-end"><SidebarDisclosure expanded={expanded} /></span>
-        </span>
-      </button>
-      {expanded && (
-        <div id={listId} className="ace-sidebar-custom-list">
-          {SIDEBAR_CUSTOM_ITEMS.map((item) => (
-            <CustomSidebarItem
-              key={item.id}
-              item={item}
-              count={counts[item.id]}
-              onClick={() => (item.action === 'experts'
-                ? onOpenExpertComponents?.()
-                : onOpenSettingsSection?.(item.settingsSection))}
-            />
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -1212,7 +1103,7 @@ function SessionRow({
       </span>
       {editing ? (
         <form
-          className="flex items-center min-w-0"
+          className="flex items-center min-w-0 py-[3px]"
           onSubmit={(e) => { e.preventDefault(); commitRename(); }}
         >
           <input
@@ -1629,11 +1520,8 @@ function WorkspaceGroup({
   return (
     <div
       data-sidebar-workspace-folder-hash={ws.hash}
-      className={clsx(
-        'ace-sidebar-workspace-folder-group',
-        ws.active && 'rounded-md',
-        folderDragState?.source === ws.hash && 'is-folder-dragging',
-      )}
+      className={clsx('ace-sidebar-workspace-folder-group my-px',
+        folderDragState?.source === ws.hash && 'is-folder-dragging')}
     >
       {folderDragState?.target === ws.hash && (
         <div
@@ -1654,25 +1542,21 @@ function WorkspaceGroup({
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
         data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
-        className={clsx(
-          'ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition',
-          ws.active ? 'bg-accent-bg text-fg' : 'text-fg hover:bg-surface-hi',
-        )}
+        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
         aria-keyshortcuts={folderReorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
         title={folderReorderable && !editing ? tr('拖动排序，也可按 Alt+上/下方向键') : undefined}
         onPointerDown={editing ? undefined : (event) => onFolderPointerDown?.(event, ws)}
-        onClick={() => (ws.active ? onToggle(ws.hash) : onActivate(ws))}
+        onClick={() => onToggle(ws.hash)}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           onFolderKeyDown?.(event, ws);
           if (event.defaultPrevented) return;
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            if (ws.active) onToggle(ws.hash);
-            else onActivate(ws);
+            onToggle(ws.hash);
           }
         }}
       >
@@ -1697,13 +1581,13 @@ function WorkspaceGroup({
             {ws.name || ws.hash}
           </span>
         )}
-        <span data-sidebar-workspace-actions="true" className="flex w-full items-center justify-end gap-1 shrink-0">
+        <span data-sidebar-workspace-actions="true" className="flex items-center justify-end gap-1 shrink-0">
           {hasUnread && <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-ok shadow-[0_0_4px_var(--ace-ok)]" title="有未读任务" />}
           <button
             data-sidebar-workspace-menu="true"
             type="button"
             onClick={openWorkspaceContextMenu}
-            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 transition"
+            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="工作区菜单"
             aria-label="工作区菜单"
           ><VsIcon name="workspaceMenu" size={18} /></button>
@@ -1712,7 +1596,7 @@ function WorkspaceGroup({
             type="button"
             onPointerDown={preserveHomeComposerFocus}
             onClick={(e) => { e.stopPropagation(); onNewSession(ws); }}
-            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 transition"
+            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="在此工作区新建任务"
             aria-label="在此工作区新建任务"
           ><VsIcon name="newSession" size={18} /></button>
@@ -3608,6 +3492,29 @@ export function Sidebar({
     onOpenHome?.(ws, { composerFeedback: true });
   }, [cancelSessionSelection, onBeforeNavigate, onOpenHome, updateExpanded]);
 
+  const onAddWorkspace = async () => {
+    try {
+      const ws = await pickExistingWorkspace({ api });
+      if (ws == null) return;
+      await refresh(ws.hash);
+      await onActivate(ws);
+    } catch (e) {
+      toast({ kind: 'err', text: '添加工作区失败:' + (e.message || '') });
+    }
+  };
+
+  const collapseAllWorkspaces = useCallback(() => {
+    workspaceCollapseAllRef.current = true;
+    updateExpanded(new Set());
+    for (const hash of sidebarWorkspaceListKeys(workspaces)) {
+      userCollapsedWorkspacesRef.current.add(hash);
+      sessionListDisclosureCompactRef.current.add(hash);
+    }
+    setExpandedSessionLists((previous) => (
+      expandedSessionListsAfterWorkspaceCollapseAll(previous, workspaces)
+    ));
+  }, [updateExpanded, workspaces]);
+
   const sidebarNavCallbacks = {
     onNewTask: () => {
       cancelSessionSelection();
@@ -3658,7 +3565,7 @@ export function Sidebar({
           <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2">
             {SIDEBAR_NAV_ITEMS.map((item) => (
               item.action === 'extensions' ? (
-                <CustomSidebarSection
+                <SidebarExtensions
                   key={item.id}
                   workspaceHash={activeRef?.workspaceHash || activeRef?.workspace_hash || ''}
                   onOpenSettingsSection={(section) => {
@@ -3681,7 +3588,7 @@ export function Sidebar({
           </div>
           <div
             ref={sidebarScrollRef}
-            className="ace-sidebar-scroll flex-1 overflow-y-auto"
+            className="ace-sidebar-scroll flex-1 overflow-y-auto pb-2"
             onScroll={clearSessionHover}
           >
             <SidebarSectionHeader
@@ -3749,6 +3656,30 @@ export function Sidebar({
               count={sectionCounts.workspaces}
               expanded={sectionExpansion.workspaces}
               onToggle={() => toggleSidebarSection(SIDEBAR_SECTION_IDS.WORKSPACES)}
+              actions={(
+                <>
+                  <button
+                    data-sidebar-collapse-all-workspaces="true"
+                    type="button"
+                    onClick={collapseAllWorkspaces}
+                    className="ace-sidebar-heading-collapse-btn"
+                    title="全部收缩工作区"
+                    aria-label="全部收缩工作区"
+                  >
+                    <VsIcon name="collapseAll" size={18} />
+                  </button>
+                  <button
+                    data-tour-target="sidebar-add-project"
+                    type="button"
+                    onClick={onAddWorkspace}
+                    className="w-6 h-6 rounded text-fg-mute hover:text-fg hover:bg-surface-hi flex items-center justify-center shrink-0 transition"
+                    title="添加工作区"
+                    aria-label="添加工作区"
+                  >
+                    <VsIcon name="folderAdd" size={18} />
+                  </button>
+                </>
+              )}
             />
             {sidebarSectionIsVisible(sectionCounts.workspaces) && sectionExpansion.workspaces && (
               <div

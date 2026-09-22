@@ -250,10 +250,8 @@ test('descriptor metadata includes label keys, disabled states, and scoped confi
   assert.equal(copyTitle.labelKey, DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE);
   assert.equal(copyTitle.enabled, false);
 
-  assert.equal(
-    items.some((item) => item.id === DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE),
-    false,
-  );
+  const activateWorkspace = items.find((item) => item.id === DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE);
+  assert.equal(activateWorkspace.enabled, false);
 
   const archiveSession = items.find((item) => item.id === DESKTOP_CONTEXT_ACTIONS.ARCHIVE_SESSION);
   assert.equal(archiveSession.danger, true);
@@ -276,8 +274,8 @@ test('已置顶会话目标显示取消置顶菜单项', () => {
   ]);
 });
 
-test('workspace target omits navigation and select-all actions', () => {
-  const items = buildDesktopContextMenuItems({
+test('workspace 目标显示项目动作', () => {
+  assert.deepEqual(ids(buildDesktopContextMenuItems({
     workspaceTarget: {
       workspaceHash: 'w1',
       path: 'C:/repo',
@@ -285,22 +283,16 @@ test('workspace target omits navigation and select-all actions', () => {
       expanded: false,
       canRemove: true,
     },
-  });
-  assert.deepEqual(ids(items), [
+  })), [
+    DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE,
+    DESKTOP_CONTEXT_ACTIONS.EXPAND_WORKSPACE,
     DESKTOP_CONTEXT_ACTIONS.NEW_WORKSPACE_SESSION,
     DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE,
     DESKTOP_CONTEXT_ACTIONS.COPY_WORKSPACE_PATH,
     DESKTOP_CONTEXT_ACTIONS.OPEN_IN_EXPLORER,
     DESKTOP_CONTEXT_ACTIONS.REMOVE_WORKSPACE,
+    DESKTOP_CONTEXT_ACTIONS.SELECT_ALL,
   ]);
-  assert.doesNotMatch(ids(items).join(','), /activate_workspace|expand_workspace|collapse_workspace|select_all/);
-});
-
-test('workspace context menu omits select-all even when no session is targeted', () => {
-  const items = buildDesktopContextMenuItems({
-    workspaceTarget: { workspaceHash: 'w1', path: 'C:/repo' },
-  });
-  assert.equal(items.some((item) => item.id === DESKTOP_CONTEXT_ACTIONS.SELECT_ALL), false);
 });
 
 test('workspace 有 opencode import count 时显示导入动作', () => {
@@ -313,10 +305,11 @@ test('workspace 有 opencode import count 时显示导入动作', () => {
       opencodeImportCount: 3,
     },
   });
-  assert.deepEqual(ids(items).slice(0, 3), [
+  assert.deepEqual(ids(items).slice(0, 4), [
+    DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE,
+    DESKTOP_CONTEXT_ACTIONS.EXPAND_WORKSPACE,
     DESKTOP_CONTEXT_ACTIONS.NEW_WORKSPACE_SESSION,
     DESKTOP_CONTEXT_ACTIONS.IMPORT_OPENCODE_SESSIONS,
-    DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE,
   ]);
 });
 

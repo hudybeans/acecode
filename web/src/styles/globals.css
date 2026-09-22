@@ -1841,18 +1841,6 @@ body {
 .ace-sidebar-footer {
   border-top: 1px solid var(--ace-border);
 }
-.ace-sidebar-extensions-arrow {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-icon {
-  opacity: 1;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-count {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-arrow {
-  opacity: 1;
-}
 .ace-desktop-frameless-topbar {
   user-select: none;
   /* macOS native fullscreen removes the traffic-light inset after AppKit's
@@ -2249,12 +2237,6 @@ body {
 }
 .ace-sidebar-workspace-action {
   color: var(--ace-fg);
-  opacity: 0;
-  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
-}
-.ace-sidebar-workspace-row:hover .ace-sidebar-workspace-action,
-.ace-sidebar-workspace-row .ace-sidebar-workspace-action:focus-visible {
-  opacity: 1;
 }
 .ace-sidebar-workspace-action:hover,
 .ace-sidebar-workspace-action:focus-visible {
@@ -5236,7 +5218,7 @@ a.ace-thread-link:focus-visible {
   transition: opacity .15s ease;
 }
 .ace-sidebar-section-header:hover .ace-sidebar-section-actions,
-.ace-sidebar-section-header:has(.ace-sidebar-section-actions :focus-visible) .ace-sidebar-section-actions {
+.ace-sidebar-section-header:focus-within .ace-sidebar-section-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -6497,12 +6479,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 
 /* Preserve the sidebar's medium baseline while following the user's font size.
    Role selectors still outrank utility classes, but use the shared size tokens. */
-.ace-sidebar .ace-sidebar-section-text {
-  font-size: var(--ace-font-size-13) !important;
-}
-.ace-sidebar .ace-sidebar-section-title {
-  font-size: var(--ace-font-size-12) !important;
-}
+.ace-sidebar .ace-sidebar-section-text,
 .ace-sidebar .ace-sidebar-meta-text {
   font-size: var(--ace-font-size-12) !important;
 }
