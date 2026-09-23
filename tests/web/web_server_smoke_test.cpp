@@ -8912,6 +8912,79 @@ TEST(WebServerHttp, DesktopFeedbackMaterializesEmptySelectedSession) {
     std::filesystem::remove(received_zip, ec);
 }
 
+// 触发场景:用户在反馈弹窗的「最近会话记录」里选中侧栏「任务」区的会话。
+// 这类会话是 no_workspace 会话:JSONL 落在 cache/no-workspace/<id>/ 推导出的
+// 项目目录下,不属于任何 workspace,列表接口给它下发的 workspace_hash 恒为空串。
+// 期望行为:列表能看到它(空 hash + no_workspace=true);用同样的空 hash 提交
+// 反馈返回 200,包里带 session/<sid>.jsonl,feedback.json 的 workspace_hash 为空串。
+// 回归:修复前 find_selected_session 只枚举 workspace 项目目录,这类会话一律
+// 404「session JSONL not found」,大量用户提交日志失败(线上会话
+// 20260923-170433-bd13 复现)。
+TEST(WebServerHttp, DesktopFeedbackUploadsNoWorkspaceSessionTranscript) {
+    const std::string sid = "20260923-170433-bd13";
+    std::filesystem::path received_zip;
+    LocalUpdateServer upload_server([&](httplib::Server& s) {
+        s.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
+            auto file = req.get_file_value("file");
+            received_zip = std::filesystem::temp_directory_path() /
+                           ("acecode_desktop_feedback_no_workspace_" +
+                            std::to_string(std::chrono::steady_clock::now()
+                                               .time_since_epoch()
+                                               .count()) + ".zip");
+            write_text(received_zip, file.content);
+            res.set_content(R"({"success":true})", "application/json");
+        });
+    });
+
+    WebServerFixture fx;
+    fx.cfg.upgrade.base_url = upload_server.base_url();
+    const std::string session_cwd =
+        acecode::no_workspace_session_cwd(sid, fx.no_workspace_cache_root.string());
+    std::filesystem::create_directories(path_from_utf8(session_cwd));
+    const std::string project_dir = acecode::SessionStorage::get_project_dir(session_cwd);
+    write_text(path_from_utf8(acecode::SessionStorage::session_path(project_dir, sid)),
+               "{\"role\":\"user\",\"content\":\"no workspace\"}\n");
+    acecode::SessionMeta meta;
+    meta.id = sid;
+    meta.cwd = session_cwd;
+    meta.no_workspace = true;
+    meta.title = "task session";
+    meta.created_at = "2026-09-23T17:04:33Z";
+    meta.updated_at = "2026-09-23T17:05:24Z";
+    acecode::SessionStorage::write_meta(
+        acecode::SessionStorage::meta_path(project_dir, sid), meta);
+    // 这类会话不在任何 workspace 的项目目录里 —— 修复前就是这一点让查找扑空。
+    ASSERT_FALSE(std::filesystem::exists(path_from_utf8(
+        acecode::SessionStorage::session_path(fx.project_dir, sid))));
+
+    auto listed = cpr::Get(cpr::Url{fx.url("/api/feedback/desktop/recent-sessions?limit=5")});
+    ASSERT_EQ(listed.status_code, 200) << listed.text;
+    auto sessions = json::parse(listed.text)["sessions"];
+    auto it = std::find_if(sessions.begin(), sessions.end(), [&](const json& item) {
+        return item.value("id", std::string{}) == sid;
+    });
+    ASSERT_NE(it, sessions.end()) << listed.text;
+    EXPECT_EQ((*it)["workspace_hash"], "");
+    EXPECT_EQ((*it)["no_workspace"], true);
+
+    auto r = cpr::Post(cpr::Url{fx.url("/api/feedback/desktop")},
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::Body{json{{"feedback_text", "task session feedback"},
+                                      {"session_id", sid},
+                                      {"workspace_hash", ""}}.dump()});
+    ASSERT_EQ(r.status_code, 200) << r.text;
+    auto body = json::parse(r.text);
+    EXPECT_EQ(body["selected_session_id"], sid);
+    EXPECT_EQ(body["workspace_hash"], "");
+    EXPECT_EQ(read_zip_entry(received_zip, "session/" + sid + ".jsonl"),
+              "{\"role\":\"user\",\"content\":\"no workspace\"}\n");
+    auto metadata = json::parse(read_zip_entry(received_zip, "feedback.json"));
+    EXPECT_EQ(metadata["selected_session_id"], sid);
+    EXPECT_EQ(metadata["workspace_hash"], "");
+    std::error_code ec;
+    std::filesystem::remove(received_zip, ec);
+}
+
 TEST(WebServerHttp, DesktopFeedbackSucceedsWithoutDesktopLog) {
     std::filesystem::path received_zip;
     LocalUpdateServer upload_server([&](httplib::Server& s) {

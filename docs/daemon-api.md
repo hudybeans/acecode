@@ -4049,6 +4049,10 @@ Returns recent sessions for optional feedback attachment. `limit` defaults to
 {"sessions":[{"id":"sid","session_id":"sid","title":"...","workspace_hash":"abc123"}]}
 ```
 
+Sessions that belong to no workspace (the sidebar task list) are included with
+`workspace_hash: ""` and `no_workspace: true`; submit them with the same empty
+hash.
+
 ### `POST /api/feedback/desktop`
 
 Body fields are optional strings:
@@ -4060,6 +4064,10 @@ Body fields are optional strings:
   "workspace_hash": "abc123"
 }
 ```
+
+`workspace_hash` scopes the session lookup to one workspace. When it is empty,
+the daemon searches every registered workspace and then the no-workspace session
+cache, so a session without a workspace attaches its transcript like any other.
 
 The package carries the newest rotated Desktop shell log (`desktop-<date>.log`)
 and the daemon log (`daemon-<date>.log`) that serves the request. Each is

@@ -397,6 +397,34 @@ void WebServer::Impl::register_feedback() {
                 });
             }
 
+            // 「任务」(no-workspace)会话不属于任何 workspace:它的 JSONL 落在
+            // cache/no-workspace/<id>/ 推导出的项目目录下,按 workspace 目录
+            // 枚举永远找不到。列表接口给这类会话下发的 workspace_hash 恒为空,
+            // 所以只在未指定 workspace 且 workspace 目录里没命中时兜底查它。
+            // 修复前这里直接 404「session JSONL not found」,用户在反馈弹窗里
+            // 只要选中侧栏「任务」区的会话就提交失败(会话 20260923-170433-bd13)。
+            if (matches.empty() && workspace_hash.empty()) {
+                if (auto meta = find_no_workspace_session_meta(session_id);
+                    meta && !meta->cwd.empty()) {
+                    const std::string project_dir =
+                        SessionStorage::get_project_dir(meta->cwd);
+                    auto candidates =
+                        SessionStorage::find_session_files(project_dir, session_id);
+                    const bool jsonl_exists =
+                        !candidates.empty() && !candidates.front().jsonl_path.empty();
+                    if (meta->id.empty()) meta->id = session_id;
+                    matches.push_back(Match{
+                        acecode::desktop::WorkspaceMeta{},
+                        std::move(*meta),
+                        jsonl_exists
+                            ? path_from_utf8(candidates.front().jsonl_path)
+                            : path_from_utf8(
+                                SessionStorage::session_path(project_dir, session_id)),
+                        jsonl_exists,
+                    });
+                }
+            }
+
             if (matches.empty()) return std::string{"session JSONL not found"};
             if (matches.size() > 1) {
                 return std::string{
