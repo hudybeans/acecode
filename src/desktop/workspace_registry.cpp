@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -48,6 +49,55 @@ std::string workspace_json_path(const std::string& projects_dir, const std::stri
     return path_to_utf8(path_from_utf8(projects_dir) / hash / kWorkspaceJson);
 }
 
+constexpr std::size_t kMaxExtraFolders = 32;
+
+// 附加文件夹的去重键:统一正斜杠、去尾分隔符;Windows 路径大小写不敏感,再转小写。
+std::string folder_key(const std::string& path) {
+    std::string key = path;
+    for (auto& c : key) {
+        if (c == '\\') c = '/';
+    }
+    while (key.size() > 1 && key.back() == '/') key.pop_back();
+#ifdef _WIN32
+    for (auto& c : key) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+#endif
+    return key;
+}
+
+// 去掉尾部分隔符,但保留盘符根(C:\ / C:/)与 POSIX 根(/)。
+std::string trim_folder(const std::string& path) {
+    std::string out = path;
+    while (out.size() > 1 && (out.back() == '/' || out.back() == '\\')) {
+        if (out.size() == 3 && out[1] == ':') break;
+        out.pop_back();
+    }
+    return out;
+}
+
+void read_icon_and_folders(const nlohmann::json& j, WorkspaceMeta& m) {
+    if (j.contains("icon") && j["icon"].is_object()) {
+        WorkspaceIcon icon;
+        const auto& icon_json = j["icon"];
+        if (icon_json.contains("id") && icon_json["id"].is_string()) {
+            icon.id = icon_json["id"].get<std::string>();
+        }
+        if (icon_json.contains("color") && icon_json["color"].is_string()) {
+            icon.color = icon_json["color"].get<std::string>();
+        }
+        // 手改坏的图标字段整体当作未设置,不影响其它字段。
+        if (is_valid_workspace_icon(icon)) m.icon = std::move(icon);
+    }
+    if (j.contains("extra_folders") && j["extra_folders"].is_array()) {
+        for (const auto& value : j["extra_folders"]) {
+            if (value.is_string() && !value.get<std::string>().empty()) {
+                m.extra_folders.push_back(value.get<std::string>());
+            }
+        }
+    }
+}
+
 // 尝试读取 workspace.json。返回 nullopt 表示文件不存在 / 损坏 / 缺关键字段。
 std::optional<WorkspaceMeta> read_workspace_json(const std::string& projects_dir,
                                                  const std::string& hash) {
@@ -84,6 +134,7 @@ std::optional<WorkspaceMeta> read_workspace_json(const std::string& projects_dir
         if (j.contains("desktop_visible") && j["desktop_visible"].is_boolean()) {
             m.desktop_visible = j["desktop_visible"].get<bool>();
         }
+        read_icon_and_folders(j, m);
         return m;
     } catch (const std::exception& e) {
         LOG_WARN(std::string("[workspace_registry] workspace.json parse failed at ")
@@ -106,10 +157,92 @@ bool write_workspace_json(const std::string& projects_dir, const WorkspaceMeta& 
     j["cwd"] = m.cwd;
     j["name"] = m.name;
     j["desktop_visible"] = m.desktop_visible;
+    // 未设置的字段省略,老版本读到的文件与改动前逐字节一致。
+    if (!m.icon.empty()) {
+        j["icon"] = {{"id", m.icon.id}, {"color", m.icon.color}};
+    }
+    if (!m.extra_folders.empty()) {
+        j["extra_folders"] = m.extra_folders;
+    }
     return atomic_write_file(p, j.dump(2));
 }
 
+// 写路径统一先读磁盘:另一个进程(Desktop / daemon)可能刚写过图标或附加文件夹,
+// 拿本进程的缓存写回会把它们冲掉。磁盘读不到时退回缓存。
+std::optional<WorkspaceMeta> latest_workspace_meta(const std::string& projects_dir,
+                                                   const std::string& hash,
+                                                   const std::optional<WorkspaceMeta>& cached) {
+    if (auto disk = read_workspace_json(projects_dir, hash)) return disk;
+    return cached;
+}
+
 } // namespace
+
+bool is_valid_workspace_icon(const WorkspaceIcon& icon) {
+    const auto token_ok = [](const std::string& value, std::size_t max_len) {
+        if (value.size() > max_len) return false;
+        for (unsigned char c : value) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+            if (!ok) return false;
+        }
+        return true;
+    };
+    if (icon.id.empty()) return icon.color.empty();
+    return token_ok(icon.id, 40) && token_ok(icon.color, 24);
+}
+
+bool normalize_workspace_extra_folders(const std::string& main_folder,
+                                       const std::vector<std::string>& input,
+                                       std::vector<std::string>& output,
+                                       std::string& error) {
+    output.clear();
+    std::unordered_set<std::string> seen;
+    if (!main_folder.empty()) seen.insert(folder_key(main_folder));
+    for (const auto& raw : input) {
+        const std::string folder = trim_folder(raw);
+        if (folder.empty()) {
+            error = "folder path must not be empty";
+            return false;
+        }
+        const fs::path native = path_from_utf8(folder);
+        if (!native.is_absolute()) {
+            error = "folder path must be absolute: " + folder;
+            return false;
+        }
+        std::error_code ec;
+        if (!fs::is_directory(native, ec) || ec) {
+            error = "folder does not exist: " + folder;
+            return false;
+        }
+        if (!seen.insert(folder_key(folder)).second) continue;
+        output.push_back(folder);
+    }
+    if (output.size() > kMaxExtraFolders) {
+        error = "too many folders (max " + std::to_string(kMaxExtraFolders) + ")";
+        return false;
+    }
+    return true;
+}
+
+WorkspaceFolders load_workspace_folders(const std::string& project_dir) {
+    WorkspaceFolders result;
+    if (project_dir.empty()) return result;
+    const fs::path dir = path_from_utf8(project_dir);
+    const std::string hash = path_to_utf8(dir.filename());
+    const std::string projects_dir = path_to_utf8(dir.parent_path());
+    if (hash.empty() || projects_dir.empty()) return result;
+    const auto meta = read_workspace_json(projects_dir, hash);
+    if (!meta) return result;
+    result.main_folder = meta->cwd;
+    for (const auto& folder : meta->extra_folders) {
+        // 已被删除 / 移走的附加文件夹不再告诉模型,也不再放行写入。
+        std::error_code ec;
+        if (fs::is_directory(path_from_utf8(folder), ec) && !ec) {
+            result.extra_folders.push_back(folder);
+        }
+    }
+    return result;
+}
 
 std::string default_workspace_name(const std::string& cwd) {
     // path("foo/").filename() 在 C++17 是空；Windows 上
@@ -353,13 +486,14 @@ bool WorkspaceRegistry::set_name(const std::string& projects_dir,
                                  const std::string& name) {
     if (name.empty()) return false;
 
-    WorkspaceMeta updated;
+    std::optional<WorkspaceMeta> cached;
     {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = entries_.find(hash);
         if (it == entries_.end()) return false;
-        updated = it->second;
+        cached = it->second;
     }
+    WorkspaceMeta updated = *latest_workspace_meta(projects_dir, hash, cached);
     updated.name = name;
 
     if (!write_workspace_json(projects_dir, updated)) return false;
@@ -372,25 +506,74 @@ bool WorkspaceRegistry::set_name(const std::string& projects_dir,
     return true;
 }
 
-bool WorkspaceRegistry::hide(const std::string& projects_dir, const std::string& hash) {
-    if (hash.empty()) return false;
+WorkspaceProfileStatus WorkspaceRegistry::update_profile(const std::string& projects_dir,
+                                                         const std::string& hash,
+                                                         const WorkspaceProfileUpdate& update,
+                                                         WorkspaceMeta* out,
+                                                         std::string& error) {
+    if (hash.empty()) return WorkspaceProfileStatus::NotFound;
+    if (update.name.empty()) {
+        error = "name must not be empty";
+        return WorkspaceProfileStatus::Invalid;
+    }
+    if (!is_valid_workspace_icon(update.icon)) {
+        error = "invalid icon";
+        return WorkspaceProfileStatus::Invalid;
+    }
 
-    WorkspaceMeta updated;
-    bool found = false;
+    std::optional<WorkspaceMeta> cached;
     {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = entries_.find(hash);
-        if (it != entries_.end()) {
-            updated = it->second;
-            found = true;
-        }
+        if (it != entries_.end()) cached = it->second;
+    }
+    auto latest = latest_workspace_meta(projects_dir, hash, cached);
+    // hash 目录名必须与 marker 里的 cwd 对得上:挡住拼出 ../ 之类的 hash 写到
+    // projects_dir 之外。
+    if (!latest || !workspace_hash_matches_cwd(hash, latest->cwd)) {
+        return WorkspaceProfileStatus::NotFound;
     }
 
-    if (!found) {
-        auto existing = read_workspace_json(projects_dir, hash);
-        if (!existing) return false;
-        updated = *existing;
+    WorkspaceMeta updated = *latest;
+    std::vector<std::string> folders;
+    if (!normalize_workspace_extra_folders(updated.cwd, update.extra_folders, folders, error)) {
+        return WorkspaceProfileStatus::Invalid;
     }
+    updated.name = update.name;
+    updated.icon = update.icon;
+    updated.extra_folders = std::move(folders);
+
+    if (!write_workspace_json(projects_dir, updated)) {
+        error = "failed to write workspace.json";
+        return WorkspaceProfileStatus::WriteFailed;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        dir_probes_.erase(hash);
+        if (updated.desktop_visible) {
+            entries_[hash] = updated;
+        } else {
+            entries_.erase(hash);
+        }
+    }
+    if (out) *out = updated;
+    return WorkspaceProfileStatus::Saved;
+}
+
+bool WorkspaceRegistry::hide(const std::string& projects_dir, const std::string& hash) {
+    if (hash.empty()) return false;
+
+    std::optional<WorkspaceMeta> cached;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = entries_.find(hash);
+        if (it != entries_.end()) cached = it->second;
+    }
+
+    auto existing = latest_workspace_meta(projects_dir, hash, cached);
+    if (!existing) return false;
+    WorkspaceMeta updated = *existing;
 
     updated.desktop_visible = false;
     if (!write_workspace_json(projects_dir, updated)) return false;

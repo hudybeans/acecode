@@ -177,7 +177,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const SystemPromptEnvironment* environment,
                                 const SystemPromptSandboxState* sandbox,
                                 const SystemPromptModelState* model,
-                                bool prompt_tool_preamble) {
+                                bool prompt_tool_preamble,
+                                const SystemPromptWorkspaceFolders* workspace_folders) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -481,6 +482,27 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     } else {
         oss << "- You cannot see image attachments. Image parts arrive as text "
             << "handles instead; use `vision_analyze` to inspect them.\n";
+    }
+    if (workspace_folders) {
+        const auto join = [](const std::vector<std::string>& folders) {
+            std::string out;
+            for (const auto& folder : folders) {
+                if (!out.empty()) out += "; ";
+                out += folder;
+            }
+            return out;
+        };
+        if (!workspace_folders->additional.empty()) {
+            oss << "- Additional working directories: " << join(workspace_folders->additional) << "\n"
+                << "- These directories belong to this project alongside the working directory. "
+                << "Read, search, and edit files in them with absolute paths; relative paths "
+                << "still resolve against the working directory.\n";
+        }
+        if (!workspace_folders->read_only.empty()) {
+            oss << "- Additional directories readable but not writable in this session "
+                << "(they overlap the checkout protected by the session write root): "
+                << join(workspace_folders->read_only) << "\n";
+        }
     }
     if (worktree && worktree->active) {
         oss << "- Session worktree: active";

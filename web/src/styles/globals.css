@@ -1813,6 +1813,14 @@ body {
 }
 .ace-sidebar-fixed-nav {
   max-height: 55%;
+  /* 任务列表滚离顶部时显出的分隔线(Sidebar 按列表 scrollTop 写 data-list-scrolled,
+     见 lib/sidebarListDivider.js);回到顶部时透明,导航与列表浑然一体。边框常驻、
+     只换颜色,切换时不引起布局位移。 */
+  border-bottom: 1px solid transparent;
+  transition: border-bottom-color .15s ease;
+}
+.ace-sidebar-fixed-nav[data-list-scrolled="true"] {
+  border-bottom-color: var(--ace-border);
 }
 /* 渐隐只作用于列表滚动内容,外层边框和底部设置区保持清晰。
    底部留白让最后一行滚到尽头时完全离开渐隐区。 */
@@ -1837,7 +1845,7 @@ body {
 .ace-sidebar-scroll {
   --ace-list-top-fade: var(--ace-list-edge-fade);
 }
-/* 底部设置区与会话列表之间唯一保留的细分隔线。 */
+/* 底部设置区与会话列表之间常驻的细分隔线(顶部那条只在列表滚动后显出)。 */
 .ace-sidebar-footer {
   border-top: 1px solid var(--ace-border);
 }
@@ -4586,8 +4594,6 @@ a.ace-thread-link:focus-visible {
 }
 .ace-preview-details-tab-scrollbar:hover .ace-preview-details-tab-scrollbar-thumb,
 .ace-tab-scroll-dragging .ace-preview-details-tab-scrollbar-thumb {
-  bottom: var(--ace-scrollbar-hover-inset);
-  height: var(--ace-scrollbar-hover-size);
   background: var(--ace-scrollbar-thumb-hover-color);
 }
 @media (hover: none) {

@@ -697,6 +697,10 @@ json WebServer::Impl::workspace_to_json(const acecode::desktop::WorkspaceMeta& m
     o["cwd"] = m.cwd;
     o["name"] = m.name;
     o["available"] = cwd_is_directory(m.cwd);
+    o["icon"] = m.icon.empty()
+        ? json(nullptr)
+        : json{{"id", m.icon.id}, {"color", m.icon.color}};
+    o["extra_folders"] = m.extra_folders;
     return o;
 }
 

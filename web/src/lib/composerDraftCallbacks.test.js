@@ -132,6 +132,7 @@ function homeFixture({ workspace = 'workspace', attachments = false, failSend = 
   const { context, state } = test;
   let previousDeps;
   Object.assign(context, {
+    api: {},
     sid: '', draftSessionKey: '', draftReadyKey: '', acceptedHomeSubmission: null,
     sessionCreated: false, createdSessionId: '', pendingAttachmentFiles: [],
     payload: { text: 'before after', composer_content: submittedContent },

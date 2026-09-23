@@ -364,7 +364,7 @@ void SessionManager::on_message(const ChatMessage& msg) {
         if (!text.empty()) last_user_summary_ = extract_summary(text);
     }
 
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
 }
 
 bool SessionManager::replace_active_messages(const std::vector<ChatMessage>& messages) {
@@ -435,7 +435,7 @@ bool SessionManager::replace_active_messages(const std::vector<ChatMessage>& mes
             log_user_message_index_error("rebuild after replace", session_id_, index_error);
         }
     }
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
     return true;
 }
 
@@ -452,7 +452,7 @@ bool SessionManager::append_compact_checkpoint(const CompactCheckpoint& checkpoi
         return false;
     }
     message_count_++;
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
     return true;
 }
 
@@ -469,7 +469,7 @@ void SessionManager::begin_user_turn_checkpoint(const std::string& user_message_
         return;
     }
     message_count_++;
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
 }
 
 void SessionManager::track_file_write_before(const std::string& file_path) {
@@ -486,7 +486,7 @@ void SessionManager::track_file_write_before(const std::string& file_path) {
         return;
     }
     message_count_++;
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
 }
 
 std::optional<TurnNetDiffRecord> SessionManager::finalize_user_turn_net_diff(
@@ -511,7 +511,7 @@ std::optional<TurnNetDiffRecord> SessionManager::finalize_user_turn_net_diff(
         return std::nullopt;
     }
     message_count_++;
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
     return record;
 }
 
@@ -905,7 +905,7 @@ std::string SessionManager::fork_active_session(const std::vector<ChatMessage>& 
             log_user_message_index_error("rebuild after fork", session_id_, index_error);
         }
     }
-    update_meta();
+    update_meta(SessionStorage::now_iso8601());
     if (goal_store_ && !previous_session_id.empty()) {
         std::string goal_error;
         if (!goal_store_->copy_goal_reset_usage(previous_session_id, session_id_, &goal_error)) {
@@ -1177,7 +1177,8 @@ bool SessionManager::update_meta(
     // Must be called under lock
     if (!created_) return true;
 
-    adopt_foreign_user_title_locked();
+    const auto persisted = SessionStorage::read_meta(meta_path_str_);
+    adopt_foreign_user_title_locked(persisted);
 
     SessionMeta meta;
     meta.id = session_id_;
@@ -1185,7 +1186,7 @@ bool SessionManager::update_meta(
     meta.created_at = created_at_;
     meta.updated_at = updated_at_override.has_value()
         ? *updated_at_override
-        : SessionStorage::now_iso8601();
+        : (persisted.id.empty() ? created_at_ : persisted.updated_at);
     meta.message_count = message_count_;
     meta.turn_count = turn_count_;
     meta.summary = last_user_summary_;
@@ -1228,12 +1229,8 @@ bool SessionManager::update_meta(
 // carry an older user title, so user_title_touched_ cannot distinguish a local
 // write from an external update. Only the explicit local write in progress is
 // allowed to win; later persisted user titles are adopted as shared state.
-void SessionManager::adopt_foreign_user_title_locked() {
+void SessionManager::adopt_foreign_user_title_locked(const SessionMeta& persisted) {
     if (local_user_title_write_pending_) return;
-    if (meta_path_str_.empty()) return;
-    std::error_code ec;
-    if (!fs::is_regular_file(path_from_utf8(meta_path_str_), ec)) return;
-    const auto persisted = SessionStorage::read_meta(meta_path_str_);
     if (persisted.id.empty()) return;
     if (persisted.title_source != "user" &&
         persisted.title_source != "user-cleared") {

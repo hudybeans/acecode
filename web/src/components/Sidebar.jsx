@@ -148,6 +148,10 @@ import {
 } from '../lib/opencodeImport.js';
 import { toast } from './Toast.jsx';
 import { VsIcon } from './Icon.jsx';
+import { EditWorkspaceModal } from './EditWorkspaceModal.jsx';
+import { WorkspaceIcon } from './WorkspaceIcon.jsx';
+import { resolveWorkspaceIcon } from '../lib/workspaceIcons.js';
+import { syncSidebarListDivider } from '../lib/sidebarListDivider.js';
 
 const SIDEBAR_SECTIONS_STORAGE_KEY = 'acecode.sidebarSectionsExpanded.v1';
 const SESSION_DRAG_START_PX = 5;
@@ -506,7 +510,7 @@ function SidebarNavItem({ item, onClick }) {
       data-tour-target={item.id === 'new-task' ? 'sidebar-new-task' : undefined}
       onPointerDown={item.id === 'new-task' ? preserveHomeComposerFocus : undefined}
       onClick={onClick}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[19px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[9px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
         <VsIcon name={item.icon} size={18} />
@@ -527,7 +531,7 @@ function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = 
       <button
         type="button"
         onClick={onToggle}
-        className="flex min-w-0 flex-1 items-center mx-1.5 pl-[17px] pr-[6px] py-[3px] rounded-md text-left hover:text-fg hover:bg-surface-hi transition"
+        className="flex min-w-0 flex-1 items-center mx-1.5 pl-[7px] pr-[6px] py-[3px] rounded-md text-left hover:text-fg hover:bg-surface-hi transition"
         title={expanded ? `折叠${title}` : `展开${title}`}
         aria-expanded={expanded}
       >
@@ -974,7 +978,7 @@ function SessionRow({
       data-sidebar-workspace-session-workspace={workspaceReorderable ? workspaceHash || undefined : undefined}
       aria-describedby={hoverCardVisible ? hoverCardId : undefined}
       className={clsx(
-        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] ml-1.5 mr-0 my-px pl-[13px] pr-[1px] rounded-md text-[14px] transition',
+        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] ml-1.5 mr-0 my-px pl-[3px] pr-[1px] rounded-md text-[14px] transition',
         pinned && 'ace-sidebar-pinned-session-row',
         workspaceReorderable && 'ace-sidebar-workspace-session-row',
         dragging && 'is-dragging',
@@ -1370,6 +1374,7 @@ function WorkspaceGroup({
   onNewSession,
   onImportOpencode,
   onRemove,
+  onEdit,
   onTogglePin,
   onArchive,
   onRenameSession,
@@ -1390,6 +1395,8 @@ function WorkspaceGroup({
   const [editing, setEditing] = useState(false);
   const [draft,   setDraft]   = useState(ws.name);
   const hasUnread = workspaceHasUnread(sessions);
+  // 「编辑项目」里选的图标;未设置时保留展开 / 折叠两态的文件夹图标。
+  const customIcon = resolveWorkspaceIcon(ws.icon);
   const projectedSessions = sidebarSessionProjection(
     sessions,
     sessionListVisibleLimit,
@@ -1427,6 +1434,10 @@ function WorkspaceGroup({
           detail.handled = true;
           onImportOpencode?.(ws);
           break;
+        case DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE:
+          detail.handled = true;
+          onEdit?.(ws);
+          break;
         case DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE:
           detail.handled = true;
           setEditing(true);
@@ -1441,7 +1452,7 @@ function WorkspaceGroup({
     };
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
-  }, [expanded, onActivate, onImportOpencode, onNewSession, onRemove, onToggle, ws]);
+  }, [expanded, onActivate, onEdit, onImportOpencode, onNewSession, onRemove, onToggle, ws]);
 
   const openWorkspaceContextMenu = useCallback((event) => {
     event.preventDefault();
@@ -1493,9 +1504,10 @@ function WorkspaceGroup({
         data-desktop-workspace-expanded={expanded ? 'true' : 'false'}
         data-desktop-workspace-rename="true"
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
+        data-desktop-workspace-edit={onEdit ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
         data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
-        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
+        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
@@ -1514,7 +1526,9 @@ function WorkspaceGroup({
         }}
       >
         <span className="w-6 h-6 flex items-center justify-center shrink-0">
-          <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />
+          {customIcon
+            ? <WorkspaceIcon id={customIcon.id} color={customIcon.color} size={16} />
+            : <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />}
         </span>
         {editing ? (
           <input
@@ -1558,7 +1572,7 @@ function WorkspaceGroup({
       {expanded && (
         <div className="mt-px mb-[10px]">
           {sessions.length === 0 ? (
-            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
+            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
               <span aria-hidden="true" />
               <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
             </div>
@@ -1588,7 +1602,7 @@ function WorkspaceGroup({
                 );
               })}
               {projectedSessions.collapsible && (
-                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px]">
+                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px]">
                   <span aria-hidden="true" />
                   <button
                     type="button"
@@ -1628,7 +1642,7 @@ function NoWorkspaceSessionGroup({
   return (
     <div className="mt-px mb-[10px]">
       {sessions.length === 0 ? (
-        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
+        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
           <span aria-hidden="true" />
           <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
         </div>
@@ -1650,7 +1664,7 @@ function NoWorkspaceSessionGroup({
             />
           ))}
           {projectedSessions.collapsible && (
-            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[13px] pr-[14px]">
+            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px]">
               <span aria-hidden="true" />
               <button
                 type="button"
@@ -1762,6 +1776,7 @@ export function Sidebar({
   const pinnedOrderItemsRef = useRef([]);
   const retainedSessionIdsRef = useRef(new Set());
   const sidebarScrollRef = useRef(null);
+  const sidebarFixedNavRef = useRef(null);
   const pinnedDragRef = useRef(null);
   const workspaceDragRef = useRef(null);
   const suppressSessionClickRef = useRef(false);
@@ -1779,6 +1794,7 @@ export function Sidebar({
   const [opencodeImportPreviews, setOpencodeImportPreviews] = useState(() => new Map());
   const opencodeImportPreviewsRef = useRef(new Map());
   const [opencodeImportDialog, setOpencodeImportDialog] = useState(null);
+  const [editingWorkspace, setEditingWorkspace] = useState(null);
   const opencodeImportPollRef = useRef(0);
   const [opencodeImportedHighlightKeys, setOpencodeImportedHighlightKeys] = useState(() => new Set());
   const opencodeImportedHighlightTimersRef = useRef(new Map());
@@ -1826,6 +1842,16 @@ export function Sidebar({
   const clearSessionHover = useCallback(() => {
     dispatchSessionHover({ type: SESSION_HOVER_LIFECYCLE_ACTIONS.CLEAR_ALL });
   }, []);
+
+  // 任务列表滚离顶部时,固定导航下方显出分隔线;回到顶部隐去(lib/sidebarListDivider.js)。
+  const handleSidebarListScroll = useCallback(() => {
+    clearSessionHover();
+    syncSidebarListDivider(sidebarFixedNavRef.current, sidebarScrollRef.current);
+  }, [clearSessionHover]);
+
+  useLayoutEffect(() => {
+    syncSidebarListDivider(sidebarFixedNavRef.current, sidebarScrollRef.current);
+  }, [collapsed]);
 
   useEffect(() => {
     if (collapsed) clearSessionHover();
@@ -3392,20 +3418,23 @@ export function Sidebar({
   };
 
   const removeWorkspace = async (ws) => {
-    if (!ws?.hash) return;
+    if (!ws?.hash) return false;
     if (sessionSelectionIntentRef.current?.target?.workspaceHash === ws.hash) {
       cancelSessionSelection();
     }
-    if (!hasDesktopRemoveWorkspace()) {
-      toast({ kind: 'info', text: '需在 desktop shell 中使用' });
-      return;
-    }
     try {
-      const r = parseDesktopResult(await window.aceDesktop_removeWorkspace(ws.hash));
-      if (!r?.ok) throw new Error(r?.error || 'remove failed');
+      // Desktop 壳顺带维护活动项目;没有桥接的网页模式(「编辑项目」里的移除)走 REST。
+      let bridgeActiveHash = '';
+      if (hasDesktopRemoveWorkspace()) {
+        const r = parseDesktopResult(await window.aceDesktop_removeWorkspace(ws.hash));
+        if (!r?.ok) throw new Error(r?.error || 'remove failed');
+        bridgeActiveHash = r.active_workspace_hash || '';
+      } else {
+        await api.removeWorkspace(ws.hash);
+      }
 
       const remaining = workspaces.filter((w) => w.hash !== ws.hash);
-      const nextHash = r.active_workspace_hash
+      const nextHash = bridgeActiveHash
         || ((ws.active || activeWorkspaceHash === ws.hash) ? (remaining[0]?.hash || '') : activeWorkspaceHash);
 
       setWorkspaces(remaining.map((w) => ({ ...w, active: w.hash === nextHash })));
@@ -3424,9 +3453,19 @@ export function Sidebar({
       setActiveWorkspaceHash(nextHash);
       toast({ kind: 'ok', text: '已从桌面工作区列表移除' });
       await refresh(nextHash);
+      return true;
     } catch (e) {
       toast({ kind: 'err', text: '移除工作区失败:' + (e.message || '') });
+      return false;
     }
+  };
+
+  const saveEditedWorkspace = async (saved) => {
+    if (!saved?.hash) return;
+    setWorkspaces((prev) => prev.map((w) => (w.hash === saved.hash
+      ? { ...w, name: saved.name, icon: saved.icon ?? null, extra_folders: saved.extra_folders || [] }
+      : w)));
+    await refresh();
   };
 
   const openNewTaskInWorkspace = useCallback(async (ws) => {
@@ -3512,7 +3551,7 @@ export function Sidebar({
         style={collapsed ? undefined : { width, minWidth: width }}
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
-        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-[7px] pl-[23px] pr-[18px] py-3 select-none">
+        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-[7px] pl-[13px] pr-[18px] py-3 select-none">
           <BrandLogo width="20" height="20" className="ace-brand-logo block shrink-0" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
@@ -3522,7 +3561,7 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-main flex-1 flex flex-col min-h-0">
-          <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2">
+          <div ref={sidebarFixedNavRef} className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2">
             {SIDEBAR_NAV_ITEMS.map((item) => (
               item.action === 'extensions' ? (
                 <SidebarExtensions
@@ -3549,7 +3588,7 @@ export function Sidebar({
           <div
             ref={sidebarScrollRef}
             className="ace-sidebar-scroll flex-1 overflow-y-auto pb-2"
-            onScroll={clearSessionHover}
+            onScroll={handleSidebarListScroll}
           >
             <SidebarSectionHeader
               sectionId={SIDEBAR_SECTION_IDS.PINNED}
@@ -3675,6 +3714,7 @@ export function Sidebar({
                       onNewSession={openNewTaskInWorkspace}
                       onImportOpencode={openOpencodeImportDialog}
                       onRemove={hasDesktopRemoveWorkspace() ? removeWorkspace : undefined}
+                      onEdit={ws.hash && ws.hash !== '__local__' ? setEditingWorkspace : undefined}
                       onTogglePin={togglePinnedSession}
                       onArchive={archiveSession}
                       onRenameSession={renameSession}
@@ -3713,7 +3753,7 @@ export function Sidebar({
             </div>
           )}
         </div>
-        <div className="ace-sidebar-footer shrink-0 pl-[19px] pr-1.5 py-2 flex items-center gap-1">
+        <div className="ace-sidebar-footer shrink-0 pl-[9px] pr-1.5 py-2 flex items-center gap-1">
           {!collapsed && (
             <SidebarQuickMenu
               data-tour-target="sidebar-settings"
@@ -3773,6 +3813,16 @@ export function Sidebar({
         onToggleSession={toggleOpencodeImportSession}
         onToggleAll={toggleAllOpencodeImportSessions}
       />
+      {editingWorkspace && (
+        <EditWorkspaceModal
+          key={editingWorkspace.hash}
+          api={api}
+          workspace={editingWorkspace}
+          onClose={() => setEditingWorkspace(null)}
+          onSaved={saveEditedWorkspace}
+          onRemove={removeWorkspace}
+        />
+      )}
     </>
   );
 }

@@ -96,6 +96,7 @@ struct ProjectInstructionsConfig;
 struct ExpertDefinition;
 struct CompactResult;
 struct SystemPromptModelState;
+struct SystemPromptWorkspaceFolders;
 class AgentLoopDoomGuard;
 
 // Callbacks for the TUI to observe agent loop events
@@ -360,6 +361,15 @@ public:
     // project dir)不动 —— worktree 是同一个项目会话的临时工作区,不是新项目。
     // 只应在工具执行线程(turn 内)或会话未运行时调用。
     void set_cwd(const std::string& new_cwd);
+    // 重读会话所属项目 workspace.json 里的附加文件夹(「编辑项目」保存的
+    // extra_folders)。每回合开始调一次,保存后已打开的会话下一轮即生效。
+    void refresh_workspace_folders();
+    // 系统提示列出的附加文件夹(已过滤掉磁盘上不存在的)。
+    std::vector<std::string> workspace_extra_folders() const;
+    // 真正放行写入的附加文件夹:文件工具的路径校验、bash 写边界守卫与沙箱可写
+    // 根都用它。有写边界(worktree / LOOP / 继承)时去掉与主文件夹重叠的项 ——
+    // 否则附加一个主仓的上级目录就能绕开 worktree 隔离。
+    std::vector<std::string> writable_workspace_folders() const;
     void set_sandbox_config(const SandboxConfig& config);
     void set_exec_rules(sandbox::ExecRules rules) { exec_rules_ = std::move(rules); }
     // 测试用:把全局规则目录(默认 `<data_dir>/rules`)指到临时目录,让
@@ -860,6 +870,15 @@ private:
     mutable std::optional<std::pair<PermissionMode, std::string>> sandbox_prompt_snapshot_;
     PermissionManager& permissions_;
     PathValidator path_validator_;
+    // 「编辑项目」的主文件夹与附加文件夹快照(refresh_workspace_folders 每回合重读)。
+    // 并行只读工具会在工作线程上查它,用锁保护。
+    mutable std::mutex workspace_folders_mu_;
+    std::string workspace_main_folder_;
+    std::vector<std::string> workspace_extra_folders_;
+    // 路径落在某个可写附加文件夹内(相对路径按 cwd_ 解析)。
+    bool path_in_workspace_folders(const std::string& path) const;
+    // 系统提示 # Environment 的附加工作目录两行(可写 / 本会话只读)。
+    SystemPromptWorkspaceFolders system_prompt_workspace_folders() const;
     std::atomic<int> context_window_{128000};
     std::string no_model_config_prompt_;
     // agent_loop termination policy. Fresh defaults come from AgentLoopConfig

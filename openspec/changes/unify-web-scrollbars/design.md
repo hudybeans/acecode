@@ -9,7 +9,7 @@
 ## Decisions
 
 - 新建共享 `styles/scrollbars.css`，由 globals.css 引用，PPT 组件通过 raw 文本将同一规则传给 iframe 文档生成器；避免两份样式漂移。
-- 细条轨道固定 12px，透明边框将滑块常态视觉收为 4px，悬停或拖动时为 8px并高亮。透明边框属于原生滑块命中区域，容器宽度不因 hover 改变。
+- 细条轨道固定 12px，透明边框将滑块视觉宽度保持为 4px，悬停或拖动时仅加深颜色。透明边框属于原生滑块命中区域，容器宽度不因 hover 改变；自绘标签滚动条同样保留 12px 命中区域和 4px 滑块厚度。
 - 默认隐藏，容器 hover 或 focus-within 时显现；`.ace-scrollbar-always` 或 `data-scrollbar-visibility="always"` 可明确选择常显。主 transcript 始终使用 10px 粗轨道，保留已有流式锚定行为。
 - 清除会绕开 Chromium WebKit 自定义规则的局部 `scrollbar-color` 和 `scrollbar-width: thin`；标准属性仅用于无 WebKit 滚动条的浏览器降级。
 - 标签条沿用既有自绘拖拽及点击逻辑，尺寸和颜色引用共享 token。下层编辑预览与紧凑标签导航的结构性隐藏继续保留。

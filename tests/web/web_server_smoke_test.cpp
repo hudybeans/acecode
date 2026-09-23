@@ -3689,6 +3689,77 @@ TEST(WebServerHttp, WorkspaceOrderPersistsAndRejectsInvalidOrStaleLists) {
     EXPECT_TRUE(json::parse(failed.text)["message"].is_string());
 }
 
+// 场景:「编辑项目」对话框经 PUT /api/workspaces/:hash 保存名称 + 图标 + 附加文件夹。
+// 期望:200 返回新 workspace;GET /api/workspaces 带 icon / extra_folders;默认图标
+// (icon:null)时字段为 null;缺省 extra_folders 保持原值;非法附加文件夹 400 且不写盘;
+// 未知 hash 404。/api/workspaces/order 这条静态路由不被 <string> 路由抢走。
+TEST(WebServerHttp, WorkspaceProfileUpdateRoundTrips) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto extra = fx.tmp_dir / "extra-folder";
+    std::filesystem::create_directories(extra);
+    const std::string extra_path = acecode::path_to_utf8(extra);
+    auto put = [&](const std::string& target, const json& body) {
+        return cpr::Put(cpr::Url{fx.url("/api/workspaces/" + target)},
+                        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    };
+
+    const auto saved = put(hash, {{"name", "  renamed  "},
+                                  {"icon", {{"id", "music"}, {"color", "blue"}}},
+                                  {"extra_folders", {extra_path}}});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto body = json::parse(saved.text);
+    EXPECT_EQ(body["name"], "renamed");
+    EXPECT_EQ(body["icon"]["id"], "music");
+    EXPECT_EQ(body["extra_folders"], json::array({extra_path}));
+
+    const auto listed = json::parse(cpr::Get(cpr::Url{fx.url("/api/workspaces")}).text);
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed[0]["icon"]["color"], "blue");
+    EXPECT_EQ(listed[0]["extra_folders"], json::array({extra_path}));
+
+    // 只改名称与图标(恢复默认)时,附加文件夹保持原值。
+    const auto reset = put(hash, {{"name", "renamed"}, {"icon", nullptr}});
+    ASSERT_EQ(reset.status_code, 200) << reset.text;
+    EXPECT_TRUE(json::parse(reset.text)["icon"].is_null());
+    EXPECT_EQ(json::parse(reset.text)["extra_folders"], json::array({extra_path}));
+
+    const auto missing = put(hash, {{"name", "renamed"},
+        {"extra_folders", {acecode::path_to_utf8(fx.tmp_dir / "does-not-exist")}}});
+    ASSERT_EQ(missing.status_code, 400) << missing.text;
+    EXPECT_EQ(json::parse(missing.text)["error"], "BAD_REQUEST");
+    EXPECT_EQ(fx.workspace_registry->get(hash)->extra_folders,
+              (std::vector<std::string>{extra_path}));
+
+    EXPECT_EQ(put(hash, {{"name", ""}}).status_code, 400);
+    EXPECT_EQ(put(hash, {{"icon", {{"id", "music"}}}}).status_code, 400);
+    EXPECT_EQ(put("ffffffffffffffff", {{"name", "x"}}).status_code, 404);
+    EXPECT_EQ(put("..%2F..%2Fescape", {{"name", "x"}}).status_code, 404);
+
+    const auto order = cpr::Put(cpr::Url{fx.url("/api/workspaces/order")},
+                                cpr::Header{{"Content-Type", "application/json"}},
+                                cpr::Body{json{{"hashes", {hash}}}.dump()});
+    EXPECT_EQ(order.status_code, 200) << order.text;
+}
+
+// 场景:网页模式(无 Desktop 桥接)在「编辑项目」里点「移除本地项目」。
+// 期望:DELETE /api/workspaces/:hash 只把项目从列表隐藏(workspace.json 仍在,
+// 附加文件夹等字段保留);未知 hash → 404。
+TEST(WebServerHttp, WorkspaceRemoveHidesWithoutDeletingMarker) {
+    WebServerFixture fx;
+    const auto second = fx.workspace_registry->register_new(
+        fx.projects_dir.string(), (fx.tmp_dir / "removable-workspace").string()).hash;
+
+    const auto removed = cpr::Delete(cpr::Url{fx.url("/api/workspaces/" + second)});
+    ASSERT_EQ(removed.status_code, 200) << removed.text;
+    EXPECT_TRUE(json::parse(removed.text)["ok"].get<bool>());
+    const auto listed = json::parse(cpr::Get(cpr::Url{fx.url("/api/workspaces")}).text);
+    for (const auto& workspace : listed) EXPECT_NE(workspace["hash"], second);
+    EXPECT_TRUE(std::filesystem::exists(fx.projects_dir / second / "workspace.json"));
+
+    EXPECT_EQ(cpr::Delete(cpr::Url{fx.url("/api/workspaces/ffffffffffffffff")}).status_code, 404);
+}
+
 // 场景: 共享 daemon 暴露 workspace registry,每个 workspace 有独立 session
 // lifecycle endpoint。创建/列表响应必须携带 workspace_hash/cwd。
 TEST(WebServerHttp, WorkspaceScopedSessionLifecycle) {
@@ -11066,6 +11137,98 @@ TEST(WebServerHttp, WorkspaceReasoningCreationAndBusyMutation) {
     EXPECT_EQ(json::parse(busy.text)["error"], "SESSION_BUSY");
     EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
     EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+}
+
+TEST(WebServerHttp, WorkspaceHomeDraftPersistsWithoutCreatingASession) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto get = [&] { return cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000}); };
+    const auto empty = get();
+    ASSERT_EQ(empty.status_code, 200) << empty.text;
+    EXPECT_EQ(json::parse(empty.text)["text"], "");
+
+    const json content{{"version", 1}, {"parts", json::array({
+        {{"type", "text"}, {"text", "draft\n"}},
+        {{"type", "path"}, {"path", "src/main.cpp"}, {"token", "@src/main.cpp"}}
+    })}};
+    const json body{{"text", "stale fallback"}, {"composer_content", content}};
+    auto saved = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{body.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["text"], "draft\n@src/main.cpp");
+    const auto path = fx.projects_dir / hash / "input_draft.json";
+    ASSERT_TRUE(std::filesystem::exists(path));
+    EXPECT_EQ(json::parse(read_text(path))["composer_content"], content);
+    EXPECT_EQ(json::parse(get().text)["composer_content"], content);
+
+    // Reading persisted state works without an in-memory draft or a session.
+    write_text(path, json{{"text", "restored from disk"}}.dump());
+    EXPECT_EQ(json::parse(get().text)["text"], "restored from disk");
+    EXPECT_TRUE(fx.registry->list_active().empty());
+    const auto sessions = cpr::Get(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Timeout{5000});
+    ASSERT_EQ(sessions.status_code, 200) << sessions.text;
+    EXPECT_TRUE(json::parse(sessions.text).empty());
+
+    const auto invalid = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{R"({"text":42})"}, cpr::Timeout{5000});
+    EXPECT_EQ(invalid.status_code, 400);
+    const auto invalid_content = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{R"({"text":"x","composer_content":{"version":1,"parts":[{"type":"unknown"}]}})"},
+        cpr::Timeout{5000});
+    EXPECT_EQ(invalid_content.status_code, 400);
+    EXPECT_EQ(json::parse(get().text)["text"], "restored from disk");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/workspaces/unknown/draft")},
+        cpr::Timeout{5000}).status_code, 404);
+}
+
+TEST(WebServerHttp, WorkspaceHomeDraftIsolatesScopesAndClearsOnlyMatchingSubmission) {
+    WebServerFixture fx;
+    const auto other_cwd = fx.tmp_dir / "other";
+    std::filesystem::create_directories(other_cwd);
+    const auto other = fx.workspace_registry->register_new(fx.projects_dir.string(), other_cwd.string());
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto path = [](const std::string& hash) { return "/api/workspaces/" + hash + "/draft"; };
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto put = [&](const std::string& scope, const std::string& text) {
+        return cpr::Put(cpr::Url{fx.url(path(scope))}, headers,
+            cpr::Body{json{{"text", text}}.dump()}, cpr::Timeout{5000});
+    };
+    ASSERT_EQ(put(hash, "newer draft").status_code, 200);
+    ASSERT_EQ(put(other.hash, "other workspace").status_code, 200);
+    ASSERT_EQ(put("__no_workspace__", "no workspace").status_code, 200);
+    const auto clear = [&](const std::string& text) {
+        return cpr::Delete(cpr::Url{fx.url(path(hash))}, headers,
+            cpr::Body{json{{"text", text}}.dump()}, cpr::Timeout{5000});
+    };
+    const auto stale = clear("submitted earlier");
+    ASSERT_EQ(stale.status_code, 200) << stale.text;
+    EXPECT_EQ(json::parse(stale.text)["cleared"], false);
+    EXPECT_EQ(json::parse(stale.text)["text"], "newer draft");
+    const auto accepted = clear("newer draft");
+    ASSERT_EQ(accepted.status_code, 200) << accepted.text;
+    EXPECT_EQ(json::parse(accepted.text)["cleared"], true);
+    EXPECT_EQ(json::parse(read_text(fx.projects_dir / hash / "input_draft.json"))["text"], "");
+    EXPECT_EQ(json::parse(read_text(fx.projects_dir / other.hash / "input_draft.json"))["text"], "other workspace");
+    EXPECT_EQ(json::parse(read_text(fx.no_workspace_cache_root / "input_draft.json"))["text"], "no workspace");
+    EXPECT_TRUE(fx.registry->list_active().empty());
+
+    const json structured{{"text", "@file"}, {"composer_content", {
+        {"version", 1}, {"parts", json::array({
+            {{"type", "path"}, {"path", "a.cpp"}, {"token", "@file"}}
+        })}
+    }}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url(path(hash))}, headers,
+        cpr::Body{structured.dump()}, cpr::Timeout{5000}).status_code, 200);
+    auto changed_reference = structured;
+    changed_reference["composer_content"]["parts"][0]["path"] = "b.cpp";
+    const auto same_text = cpr::Delete(cpr::Url{fx.url(path(hash))}, headers,
+        cpr::Body{changed_reference.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(same_text.status_code, 200) << same_text.text;
+    EXPECT_EQ(json::parse(same_text.text)["cleared"], false);
+    EXPECT_EQ(json::parse(same_text.text)["composer_content"], structured["composer_content"]);
 }
 
 TEST(WebServerHttp, ComposerContentDraftAndMessagePreserveOrderAndRejectMissingAttachments) {

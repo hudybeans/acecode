@@ -869,3 +869,36 @@ test('已有右键菜单时重开前短暂隐藏', () => {
   assert.equal(contextMenuOpenDelay({ hasVisibleMenu: true }), CONTEXT_MENU_REOPEN_DELAY_MS);
   assert.equal(contextMenuOpenDelay({ hasPendingMenu: true }), CONTEXT_MENU_REOPEN_DELAY_MS);
 });
+
+// 场景:侧栏项目行带 data-desktop-workspace-edit(有真实项目 hash,不是 __local__ 兼容行)。
+// 期望:右键菜单在「重命名项目」前出现「编辑项目」,其余项目动作顺序不变。
+test('可编辑的 workspace 目标在重命名前显示编辑项目', () => {
+  const actions = ids(buildDesktopContextMenuItems({
+    workspaceTarget: {
+      workspaceHash: 'w1',
+      path: 'C:/repo',
+      active: true,
+      expanded: true,
+      canEdit: true,
+    },
+  }));
+  const edit = actions.indexOf(DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE);
+  assert.notEqual(edit, -1);
+  assert.equal(actions[edit + 1], DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE);
+});
+
+// 场景:从 DOM 属性解析 workspace 目标。期望:只有显式 data-desktop-workspace-edit="true"
+// 才算可编辑,缺省(__local__ 兼容行不带该属性)时菜单里不出现「编辑项目」。
+test('workspace target parses edit attribute', () => {
+  const editable = workspaceTargetFromElement(elementFor(WORKSPACE_TARGET_SELECTOR, {
+    'data-desktop-workspace-id': 'w1',
+    'data-desktop-workspace-edit': 'true',
+  }));
+  assert.equal(editable.canEdit, true);
+  const plain = workspaceTargetFromElement(elementFor(WORKSPACE_TARGET_SELECTOR, {
+    'data-desktop-workspace-id': '__local__',
+  }));
+  assert.equal(plain.canEdit, false);
+  assert.equal(ids(buildDesktopContextMenuItems({ workspaceTarget: plain }))
+    .includes(DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE), false);
+});

@@ -114,10 +114,7 @@ import {
   clampDockHeight,
   consoleCwdForContext,
 } from './lib/consoleDock.js';
-import {
-  clearHomeComposerDraftIfMatch,
-  updateHomeComposerDrafts,
-} from './lib/homeComposerDrafts.js';
+import { createHomeComposerDraftStore } from './lib/homeComposerDraftStore.js';
 import { nextHomeLogoEffectEnabled } from './lib/homeLogoEffectPolicy.js';
 import { homeRefFromWorkspace, noHomeWorkspaceOption } from './lib/homeWorkspaceSelection.js';
 import {
@@ -254,6 +251,7 @@ export function App() {
   const [sidebarSessionLoadResetSequence, setSidebarSessionLoadResetSequence] = useState(0);
   const [homeLogoEffectEnabled, setHomeLogoEffectEnabled] = useState(true);
   const [homeComposerDrafts, setHomeComposerDrafts] = useState({});
+  const [homeDraftStore] = useState(() => createHomeComposerDraftStore({ onChange: setHomeComposerDrafts }));
   const [homeComposerAttentionRequest, setHomeComposerAttentionRequest] = useState(0);
   const [navHistory, setNavHistory] = useState(() => (
     (typeof window !== 'undefined' && navigationHistoryFromHash(window.location.hash))
@@ -295,8 +293,8 @@ export function App() {
   const [updateRestarting, setUpdateRestarting] = useState(false);
   const [updateJob, setUpdateJob] = useState(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [singleLayout, setSingleLayout] = useWorkbenchState(workbenchOwner, 'layout', () =>
-    readWithFallback(SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths));
+  const [singleLayout, setSingleLayout] = usePreference(
+    SINGLE_LAYOUT_STORAGE_KEY, DEFAULT_SINGLE_LAYOUT, validateLayoutWidths);
   const previewPanelUserSized = previewPanelWidthIsUserSized(singleLayout);
   const initialUiPrefs = useMemo(() => ({
     ...DEFAULT_UI_PREFS,
@@ -338,16 +336,30 @@ export function App() {
     if (!id) return;
     setRecentExpertIds((current) => recordRecentExpert(current, id));
   }, [setRecentExpertIds]);
-  const updateHomeComposerDraft = useCallback((workspaceHash, text) => {
-    setHomeComposerDrafts((current) => (
-      updateHomeComposerDrafts(current, workspaceHash, text)
-    ));
-  }, []);
-  const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText) => {
-    setHomeComposerDrafts((current) => (
-      clearHomeComposerDraftIfMatch(current, workspaceHash, submittedText)
-    ));
-  }, []);
+  const loadHomeComposerDraft = useCallback((workspaceHash, client = api) => ({
+    draft: homeDraftStore.read(client, workspaceHash),
+    ready: homeDraftStore.load(client, workspaceHash),
+  }), [homeDraftStore]);
+  const updateHomeComposerDraft = useCallback((workspaceHash, text, client = api) => {
+    homeDraftStore.update(client, workspaceHash, text);
+  }, [homeDraftStore]);
+  const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText, client = api) => {
+    void homeDraftStore.accept(client, workspaceHash, submittedText);
+  }, [homeDraftStore]);
+  useEffect(() => {
+    const flush = () => { void homeDraftStore.flush(); };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      flush();
+    };
+  }, [homeDraftStore]);
+  useEffect(() => { void homeDraftStore.flush(); }, [activeRef, homeDraftStore]);
   // grid4/grid9 入口暂时隐藏:主界面固定单会话,避免旧 localStorage 把用户卡在未完善视图。
   const view = 'single';
   const fontSize = effectiveFontSize(uiPrefs);
@@ -2199,6 +2211,7 @@ export function App() {
                 sessionRef={activeRef}
                 homeLogoEffectEnabled={homeLogoEffectEnabled}
                 homeComposerDrafts={homeComposerDrafts}
+                onHomeComposerDraftLoad={loadHomeComposerDraft}
                 homeComposerAttentionRequest={homeComposerAttentionRequest}
                 onHomeComposerDraftChange={updateHomeComposerDraft}
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}

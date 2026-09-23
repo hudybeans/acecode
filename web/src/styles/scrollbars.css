@@ -1,12 +1,10 @@
 /* 统一滚动条：细条默认随容器 hover/focus 显现；显式 always 模式常显。
- * 轨道尺寸固定，透明边框也属于原生拖动区域，hover 不改变内容布局。
+ * 轨道尺寸固定，透明边框也属于原生拖动区域，hover/拖动仅加深颜色，不加粗滑块。
  * 此文件也以 raw 文本用于 PPT iframe，保持纯 CSS、无外部依赖。 */
 :root {
   --ace-scrollbar-hit-size: 12px;
   --ace-scrollbar-thin-size: 4px;
-  --ace-scrollbar-hover-size: 8px;
   --ace-scrollbar-thin-inset: 4px;
-  --ace-scrollbar-hover-inset: 2px;
   --ace-scrollbar-thick-size: 10px;
   --ace-scrollbar-thumb-color: rgba(var(--ace-fg-mute-rgb, 150, 150, 150), 0.46);
   --ace-scrollbar-thumb-hover-color: rgba(var(--ace-fg-mute-rgb, 150, 150, 150), 0.8);
@@ -39,7 +37,6 @@
 ::-webkit-scrollbar-thumb:hover,
 ::-webkit-scrollbar-thumb:active {
   background-color: var(--ace-scrollbar-thumb-hover-color);
-  border-width: var(--ace-scrollbar-hover-inset);
 }
 ::-webkit-scrollbar-button {
   display: none;

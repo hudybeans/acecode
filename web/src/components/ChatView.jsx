@@ -119,7 +119,7 @@ import { usePreference } from '../lib/usePreference.js';
 import { pickExistingWorkspace } from '../lib/workspacePicker.js';
 import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
-import { homeComposerDraft, homeComposerDraftText } from '../lib/homeComposerDrafts.js';
+import { homeComposerDraft } from '../lib/homeComposerDrafts.js';
 import {
   composerContentAttachments, composerContentFromText, composerContentSignature,
   normalizeComposerContent, reconcileComposerContentAttachments,
@@ -561,7 +561,7 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, onRegisterPreviewLeaveGuard, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, messageAutoCollapse = true, nativeSurfacesVisible = true }) {
+export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftLoad, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, onRegisterPreviewLeaveGuard, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, messageAutoCollapse = true, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
   const workbenchOwner = sessionWorkbench.ownerFor(ref);
@@ -984,10 +984,6 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     : (explicitHomeDraftWorkspaceHash ?? (
         isRealWorkspaceHash(homeWorkspaceHash) ? homeWorkspaceHash : ''
       )), sid ? '' : ref?.composerDraftScope);
-  const currentHomeDraftText = homeComposerDraftText(
-    homeComposerDrafts,
-    homeDraftWorkspaceHash,
-  );
   composerValueRef.current = composerValue;
   composerContentRef.current = composerContent;
   composerAttachmentsRef.current = composerAttachments;
@@ -1299,8 +1295,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     setComposerValue(next, normalized);
     const restored = composerContentAttachments(normalized, composerAttachmentsRef.current, { sessionId: sid });
     setComposerAttachments((current) => mergeComposerAttachmentResources(current, restored));
-    if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, composerDraftSnapshot(next, normalized, composerAttachmentsRef.current));
-  }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, setComposerValue, sid]);
+    if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, composerDraftSnapshot(next, normalized, composerAttachmentsRef.current), api);
+  }, [api, homeDraftWorkspaceHash, onHomeComposerDraftChange, setComposerValue, sid]);
 
   const restoreComposerDraft = useCallback((draft, targetSid = '') => {
     const content = normalizeComposerContent(draft?.composer_content);
@@ -1871,8 +1867,17 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     if (!preserveComposerInput) setComposerSubmitting(false);
 
     if (!targetSid || !targetKey) {
-      composerDirtyRef.current = !!currentHomeDraftText;
-      restoreComposerDraft(homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash));
+      const loading = onHomeComposerDraftLoad?.(homeDraftWorkspaceHash, api);
+      const initial = loading?.draft ?? homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash);
+      composerDirtyRef.current = !!initial.text;
+      restoreComposerDraft(initial);
+      if (loading) {
+        void loading.ready.then((draft) => {
+          if (cancelled || draftEditVersionRef.current !== editVersionAtLoad) return;
+          composerDirtyRef.current = !!draft.text;
+          restoreComposerDraft(draft);
+        });
+      }
       draftLastSavedRef.current = { key: '', text: '' };
       return () => { cancelled = true; };
     }
@@ -1916,7 +1921,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     return () => { cancelled = true; };
   // Home edits update App's draft store without triggering restoration again.
   // Only session/workspace changes should reset or load the scoped draft.
-  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, restoreComposerDraft, sid]);
+  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftLoad, restoreComposerDraft, sid]);
 
   useEffect(() => {
     if (!acceptedHomeSubmission || acceptedHomeSubmission.sessionId !== sid
@@ -2453,10 +2458,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     draftEditVersionRef.current += 1;
     composerDirtyRef.current = !!stagedExpertDraft.text;
     setComposerValue(stagedExpertDraft.text);
-    onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text);
+    onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text, api);
     onInitialDraftConsumed?.();
     restoreChatInputFocusSoon(true);
   }, [
+    api,
     sid,
     stagedExpertDraft.present,
     stagedExpertDraft.text,
@@ -3222,6 +3228,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           onHomeComposerDraftAccepted?.(
             submittedHomeDraftWorkspaceHash,
             submittedHomeDraftText,
+            api,
           );
         })
         .catch((e) => {

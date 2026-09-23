@@ -3,6 +3,7 @@
 #include "agent_loop_shell_guard.hpp"
 
 #include <string>
+#include <vector>
 
 using acecode::command_looks_like_file_write;
 using acecode::command_mentions_path;
@@ -81,4 +82,22 @@ TEST(ShellWriteGuard, LoopYoloBlocksExternalAndDynamicWriteTargets) {
         "Remove-Item C:/external/output.txt", cwd).empty());
     EXPECT_FALSE(loop_shell_write_escape_reason(
         "python -c \"Path('C:/external/output').write_bytes(data)\"", cwd).empty());
+}
+
+// 场景:worktree / LOOP 写边界下,项目「编辑项目」里添加了附加文件夹 D:/shared/lib。
+// 期望:写进附加文件夹(含 PowerShell 包装的内层命令)放行;附加文件夹之外的
+// 外部写入、以及相对路径(仍按写边界根解析,不能拿附加文件夹当基准)照旧拦截。
+TEST(ShellWriteGuard, LoopYoloAllowsWritesIntoWritableWorkspaceFolders) {
+    const std::string cwd = "C:/repo/worktree";
+    const std::vector<std::string> extra = {"D:/shared/lib"};
+    EXPECT_TRUE(loop_shell_write_escape_reason(
+        "Set-Content -Path D:/shared/lib/generated.txt -Value hello", cwd, extra).empty());
+    EXPECT_TRUE(loop_shell_write_escape_reason(
+        R"ps(powershell -Command "Copy-Item local.txt D:/shared/lib/copy.txt")ps", cwd, extra).empty());
+    EXPECT_FALSE(loop_shell_write_escape_reason(
+        "Set-Content -Path D:/shared/other/generated.txt -Value hello", cwd, extra).empty());
+    EXPECT_FALSE(loop_shell_write_escape_reason(
+        "Set-Content -Path D:/shared/lib/generated.txt -Value hello", cwd).empty());
+    EXPECT_FALSE(loop_shell_write_escape_reason(
+        "echo hello > ../../shared/lib/x.txt", cwd, extra).empty());
 }

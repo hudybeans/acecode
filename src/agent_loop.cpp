@@ -2,6 +2,7 @@
 #include "agent_loop_doom_guard.hpp"
 #include "agent_loop_shell_guard.hpp"
 #include "computer_use/runtime.hpp"
+#include "desktop/workspace_registry.hpp"
 #include "sandbox/exec_permission.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
@@ -587,6 +588,76 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     sandbox_runtime_.clear_session_grants();
     last_sandbox_violation_.reset();
     reload_exec_rules();
+    // 进出 worktree 会改变写边界,可写附加文件夹随之重算。
+    sandbox_runtime_.set_workspace_writable_roots(writable_workspace_folders());
+}
+
+void AgentLoop::refresh_workspace_folders() {
+    // workspace.json 与会话文件同在 <projects>/<hash>/ 下。worktree 会话的 cwd_
+    // 是 worktree 路径,但会话存储目录不动,所以优先用 SessionManager 的 project dir。
+    std::string project_dir =
+        session_manager_ ? session_manager_->current_project_dir() : std::string{};
+    if (project_dir.empty()) project_dir = SessionStorage::get_project_dir(cwd_);
+    auto folders = desktop::load_workspace_folders(project_dir);
+    {
+        std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+        workspace_main_folder_ = std::move(folders.main_folder);
+        workspace_extra_folders_ = std::move(folders.extra_folders);
+    }
+    sandbox_runtime_.set_workspace_writable_roots(writable_workspace_folders());
+}
+
+std::vector<std::string> AgentLoop::workspace_extra_folders() const {
+    std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+    return workspace_extra_folders_;
+}
+
+std::vector<std::string> AgentLoop::writable_workspace_folders() const {
+    std::string main_folder;
+    std::vector<std::string> extras;
+    {
+        std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+        main_folder = workspace_main_folder_;
+        extras = workspace_extra_folders_;
+    }
+    if (extras.empty() || main_folder.empty() || write_root().empty()) return extras;
+    // 写边界存在的意义是护住主 checkout。与主文件夹互为包含的附加文件夹
+    // (主仓的上级目录,或主仓里的子目录)一旦放行,worktree 隔离就被绕开了。
+    const auto contains = [](const std::string& root, const std::string& path) {
+        return PathValidator(root, false).validate(path).empty();
+    };
+    std::vector<std::string> out;
+    for (const auto& folder : extras) {
+        if (contains(folder, main_folder) || contains(main_folder, folder)) continue;
+        out.push_back(folder);
+    }
+    return out;
+}
+
+bool AgentLoop::path_in_workspace_folders(const std::string& path) const {
+    if (path.empty()) return false;
+    const auto folders = writable_workspace_folders();
+    if (folders.empty()) return false;
+    std::filesystem::path target = path_from_utf8(path);
+    // 相对路径永远按会话 cwd 解析,不能拿附加文件夹当基准去"凑"出一个放行。
+    if (target.is_relative()) target = path_from_utf8(cwd_) / target;
+    const std::string absolute = path_to_utf8(target);
+    for (const auto& folder : folders) {
+        if (PathValidator(folder, false).validate(absolute).empty()) return true;
+    }
+    return false;
+}
+
+SystemPromptWorkspaceFolders AgentLoop::system_prompt_workspace_folders() const {
+    SystemPromptWorkspaceFolders result;
+    result.additional = writable_workspace_folders();
+    for (const auto& folder : workspace_extra_folders()) {
+        if (std::find(result.additional.begin(), result.additional.end(), folder) ==
+            result.additional.end()) {
+            result.read_only.push_back(folder);
+        }
+    }
+    return result;
 }
 
 std::string AgentLoop::global_exec_rules_dir() const {
@@ -1848,6 +1919,7 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     const SystemPromptModelState model_state = system_prompt_model_state();
+    const SystemPromptWorkspaceFolders workspace_folders_state = system_prompt_workspace_folders();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
@@ -1855,7 +1927,7 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode());
+        tool_preamble_prompt_mode(), &workspace_folders_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -2948,6 +3020,7 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     const SystemPromptModelState model_state = system_prompt_model_state();
+    const SystemPromptWorkspaceFolders workspace_folders_state = system_prompt_workspace_folders();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
@@ -2955,7 +3028,7 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode());
+        tool_preamble_prompt_mode(), &workspace_folders_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -4410,16 +4483,18 @@ bool AgentLoop::execute_tool_calls(
             tool_name != "create_workspace") {
             const std::string boundary_error =
                 PathValidator(boundary_root, false).validate(path);
-            if (!boundary_error.empty()) {
+            if (!boundary_error.empty() && !path_in_workspace_folders(path)) {
                 return "Write boundary blocked: " + path +
                        " is outside the session write root " + boundary_root +
                        ". Reads may go anywhere, but every write must stay inside "
                        "the worktree / execution root.";
             }
         }
-        return is_cwd_validation_exempt(tool_name, path, boundary_root)
-            ? std::string{}
-            : path_validator_.validate(path);
+        if (is_cwd_validation_exempt(tool_name, path, boundary_root)) return {};
+        std::string cwd_error = path_validator_.validate(path);
+        // 「编辑项目」的附加文件夹与工作目录同等对待。
+        if (!cwd_error.empty() && path_in_workspace_folders(path)) return {};
+        return cwd_error;
     };
 
     // Helper: execute a single tool (for both parallel and serial use).
@@ -4482,7 +4557,9 @@ bool AgentLoop::execute_tool_calls(
             project_dir,
             session_id,
             [this](const std::string& path) {
-                return path_validator_.validate(path);
+                std::string error = path_validator_.validate(path);
+                if (!error.empty() && path_in_workspace_folders(path)) error.clear();
+                return error;
             },
             cwd_);
         result.attachments = std::move(materialized.attachments);
@@ -5178,7 +5255,8 @@ bool AgentLoop::execute_tool_calls(
                         permissions_.mode() == PermissionMode::Yolo &&
                         !permissions_.is_dangerous()) {
                         const std::string boundary_rejection =
-                            loop_shell_write_escape_reason(ctx_command, boundary_root);
+                            loop_shell_write_escape_reason(ctx_command, boundary_root,
+                                                           writable_workspace_folders());
                         if (!boundary_rejection.empty()) {
                             audit_gate(security::kAuditDecisionForbidden, security::kAuditSourceRule, "write_boundary");
                             return ToolResult{"[Error] " + boundary_rejection, false};
@@ -5743,6 +5821,9 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
         sandbox_prompt_snapshot_.reset();
     }
+    // 「编辑项目」保存的附加文件夹:每回合开头重读,放在沙盒描述快照之前,
+    // 本回合的系统提示与可写根一致且回合内不变(prompt cache 前缀稳定)。
+    refresh_workspace_folders();
     abort_requested_ = false;
     turn_interrupt_requested_ = false;
     busy_ = true;

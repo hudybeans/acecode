@@ -196,6 +196,16 @@ export function sessionDraftPath(id, workspaceHash = '') {
   return `/api/sessions/${sid}/draft`;
 }
 
+export function workspaceDraftPath(workspaceHash = '') {
+  return `/api/workspaces/${encodeURIComponent(workspaceHash || '__no_workspace__')}/draft`;
+}
+
+export function workspaceDraftRequestOptions(draft) {
+  // Fetch keepalive bodies are limited to 64 KiB. Larger pasted drafts must
+  // still autosave normally instead of failing every request with TypeError.
+  return { keepalive: new TextEncoder().encode(JSON.stringify(draft)).byteLength <= 64 * 1024 };
+}
+
 export function sessionTodosPath(id, workspaceHash = '') {
   const sid = encodeURIComponent(id);
   const hash = String(workspaceHash || '').trim();
@@ -317,6 +327,9 @@ export function createApi(base = null) {
       'GET', '/api/workspaces', undefined, base, { signal: options.signal },
     ),
     setWorkspaceOrder: (hashes)      => request('PUT', '/api/workspaces/order', { hashes }, base),
+    getWorkspaceDraft: (hash = '') => request('GET', workspaceDraftPath(hash), undefined, base),
+    setWorkspaceDraft: (hash, draft) => request('PUT', workspaceDraftPath(hash), draft, base, workspaceDraftRequestOptions(draft)),
+    clearWorkspaceDraft: (hash, submitted) => request('DELETE', workspaceDraftPath(hash), submitted, base, workspaceDraftRequestOptions(submitted)),
     listLoops:        ()             => request('GET',    '/api/loops', undefined, base),
     listExperts:      (workspace='') => request('GET',    expertsPath(workspace), undefined, base),
     listExpertCapabilities: (workspace='') =>
@@ -332,6 +345,9 @@ export function createApi(base = null) {
     deleteLoop:       (id)           => request('DELETE', `/api/loops/${encodeURIComponent(id)}`, undefined, base),
     listLoopRuns:     (id, limit=100) => request('GET',   `/api/loops/${encodeURIComponent(id)}/runs?limit=${encodeURIComponent(String(limit))}`, undefined, base),
     registerWorkspace:(cwd)          => request('POST',   '/api/workspaces', {cwd}, base),
+    // 「编辑项目」:名称 / 图标 / 附加文件夹整体保存;移除 = 从项目列表隐藏(不删文件)。
+    updateWorkspace:  (hash, profile) => request('PUT',   `/api/workspaces/${encodeURIComponent(hash)}`, profile, base),
+    removeWorkspace:  (hash)         => request('DELETE', `/api/workspaces/${encodeURIComponent(hash)}`, undefined, base),
     // 后端弹原生目录选择框并阻塞到用户选完 —— 不能设超时。
     pickWorkspaceFolder:()           => request('POST',   '/api/workspaces/pick-folder', undefined, base,
       { timeoutMs: NO_TIMEOUT }),

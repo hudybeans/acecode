@@ -667,6 +667,76 @@ TEST(SavedModelsTest, LegacyAceModelCatalogContextMigratesToFallback) {
     EXPECT_FALSE(is_acemodel_catalog_context_fallback((*parsed)[1]));
 }
 
+// ACEModel 的静态目录没有推理等级,但上游探测可给已保存配置提供推理声明。
+// 加载时刷新视觉/工具能力后仍需保留声明及对应标签。
+TEST(SavedModelsTest, AceModelCatalogKeepsDiscoveredReasoning) {
+    const auto input = nlohmann::json::parse(R"([{
+        "name": "starrylighttest",
+        "provider": "openai",
+        "model": "starrylight",
+        "base_url": "https://example.test/v1",
+        "api_key": "test-key",
+        "models_dev_provider_id": "acemodel",
+        "capabilities_source": "catalog",
+        "capabilities": ["vision", "tool_use", "reasoning"],
+        "reasoning": {
+            "supported": true,
+            "mandatory": false,
+            "default_enabled": true,
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "default_effort": "medium",
+            "supports_max_tokens": false
+        }
+    }])");
+
+    std::string error;
+    auto parsed = parse_saved_models(input, error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    ASSERT_EQ(parsed->size(), 1u);
+    EXPECT_EQ(parsed->front().capabilities,
+              (std::vector<std::string>{"vision", "tool_use", "reasoning"}));
+    ASSERT_TRUE(parsed->front().reasoning.has_value());
+    EXPECT_EQ(parsed->front().reasoning->default_effort, "medium");
+    EXPECT_TRUE(validate_saved_models(*parsed, "starrylighttest", error)) << error;
+}
+
+// 没有上游推理声明时使用静态目录;其他来源的矛盾元数据仍需被校验拒绝。
+TEST(SavedModelsTest, AceModelReasoningReconciliationDoesNotRelaxOtherProfiles) {
+    nlohmann::json input = nlohmann::json::parse(R"([{
+        "name": "starrylighttest",
+        "provider": "openai",
+        "model": "starrylight",
+        "base_url": "https://example.test/v1",
+        "api_key": "test-key",
+        "models_dev_provider_id": "acemodel",
+        "capabilities_source": "catalog",
+        "capabilities": ["vision", "tool_use", "reasoning"]
+    }])");
+
+    std::string error;
+    auto parsed = parse_saved_models(input, error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    EXPECT_EQ(parsed->front().capabilities,
+              (std::vector<std::string>{"vision", "tool_use"}));
+    EXPECT_FALSE(parsed->front().reasoning.has_value());
+    EXPECT_TRUE(validate_saved_models(*parsed, "starrylighttest", error)) << error;
+
+    input[0]["capabilities_source"] = "manual";
+    input[0]["capabilities"] = nlohmann::json::array({"vision", "tool_use"});
+    input[0]["reasoning"] = {
+        {"supported", true},
+        {"mandatory", false},
+        {"default_enabled", true},
+        {"supported_efforts", nlohmann::json::array({"medium"})},
+        {"supports_max_tokens", false},
+    };
+    parsed = parse_saved_models(input, error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    EXPECT_FALSE(validate_saved_models(*parsed, "starrylighttest", error));
+    EXPECT_NE(error.find("inconsistent reasoning capability metadata"),
+              std::string::npos);
+}
+
 // 额外 — stream_timeout_ms 是可选正整数;解析后参与 validate。
 TEST(SavedModelsTest, OptionalStreamTimeoutParsesAndValidates) {
     nlohmann::json j = nlohmann::json::array();

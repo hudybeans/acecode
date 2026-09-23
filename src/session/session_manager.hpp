@@ -260,6 +260,8 @@ public:
 
 private:
     bool ensure_created();  // Lazy creation of session files on first message
+    // Metadata-only writes preserve persisted activity time. Pass the current
+    // timestamp explicitly after successfully changing conversation history.
     bool update_meta(
         std::optional<std::string> updated_at_override = std::nullopt);
     bool try_set_generated_session_title_locked(std::string title);
@@ -268,7 +270,7 @@ private:
     // before every meta write so the in-memory title never silently
     // overwrites a rename that landed on disk from elsewhere. An explicit
     // local title write is the only operation allowed to outrank the disk.
-    void adopt_foreign_user_title_locked();
+    void adopt_foreign_user_title_locked(const SessionMeta& persisted);
     void reset_auto_title_state_locked();
     std::string extract_summary(const std::string& content) const;
     bool acquire_writer_lease_locked();

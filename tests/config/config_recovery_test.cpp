@@ -52,6 +52,32 @@ void write_bytes(const fs::path& path, const std::string& bytes) {
     ASSERT_TRUE(output.good());
 }
 
+nlohmann::json acemodel_with_discovered_reasoning() {
+    return {
+        {"default_model_name", "starrylighttest"},
+        {"saved_models", nlohmann::json::array({{
+            {"name", "starrylighttest"},
+            {"provider", "openai"},
+            {"model", "starrylight"},
+            {"base_url", "https://example.test/v1"},
+            {"api_key", "test-key"},
+            {"models_dev_provider_id", "acemodel"},
+            {"capabilities_source", "catalog"},
+            {"capabilities", nlohmann::json::array(
+                {"vision", "tool_use", "reasoning"})},
+            {"reasoning", {
+                {"supported", true},
+                {"mandatory", false},
+                {"default_enabled", true},
+                {"supported_efforts", nlohmann::json::array(
+                    {"low", "medium", "high", "xhigh", "max"})},
+                {"default_effort", "medium"},
+                {"supports_max_tokens", false},
+            }},
+        }})},
+    };
+}
+
 } // namespace
 
 TEST(ConfigRecoveryPersistence, PathsStayBesideExplicitConfig) {
@@ -233,6 +259,41 @@ TEST(ConfigRecoveryLoad, SupportedMissingDefaultRepairDoesNotCreateNotice) {
     const auto snapshot = nlohmann::json::parse(
         read_bytes(paths.last_good_path));
     EXPECT_EQ(snapshot["default_model_name"], "available-model");
+}
+
+TEST(ConfigRecoveryLoad, AceModelDiscoveredReasoningDoesNotTriggerRollback) {
+    TempRecoveryConfig temp;
+    const std::string original = acemodel_with_discovered_reasoning().dump(2) + "\n";
+    write_bytes(temp.config, original);
+    std::string error;
+    ASSERT_TRUE(acecode::write_last_good_config(
+        temp.config.string(), original, &error)) << error;
+
+    const auto loaded = acecode::load_config_from_path(temp.config.string());
+    ASSERT_EQ(loaded.saved_models.size(), 1u);
+    EXPECT_EQ(loaded.saved_models.front().capabilities,
+              (std::vector<std::string>{"vision", "tool_use", "reasoning"}));
+    ASSERT_TRUE(loaded.saved_models.front().reasoning.has_value());
+    EXPECT_EQ(loaded.saved_models.front().reasoning->default_effort, "medium");
+    EXPECT_EQ(read_bytes(temp.config), original);
+    EXPECT_FALSE(acecode::read_config_recovery_notice(
+        temp.config.string()).pending);
+}
+
+TEST(ConfigRecoveryLoad, AceModelReasoningSnapshotCanRestoreInvalidActiveConfig) {
+    TempRecoveryConfig temp;
+    const std::string snapshot = acemodel_with_discovered_reasoning().dump(2) + "\n";
+    std::string error;
+    ASSERT_TRUE(acecode::write_last_good_config(
+        temp.config.string(), snapshot, &error)) << error;
+    write_bytes(temp.config, "{\n  \"broken\":\n");
+
+    const auto loaded = acecode::load_config_from_path(temp.config.string());
+    ASSERT_EQ(loaded.saved_models.size(), 1u);
+    EXPECT_EQ(loaded.saved_models.front().name, "starrylighttest");
+    EXPECT_EQ(read_bytes(temp.config), snapshot);
+    EXPECT_TRUE(acecode::read_config_recovery_notice(
+        temp.config.string()).pending);
 }
 
 TEST(ConfigRecoveryLoad, FailedTargetedRepairNeverAdvancesStaleSnapshot) {

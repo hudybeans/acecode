@@ -28,6 +28,8 @@ export function createSessionWorkbench({ storage, newId = () => globalThis.crypt
     const saved = JSON.parse(storage?.getItem(STORAGE_KEY) || 'null', decode);
     if (saved?.records instanceof Map && saved?.drafts instanceof Map && saved?.redirects instanceof Map) {
       ({ records, drafts, redirects } = saved);
+      // Widths belong to the global layout preference, including for old sessions.
+      for (const record of records.values()) delete record.layout;
     }
   } catch { /* 不可用或损坏的浏览存储不影响当前窗口。 */ }
 

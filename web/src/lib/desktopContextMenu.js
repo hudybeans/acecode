@@ -20,6 +20,7 @@ export const DESKTOP_CONTEXT_ACTIONS = Object.freeze({
   COLLAPSE_WORKSPACE: 'collapse_workspace',
   NEW_WORKSPACE_SESSION: 'new_workspace_session',
   IMPORT_OPENCODE_SESSIONS: 'import_opencode_sessions',
+  EDIT_WORKSPACE: 'edit_workspace',
   RENAME_WORKSPACE: 'rename_workspace',
   COPY_WORKSPACE_PATH: 'copy_workspace_path',
   REMOVE_WORKSPACE: 'remove_workspace',
@@ -301,6 +302,9 @@ export function buildDesktopContextMenuItems({
       if (workspaceTarget.opencodeImportCount > 0) {
         addAction(items, DESKTOP_CONTEXT_ACTIONS.IMPORT_OPENCODE_SESSIONS, workspaceTarget);
       }
+      if (workspaceTarget.canEdit) {
+        addAction(items, DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE, workspaceTarget);
+      }
       addAction(items, DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE, workspaceTarget, { enabled: workspaceTarget.canRename !== false });
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_WORKSPACE_PATH, workspaceTarget, { enabled: !!workspaceTarget.path });
       if (workspaceTarget.path) {
@@ -502,6 +506,7 @@ export function workspaceTargetFromElement(target) {
     active: boolAttr(el, 'data-desktop-workspace-active', 'desktopWorkspaceActive'),
     expanded: boolAttr(el, 'data-desktop-workspace-expanded', 'desktopWorkspaceExpanded'),
     canRename: getAttr(el, 'data-desktop-workspace-rename', 'desktopWorkspaceRename') !== 'false',
+    canEdit: boolAttr(el, 'data-desktop-workspace-edit', 'desktopWorkspaceEdit'),
     canRemove: boolAttr(el, 'data-desktop-workspace-remove', 'desktopWorkspaceRemove'),
     opencodeImportCount: numberAttr(el, 'data-desktop-workspace-opencode-import-count', 'desktopWorkspaceOpencodeImportCount'),
   };

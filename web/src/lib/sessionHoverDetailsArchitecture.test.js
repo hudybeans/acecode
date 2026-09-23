@@ -51,7 +51,9 @@ test('Sidebar owns one lifecycle reducer and clears stale trigger boundaries', (
   assert.match(sidebar, /activeOwner: activeSessionHoverOwner\(sessionHoverState\)/);
   assert.match(sidebar, /<SessionHoverLifecycleContext\.Provider value=\{sessionHoverContextValue\}>/);
   assert.match(sidebar, /if \(collapsed\) clearSessionHover\(\)/);
-  assert.match(sidebar, /onScroll=\{clearSessionHover\}/);
+  // 列表滚动仍先清掉悬停卡片,再同步顶部分隔线(lib/sidebarListDivider.js)。
+  assert.match(sidebar, /onScroll=\{handleSidebarListScroll\}/);
+  assert.match(sidebar, /const handleSidebarListScroll = useCallback\(\(\) => \{\s*clearSessionHover\(\);/);
   assert.match(sidebar, /window\.addEventListener\('pointerdown', handlePointerDown, true\)/);
   assert.match(sidebar, /window\.addEventListener\('blur', clearSessionHover\)/);
   assert.match(sidebar, /document\.addEventListener\('visibilitychange', handleVisibilityChange\)/);

@@ -240,10 +240,15 @@ update their transcript presentation.
 | GET | `/api/workspaces` | list registered workspaces |
 | POST | `/api/workspaces` | register cwd as workspace |
 | PUT | `/api/workspaces/order` | persist visible workspace order |
+| PUT | `/api/workspaces/:hash` | save the Edit Project dialog: name, icon, additional folders |
+| DELETE | `/api/workspaces/:hash` | remove a local project from the list (hide; no files deleted) |
 | POST | `/api/workspaces/pick-folder` | desktop native folder picker |
 | GET | `/api/projects/defaults` | new-project default parent directory |
 | POST | `/api/projects` | create and register a new project directory |
 | POST | `/api/open-in-explorer` | open a folder or reveal a file in the OS file manager |
+| GET | `/api/workspaces/:hash/draft` | read the workspace's single new-session draft |
+| PUT | `/api/workspaces/:hash/draft` | replace the new-session draft without creating a session |
+| DELETE | `/api/workspaces/:hash/draft` | clear only a matching submitted new-session draft |
 | GET | `/api/workspaces/:hash/sessions` | list sessions in workspace; `limit=N` returns `{sessions,total,total_exact,has_more}` |
 | POST | `/api/workspaces/:hash/sessions` | create workspace session |
 | POST | `/api/workspaces/:hash/sessions/:id/resume` | resume workspace session |
@@ -569,6 +574,43 @@ Registers the cwd and returns `201` plus a `Workspace`. Errors:
 - `400` bad JSON or missing `cwd`
 - `503` workspace registry unavailable
 
+`Workspace` objects from `GET`/`POST`/`PUT` also carry the Edit Project
+fields: `icon` (`{"id","color"}` or `null` = default folder icon) and
+`extra_folders` (absolute paths, possibly empty).
+
+### `PUT /api/workspaces/:hash`
+
+Saves the Web UI "Edit Project" dialog. The main folder (`cwd`) cannot be
+changed. Body:
+
+```json
+{"name":"acecode","icon":{"id":"music","color":"blue"},"extra_folders":["D:/shared/lib"]}
+```
+
+`name` is required and trimmed. Omitting `icon` or `extra_folders` keeps the
+stored value; `"icon": null` restores the default icon. `id`/`color` are opaque
+keys from the Web icon table (`[a-z0-9-]`). Every additional folder must be an
+existing absolute directory; the main folder and duplicates (case/separator
+insensitive on Windows) are dropped silently; at most 32. The marker is re-read
+from disk before writing so fields saved by another process (Desktop vs daemon
+registry caches) survive. Returns `200` plus the updated `Workspace`. Errors:
+
+- `400` `BAD_REQUEST` bad JSON, empty name, invalid icon, relative/missing folder
+- `404` `WORKSPACE_NOT_FOUND` unknown hash or a marker whose `cwd` does not hash to `:hash`
+- `500` `PERSIST_FAILED`
+- `503` workspace registry unavailable
+
+Additional folders take effect from the next agent turn: the system prompt's
+`# Environment` lists them, file tools accept paths inside them, and the bash
+sandbox adds them as writable roots. Sessions with a write boundary (worktree /
+LOOP / inherited) keep folders that overlap the main checkout read-only.
+
+### `DELETE /api/workspaces/:hash`
+
+Web-mode counterpart of the Desktop `aceDesktop_removeWorkspace` bridge: sets
+`desktop_visible=false` in the marker. Sessions, the marker's other fields and
+all project files are kept. Returns `{"ok":true}`; `404` for unknown hashes.
+
 ### `POST /api/workspaces/pick-folder`
 
 Desktop-only native folder picker. Returns a registered `Workspace` or `null`
@@ -671,6 +713,10 @@ the raw array:
 `sessions` is the newest N rows, ordered by `updated_at` descending — the same
 order the unlimited list uses. Omitting `limit`, or passing `0`, keeps the
 original array body and never adds the paging fields.
+
+`updated_at` records persisted conversation activity. Resuming, switching, or
+closing a session and saving metadata such as titles or model preferences do
+not advance it; appending or replacing conversation history does.
 
 A bounded page stops reading the project directory as soon as it has enough
 rows, so it does not learn the exact post-filter count:
@@ -1033,6 +1079,25 @@ the archived-session settings page. Guard rails:
   when the session client is unavailable
 
 ### Archive, title, draft, and todos
+
+New-session drafts use `GET/PUT/DELETE /api/workspaces/:hash/draft`, independently
+of existing-session drafts. Use `__no_workspace__` for the separate no-workspace
+draft. Unknown workspace hashes return `404`; the usual authentication and CORS
+rules apply. Each workspace owns one `input_draft.json` in its project data
+directory (no-workspace uses its cache root). Saving does not create a session,
+metadata entry, or transcript, and drafts survive page and daemon restarts.
+
+PUT takes `{"text":"...","composer_content":{...}}` with optional structured
+content, using the same normalization as session drafts. GET/PUT return
+`{"workspace_hash":"...","text":"...","composer_content"?:{...}}`.
+DELETE takes the submitted draft in the same format, atomically clears only
+when the stored content matches, and returns the current draft with
+`"cleared":true/false`. Invalid input returns `400`; disk failures return `500`.
+
+The home composer autosaves in order and restores on entry. A late response
+cannot replace newer edits; failed sends retain the draft. Structured references
+are durable, but unsent browser File bytes keep their existing in-memory
+lifetime: after reload an unavailable upload must be attached again.
 
 Workspace-scoped and compatibility paths share the same behavior:
 

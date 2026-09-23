@@ -68,7 +68,8 @@ run('App owns navigation-lifetime drafts and ChatView keeps home/session paths s
   assert.match(app, /onHomeComposerDraftChange=\{updateHomeComposerDraft\}/);
   assert.match(app, /onHomeComposerDraftAccepted=\{acceptHomeComposerDraft\}/);
   assert.match(chat, /if \(!sid\) onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, composerDraftSnapshot/);
-  assert.match(chat, /restoreComposerDraft\(homeComposerDraft\(homeComposerDrafts, homeDraftWorkspaceHash\)\)/);
+  assert.match(chat, /loading\?\.draft \?\? homeComposerDraft\(homeComposerDrafts, homeDraftWorkspaceHash\)/);
+  assert.match(app, /onHomeComposerDraftLoad=\{loadHomeComposerDraft\}/);
   assert.match(chat, /if \(sid \|\| !stagedExpertDraft\.present\) return/);
   assert.match(chat, /onHomeComposerDraftAccepted\?\.\(\s+submittedHomeDraftWorkspaceHash,\s+submittedHomeDraftText/s);
   assert.match(chat, /if \(!targetSid \|\| !targetKey\)[\s\S]*api\.getSessionDraft\(targetSid, targetWorkspaceHash\)/);

@@ -2359,6 +2359,11 @@ int main(int argc, char** argv) {
             o["cwd"] = m.cwd;
             o["name"] = m.name;
             o["available"] = is_existing_directory(m.cwd);
+            // 与 daemon GET /api/workspaces 同形(侧栏在 REST 失败时退回这里)。
+            o["icon"] = m.icon.empty()
+                ? nlohmann::json(nullptr)
+                : nlohmann::json{{"id", m.icon.id}, {"color", m.icon.color}};
+            o["extra_folders"] = m.extra_folders;
             o["daemon_state"] = state_string(snap.state);
             o["active"] = (m.hash == cur);
             if (snap.state == DaemonState::Running) {
@@ -2734,6 +2739,22 @@ int main(int argc, char** argv) {
         o["cwd"] = m.cwd;
         o["name"] = m.name;
         return o.dump();
+    });
+
+    // bridge: pickFolder —「编辑项目」的「添加文件夹」。只返回选中的目录,不注册
+    // 项目(上面的 aceDesktop_addWorkspace 会把目录注册成新项目,不能复用)。
+    host.bind("aceDesktop_pickFolder", [&](const std::string& /*req*/) -> std::string {
+        auto outcome = pick_folder_outcome(host.native_window());
+        if (!outcome.error.empty()) {
+            return nlohmann::json{{"ok", false}, {"error", outcome.error}}.dump();
+        }
+        if (!outcome.path) {
+            return nlohmann::json{{"ok", true}, {"cancelled", true}}.dump();
+        }
+        // 与 addWorkspace 同样统一成正斜杠,和主文件夹的持久化形态一致。
+        std::string path = *outcome.path;
+        for (auto& c : path) if (c == '\\') c = '/';
+        return nlohmann::json{{"ok", true}, {"cancelled", false}, {"path", path}}.dump();
     });
 
     // 4. navigate(URL 在第 3 步已就绪)
