@@ -171,8 +171,10 @@ struct AgentCallbacks {
 
     // Called just before a tool begins executing. `command_preview` is a short
     // human-readable summary (e.g. the first 60 chars of a bash command).
+    // `preamble` 是工具前言(add-tool-preamble)给这次调用的一句话,空 = 没有。
     std::function<void(const std::string& tool_name,
-                       const std::string& command_preview)> on_tool_progress_start;
+                       const std::string& command_preview,
+                       const std::string& preamble)> on_tool_progress_start;
 
     // Called from the tool's streaming thread with each cleaned chunk.
     // `tail_snapshot` is the last-5-lines sliding window; `current_partial` is
@@ -693,9 +695,13 @@ private:
         std::vector<std::string> tool_call_ids;
     };
     struct ToolPreambleTitle {
+        // 批次标题(reasoning / sidecar 模式):整批工具共用。
         std::string title;
         std::string source;
         std::vector<std::string> tool_call_ids;
+        // 逐调用前言(prompt 模式):键 = tool_call_id(空 id 用 "#<index>"),
+        // 值 = 该调用自己 `preamble` 参数里的一句话。
+        std::map<std::string, std::string> per_call;
     };
 
     // Phase 3: Stream provider response and accumulate.

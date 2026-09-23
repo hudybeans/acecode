@@ -30,22 +30,22 @@ turn end: flush_late_tool_preamble(true)             ← 仍没到就丢弃
 - **标题只在一处解析**(`AgentLoop::resolve_tool_preamble_for_step`),`execute_tool_calls` 只消费。
 - **落盘键**:`metadata.tool_preamble` 挂在 assistant(tool_calls) 消息上,provider 序列化不读 metadata,不打穿 prompt cache;`session_serializer` 原本就透传 metadata,REST `GET messages` 与 resume 自然带回。
 - **事件先于 tool_start**:Web reducer 先把标题按 tool_call_id 暂存在 `pendingToolPreambles`,`tool_start` 建项时取走;迟到事件原地打标。空正文的工具回合没有 assistant Message 帧可搭,所以事件是必须的,不是可选的。
-- **投影分组键是标题**(而不是 batch_id):assistant 正文条目的 metadata 没有 batch_id(实时 Message 帧只带 title/source),用标题做键才能让 prompt 模式的正文条目和它的工具项落进同一组;group id 才用 batch_id(有则)保证流式追加时稳定。
-- **无标题工具项不被上一组冒领**:prompt 模式下模型偶尔写长段落,daemon 不给标题,这些工具项另起无标题组走模板汇总。
+- **投影不按批次拆组**:一段活动仍是一条 `activity_summary`,前言只影响实时行(正在运行工具的前言)与运行中的工具行;落定后的记录与功能关闭时形态一致。按批次拆成多行就是用户否掉的那版。
+- **每个调用一条前言是三种模式对下游的统一形态**:参数模式各取各的,批次标题模式每个调用都等于批次标题(`preamble_for_call`),`tool_start.preamble` 是唯一的实时通道;批次标题模式另发的 `tool_preamble` 事件只为迟到补标与历史 batch_id。
 
 ## sidecar 的等待策略
 
 在第一个**完整**工具调用露头时启动(参数预览进材料,比只有工具名的标签准),与后续参数流式 / 工具执行并行;`resolve_tool_preamble_for_step` 有界等待 `sidecar_wait_ms`(默认 2000,clamp [0,15000]),每 50ms 看一次中止标记。等不到就按无标题落盘,工具执行完与回合末各看一次,到了就发 `late:true` 事件(不写 JSONL —— 已落盘消息没有改写入口)。摘要线程 detached、只写 `ToolPreambleSidecarTask`,AgentLoop 永不被它回调,线程晚于 AgentLoop 结束也不会踩到已析构的 this。
 
-## 为什么 prompt 模式要改系统提示的口径
+## prompt 模式为什么是「参数」而不是「先说一句话」
 
-`system_prompt.cpp` 原有「Do not narrate every tool call / prefer silent batches」是为省 token 定的;preamble 一句约 15~25 个输出 token,比旁路摘要便宜一个量级。只在 `enabled && mode == prompt` 时切换文案,其它模式与关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。
+第一版做成「含工具调用的消息先写一句前言」,实测(用户截图)三个问题:文本先流出来变成气泡、工具参数再流、批次开始才把那句话搬进 loading;每个模型步一组,连续单工具步堆成一摞标题行;展开后那句话在组里又重复一遍。改成参数后这些时序问题都不存在:`inject_preamble_parameter` 给每个工具定义加 `preamble`,模型在调用参数里填;`ToolCallDelta` 带参数前缀(`kToolCallDeltaArgumentsPrefixBytes`),`extract_preamble_from_partial_arguments` 在值闭合的那一刻就换掉 tool_planning 的 label;`strip_preamble_parameter` 在 `resolve_tool_preamble_for_step` 里剥掉,后面的权限 / 预览 / hooks / doom guard / 执行 / 落盘全是干净参数。系统提示只**追加**「# Tool call preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。每次调用约十几个 token,比旁路摘要便宜一个量级。
 
 ## 三端 loading 提示同源
 
 - Web `ActivitySummaryBlock`:`item.preamble.title` > 阶段文案 / 并行计数(后者退到 detail)。
 - daemon `agent_progress`:reasoning(流式期间)/ tool_planning / tool_running 在有标题时 label = 标题,工具名 / 命令预览退到 detail,所以侧栏、迷你视图等只读 `activity.label` 的消费方也显示标题。
-- TUI:`on_thinking_title` 替换等待动画短语;`on_tool_preamble` 插 `● 标题` 伪行。
+- TUI:`on_thinking_title` 替换等待动画短语;批次标题模式 `on_tool_preamble` 插 `● 标题` 伪行;参数模式同一回调逐调用送前言(source=prompt),TUI 暂存后挂到紧接着的 tool_call 行(`● FileRead · 前言`),写工具的进度头也显示它。读工具走并行路径没有进度头,这条回调是 TUI 看到前言的唯一通道。
 
 ## 已知限制
 

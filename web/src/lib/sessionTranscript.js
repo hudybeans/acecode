@@ -836,11 +836,18 @@ function tagHistoryToolPreambles(produced, message, preambleByCallId) {
     const ids = [];
     for (let i = 0; i < toolCalls.length; i += 1) {
       const call = normalizePersistedToolCall(toolCalls[i], i);
-      if (call.toolCallId) ids.push(call.toolCallId);
+      ids.push(call.toolCallId || `#${i}`);
     }
     const preamble = ids.length > 0 ? toolPreambleFromMetadata(message.metadata, ids[0]) : null;
     if (!preamble) return produced;
-    ids.forEach((id) => preambleByCallId.set(id, preamble));
+    // 批次标题给整批;参数模式的逐调用前言按 id(缺 id 用 "#<index>")各取各的。
+    ids.forEach((id, index) => {
+      const own = String(preamble.calls[id] ?? preamble.calls[`#${index}`] ?? '').trim();
+      const title = own || preamble.title;
+      if (!title) return;
+      preambleByCallId.set(id, { title, source: preamble.source, batchId: preamble.title ? preamble.batchId : '' });
+    });
+    if (!preamble.title) return produced;
     return produced.map((item) => {
       if (item?.kind !== 'msg' || !item.metadata?.tool_preamble) return item;
       return {
@@ -1605,6 +1612,15 @@ export function reduceTranscriptEvent(state, msg) {
         metadata: null,
         askUserQuestionResult: null,
       };
+      // 工具前言:参数模式下 tool_start 直接带这次调用的前言;批次标题模式下
+      // 由先到的 tool_preamble 事件暂存在 pending,这里取走(两者并存时后者带 batchId)。
+      if (typeof p.preamble === 'string' && p.preamble.trim()) {
+        tool.preamble = {
+          title: p.preamble.trim(),
+          source: String(p.preamble_source || ''),
+          batchId: '',
+        };
+      }
       const pendingPreamble = tool.toolCallId
         ? (next.pendingToolPreambles || {})[tool.toolCallId]
         : null;

@@ -3582,9 +3582,17 @@ that the Web UI shows above the running tools and keeps as the header of the
 collapsed batch afterwards. The title comes from one of three sources, chosen
 by `mode`:
 
-- `prompt`: the system prompt asks the model to start every message that
-  contains tool calls with an 8-12 word preamble line; that line becomes the
-  title (and is folded into the header instead of rendered as a bubble).
+- `prompt`: every tool definition sent to the model gets an extra optional
+  `preamble` string argument and the system prompt asks the model to fill it on
+  every call with an 8-12 word line. The daemon strips the argument before the
+  permission gate, previews, hooks and execution (the tool never sees it), so
+  the persisted `tool_calls[].function.arguments` are clean too; the text
+  travels as `tool_start.preamble` and as
+  `metadata.tool_preamble.calls[tool_call_id]`. While the arguments are still
+  streaming, the `agent_progress` frame with `phase:"tool_planning"` already
+  carries the preamble as its `label` once the value has closed (providers put
+  the first 1024 bytes of the accumulated arguments into the delta). This mode
+  has no batch title and emits no `tool_preamble` event.
 - `reasoning`: the first `**bold**` span of the provider's reasoning summary
   (OpenAI Responses / Codex app-server / Gemini summaries start with one),
   falling back to the first sentence of the reasoning. No prompt change, no
@@ -3595,13 +3603,20 @@ by `mode`:
   before persisting the assistant message; a later result is delivered as a
   `tool_preamble` event with `late:true` and is not written to the JSONL.
 
-The title is persisted as `metadata.tool_preamble = {title, source}` on the
-`assistant` message that carries the `tool_calls`, so `GET /messages` and
-resume reproduce the grouping. Live sessions also receive a `tool_preamble`
-event `{batch_id, tool_call_ids, title, source, late}` (`batch_id` is the
-first tool call id of the batch) right before the batch's `tool_start` frames,
-and, in `reasoning` mode, the `agent_progress` frame with `phase:"reasoning"`
-carries the title as its `label` while the model is still streaming.
+Persistence: `metadata.tool_preamble = {source, title?, calls?}` on the
+`assistant` message that carries the `tool_calls` (`title` for the batch title
+modes, `calls` = `{tool_call_id: text}` for the parameter mode), so
+`GET /messages` and resume reproduce the per-call preambles. Live sessions get
+the preamble of each call as `tool_start.preamble` (plus `preamble_source`),
+the `tool_running` / `tool_planning` `agent_progress` frames use it as their
+`label` (tool name and command preview move to `detail`), and the batch title
+modes additionally emit a `tool_preamble` event
+`{batch_id, tool_call_ids, title, source, late}` (`batch_id` is the first tool
+call id of the batch) right before the batch's `tool_start` frames; in
+`reasoning` mode the `agent_progress` frame with `phase:"reasoning"` carries
+the title while the model is still streaming. The Web UI shows the preamble as
+the running tool row's label and as the live activity row; it never splits the
+transcript into per-batch groups.
 
 `GET /api/config/tool-preamble` returns `{enabled, mode, sidecar_model,
 sidecar_wait_ms, modes:["prompt","reasoning","sidecar"], saved_models:[...]}`.

@@ -8,7 +8,8 @@
 
 ## 2. AgentLoop 与协议
 
-- [x] 2.1 `build_system_prompt` 的 `prompt_tool_preamble` 开关与 Codex 式 preamble 指引
+- [x] 2.1 `build_system_prompt` 的 `prompt_tool_preamble` 开关:追加「# Tool call preamble」段(既有「不要叙述」口径保留)
+- [x] 2.1b 参数模式:`inject_preamble_parameter` / `extract_preamble_from_partial_arguments` / `strip_preamble_parameter`,provider 增量带参数前缀,`tool_start.preamble`,metadata `calls`,TUI 进度头显示前言(第一版「先说一句话」已废)
 - [x] 2.2 流回调:reasoning 加粗标题(流式期间替换 loading label)、第一个完整 ToolCall 启动 sidecar
 - [x] 2.3 `resolve_tool_preamble_for_step` / `execute_tool_calls` 落盘 metadata + `tool_preamble` 事件 + 回调;迟到 late 事件
 - [x] 2.4 `agent_progress` 的 tool_planning / tool_running 在有标题时 label = 标题
@@ -25,7 +26,7 @@
 - [x] 4.1 reducer:`tool_preamble` 事件、`pendingToolPreambles`、历史加载从 assistant metadata 传播
 - [x] 4.2 投影:`splitPreambleGroups` / `flushToolBuffer` 按标题拆组,prompt 正文折进分组,legacy 包装归并保留标题
 - [x] 4.3 `ActivitySummaryBlock` 标题优先
-- [x] 4.4 TUI:`on_thinking_title` / `on_tool_preamble` 回调、`preamble` 伪行渲染、`session_replay` 还原
+- [x] 4.4 TUI:`on_thinking_title` / `on_tool_preamble` 回调、`preamble` 伪行渲染、`session_replay` 还原;参数模式前言挂 tool_call 行(`Message::preamble`,`calls` 回放)
 
 ## 5. 测试与文档
 

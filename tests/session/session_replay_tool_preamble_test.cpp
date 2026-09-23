@@ -1,7 +1,8 @@
 // 覆盖 resume 回放对 metadata.tool_preamble 的还原(openspec add-tool-preamble):
 //   1. reasoning / sidecar 来源:assistant 正文行之后、tool_call 行之前多一行
 //      role=preamble 的标题伪行
-//   2. prompt 来源:那句正文就是标题,只出标题行,不再重复推正文行
+//   2. prompt 来源(第一版遗留数据,title):那句正文就是标题,只出标题行,不再重复推正文行;
+//      参数模式(calls):不出伪行,前言挂到各自的 tool_call 行(Message::preamble)
 //   3. 没有 tool_calls 的 assistant 消息即使带 metadata 也不出标题行(标题只
 //      属于工具批次);没有 metadata 的老会话与改动前完全一致
 
@@ -87,6 +88,36 @@ TEST(SessionReplayToolPreamble, PromptSourceFoldsTextIntoTitleRow) {
     ASSERT_EQ(roles_of(rows), (std::vector<std::string>{
         "preamble", "tool_call", "tool_result"}));
     EXPECT_EQ(rows[0].content, "Reading the loader");
+}
+
+// 场景:参数模式落盘的 metadata.tool_preamble = {source:"prompt", calls:{...}},两个
+// tool_call(call-1 / 没有 id 的第二个)各有自己的前言,assistant 正文为空。
+// 期望:不出 preamble 伪行、不出空正文行;两条 tool_call 行的 preamble 字段各是自己
+// 那句(没有 id 的按 "#1" 取),tool_result 照常成对相邻。
+TEST(SessionReplayToolPreamble, PromptCallsAttachPreambleToEachToolCallRow) {
+    ToolExecutor tools;
+    ChatMessage m;
+    m.role = "assistant";
+    nlohmann::json first;
+    first["id"] = "call-1";
+    first["type"] = "function";
+    first["function"]["name"] = "file_read";
+    first["function"]["arguments"] = R"({"file_path":"a.txt"})";
+    nlohmann::json second;
+    second["type"] = "function";
+    second["function"]["name"] = "grep";
+    second["function"]["arguments"] = R"({"pattern":"x"})";
+    m.tool_calls = nlohmann::json::array({first, second});
+    m.metadata = {{"tool_preamble", {
+        {"source", "prompt"},
+        {"calls", {{"call-1", "Reading a.txt"}, {"#1", "Searching for x"}}},
+    }}};
+    const auto rows = replay_session_messages(
+        {m, tool_result("ok"), tool_result("ok2")}, tools);
+    ASSERT_EQ(roles_of(rows), (std::vector<std::string>{
+        "tool_call", "tool_result", "tool_call", "tool_result"}));
+    EXPECT_EQ(rows[0].preamble, "Reading a.txt");
+    EXPECT_EQ(rows[2].preamble, "Searching for x");
 }
 
 // 场景:没有 metadata 的老会话 / 没有 tool_calls 但带 metadata 的消息。

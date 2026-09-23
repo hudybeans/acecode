@@ -147,6 +147,91 @@ TEST(ToolPreambleNormalize, TruncationIsUtf8Safe) {
     EXPECT_EQ(truncate_code_points("abc", 10), "abc");
 }
 
+// 场景:参数模式给工具定义注入 `preamble`。三个定义:正常 schema、parameters 为
+// null 的、已经自带 preamble 参数的。期望:前两个各注入一个 string 属性(带说明,
+// 不进 required),第三个原样跳过;返回注入数 2。
+TEST(ToolPreambleParameter, InjectsIntoEveryDefinitionExceptExisting) {
+    acecode::ToolDef normal;
+    normal.name = "file_read";
+    normal.parameters = {
+        {"type", "object"},
+        {"properties", {{"file_path", {{"type", "string"}}}}},
+        {"required", nlohmann::json::array({"file_path"})},
+    };
+    acecode::ToolDef bare;
+    bare.name = "ping";
+    acecode::ToolDef own;
+    own.name = "custom";
+    own.parameters = {{"type", "object"}, {"properties", {{"preamble", {{"type", "integer"}}}}}};
+
+    std::vector<acecode::ToolDef> defs{normal, bare, own};
+    EXPECT_EQ(inject_preamble_parameter(defs), 2u);
+    EXPECT_EQ(defs[0].parameters["properties"]["preamble"]["type"], "string");
+    EXPECT_NE(defs[0].parameters["properties"]["preamble"]["description"].get<std::string>().find("Reading registry sections"),
+              std::string::npos);
+    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path"}));
+    EXPECT_EQ(defs[1].parameters["type"], "object");
+    EXPECT_EQ(defs[1].parameters["properties"]["preamble"]["type"], "string");
+    EXPECT_EQ(defs[2].parameters["properties"]["preamble"]["type"], "integer");
+}
+
+// 场景:判断工具定义是否自带 `preamble` 参数。期望:properties 里有同名键才算;
+// parameters 为 null / 没有 properties / properties 不是对象都不算。
+TEST(ToolPreambleParameter, DefinitionDeclaresPreambleOnlyWhenSchemaHasIt) {
+    acecode::ToolDef own;
+    own.parameters = {{"type", "object"}, {"properties", {{"preamble", {{"type", "string"}}}}}};
+    EXPECT_TRUE(definition_declares_preamble(own));
+    acecode::ToolDef plain;
+    plain.parameters = {{"type", "object"}, {"properties", {{"file_path", {{"type", "string"}}}}}};
+    EXPECT_FALSE(definition_declares_preamble(plain));
+    acecode::ToolDef bare;
+    EXPECT_FALSE(definition_declares_preamble(bare));
+    acecode::ToolDef odd;
+    odd.parameters = {{"type", "object"}, {"properties", "not-an-object"}};
+    EXPECT_FALSE(definition_declares_preamble(odd));
+}
+
+// 场景:参数 JSON 还在流式传输,前缀里 `preamble` 的值已经完整 / 尚未闭合 /
+// 只是别的字符串值里恰好含这串。期望:完整时返回规整后的值(含转义解码),
+// 未闭合返回空(等下一段),值里的假键不算,只认对象顶层的键。
+TEST(ToolPreambleParameter, ExtractsFromPartialArgumentsOnlyWhenComplete) {
+    EXPECT_EQ(extract_preamble_from_partial_arguments(
+                  R"({"preamble":"Reading the loader","file_path":"regi)"),
+              "Reading the loader");
+    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"preamble":"Reading the lo)"), "");
+    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"preamble":)"), "");
+    // 下面两条不用原始字符串:MSVC 传统预处理器会把宏参数里含 \" 的 R"(...)" 重新切分成
+    // 普通字符串(报 C2017 / C3688),先存进变量再传给宏就绕开了。
+    const std::string fake_key_inside_value =
+        "{\"query\":\"\\\"preamble\\\":\\\"fake\\\"\",\"preamble\":\"Real one\"}";
+    EXPECT_EQ(extract_preamble_from_partial_arguments(fake_key_inside_value), "Real one");
+    const std::string escaped_value = "{\"preamble\":\"Say \\\"hi\\\" \\u4e2d\"}";
+    const std::string expected_decoded = std::string("Say \"hi\" ") + "\xE4\xB8\xAD";
+    EXPECT_EQ(extract_preamble_from_partial_arguments(escaped_value), expected_decoded);
+    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"file_path":"a"})"), "");
+}
+
+// 场景:完整参数里剥掉 `preamble`。期望:返回规整后的前言,参数变成不含该键的
+// JSON(工具看不到它);没有该键 / 非法 JSON 时参数原样不动;值不是字符串时键
+// 照样剥掉但不出标题。
+TEST(ToolPreambleParameter, StripsParameterBeforeExecution) {
+    std::string args = R"({"preamble":"Reading the loader.","file_path":"a.txt"})";
+    EXPECT_EQ(strip_preamble_parameter(args), "Reading the loader");
+    EXPECT_EQ(nlohmann::json::parse(args), nlohmann::json({{"file_path", "a.txt"}}));
+
+    std::string untouched = R"({"file_path":"a.txt"})";
+    EXPECT_EQ(strip_preamble_parameter(untouched), "");
+    EXPECT_EQ(untouched, R"({"file_path":"a.txt"})");
+
+    std::string broken = R"({"preamble":"x")";
+    EXPECT_EQ(strip_preamble_parameter(broken), "");
+    EXPECT_EQ(broken, R"({"preamble":"x")");
+
+    std::string non_string = R"({"preamble":42,"file_path":"a"})";
+    EXPECT_EQ(strip_preamble_parameter(non_string), "");
+    EXPECT_EQ(nlohmann::json::parse(non_string), nlohmann::json({{"file_path", "a"}}));
+}
+
 // 场景:mode 校验。期望:三个规范名有效,其它(含大小写变体)无效。
 TEST(ToolPreambleMode, ValidatesCanonicalNames) {
     EXPECT_TRUE(is_valid_mode("prompt"));

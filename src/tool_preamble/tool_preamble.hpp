@@ -77,4 +77,27 @@ std::vector<ChatMessage> build_sidecar_messages(const SidecarSummaryInput& input
 // 供调用方构造材料时用的同款截断(前缀 + "…")。
 std::string truncate_code_points(const std::string& text, std::size_t max_code_points);
 
+// ---- prompt 模式 = 工具调用参数 ----
+// 不是「先说一句话再调工具」(那会先流出一个气泡、批次开始才搬进 loading),而是
+// 给每个工具定义注入一个 `preamble` 字符串参数,模型在每次调用里填一句;参数
+// 一流出来就当 loading 文案,执行前剥掉,工具本身永远看不到它。
+inline constexpr const char* kToolParameterName = "preamble";
+
+// 工具定义自己是否声明了 `preamble` 参数(properties 里已有同名键)。这种工具的
+// `preamble` 是它的真实入参(MCP 工具可能撞名):注入跳过它,执行前也不能把它
+// 当前言剥掉。
+bool definition_declares_preamble(const ToolDef& definition);
+
+// 给每个工具定义注入 `preamble` 参数(properties 里加一项,不进 required)。
+// 工具自己已有同名参数则跳过。返回注入的个数。
+std::size_t inject_preamble_parameter(std::vector<ToolDef>& definitions);
+
+// 从流式的参数 JSON 前缀里抽 `"preamble":"…"` 的值:键与整个字符串值都已到齐
+// 才返回(处理转义),否则空串。只认对象顶层的键(前一个非空白字符是 { 或 ,)。
+std::string extract_preamble_from_partial_arguments(const std::string& partial_json);
+
+// 从完整参数 JSON 里取出并剥掉 `preamble`:返回规整后的标题(空 = 没有),
+// arguments 被改写为去掉该键的 JSON;非法 JSON / 非对象原样不动。
+std::string strip_preamble_parameter(std::string& arguments);
+
 } // namespace acecode::tool_preamble

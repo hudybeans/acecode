@@ -2994,6 +2994,11 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     // (openspec add-gpt-apply-patch-adaptation)。三个工具始终注册,这里只裁
     // 模型侧定义表;模型在回合内固定,所以裁完的表逐字节稳定,不打穿 prompt cache。
     filter_tool_definitions_for_model(bundle.tool_defs, model_state.prefers_apply_patch);
+    // 工具前言 · 参数模式(add-tool-preamble):每个工具定义多一个 `preamble`
+    // 字符串参数。只随配置变化,注入结果逐字节稳定,不打穿 prompt cache。
+    if (tool_preamble_prompt_mode()) {
+        tool_preamble::inject_preamble_parameter(bundle.tool_defs);
+    }
     LOG_DEBUG("Registered tools: " + std::to_string(bundle.tool_defs.size()));
 
     // gitStatus 快照:每会话激活惰性采集一次,cwd 切换或外部失效(Web UI
@@ -3372,14 +3377,36 @@ AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
     ProviderCallResult& result) {
     ToolPreambleTitle out;
     const ToolPreambleConfig cfg = tool_preamble_config();
-    const ChatResponse& accumulated = result.accumulated;
+    ChatResponse& accumulated = result.accumulated;
     if (!cfg.enabled || accumulated.tool_calls.empty()) return out;
     for (const auto& tc : accumulated.tool_calls) {
         if (!tc.id.empty()) out.tool_call_ids.push_back(tc.id);
     }
     if (cfg.mode == tool_preamble::kModePrompt) {
+        // 参数模式:每个调用自己的 `preamble`。这里就把它从参数里剥掉 —— 之后的
+        // 落盘、权限门、预览、hooks、doom guard、执行看到的都是干净参数,
+        // 前言只经 metadata.tool_preamble.calls 与 tool_start.preamble 传给界面。
         out.source = tool_preamble::kModePrompt;
-        out.title = tool_preamble::title_from_assistant_text(accumulated.content);
+        // 工具自己声明了 `preamble` 参数的(MCP 工具可能撞名):那是它的真实入参,
+        // 注入时已跳过,这里同样不剥、不当前言。按原生名判定,模型侧别名先解析回来。
+        std::set<std::string> native_preamble_tools;
+        for (const auto& def : tools_.get_tool_definitions()) {
+            if (tool_preamble::definition_declares_preamble(def)) {
+                native_preamble_tools.insert(def.name);
+            }
+        }
+        for (std::size_t i = 0; i < accumulated.tool_calls.size(); ++i) {
+            auto& tc = accumulated.tool_calls[i];
+            if (!native_preamble_tools.empty() &&
+                native_preamble_tools.count(
+                    tools_.resolve_model_tool_name_to_native(tc.function_name))) {
+                continue;
+            }
+            const std::string title =
+                tool_preamble::strip_preamble_parameter(tc.function_arguments);
+            if (title.empty()) continue;
+            out.per_call[tc.id.empty() ? "#" + std::to_string(i) : tc.id] = title;
+        }
     } else if (cfg.mode == tool_preamble::kModeReasoning) {
         out.source = tool_preamble::kModeReasoning;
         out.title = result.reasoning_preamble_title.empty()
@@ -3410,8 +3437,8 @@ AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
         }
     }
     if (out.title.empty()) {
-        out.source.clear();
         out.tool_call_ids.clear();
+        if (out.per_call.empty()) out.source.clear();
     }
     return out;
 }
@@ -3474,11 +3501,17 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
         preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeReasoning;
     const bool preamble_sidecar =
         preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeSidecar;
+    const bool preamble_param =
+        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModePrompt;
+    // 参数模式:按 tool_index 缓存已从参数前缀抽到的前言,后续增量不重复解析。
+    std::map<int, std::string> delta_preambles;
 
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
+                            &delta_preambles,
                             model_step_index, preamble_reasoning, preamble_sidecar,
+                            preamble_param,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3563,11 +3596,22 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
-                // 工具前言:推理阶段已经拿到批次标题时,准备调用的进度行继续显示
-                // 标题(工具名退到 detail),loading 提示不在标题与通用文案之间来回跳。
-                const bool titled = !result.reasoning_preamble_title.empty();
+                // 工具前言:标题一到手,准备调用的进度行就显示标题(工具名退到 detail),
+                // loading 提示不在标题与通用文案之间来回跳。reasoning 模式用推理里的
+                // 加粗;参数模式从参数 JSON 前缀里抽 `preamble`(模型被要求把它放在
+                // 第一个键,所以通常在参数流完之前就能拿到)。
+                std::string titled_label = result.reasoning_preamble_title;
+                if (preamble_param) {
+                    auto& cached = delta_preambles[evt.tool_index];
+                    if (cached.empty()) {
+                        cached = tool_preamble::extract_preamble_from_partial_arguments(
+                            evt.tool_call.function_arguments);
+                    }
+                    if (!cached.empty()) titled_label = cached;
+                }
+                const bool titled = !titled_label.empty();
                 emit_progress("tool_planning",
-                    titled ? result.reasoning_preamble_title : label,
+                    titled ? titled_label : label,
                     titled ? label : format_bytes_detail(evt.tool_call_argument_bytes),
                     tool_name, evt.tool_call.id, evt.tool_index, false);
             }
@@ -4204,17 +4248,34 @@ bool AgentLoop::execute_tool_calls(
     // tool_preamble 事件给实时界面 —— 空正文的工具回合没有 Message 帧可搭。
     const ToolPreambleTitle step_preamble = std::move(current_step_preamble_);
     current_step_preamble_ = {};
+    const bool has_batch_title = !step_preamble.title.empty();
     nlohmann::json preamble_metadata;
-    if (!step_preamble.title.empty()) {
-        preamble_metadata = {{"title", step_preamble.title},
-                             {"source", step_preamble.source}};
+    if (has_batch_title || !step_preamble.per_call.empty()) {
+        preamble_metadata = {{"source", step_preamble.source}};
+        if (has_batch_title) preamble_metadata["title"] = step_preamble.title;
+        if (!step_preamble.per_call.empty()) preamble_metadata["calls"] = step_preamble.per_call;
         if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
         tc_msg.metadata[tool_preamble::kMetadataKey] = preamble_metadata;
     }
+    // 单个调用的前言:参数模式取它自己的那句,其它模式沿用批次标题。
+    auto preamble_for_call = [&step_preamble](const ToolCall& call, std::size_t index) {
+        const auto it = step_preamble.per_call.find(
+            call.id.empty() ? "#" + std::to_string(index) : call.id);
+        if (it != step_preamble.per_call.end()) return it->second;
+        return step_preamble.title;
+    };
+    // 参数模式没有批次标题:每个调用的前言在它的 tool_call 行亮出之前经
+    // on_tool_preamble(source=prompt) 交给 TUI,TUI 把它挂到紧接着的那一行上
+    // (读工具走并行路径没有进度头,这是 TUI 看到它的唯一通道)。
+    auto notify_call_preamble = [&](const ToolCall& call, std::size_t index) {
+        if (has_batch_title || !callbacks_.on_tool_preamble) return;
+        const std::string preamble = preamble_for_call(call, index);
+        if (!preamble.empty()) callbacks_.on_tool_preamble(preamble, step_preamble.source);
+    };
     messages_.push_back(tc_msg);
     if (session_manager_) session_manager_->on_message(tc_msg);
     dispatch_assistant_completed_hook(tc_msg, provider_snapshot);
-    if (!step_preamble.title.empty()) {
+    if (has_batch_title) {
         emit_tool_preamble_event(step_preamble, false);
         if (callbacks_.on_tool_preamble) {
             callbacks_.on_tool_preamble(step_preamble.title, step_preamble.source);
@@ -4496,6 +4557,7 @@ bool AgentLoop::execute_tool_calls(
         auto tool_start_tp = std::chrono::steady_clock::now();
         const std::int64_t tool_started_at_ms = now_epoch_ms();
         const int tool_index_int = static_cast<int>(tool_index);
+        const std::string call_preamble = preamble_for_call(tc, tool_index);
 
         {
             nlohmann::json args_payload;
@@ -4506,15 +4568,20 @@ bool AgentLoop::execute_tool_calls(
                 cmd_preview, display_override,
                 is_task_complete, tc.id, tool_index_int);
             start_payload["started_at_ms"] = tool_started_at_ms;
+            // 工具前言:这次调用的前言随 tool_start 下发,工具行 / loading 直接用。
+            if (!call_preamble.empty()) {
+                start_payload["preamble"] = call_preamble;
+                start_payload["preamble_source"] = step_preamble.source;
+            }
             events_.emit(
                 SessionEventKind::ToolStart, std::move(start_payload));
         }
 
-        // 工具前言:批次有标题时 loading 提示显示标题,工具名 / 命令预览退到 detail。
+        // 工具前言:有前言时 loading 提示显示前言,工具名 / 命令预览退到 detail。
         emit_progress("tool_running",
-            step_preamble.title.empty()
+            call_preamble.empty()
                 ? "正在调用工具 " + tc.function_name
-                : step_preamble.title,
+                : call_preamble,
             cmd_preview, tc.function_name, tc.id, tool_index_int, true);
 
         struct ProgressState {
@@ -4659,7 +4726,7 @@ bool AgentLoop::execute_tool_calls(
         };
         ProgressGuard guard;
         if (emit_tui_progress && callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview);
+            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, call_preamble);
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 
@@ -4852,6 +4919,7 @@ bool AgentLoop::execute_tool_calls(
                 // 灰色指示灯),结果一到紧跟其后 —— 即使批内并行执行,transcript
                 // 仍按提交顺序呈现「调用 → 结果」相邻的成对行。abort 时未收割
                 // 的调用不再显示伪行,canonical 的 [Interrupted] 由 Phase 3 落盘。
+                notify_call_preamble(item.call, idx);
                 dispatch_message("tool_call",
                     "[Tool: " + item.call.function_name + "] " +
                         item.call.function_arguments, true);
@@ -4881,6 +4949,7 @@ bool AgentLoop::execute_tool_calls(
         const auto& tc = *entry.tc;
         LOG_INFO("Tool call (write): " + tc.function_name + " id=" + tc.id);
 
+        notify_call_preamble(tc, entry.original_index);
         dispatch_message("tool_call",
                 "[Tool: " + tc.function_name + "] " + tc.function_arguments, true);
 
@@ -5321,12 +5390,16 @@ bool AgentLoop::execute_tool_calls(
                                                                   : security::kAuditDecisionAllow,
                         security::kAuditSourceUser,
                         exec_permission ? exec_permission->decision.reason : "confirmation");
-                    emit_progress("tool_running",
-                        step_preamble.title.empty()
-                            ? "正在调用工具 " + effective_tc.function_name
-                            : step_preamble.title,
-                        effective_tc.function_name, effective_tc.function_name, effective_tc.id,
-                        static_cast<int>(entry.original_index), true);
+                    {
+                        const std::string confirmed_preamble =
+                            preamble_for_call(effective_tc, entry.original_index);
+                        emit_progress("tool_running",
+                            confirmed_preamble.empty()
+                                ? "正在调用工具 " + effective_tc.function_name
+                                : confirmed_preamble,
+                            effective_tc.function_name, effective_tc.function_name, effective_tc.id,
+                            static_cast<int>(entry.original_index), true);
+                    }
                     if (perm == PermissionResult::AllowScoped) {
                         // D4:只放行建议目录 —— 记进会话授权,命令留在 workspace-write 里带着
                         // 该目录执行,而不是整个出沙盒。
@@ -6552,7 +6625,7 @@ void AgentLoop::run_shell(std::string command) {
         };
         ProgressGuard guard;
         if (callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start("bash", cmd_preview);
+            callbacks_.on_tool_progress_start("bash", cmd_preview, std::string{});
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 

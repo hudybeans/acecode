@@ -164,10 +164,18 @@ enum class StreamEventType {
     ReasoningDelta,
 };
 
+// ToolCallDelta 里 tool_call.function_arguments 携带的参数前缀上限(字节)。
+// 工具前言的参数模式要在参数流完之前就抽到 `preamble` 的值,所以流式增量
+// 带上已累积参数的前 N 字节;上限防止大参数(file_write 正文)每个增量整份拷贝。
+inline constexpr std::size_t kToolCallDeltaArgumentsPrefixBytes = 1024;
+
 struct StreamEvent {
     StreamEventType type;
     std::string content;        // Delta: token fragment
-    ToolCall tool_call;         // ToolCall: complete call; ToolCallDelta: partial metadata
+    // ToolCall: complete call; ToolCallDelta: partial metadata —— id / name 已知即填,
+    // function_arguments 是已累积参数的前 kToolCallDeltaArgumentsPrefixBytes 字节
+    // (provider 未实现时为空,消费方按「还没到」处理)。
+    ToolCall tool_call;
     int tool_index = -1;        // ToolCall/ToolCallDelta: index within current assistant turn
     std::size_t tool_call_argument_bytes = 0; // ToolCallDelta: accumulated argument bytes
     std::string error;          // Error: description

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <utility>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -4151,6 +4152,12 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 segs.push_back(
                     text(display_name)
                     | bold | color(acecode::tui::tool_call_name_color(palette)));
+                if (!msg.preamble.empty()) {
+                    // 工具前言(参数模式):`● FileRead · 正在读取加载器`。前言用
+                    // 次要色,工具名仍是视觉锚点;参数(verbose 时)跟在后面。
+                    segs.push_back(text(" \xC2\xB7 ") | color(tui::theme().ui.text_dim)); // "·"
+                    segs.push_back(text(msg.preamble) | tui::readable_secondary());
+                }
                 if (show_args && !parts.args.empty()) {
                     segs.push_back(paragraph("(" + parts.args + ")")
                         | color(acecode::tui::tool_call_argument_color(palette))
@@ -5604,6 +5611,9 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
                     m.display_override = ToolExecutor::build_tool_call_preview(
                         parts.name, parts.args);
                 }
+                // 参数模式的前言(on_tool_preamble 刚送达)挂到这一行上。
+                m.preamble = std::exchange(state.pending_tool_call_preamble,
+                                           std::string{});
             }
             state.conversation.push_back(std::move(m));
         }
@@ -5779,14 +5789,13 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         const std::string& title, const std::string& source) {
         if (title.empty()) return;
         std::lock_guard<std::mutex> lk(state.mu);
-        if (source == "prompt" && !state.conversation.empty() &&
-            state.conversation.back().role == "assistant" &&
-            !state.conversation.back().is_tool) {
-            state.conversation.back().role = "preamble";
-            state.conversation.back().content = title;
-        } else {
-            state.conversation.push_back({"preamble", title, false});
+        if (source == "prompt") {
+            // 参数模式:没有批次标题,这是紧接着那个 tool_call 的前言,挂到该行上
+            // 而不是另起一行(一摞标题行就是被否掉的那版)。
+            state.pending_tool_call_preamble = title;
+            return;
         }
+        state.conversation.push_back({"preamble", title, false});
         clamp_chat_focus();
         screen.PostEvent(Event::Custom);
     };
@@ -6460,13 +6469,15 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
 
     // --- Tool progress callbacks (streaming-tool-progress change) ---
     callbacks.on_tool_progress_start = [&state, &screen](
-        const std::string& tool_name, const std::string& cmd_preview) {
+        const std::string& tool_name, const std::string& cmd_preview,
+        const std::string& preamble) {
         {
             std::lock_guard<std::mutex> lk(state.mu);
             state.tool_running = true;
             state.tool_progress = {};
             state.tool_progress.tool_name = tool_name;
             state.tool_progress.command_preview = cmd_preview;
+            state.tool_progress.preamble = preamble;
             state.tool_progress.start_time = std::chrono::steady_clock::now();
             state.last_tool_post_event_time = std::chrono::steady_clock::now();
         }
