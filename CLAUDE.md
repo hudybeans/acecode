@@ -794,6 +794,8 @@ Crow 的 `ResponseCorsMiddleware` 在响应完成时复用 `add_loopback_cors_he
 
 `.github/workflows/package.yml` builds Linux x64/arm64, Windows x64/arm64, macOS x64/arm64. Releases auto-cut on `v*` tags.
 
+`.github/workflows/release-tag.yml`(手动触发,输入 `version` + 可选 `sha`)用于无法直接推 tag 的环境:校验目标提交在 master 上且 `CMakeLists.txt` 版本一致、tag 不存在,再用 workflow token 打注解 tag,并显式 `gh workflow run package.yml --ref v<version>` —— workflow token 推的 tag 不会触发 push 事件,而 package.yml 只看 `github.ref`,效果与手推 tag 相同。发布门槛不变:仍要等该提交在 master 上的 `test.yml` push 检查通过。
+
 **npm 发布已暂停**:`publish-npm` job 使用固定 `if: ${{ false }}`，`v*` tag 和手动 workflow 均不会发布 npm；保留的 `npm_version` 输入目前不生效。全平台包、GitHub Release、macOS PKG 和更新包发布不受影响。
 
 **npm 保留实现**(当前不会运行):CLI 主包为 `@aceagent/acecode`，桌面主包为 `@aceagent/desktop`，另有 6 个平台二进制包 `@aceagent/<os>-<cpu>`(esbuild 模式:主包只有 JS 垫片,`optionalDependencies` 按 os/cpu 字段精确钉同版本平台包)。平台包同时装 `acecode` / `acecode-desktop`(macOS 为 `ACECode.app`)——Desktop 按自身真实路径所在目录定位 daemon(`locate_daemon_exe`),不能拆包,垫片必须直接 spawn 包内原始文件不能拷走。组装脚本 [scripts/npm/prepare-npm-packages.mjs](scripts/npm/prepare-npm-packages.mjs),主包模板在 [npm/cli/](npm/cli) 与 [npm/desktop/](npm/desktop);改名/换 scope 需同步脚本、模板与两个 bin 垫片。job 恢复运行后的行为:`NPM_TOKEN` secret 缺失 → 失败;已发布版本 → 幂等跳过(重跑安全);预发布版本(名含 `-`)→ dist-tag `next`,否则 `latest`。手动 `npm_version` 必须与 `CMakeLists.txt` 项目版本一致，且不会重复创建 GitHub Release。linux-old(glibc ≤ 2.28)产物刻意不上 npm(npm 无法按 glibc 选包),老发行版用户走 GitHub Releases。裸名 `acecode` 已被 registry 以与活跃包 `ace-code` 过于相似为由拒绝，不能改回裸名。

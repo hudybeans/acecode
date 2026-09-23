@@ -1,0 +1,79 @@
+name: release-tag
+
+# Creates the v<version> tag on a master commit and starts package.yml for it.
+# A tag pushed with the workflow token does not trigger push workflows, so the
+# package run is dispatched explicitly on the tag ref; package.yml keys its
+# release path off github.ref, so the result matches a manually pushed tag.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v; must match CMakeLists.txt
+        required: true
+        type: string
+      sha:
+        description: Master commit to tag (defaults to the current master head)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Create and push the release tag
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET_SHA: ${{ inputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$VERSION'"
+            exit 1
+          fi
+          tag="v$VERSION"
+          if ! target="$(git rev-parse --verify --quiet "${TARGET_SHA:-HEAD}^{commit}")"; then
+            echo "::error::Unknown commit '${TARGET_SHA}'"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$target" HEAD; then
+            echo "::error::$target is not on master"
+            exit 1
+          fi
+          declared_version="$(git show "$target:CMakeLists.txt" | awk '$1 == "project(acecode" && $2 == "VERSION" { print $3; exit }')"
+          if [ "$declared_version" != "$VERSION" ]; then
+            echo "::error::CMakeLists.txt at $target declares '$declared_version', not $VERSION"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$target" -m "ACECode $tag"
+          git push origin "refs/tags/$tag"
+          echo "Tagged $target as $tag"
+
+      - name: Start package workflow for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: gh workflow run package.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
