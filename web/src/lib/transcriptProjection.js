@@ -34,9 +34,10 @@ function isToolItem(item) {
   return item?.kind === 'tool';
 }
 
-// 工具前言(add-tool-preamble):一个条目所属批次的标题。实时路径挂在
-// tool.preamble(reducer 按 tool_preamble 事件打标),历史路径挂在 msg 的
-// metadata.tool_preamble(assistant 正文 / tool_call 包装 / legacy 结果)。
+// 工具前言(add-tool-preamble):一个工具调用的前言。实时路径挂在
+// tool.preamble(reducer 从 tool_start.preamble 或 tool_preamble 事件打标),
+// 历史路径挂在 msg 的 metadata.tool_preamble:批次标题 `title`,或参数模式的
+// 逐调用 `calls[tool_call_id]`(tool_call 包装项 / legacy 结果按自己的 id 取)。
 function preambleOfItem(item) {
   if (isToolItem(item)) {
     const p = item.tool?.preamble;
@@ -49,7 +50,9 @@ function preambleOfItem(item) {
   if (item?.kind === 'msg') {
     const p = item.metadata?.tool_preamble;
     if (!p || typeof p !== 'object') return null;
-    const title = String(p.title || '').trim();
+    const calls = p.calls && typeof p.calls === 'object' && !Array.isArray(p.calls) ? p.calls : null;
+    const ownTitle = calls ? String(calls[toolCallIdForItem(item)] || '').trim() : '';
+    const title = ownTitle || String(p.title || '').trim();
     return title
       ? { title, source: String(p.source || ''), batchId: String(p.batch_id || p.batchId || '') }
       : null;
@@ -57,11 +60,16 @@ function preambleOfItem(item) {
   return null;
 }
 
-// prompt 模式下那句前言本身就是标题:折进批次分组,不再作为独立气泡显示。
-function isPromptPreambleMessage(item) {
-  if (!isAssistantMessage(item) || item.streaming) return false;
-  const preamble = preambleOfItem(item);
-  return !!preamble && preamble.source === 'prompt';
+// 实时分组的前言 = 正在运行的最新一个工具的前言;工具都跑完(模型在想下一步)
+// 时不沿用旧前言,让阶段文案接管。
+function liveToolPreamble(items) {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (!isCollapsibleToolItem(item) || item.tool?.isDone === true) continue;
+    const preamble = preambleOfItem(item);
+    if (preamble) return preamble;
+  }
+  return null;
 }
 
 function isAskUserQuestionResultTool(item) {
@@ -152,7 +160,6 @@ function isActivityBufferItem(item) {
   return isCollapsibleToolItem(item)
     || isToolTranscriptMessage(item)
     || isEmptyAssistantMessage(item)
-    || isPromptPreambleMessage(item)
     || item?.kind === 'subagent_group';
 }
 
@@ -407,6 +414,10 @@ function toolActivityLabel(item) {
     return count > 0 ? `正在运行 ${count} 个智能体` : '正在运行智能体';
   }
   const tool = item?.tool || {};
+  // 工具前言优先:正在运行的工具有前言时实时标题就是那句话;跑完的工具不再
+  // 沿用前言,免得模型思考下一步时活动行还挂着上一步的文案。
+  const preamble = preambleOfItem(item);
+  if (preamble && item.tool?.isDone !== true) return preamble.title;
   const direct = cleanSummaryText(tool.title || tool.displayOverride);
   if (direct) return direct;
   const verb = cleanSummaryText(tool.summary?.verb);
@@ -438,7 +449,9 @@ function liveToolActivityTitle(items) {
 function makeToolSummaryItem(items, options = {}) {
   const { startTs, endTs } = collapsedTimestamps(items);
   const live = options.live === true;
-  const preamble = options.preamble && options.preamble.title ? options.preamble : null;
+  // 工具前言只影响实时行:正在运行的工具有前言时,活动行标题就是它(并行计数与
+  // 阶段文案退到 detail);落定后的汇总仍是按工具统计的模板文案。
+  const preamble = live ? liveToolPreamble(items) : null;
   return {
     kind: 'activity_summary',
     mode: live ? 'live' : 'tools',
@@ -453,40 +466,6 @@ function makeToolSummaryItem(items, options = {}) {
     coveredItemIds: coveredIds(items),
     ts: startTs || endTs || Date.now(),
   };
-}
-
-// 工具前言(add-tool-preamble):把一段活动缓冲按批次标题切开。带标题的条目
-// 开启新组(同一标题连续出现不重复开组);没有标题的工具项跟在带标题的组后面
-// 时另起无标题组(该批次没拿到标题,不能被上一组的标题冒领);其它无标题条目
-// (空 assistant 消息、子代理分组、legacy 结果行)归入当前组。没有任何标题时
-// 返回单个无标题组 —— 功能关闭时投影与改动前完全一致。
-function splitPreambleGroups(items) {
-  const groups = [];
-  let current = null;
-  const open = (preamble) => {
-    current = { key: preamble ? preamble.title : '', preamble, items: [] };
-    groups.push(current);
-  };
-  for (const item of items) {
-    const preamble = preambleOfItem(item);
-    if (preamble) {
-      if (!current || !current.preamble || current.key !== preamble.title) open(preamble);
-    } else if (!current) {
-      open(null);
-    } else if (current.preamble && (isToolItem(item) || isToolCallTranscriptMessage(item))) {
-      open(null);
-    }
-    current.items.push(item);
-  }
-  return groups;
-}
-
-function preambleGroupId(group, baseId) {
-  const batchId = group.items
-    .map((item) => preambleOfItem(item)?.batchId || '')
-    .find(Boolean) || '';
-  const key = batchId || group.preamble.title;
-  return `${baseId || collapsedId('tools', group.items)}:preamble:${key}`;
 }
 
 function makeProcessedDetailItems(items) {
@@ -1052,23 +1031,7 @@ function projectFinalCollapsedTurn(items, options = {}) {
 function flushToolBuffer(out, buffer, { live = false, id = '' } = {}) {
   if (buffer.length === 0) return false;
   if (hasCollapsibleToolActivity(buffer)) {
-    const groups = splitPreambleGroups(buffer);
-    if (groups.length === 1 && !groups[0].preamble) {
-      out.push(makeToolSummaryItem(buffer, { live, id }));
-    } else {
-      // 工具前言:每个带标题的批次单独成行;只有最后一组承接实时状态。
-      groups.forEach((group, index) => {
-        const last = index === groups.length - 1;
-        const groupId = group.preamble
-          ? preambleGroupId(group, id)
-          : `${id || collapsedId('tools', buffer)}:untitled:${index}`;
-        out.push(makeToolSummaryItem(group.items, {
-          live: live && last,
-          id: groupId,
-          preamble: group.preamble,
-        }));
-      });
-    }
+    out.push(makeToolSummaryItem(buffer, { live, id }));
   } else {
     out.push(...buffer);
   }
@@ -1493,6 +1456,5 @@ export const __test__ = {
   isMediaToolItem,
   collapseCompletedCompactNoticeGroups,
   preambleOfItem,
-  isPromptPreambleMessage,
-  splitPreambleGroups,
+  liveToolPreamble,
 };

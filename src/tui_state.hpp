@@ -85,6 +85,10 @@ struct TuiState {
         // never folded and never expanded into the raw argument JSON, so tool
         // parameter names cannot reach the transcript.
         bool ask_result = false;
+        // 工具前言(add-tool-preamble,参数模式):这个 tool_call 自己的那句前言,
+        // 渲染在工具名之后。运行期字段,不进 JSONL;resume 由 session_replay 从
+        // metadata.tool_preamble.calls 还原。
+        std::string preamble;
     };
 
     std::vector<Message> conversation;
@@ -130,6 +134,9 @@ struct TuiState {
 
     bool is_waiting = false;
     std::string current_thinking_phrase = "Thinking";
+    // 参数模式的前言在 tool_call 行之前经 on_tool_preamble(source=prompt) 送达,
+    // 暂存在这里,紧接着的 on_message(tool_call) 取走挂到该行上。
+    std::string pending_tool_call_preamble;
     std::string status_line; // for auth/provider status
     std::string update_notice; // startup update availability prompt
     std::string token_status; // for token usage display
@@ -420,6 +427,9 @@ struct TuiState {
     struct ToolProgress {
         std::string tool_name;
         std::string command_preview;
+        // 工具前言(add-tool-preamble):该次调用的前言,非空时进度头显示
+        // "● 前言 · Tool(args)",让等待期一眼看到「在干什么」。
+        std::string preamble;
         std::vector<std::string> tail_lines;    // up to last 5 complete lines
         std::string current_partial;            // current line in progress (no \n yet)
         int total_lines = 0;

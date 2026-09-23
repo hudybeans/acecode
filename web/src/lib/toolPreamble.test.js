@@ -96,15 +96,20 @@ run('normalizeToolPreambleEvent', () => {
 });
 
 // 触发场景:REST 历史里的 assistant 消息 metadata。
-// 期望行为:metadata.tool_preamble 存在且有标题时返回结构;batchId 优先取调用方
-// 传入的第一个 tool_call_id,否则取 metadata 里的 batch_id;没有则 null。
+// 期望行为:批次标题 title 或逐调用 calls 任一存在就返回结构(calls 里的空值被剔除);
+// batchId 优先取调用方传入的第一个 tool_call_id,否则取 metadata 里的 batch_id;
+// 两者都没有则 null。
 run('toolPreambleFromMetadata', () => {
   assert.deepEqual(
-    toolPreambleFromMetadata({ tool_preamble: { title: 'Checking loader', source: 'prompt' } }, 'c1'),
-    { title: 'Checking loader', source: 'prompt', batchId: 'c1' },
+    toolPreambleFromMetadata({ tool_preamble: { title: 'Checking loader', source: 'reasoning' } }, 'c1'),
+    { title: 'Checking loader', source: 'reasoning', batchId: 'c1', calls: {} },
+  );
+  assert.deepEqual(
+    toolPreambleFromMetadata({ tool_preamble: { source: 'prompt', calls: { c1: ' Listing files ', c2: '' } } }),
+    { title: '', source: 'prompt', batchId: '', calls: { c1: 'Listing files' } },
   );
   assert.equal(toolPreambleFromMetadata({ tool_preamble: { title: 'x', batch_id: 'c7' } }).batchId, 'c7');
-  assert.equal(toolPreambleFromMetadata({ tool_preamble: { title: '' } }), null);
+  assert.equal(toolPreambleFromMetadata({ tool_preamble: { title: '', calls: {} } }), null);
   assert.equal(toolPreambleFromMetadata({}), null);
   assert.equal(toolPreambleFromMetadata(null), null);
 });

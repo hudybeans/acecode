@@ -213,7 +213,11 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     hunks = [],
     attachments = [],
     askUserQuestionResult = null,
+    preamble = null,
   } = entry || {};
+  // 工具前言(add-tool-preamble):运行中的工具行以前言为标题(verb / object 退到
+  // detail);落定后的行保持原样,前言只进悬浮提示,不给已完成的记录添噪音。
+  const preambleTitle = String(preamble?.title || '').trim();
   const shouldExpandAskResult = isDone
     && success !== false
     && askUserQuestionItems(askUserQuestionResult).length > 0;
@@ -452,7 +456,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
           expandable
           expanded={expanded}
           onToggle={toggleExpanded}
-          title={buttonTooltip || (expanded ? '收起' : '展开')}
+          title={joinTooltipParts(preambleTitle, buttonTooltip || (expanded ? '收起' : '展开'))}
           ariaLabel={expanded ? '收起' : '展开'}
         />
         {expanded && (shellDetails || createdFile || diffHtml || fullToolOutput) && (
@@ -499,8 +503,10 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
       <ActivityLine
         running
         spinnerStatic={!liveProgress}
-        label={genericSummary.verb || title || displayOverride || tool || '正在执行工具'}
-        detail={bashCommand || genericSummary.object || ''}
+        label={preambleTitle || genericSummary.verb || title || displayOverride || tool || '正在执行工具'}
+        detail={preambleTitle
+          ? [genericSummary.verb, bashCommand || genericSummary.object].filter(Boolean).join(' · ')
+          : (bashCommand || genericSummary.object || '')}
         trailing={(
           <>
             <span>{totalLines} 行</span>

@@ -16,8 +16,8 @@ export const TOOL_PREAMBLE_MODES = Object.freeze([
   Object.freeze({
     id: TOOL_PREAMBLE_MODE_PROMPT,
     label: '提示驱动',
-    summary: '让模型在每批工具调用前先写一句前言，作为该批次的标题。',
-    help: '在系统提示里要求模型：每条包含工具调用的消息都先写一句 8～12 个词的前言（例如「正在读取注册表段落」），再发出工具调用。这句话直接作为该批次的标题显示，不再以普通气泡出现。不依赖模型服务的特殊能力，也不额外发请求，每批只多几十个输出 token；效果取决于模型遵循指令的能力，较弱的模型可能写得啰嗦或漏写，此时该批次退回按工具统计的默认汇总。',
+    summary: '给每个工具调用加一个 preamble 参数，由模型在调用时填一句前言。',
+    help: '在每个工具的参数表里注入一个 preamble 字符串参数，并在系统提示里要求模型每次调用都填一句 8～12 个词的前言（例如「正在读取注册表段落」）。参数一流出来就作为这次调用的 loading 文案，工具行运行时显示它，执行前会被剥掉，工具本身看不到。不依赖模型服务的特殊能力、不额外发请求，每次调用只多十几个 token；模型偶尔漏填时该调用退回默认文案。',
   }),
   Object.freeze({
     id: TOOL_PREAMBLE_MODE_REASONING,
@@ -121,15 +121,25 @@ export function normalizeToolPreambleEvent(payload) {
   };
 }
 
-// assistant 消息 metadata.tool_preamble → 挂在同批次工具项上的结构。
+// assistant 消息 metadata.tool_preamble → 历史还原用的结构:批次标题 `title`
+// (reasoning / sidecar)与参数模式的逐调用 `calls`({tool_call_id: 前言});
+// 两者都没有时返回 null。
 export function toolPreambleFromMetadata(metadata, batchId = '') {
   const entry = metadata && typeof metadata === 'object' ? metadata.tool_preamble : null;
   if (!entry || typeof entry !== 'object') return null;
   const title = String(entry.title || '').trim();
-  if (!title) return null;
+  const calls = {};
+  if (entry.calls && typeof entry.calls === 'object' && !Array.isArray(entry.calls)) {
+    for (const [id, value] of Object.entries(entry.calls)) {
+      const text = String(value || '').trim();
+      if (id && text) calls[id] = text;
+    }
+  }
+  if (!title && Object.keys(calls).length === 0) return null;
   return {
     title,
     source: String(entry.source || '').trim(),
     batchId: String(batchId || entry.batch_id || entry.batchId || '').trim(),
+    calls,
   };
 }

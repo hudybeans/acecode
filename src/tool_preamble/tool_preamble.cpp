@@ -343,6 +343,110 @@ std::string sanitize_sidecar_title(const std::string& raw) {
     return title;
 }
 
+namespace {
+
+constexpr const char* kToolParameterDescription =
+    "Status line shown to the user while this call runs: one short line, 8-12 words "
+    "or up to 16 Chinese characters, in the user's language, present-participle "
+    "phrasing like \"Reading registry sections\". Put this key first in the arguments. "
+    "It is stripped before the tool runs and never affects the call.";
+
+}  // namespace
+
+bool definition_declares_preamble(const ToolDef& definition) {
+    if (!definition.parameters.is_object()) return false;
+    const auto props = definition.parameters.find("properties");
+    return props != definition.parameters.end() && props->is_object() &&
+           props->contains(kToolParameterName);
+}
+
+std::size_t inject_preamble_parameter(std::vector<ToolDef>& definitions) {
+    std::size_t injected = 0;
+    for (auto& def : definitions) {
+        if (definition_declares_preamble(def)) continue;
+        if (!def.parameters.is_object()) {
+            def.parameters = nlohmann::json{
+                {"type", "object"},
+                {"properties", nlohmann::json::object()},
+            };
+        }
+        auto& params = def.parameters;
+        if (!params.contains("properties") || !params["properties"].is_object()) {
+            params["properties"] = nlohmann::json::object();
+        }
+        auto& props = params["properties"];
+        if (props.contains(kToolParameterName)) continue;
+        props[kToolParameterName] = nlohmann::json{
+            {"type", "string"},
+            {"description", kToolParameterDescription},
+        };
+        ++injected;
+    }
+    return injected;
+}
+
+std::string extract_preamble_from_partial_arguments(const std::string& partial_json) {
+    const std::string key = std::string("\"") + kToolParameterName + "\"";
+    std::size_t pos = partial_json.find(key);
+    while (pos != std::string::npos) {
+        // 只认对象顶层的键:前一个非空白字符必须是 { 或 ,(值里恰好含这串的不算)。
+        bool top_level = false;
+        for (std::size_t p = pos; p > 0;) {
+            --p;
+            const unsigned char c = static_cast<unsigned char>(partial_json[p]);
+            if (is_space_byte(c)) continue;
+            top_level = (c == '{' || c == ',');
+            break;
+        }
+        if (!top_level) {
+            pos = partial_json.find(key, pos + key.size());
+            continue;
+        }
+        std::size_t i = pos + key.size();
+        while (i < partial_json.size() && is_space_byte(static_cast<unsigned char>(partial_json[i]))) ++i;
+        if (i >= partial_json.size() || partial_json[i] != ':') return {};
+        ++i;
+        while (i < partial_json.size() && is_space_byte(static_cast<unsigned char>(partial_json[i]))) ++i;
+        if (i >= partial_json.size() || partial_json[i] != '"') return {};
+        const std::size_t start = i;
+        bool escaped = false;
+        for (++i; i < partial_json.size(); ++i) {
+            const char c = partial_json[i];
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\') { escaped = true; continue; }
+            if (c != '"') continue;
+            try {
+                const auto value = nlohmann::json::parse(partial_json.substr(start, i - start + 1));
+                if (value.is_string()) {
+                    return normalize_title_line(value.get<std::string>(), kPromptTitleMaxCodePoints);
+                }
+            } catch (...) {
+            }
+            return {};
+        }
+        return {};  // 字符串值还没流完
+    }
+    return {};
+}
+
+std::string strip_preamble_parameter(std::string& arguments) {
+    nlohmann::json parsed;
+    try {
+        parsed = nlohmann::json::parse(arguments);
+    } catch (...) {
+        return {};
+    }
+    if (!parsed.is_object() || !parsed.contains(kToolParameterName)) return {};
+    std::string title;
+    if (parsed[kToolParameterName].is_string()) {
+        title = normalize_title_line(parsed[kToolParameterName].get<std::string>(),
+                                     kPromptTitleMaxCodePoints);
+    }
+    parsed.erase(kToolParameterName);
+    arguments = parsed.dump();
+    return title;
+}
+
 std::vector<ChatMessage> build_sidecar_messages(const SidecarSummaryInput& input) {
     constexpr std::size_t kTextBudget = 400;
     constexpr std::size_t kArgsBudget = 200;
