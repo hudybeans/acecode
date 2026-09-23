@@ -3582,7 +3582,7 @@ that the Web UI shows above the running tools and keeps as the header of the
 collapsed batch afterwards. The title comes from one of three sources, chosen
 by `mode`:
 
-- `prompt`: every tool definition sent to the model gets an extra optional
+- `prompt`: every tool definition sent to the model gets an extra required
   `preamble` string argument and the system prompt asks the model to fill it on
   every call with an 8-12 word line. The daemon strips the argument before the
   permission gate, previews, hooks and execution (the tool never sees it), so

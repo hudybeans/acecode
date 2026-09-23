@@ -437,6 +437,13 @@ TEST(AgentLoopToolPreamble, PromptModeInjectsParameterAndStripsItPerCall) {
     const auto def = h.tool_def_of_turn(0, "probe_read");
     ASSERT_TRUE(def.has_value());
     EXPECT_EQ(def->parameters["properties"]["preamble"]["type"], "string");
+    // 发给模型的定义里 preamble 必须在 required 里:grok 对可选参数几乎不填
+    // (实测会话 20260923-164654-8908 与隔离基线 27 次调用只填 1 次)。
+    bool preamble_required = false;
+    for (const auto& item : def->parameters["required"]) {
+        if (item.is_string() && item.get<std::string>() == "preamble") preamble_required = true;
+    }
+    EXPECT_TRUE(preamble_required);
     const std::string system_prompt = h.system_prompt_of_turn(0);
     EXPECT_NE(system_prompt.find("# Tool call preamble"), std::string::npos);
     EXPECT_NE(system_prompt.find("Do not narrate every tool call"), std::string::npos);

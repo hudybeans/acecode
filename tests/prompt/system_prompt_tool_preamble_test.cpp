@@ -77,13 +77,14 @@ TEST_F(SystemPromptToolPreambleTest, DisabledIsByteIdenticalToLegacyPrompt) {
     EXPECT_EQ(off.find("# Tool call preamble"), std::string::npos);
 }
 
-// 场景:开关打开。期望:多出「# Tool call preamble」段(参数名 `preamble`、8-12 词、
+// 场景:开关打开。期望:多出「# Tool call preamble」段(参数名 `preamble` 且必填、并行批次每个调用都填、8-12 词、
 // 放在参数第一位、执行前剥掉),同时「不要叙述工具调用」「批量调用」的口径原样
 // 保留 —— 前言替代的是叙述文本,不是批处理。
 TEST_F(SystemPromptToolPreambleTest, EnabledAddsParameterGuidanceAndKeepsLegacyRules) {
     const std::string on = build(true);
     EXPECT_NE(on.find("# Tool call preamble"), std::string::npos);
-    EXPECT_NE(on.find("Every tool accepts an extra `preamble` argument"), std::string::npos);
+    EXPECT_NE(on.find("Every tool has a required `preamble` argument"), std::string::npos);
+    EXPECT_NE(on.find("including each call of a parallel batch"), std::string::npos);
     EXPECT_NE(on.find("8-12 words"), std::string::npos);
     EXPECT_NE(on.find("Put `preamble` first in the arguments"), std::string::npos);
     EXPECT_NE(on.find("stripped before the tool executes"), std::string::npos);

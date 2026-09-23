@@ -15,7 +15,7 @@
 
 ### Requirement: 标题来源
 开启后每个含工具调用的模型步 SHALL 按 `mode` 解析一条标题:
-- `prompt`:每个工具定义 MUST 注入可选的 `preamble` 字符串参数,系统提示 MUST 要求模型每次调用都填写;每个调用的前言 = 其参数里 `preamble` 的规整值,该键 MUST 在权限门 / 预览 / hooks / 执行 / 落盘之前剥掉;参数流式前缀里值已闭合时 `agent_progress{tool_planning}` 的 label MUST 已是前言。此模式没有批次标题、不发 `tool_preamble` 事件。
+- `prompt`:每个工具定义 MUST 注入必填(required)的 `preamble` 字符串参数,系统提示 MUST 要求模型每次调用都填写;每个调用的前言 = 其参数里 `preamble` 的规整值,该键 MUST 在权限门 / 预览 / hooks / 执行 / 落盘之前剥掉;参数流式前缀里值已闭合时 `agent_progress{tool_planning}` 的 label MUST 已是前言。此模式没有批次标题、不发 `tool_preamble` 事件。
 - `reasoning`:推理内容里第一对闭合 `**…**` 的内文;没有时取首行首句(去掉 Okay, / 好的， 等口头填充),截到 60 个 code point;不足 2 个 code point 视为无标题。
 - `sidecar`:第一个完整工具调用露头时用用户请求、assistant 正文与调用预览另发一次请求,清洗后的第一行;落盘前最多等待 `sidecar_wait_ms`。
 

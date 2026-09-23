@@ -148,8 +148,9 @@ TEST(ToolPreambleNormalize, TruncationIsUtf8Safe) {
 }
 
 // 场景:参数模式给工具定义注入 `preamble`。三个定义:正常 schema、parameters 为
-// null 的、已经自带 preamble 参数的。期望:前两个各注入一个 string 属性(带说明,
-// 不进 required),第三个原样跳过;返回注入数 2。
+// null 的、已经自带 preamble 参数的。期望:前两个各注入一个 string 属性(带说明)并
+// 追加进 required(已有 required 数组末尾追加,没有则新建;grok 对可选参数几乎不填,
+// 见会话 20260923-164654-8908),第三个原样跳过;返回注入数 2。
 TEST(ToolPreambleParameter, InjectsIntoEveryDefinitionExceptExisting) {
     acecode::ToolDef normal;
     normal.name = "file_read";
@@ -169,10 +170,15 @@ TEST(ToolPreambleParameter, InjectsIntoEveryDefinitionExceptExisting) {
     EXPECT_EQ(defs[0].parameters["properties"]["preamble"]["type"], "string");
     EXPECT_NE(defs[0].parameters["properties"]["preamble"]["description"].get<std::string>().find("Reading registry sections"),
               std::string::npos);
-    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path"}));
+    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path", "preamble"}));
     EXPECT_EQ(defs[1].parameters["type"], "object");
     EXPECT_EQ(defs[1].parameters["properties"]["preamble"]["type"], "string");
+    EXPECT_EQ(defs[1].parameters["required"], nlohmann::json::array({"preamble"}));
     EXPECT_EQ(defs[2].parameters["properties"]["preamble"]["type"], "integer");
+    EXPECT_FALSE(defs[2].parameters.contains("required"));
+    // 再注入一次是幂等的:required 里不会出现第二个 preamble。
+    EXPECT_EQ(inject_preamble_parameter(defs), 0u);
+    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path", "preamble"}));
 }
 
 // 场景:判断工具定义是否自带 `preamble` 参数。期望:properties 里有同名键才算;
