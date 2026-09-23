@@ -384,14 +384,16 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         // 工具前言 · 提示驱动(add-tool-preamble):前言是每个工具调用里的
         // `preamble` 参数,不是调用前的一句话 —— 上面「不要叙述」的口径原样保留。
         oss << "# Tool call preamble\n\n"
-            << "Every tool accepts an extra `preamble` argument. Fill it on every call with "
-            << "one short status line telling the user what this call is for: 8-12 words (or "
-            << "up to 16 Chinese characters), present-participle phrasing like \"Reading "
-            << "registry sections\", in the user's language, no trailing punctuation. Put "
-            << "`preamble` first in the arguments. The UI shows it while the tool runs; it is "
-            << "stripped before the tool executes and never affects the call itself. It "
-            << "replaces narration text: keep batching independent calls in one message and "
-            << "do not add a sentence before them.\n\n";
+            << "Every tool has a required `preamble` argument. Fill it on every single call, "
+            << "including each call of a parallel batch, with one short status line telling "
+            << "the user what this call is for: 8-12 words (or up to 16 Chinese characters), "
+            << "present-participle phrasing like \"Reading registry sections\" or \"正在读取注册"
+            << "表段落\", always in the language of the user's latest message (a Chinese user "
+            << "gets a Chinese line), no trailing punctuation. Put `preamble` "
+            << "first in the arguments. The UI shows it while the tool runs; it is stripped "
+            << "before the tool executes and never affects the call itself. It replaces "
+            << "narration text: keep batching independent calls in one message and do not add "
+            << "a sentence before them.\n\n";
     }
 
     oss << "# Presenting your work and final message\n\n"

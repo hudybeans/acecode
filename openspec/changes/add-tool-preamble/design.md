@@ -39,7 +39,7 @@ turn end: flush_late_tool_preamble(true)             ← 仍没到就丢弃
 
 ## prompt 模式为什么是「参数」而不是「先说一句话」
 
-第一版做成「含工具调用的消息先写一句前言」,实测(用户截图)三个问题:文本先流出来变成气泡、工具参数再流、批次开始才把那句话搬进 loading;每个模型步一组,连续单工具步堆成一摞标题行;展开后那句话在组里又重复一遍。改成参数后这些时序问题都不存在:`inject_preamble_parameter` 给每个工具定义加 `preamble`,模型在调用参数里填;`ToolCallDelta` 带参数前缀(`kToolCallDeltaArgumentsPrefixBytes`),`extract_preamble_from_partial_arguments` 在值闭合的那一刻就换掉 tool_planning 的 label;`strip_preamble_parameter` 在 `resolve_tool_preamble_for_step` 里剥掉,后面的权限 / 预览 / hooks / doom guard / 执行 / 落盘全是干净参数。系统提示只**追加**「# Tool call preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。每次调用约十几个 token,比旁路摘要便宜一个量级。
+第一版做成「含工具调用的消息先写一句前言」,实测(用户截图)三个问题:文本先流出来变成气泡、工具参数再流、批次开始才把那句话搬进 loading;每个模型步一组,连续单工具步堆成一摞标题行;展开后那句话在组里又重复一遍。改成参数后这些时序问题都不存在:`inject_preamble_parameter` 给每个工具定义加 `preamble`,模型在调用参数里填;`ToolCallDelta` 带参数前缀(`kToolCallDeltaArgumentsPrefixBytes`),`extract_preamble_from_partial_arguments` 在值闭合的那一刻就换掉 tool_planning 的 label;`strip_preamble_parameter` 在 `resolve_tool_preamble_for_step` 里剥掉,后面的权限 / 预览 / hooks / doom guard / 执行 / 落盘全是干净参数。系统提示只**追加**「# Tool call preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。每次调用约十几个 token,比旁路摘要便宜一个量级。`preamble` 必须进 required:只描述成可选时 grok-4.7 在并行读批次里几乎不填(用户会话 20260923-164654-8908 六步填一步,隔离基线 27 次调用填 1 次),进 required 并把「并行批次每个调用都填」写进提示后每次都填;GPT 系两种写法都填。
 
 ## 三端 loading 提示同源
 
