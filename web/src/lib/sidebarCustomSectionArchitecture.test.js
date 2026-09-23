@@ -19,30 +19,51 @@ function test(name, fn) {
   }
 }
 
-test('sidebar restores one default-collapsed extension section with settled counts', () => {
+// 「扩展」改为向右弹出菜单 + 「自定义」对话框:计数请求仍并行且互不阻塞,
+// 条目点击仍走原来的设置分节 / 专家组件回调。
+test('sidebar extensions open a flyout menu with settled counts', () => {
   const sidebar = source('components/Sidebar.jsx');
-  assert.match(sidebar, /acecode\.sidebarCustomSectionExpanded\.v2/);
-  assert.match(sidebar, /DEFAULT_SIDEBAR_CUSTOM_EXPANDED/);
-  assert.match(sidebar, /Promise\.allSettled\(\[/);
-  assert.match(sidebar, /api\.listSkills\(\)/);
-  assert.match(sidebar, /api\.getMcp\(\)/);
-  assert.match(sidebar, /api\.listExperts\(workspaceHash \|\| '__local__'\)/);
-  assert.match(sidebar, /api\.listModels\(\)/);
-  assert.match(sidebar, /const totalCount = sidebarCustomTotalCount\(counts\)/);
-  assert.match(sidebar, /<VsIcon name="extension" size=\{18\} \/>/);
-  assert.match(sidebar, />扩展<\/span>/);
-  assert.match(sidebar, /data-sidebar-custom-section="true"/);
+  const extensions = source('components/SidebarExtensions.jsx');
+  assert.match(sidebar, /import \{ SidebarExtensions \} from '\.\/SidebarExtensions\.jsx'/);
+  assert.doesNotMatch(sidebar, /CustomSidebarSection|sidebarCustomSectionExpanded/);
+  assert.match(extensions, /acecode\.sidebarExtensions\.v1/);
+  assert.match(extensions, /Promise\.allSettled\(\[/);
+  assert.match(extensions, /api\.listSkills\(\)/);
+  assert.match(extensions, /api\.getMcp\(\)/);
+  assert.match(extensions, /api\.listExperts\(workspaceHash \|\| '__local__'\)/);
+  assert.match(extensions, /api\.listModels\(\)/);
+  assert.match(extensions, /<VsIcon name="extension" size=\{18\} \/>/);
+  assert.match(extensions, />扩展<\/span>/);
+  assert.match(extensions, /data-sidebar-custom-section="true"/);
+  assert.match(extensions, /aria-haspopup="menu"/);
+  assert.match(extensions, /<AnchoredMenu[\s\S]*preferredPlacement="right"/);
+  assert.match(extensions, />自定义<\/span>/);
 });
 
 test('custom shortcuts reuse the existing settings-section callback', () => {
   const sidebar = source('components/Sidebar.jsx');
+  const extensions = source('components/SidebarExtensions.jsx');
   const app = source('App.jsx');
-  assert.match(sidebar, /SIDEBAR_CUSTOM_ITEMS\.map/);
-  assert.doesNotMatch(sidebar, /id: 'models'/);
-  assert.match(sidebar, /onOpenSettingsSection\?\.\(item\.settingsSection\)/);
+  assert.match(extensions, /sidebarExtensionLayout\(prefs\)/);
+  assert.doesNotMatch(extensions, /id: 'models'/);
+  assert.match(extensions, /onOpenSettingsSection\?\.\(item\.settingsSection\)/);
+  assert.match(extensions, /onOpenExpertComponents\?\.\(\)/);
+  assert.match(sidebar, /onOpenSettingsSection\?\.\(section\)/);
   assert.match(app, /onOpenSettingsSection=\{openSettingsSection\}/);
-  assert.match(sidebar, /onOpenExpertComponents\?\.\(\)/);
   assert.match(app, /onOpenExpertComponents=\{openExpertComponents\}/);
+});
+
+// 「自定义」必须走共享 Modal(键盘约定),「完成」是默认操作;拖动中的 Esc
+// 只撤销拖动,不能冒泡到 Modal 把对话框关掉。
+test('extension customizer uses the shared modal with checkable, draggable rows', () => {
+  const extensions = source('components/SidebarExtensions.jsx');
+  assert.match(extensions, /<Modal onClose=\{onClose\}/);
+  assert.match(extensions, /data-ace-dialog-primary="true"[\s\S]*?完成/);
+  assert.match(extensions, /role="checkbox"\s+aria-checked=\{pinned\}/);
+  assert.match(extensions, /toggleSidebarExtensionPinned\(/);
+  assert.match(extensions, /moveSidebarExtension\(/);
+  assert.match(extensions, /keyEvent\.stopImmediatePropagation\(\)/);
+  assert.match(extensions, /<VsIcon name="GripVertical"/);
 });
 
 test('brand and settings live outside the scrolling task list, with extensions in primary navigation', () => {
@@ -51,7 +72,7 @@ test('brand and settings live outside the scrolling task list, with extensions i
   const tour = source('lib/desktopGuidedTour.js');
   const brand = sidebar.indexOf('data-sidebar-brand="true"');
   const nav = sidebar.indexOf('className="ace-sidebar-fixed-nav');
-  const extensions = sidebar.indexOf('<CustomSidebarSection', nav);
+  const extensions = sidebar.indexOf('<SidebarExtensions', nav);
   const taskList = sidebar.indexOf('className="ace-sidebar-scroll', nav);
   const settings = sidebar.indexOf('data-tour-target="sidebar-settings"');
   assert.ok(brand > 0 && brand < nav && nav < extensions && extensions < taskList);
@@ -72,15 +93,12 @@ test('brand and settings live outside the scrolling task list, with extensions i
   assert.match(css, /\.ace-sidebar\[data-collapsed="true"\] \{[^}]*visibility: hidden;[^}]*visibility 0s linear 250ms/s);
 });
 
-test('extension disclosure supports accessible buttons and a stable hover icon slot', () => {
-  const sidebar = source('components/Sidebar.jsx');
+test('extension trigger shows a trailing chevron and the fixed nav keeps its height cap', () => {
+  const extensions = source('components/SidebarExtensions.jsx');
   const css = source('styles/globals.css');
-  assert.match(sidebar, /aria-expanded=\{expanded\}\s+aria-controls=\{listId\}/);
-  assert.match(sidebar, /id=\{listId\} className="ace-sidebar-custom-list/);
-  assert.match(sidebar, /ace-sidebar-extensions-arrow absolute inset-0 flex items-center justify-end/);
-  assert.match(css, /\.ace-sidebar-extensions-trigger:is\(:hover, :focus-visible\) \.ace-sidebar-extensions-arrow\s*\{\s*opacity: 1;/);
-  assert.doesNotMatch(css, /\.ace-sidebar-extensions-trigger:is\([^)]*:focus-within[^)]*\)/);
-  assert.doesNotMatch(sidebar, /data-sidebar-section-disclosure=.*group-focus-within/);
+  assert.match(extensions, /aria-expanded=\{menuOpen\}/);
+  assert.match(extensions, /<VsIcon name="expandRight" size=\{16\}/);
+  assert.doesNotMatch(css, /ace-sidebar-extensions-arrow/);
   assert.match(css, /\.ace-sidebar-fixed-nav\s*\{\s*max-height: 55%;/);
 });
 

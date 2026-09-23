@@ -1751,9 +1751,14 @@ body {
 .ace-topbar {
   /* Add 5px above and 6px below the original 30px row without enlarging controls. */
   --ace-topbar-control-size: 24px;
-  /* Four controls, three gaps, and the shared 19px sidebar first-column inset. */
+  /* Four 24px controls, three 4px gaps, and the topbar's own 8px left padding. */
   --ace-topbar-navigation-min-width: 116px;
-  --ace-topbar-leading-inset: 19px;
+  /* Must equal the topbar's own left padding (px-2 in TopBar.jsx; the macOS
+     frameless override pairs an 80px padding with an 80px inset). The navigation
+     block is sized to end 4px before the sidebar border, and the session title
+     then clears that border with its own left padding. A larger inset keeps the
+     block narrower and pulls the title back onto the border. */
+  --ace-topbar-leading-inset: 8px;
   box-sizing: border-box;
   min-height: var(--ace-topbar-height);
   height: auto;
@@ -1773,8 +1778,12 @@ body {
   margin-top: 3px;
 }
 .ace-topbar-navigation {
+  /* 这块留白唯一的作用就是把会话标题顶到侧栏右边框之外,所以宽度必须严格等于
+     侧栏宽度减去 inset 和 4px。任何按视口计算的上限(例如从前的 max-width: 35vw)
+     或按视口收窄的断点,都会在窗口变窄时提前结束这块留白,把标题拽回边框左侧。
+     真正放不下时由 min-width 保住按钮尺寸、由 flex-shrink 让位给右侧控件,
+     那时标题已经缩到 0,不会再出现压线。 */
   width: max(var(--ace-topbar-navigation-min-width), calc(var(--ace-topbar-sidebar-width) - var(--ace-topbar-leading-inset, 8px) - 4px));
-  max-width: 35vw;
   min-width: var(--ace-topbar-navigation-min-width);
   flex-shrink: 1;
 }
@@ -1782,6 +1791,8 @@ body {
   max-width: calc(100% - 8px);
   overflow-wrap: anywhere;
 }
+/* 12px minus the 4px the navigation block keeps clear of the sidebar border
+   leaves an 8px gap between that border and the session title. */
 .ace-topbar-session-title { padding-left: 12px; }
 .ace-topbar-controls { gap: 40px; }
 .ace-topbar-controls > .ace-window-controls { margin-left: 0; }
@@ -1792,10 +1803,6 @@ body {
 .ace-topbar .ace-session-title-actions > button {
   width: var(--ace-topbar-control-size);
   height: var(--ace-topbar-control-size);
-}
-@media (max-width: 640px) {
-  .ace-topbar-navigation { width: var(--ace-topbar-navigation-min-width); }
-  .ace-topbar-session-title { padding-left: 0; }
 }
 .ace-topbar-update-button {
   height: var(--ace-topbar-control-size);
@@ -1819,6 +1826,10 @@ body {
     transparent 100%);
   padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
   scroll-padding-bottom: calc(var(--ace-list-edge-fade) + 2px);
+  /* 稳定滚动条槽位:列表内容高度越过视口时自定义滚动条(--ace-scrollbar-hit-size:
+     12px)会挤掉 12px 内容宽度,切会话触发 reveal 展开时列表会明显左右抖一下。
+     常驻槽位让宽度与是否溢出无关。轨道默认透明,短列表时右侧空槽不可见。 */
+  scrollbar-gutter: stable;
   -webkit-mask-image: var(--ace-list-edge-mask);
   mask-image: var(--ace-list-edge-mask);
 }
@@ -1829,18 +1840,6 @@ body {
 /* 底部设置区与会话列表之间唯一保留的细分隔线。 */
 .ace-sidebar-footer {
   border-top: 1px solid var(--ace-border);
-}
-.ace-sidebar-extensions-arrow {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-icon {
-  opacity: 1;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-count {
-  opacity: 0;
-}
-.ace-sidebar-extensions-trigger:is(:hover, :focus-visible) .ace-sidebar-extensions-arrow {
-  opacity: 1;
 }
 .ace-desktop-frameless-topbar {
   user-select: none;
@@ -2238,12 +2237,6 @@ body {
 }
 .ace-sidebar-workspace-action {
   color: var(--ace-fg);
-  opacity: 0;
-  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
-}
-.ace-sidebar-workspace-row:hover .ace-sidebar-workspace-action,
-.ace-sidebar-workspace-row .ace-sidebar-workspace-action:focus-visible {
-  opacity: 1;
 }
 .ace-sidebar-workspace-action:hover,
 .ace-sidebar-workspace-action:focus-visible {
@@ -2593,10 +2586,6 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 @keyframes ace-spin { to { transform: rotate(360deg); } }
-@keyframes ace-session-loading-dot-pulse {
-  0%, 18%, 100% { opacity: 0.24; transform: scale(0.7); }
-  9% { opacity: 1; transform: scale(1); }
-}
 .ace-spinner {
   display: inline-block; width: 1em; height: 1em;
   border: calc(.05em + .2px) solid rgba(var(--ace-fg-mute-rgb), 0.40);
@@ -2608,47 +2597,6 @@ body {
 .ace-spinner-static {
   animation: none;
   border-top-color: rgba(var(--ace-fg-mute-rgb), 0.40);
-}
-.ace-session-loading {
-  position: relative;
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  color: var(--ace-accent);
-}
-.ace-session-loading-matrix {
-  position: absolute;
-  inset: 0;
-}
-.ace-session-loading-dot {
-  position: absolute;
-  width: 2px;
-  height: 2px;
-  border-radius: 9999px;
-  background: currentColor;
-  animation: ace-session-loading-dot-pulse 1.8s cubic-bezier(.65, 0, .35, 1) infinite;
-}
-/* Abstract A: two interrupted strokes joined by a crossbar. */
-.ace-session-loading-dot.is-a-0 { left: 7px; top: 1px; animation-delay: 0ms; }
-.ace-session-loading-dot.is-a-1 { left: 5px; top: 3px; animation-delay: 150ms; }
-.ace-session-loading-dot.is-a-2 { left: 9px; top: 3px; animation-delay: 300ms; }
-.ace-session-loading-dot.is-a-3 { left: 4px; top: 6px; animation-delay: 450ms; }
-.ace-session-loading-dot.is-a-4 { left: 10px; top: 6px; animation-delay: 600ms; }
-.ace-session-loading-dot.is-a-5 { left: 5px; top: 8px; animation-delay: 750ms; }
-.ace-session-loading-dot.is-a-6 { left: 7px; top: 8px; animation-delay: 900ms; }
-.ace-session-loading-dot.is-a-7 { left: 9px; top: 8px; animation-delay: 1050ms; }
-.ace-session-loading-dot.is-a-8 { left: 3px; top: 11px; animation-delay: 1200ms; }
-.ace-session-loading-dot.is-a-9 { left: 11px; top: 11px; animation-delay: 1350ms; }
-.ace-session-loading-dot.is-a-10 { left: 2px; top: 14px; animation-delay: 1500ms; }
-.ace-session-loading-dot.is-a-11 { left: 12px; top: 14px; animation-delay: 1650ms; }
-
-@media (prefers-reduced-motion: reduce) {
-  /* Keep the abstract A visible without movement. */
-  .ace-session-loading .ace-session-loading-dot {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* Upgrade progress is deliberately quicker than the 350ms status polling interval,
@@ -4512,7 +4460,9 @@ a.ace-thread-link:focus-visible {
   cursor: col-resize;
   touch-action: none;
 }
-.ace-resize-handle::after {
+/* Paint both highlights as filled strips; borders snap differently at fractional DPI. */
+.ace-resize-handle::after,
+.ace-topbar::after {
   content: "";
   position: absolute;
   top: 0;
@@ -4524,16 +4474,25 @@ a.ace-thread-link:focus-visible {
   transition: opacity .12s ease;
   pointer-events: none;
 }
+.ace-topbar::after {
+  left: calc(var(--ace-topbar-sidebar-width, 0px) - 1px);
+  transition: left 250ms ease, opacity .12s ease;
+}
 .ace-resize-handle:hover::after,
-.ace-resize-handle:focus-visible::after { opacity: 1; }
+.ace-resize-handle:focus-visible::after,
+.ace-topbar:has(+ .ace-single-shell > .ace-resize-handle-left:is(:hover, :focus-visible))::after { opacity: 1; }
 .ace-resize-handle:focus-visible { outline: none; }
-.ace-resize-handle:focus-visible::after { width: 2px; left: -1px; }
+.ace-resize-handle:focus-visible::after,
+.ace-topbar:has(+ .ace-single-shell > .ace-resize-handle-left:focus-visible)::after { width: 2px; }
 .ace-resizing,
 .ace-resizing * {
   cursor: col-resize !important;
   user-select: none !important;
 }
-.ace-resizing .ace-sidebar { transition: none !important; }
+/* Follow the pointer immediately while preserving the shared highlight fade. */
+.ace-resizing .ace-sidebar,
+.ace-resizing .ace-topbar::before { transition: none !important; }
+.ace-resizing .ace-topbar::after { transition: opacity .12s ease !important; }
 
 /* Preview/details panel between chat and SidePanel */
 .ace-preview-details-shell {
@@ -5259,7 +5218,7 @@ a.ace-thread-link:focus-visible {
   transition: opacity .15s ease;
 }
 .ace-sidebar-section-header:hover .ace-sidebar-section-actions,
-.ace-sidebar-section-header:has(.ace-sidebar-section-actions :focus-visible) .ace-sidebar-section-actions {
+.ace-sidebar-section-header:focus-within .ace-sidebar-section-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -6520,12 +6479,7 @@ div.ace-markdown-opaque > div.ace-markdown-opaque-rendered {
 
 /* Preserve the sidebar's medium baseline while following the user's font size.
    Role selectors still outrank utility classes, but use the shared size tokens. */
-.ace-sidebar .ace-sidebar-section-text {
-  font-size: var(--ace-font-size-13) !important;
-}
-.ace-sidebar .ace-sidebar-section-title {
-  font-size: var(--ace-font-size-12) !important;
-}
+.ace-sidebar .ace-sidebar-section-text,
 .ace-sidebar .ace-sidebar-meta-text {
   font-size: var(--ace-font-size-12) !important;
 }
