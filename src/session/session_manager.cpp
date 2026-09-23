@@ -27,49 +27,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-size_t utf8_safe_prefix_length(const std::string& text, size_t max_bytes) {
-    const size_t limit = (std::min)(max_bytes, text.size());
-    size_t i = 0;
-    size_t last_valid = 0;
-
-    while (i < limit) {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        size_t seq_len = 0;
-
-        if ((c & 0x80u) == 0) {
-            seq_len = 1;
-        } else if ((c & 0xE0u) == 0xC0u) {
-            seq_len = 2;
-        } else if ((c & 0xF0u) == 0xE0u) {
-            seq_len = 3;
-        } else if ((c & 0xF8u) == 0xF0u) {
-            seq_len = 4;
-        } else {
-            break;
-        }
-
-        if (i + seq_len > limit || i + seq_len > text.size()) {
-            break;
-        }
-
-        bool valid = true;
-        for (size_t j = 1; j < seq_len; ++j) {
-            const unsigned char continuation = static_cast<unsigned char>(text[i + j]);
-            if ((continuation & 0xC0u) != 0x80u) {
-                valid = false;
-                break;
-            }
-        }
-
-        if (!valid) {
-            break;
-        }
-
-        i += seq_len;
-        last_valid = i;
-    }
-
-    return last_valid;
+// 会话摘要(无标题时的显示标题)取用户消息的「显示文本」:@session 引用 /
+// skill 展开后 content 是给模型看的长文本,metadata.display_text 才是用户敲的
+// 原文。曾经按 content 截断,侧栏标题就变成了
+// "Referenced ACECode session context follows..."。空串 = 不更新摘要。
+std::string user_summary_source_text(const acecode::ChatMessage& msg) {
+    return acecode::SessionStorage::visible_user_message_text(msg);
 }
 
 std::string normalize_permission_mode_name(std::string mode) {
@@ -396,8 +359,9 @@ void SessionManager::on_message(const ChatMessage& msg) {
     }
 
     // Track last user message for summary
-    if (is_visible_user_turn_message(msg) && !msg.content.empty()) {
-        last_user_summary_ = extract_summary(msg.content);
+    if (is_visible_user_turn_message(msg)) {
+        const std::string text = user_summary_source_text(msg);
+        if (!text.empty()) last_user_summary_ = extract_summary(text);
     }
 
     update_meta();
@@ -443,8 +407,8 @@ bool SessionManager::replace_active_messages(const std::vector<ChatMessage>& mes
         rewritten.push_back(msg);
         if (is_visible_user_turn_message(msg)) {
             turn_count_++;
-            if (!msg.content.empty()) {
-                last_user_summary_ = extract_summary(msg.content);
+            if (const std::string text = user_summary_source_text(msg); !text.empty()) {
+                last_user_summary_ = extract_summary(text);
             }
             auto it = checkpoints_by_user.find(msg.uuid);
             if (it != checkpoints_by_user.end()) {
@@ -876,8 +840,9 @@ std::string SessionManager::fork_active_session(const std::vector<ChatMessage>& 
     created_ = true;
 
     for (auto it = fork_messages.rbegin(); it != fork_messages.rend(); ++it) {
-        if (is_visible_user_turn_message(*it) && !it->content.empty()) {
-            last_user_summary_ = extract_summary(it->content);
+        if (!is_visible_user_turn_message(*it)) continue;
+        if (const std::string text = user_summary_source_text(*it); !text.empty()) {
+            last_user_summary_ = extract_summary(text);
             break;
         }
     }
@@ -1043,8 +1008,10 @@ std::string SessionManager::fork_session_to_new_id(
                     count++;
                 }
             }
-            if (is_visible_user_turn_message(msg) && !msg.content.empty()) {
-                last_user_summary = extract_summary(msg.content);
+            if (is_visible_user_turn_message(msg)) {
+                if (const std::string text = user_summary_source_text(msg); !text.empty()) {
+                    last_user_summary = extract_summary(text);
+                }
             }
         }
     } catch (...) {
@@ -1558,6 +1525,11 @@ std::string SessionManager::current_title_source() const {
     return title_source_;
 }
 
+std::string SessionManager::current_summary() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return last_user_summary_;
+}
+
 void SessionManager::set_input_draft(std::string draft, nlohmann::json composer_content) {
     std::lock_guard<std::mutex> lk(mu_);
     input_draft_ = std::move(draft);
@@ -1881,29 +1853,9 @@ void SessionManager::release_writer_lease_locked() {
 }
 
 std::string SessionManager::extract_summary(const std::string& content) const {
-    constexpr size_t max_summary_bytes = 80;
-    constexpr size_t min_word_break_bytes = 60;
-
-    if (content.size() <= max_summary_bytes) return content;
-
-    const size_t safe_limit = utf8_safe_prefix_length(content, max_summary_bytes);
-    if (safe_limit == 0) {
-        return "...";
-    }
-
-    size_t cut = safe_limit;
-    while (cut > min_word_break_bytes && content[cut - 1] != ' ') {
-        --cut;
-    }
-    if (cut <= min_word_break_bytes) {
-        cut = safe_limit;
-    }
-
-    while (cut > 0 && content[cut - 1] == ' ') {
-        --cut;
-    }
-
-    return content.substr(0, cut) + "...";
+    // 与 SessionStorage 补齐旧 meta 时用的是同一实现:内存摘要与磁盘摘要、
+    // 侧栏与顶部标题必须逐字节一致。
+    return SessionStorage::summarize_user_message_text(content);
 }
 
 } // namespace acecode

@@ -2665,6 +2665,7 @@ void AgentLoop::commit_turn_steering_input(
     if (session_manager_) {
         session_manager_->on_message(message);
     }
+    emit_session_summary_updated();
 
     const std::string display = message.metadata.value(
         "display_text", message.content);
@@ -2832,6 +2833,14 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
     return info;
 }
 
+void AgentLoop::emit_session_summary_updated() {
+    if (!session_manager_) return;
+    const std::string summary = session_manager_->current_summary();
+    if (summary.empty()) return;
+    events_.emit(SessionEventKind::SessionUpdated,
+                 nlohmann::json{{"summary", summary}});
+}
+
 void AgentLoop::append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context) {
     auto& user_msg = info.user_msg;
     ensure_user_message_identity(user_msg);
@@ -2849,6 +2858,7 @@ void AgentLoop::append_user_turn_message(UserTurnInfo& info, bool hidden_goal_co
         }
     }
     if (!hidden_goal_context) {
+        emit_session_summary_updated();
         nlohmann::json msg_event = {
             {"role", "user"}, {"content", user_msg.content},
             {"is_tool", false}, {"id", user_msg.uuid},

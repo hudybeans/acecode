@@ -110,11 +110,6 @@ import {
   pinnedRefreshTargets,
 } from '../lib/sidebarAuxiliaryFetch.js';
 import {
-  loadSidebarFullTitle,
-  sidebarFullTitleRequestKey,
-  sidebarTitleHydrationState,
-} from '../lib/sidebarFullTitle.js';
-import {
   createSidebarSessionLoadPool,
   sidebarSessionLoadKey,
 } from '../lib/sidebarSessionLoadPool.js';
@@ -691,7 +686,7 @@ function SessionHoverCard({
   );
 }
 
-function SidebarSessionTitle({ title, marqueeReady = true }) {
+function SidebarSessionTitle({ title }) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const [metrics, setMetrics] = useState(() => sidebarTitleMarqueeMetrics(0, 0));
@@ -744,10 +739,9 @@ function SidebarSessionTitle({ title, marqueeReady = true }) {
         'ace-sidebar-session-title-viewport',
         'min-w-0 flex-1',
         metrics.overflowing && 'is-overflowing',
-        metrics.overflowing && marqueeReady && 'is-marquee-ready',
+        metrics.overflowing && 'is-marquee-ready',
       )}
       data-sidebar-session-title-overflow={metrics.overflowing ? 'true' : 'false'}
-      data-sidebar-session-title-complete={marqueeReady ? 'true' : 'false'}
       style={marqueeStyle}
     >
       <span ref={contentRef} className="ace-sidebar-session-title-content">
@@ -786,22 +780,10 @@ function SessionRow({
   const rowKey = (pinned || workspaceReorderable)
     ? sidebarSessionDragKey(pinScope, s.id)
     : '';
+  // 侧栏与顶部标题栏显示同一个字段:服务端 title(用户改名 / 大模型生成),
+  // 没有就用 summary(最近一条用户消息显示文本的 80 字节截断)。这里不再另拉
+  // 消息全文做跑马灯 —— 那会让侧栏 hover 时滚出一段与顶部不一致、且长度不受限的文本。
   const title = sessionDisplayTitle(s, s.name || '');
-  const titleHydration = useMemo(
-    () => sidebarTitleHydrationState(s, title),
-    [s.summary, s.title, s.title_source, s.titleSource, title],
-  );
-  const fullTitleRequestKey = sidebarFullTitleRequestKey(s);
-  const [resolvedFullTitle, setResolvedFullTitle] = useState({ key: '', title: '' });
-  const [fullTitleLoadingKey, setFullTitleLoadingKey] = useState('');
-  const latestFullTitleRequestKeyRef = useRef(fullTitleRequestKey);
-  latestFullTitleRequestKeyRef.current = fullTitleRequestKey;
-  const hydratedTitle = titleHydration.needsFullTitle
-    && resolvedFullTitle.key === fullTitleRequestKey
-    ? resolvedFullTitle.title
-    : '';
-  const marqueeTitle = hydratedTitle || titleHydration.displayTitle;
-  const marqueeReady = !titleHydration.needsFullTitle || Boolean(hydratedTitle);
   const sessionMarker = sidebarSessionMarker(s);
   const remoteControlBound = Boolean(s.remote_control_bound ?? s.remoteControlBound);
   const hoverDetails = sessionHoverDetails(s);
@@ -828,33 +810,6 @@ function SessionRow({
   const latestRemoteControlSurgeSequenceRef = useRef(remoteControlSurgeSequence);
   latestRemoteControlBoundRef.current = remoteControlBound;
   latestRemoteControlSurgeSequenceRef.current = remoteControlSurgeSequence;
-
-  const ensureCompleteMarqueeTitle = useCallback(() => {
-    if (!titleHydration.needsFullTitle
-        || hydratedTitle
-        || !fullTitleRequestKey
-        || fullTitleLoadingKey === fullTitleRequestKey) {
-      return;
-    }
-
-    const requestedKey = fullTitleRequestKey;
-    setFullTitleLoadingKey(requestedKey);
-    loadSidebarFullTitle(api, s)
-      .then((fullTitle) => {
-        if (!fullTitle || latestFullTitleRequestKeyRef.current !== requestedKey) return;
-        setResolvedFullTitle({ key: requestedKey, title: fullTitle });
-      })
-      .catch(() => {})
-      .finally(() => {
-        setFullTitleLoadingKey((current) => current === requestedKey ? '' : current);
-      });
-  }, [
-    fullTitleLoadingKey,
-    fullTitleRequestKey,
-    hydratedTitle,
-    s,
-    titleHydration.needsFullTitle,
-  ]);
 
   const finishRemoteControlSurge = useCallback((requestedSequence = 0) => {
     const sequence = Number(requestedSequence) || 0;
@@ -1039,7 +994,6 @@ function SessionRow({
             owner: hoverCardId,
           });
         }
-        ensureCompleteMarqueeTitle();
       }}
       onMouseLeave={hoverDetails ? () => {
         sessionHoverLifecycle.dispatch({
@@ -1070,7 +1024,6 @@ function SessionRow({
             owner: hoverCardId,
           });
         }
-        ensureCompleteMarqueeTitle();
       }}
       onBlurCapture={hoverDetails ? (event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -1127,8 +1080,8 @@ function SessionRow({
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(s); }}
           aria-describedby={hoverCardVisible ? hoverCardId : undefined}
           aria-label={remoteControlBound
-            ? tr('remoteControl.connectedSessionAria', { title: marqueeTitle || title })
-            : (marqueeTitle || title)}
+            ? tr('remoteControl.connectedSessionAria', { title })
+            : title}
           className="ace-sidebar-session-title-button ace-sidebar-tree-content flex min-w-0 w-full items-center gap-1.5 px-0 py-[4.5px] bg-transparent text-left cursor-pointer"
         >
           {remoteControlBound && (
@@ -1139,7 +1092,7 @@ function SessionRow({
               data-remote-control-session-icon="true"
             />
           )}
-          <SidebarSessionTitle title={marqueeTitle} marqueeReady={marqueeReady} />
+          <SidebarSessionTitle title={title} />
         </button>
       )}
       <span className="flex w-full min-w-0 items-center justify-end gap-0">
@@ -1230,7 +1183,7 @@ function SessionRow({
           anchorRef={rowRef}
           cardId={hoverCardId}
           session={s}
-          title={marqueeTitle}
+          title={title}
         />
       )}
     </div>
@@ -3023,12 +2976,19 @@ export function Sidebar({
         if (!sid) return;
         setSessions((prev) => prev.map((session) => {
           if ((session.id || session.session_id || session.sessionId) !== sid) return session;
+          const hasTitle = Object.prototype.hasOwnProperty.call(payload, 'title');
+          // summary 与 title 同为显示标题的来源(无标题时显示 summary),daemon 在
+          // 用户消息落盘后单独推 {summary};ChatView 的 transcript 对同一事件做同样合并。
+          const hasSummary = Object.prototype.hasOwnProperty.call(payload, 'summary');
           return {
             ...session,
-            title: Object.prototype.hasOwnProperty.call(payload, 'title')
-              ? (payload.title || '')
-              : session.title,
-            title_source: payload.title_source || session.title_source || '',
+            title: hasTitle ? (payload.title || '') : session.title,
+            title_source: hasTitle
+              ? String(payload.title_source || '')
+              : (session.title_source || ''),
+            summary: hasSummary
+              ? (typeof payload.summary === 'string' ? payload.summary : '')
+              : session.summary,
             workspace_hash: payload.workspace_hash || session.workspace_hash,
             cwd: payload.cwd || session.cwd,
           };

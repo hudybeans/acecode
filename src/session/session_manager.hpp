@@ -219,6 +219,9 @@ public:
     // Return the current in-memory title (empty when unset).
     std::string current_title() const;
     std::string current_title_source() const;
+    // 最近一条可见用户消息的摘要(显示文本截到 80 字节)。没有标题时它就是
+    // 会话在侧栏 / 顶部标题栏里显示的名字,与 meta.summary 同源。
+    std::string current_summary() const;
 
     // Persisted unsubmitted chat input draft for the active session.
     void set_input_draft(std::string draft, nlohmann::json composer_content = nullptr);

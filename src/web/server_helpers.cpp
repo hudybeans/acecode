@@ -984,6 +984,17 @@ void WebServer::Impl::append_session_runtime_snapshot(json& wrapper,
             if (entry->sm) {
                 meta = entry->sm->load_session_meta(session_id);
                 have_meta = !meta.id.empty();
+                // 显示标题三件套与会话列表同源(session_info_to_json 同款
+                // 优先级:磁盘上的 user 改名压过过期的内存标题)。前端顶部
+                // 标题栏从这里取初值,不再从消息正文现推。
+                const bool meta_user_title = have_meta &&
+                    (meta.title_source == "user" || meta.title_source == "user-cleared");
+                wrapper["title"] = meta_user_title ? meta.title : entry->sm->current_title();
+                wrapper["title_source"] = meta_user_title
+                    ? meta.title_source
+                    : entry->sm->current_title_source();
+                const std::string live_summary = entry->sm->current_summary();
+                wrapper["summary"] = !live_summary.empty() ? live_summary : meta.summary;
                 wrapper["turn_count"] = entry->sm->current_turn_count();
                 wrapper["permission_mode"] = entry->sm->current_permission_mode();
                 wrapper["token_usage"] = token_usage_or_null(entry->sm->current_last_token_usage());
@@ -1017,6 +1028,11 @@ void WebServer::Impl::append_session_runtime_snapshot(json& wrapper,
             wrapper["workspace_hash"] = "";
             wrapper["cwd"] = "";
         }
+        if (!wrapper.contains("title")) {
+            wrapper["title"] = meta.title;
+            wrapper["title_source"] = meta.title_source;
+        }
+        if (!wrapper.contains("summary")) wrapper["summary"] = meta.summary;
         if (!wrapper.contains("turn_count")) wrapper["turn_count"] = meta.turn_count;
         if (!wrapper.contains("permission_mode")) {
             wrapper["permission_mode"] = meta.permission_mode.empty() ? "default" : meta.permission_mode;

@@ -671,6 +671,10 @@ private:
     UserTurnInfo prepare_user_turn(const UserInput& input, bool hidden_goal_context);
     UserTurnInfo prepare_retry_user_turn(const ChatMessage& message);
     void append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context);
+    // 用户消息落盘后把新的会话摘要(无标题时的显示标题)以 session_updated
+    // {summary} 推给界面:侧栏与顶部标题栏同源于这一个字段,前端不再各自从
+    // 消息正文现推标题(那正是两处标题不一致、且长度不受限的根因)。
+    void emit_session_summary_updated();
     void start_user_turn(const UserTurnInfo& info);
 
     // Phase 2: Build the full message list for the LLM provider.

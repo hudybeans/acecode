@@ -622,7 +622,6 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     todoSummary,
     activity,
     applyEvent,
-    setTitle: setTranscriptTitle,
   } = transcript;
 
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false);
@@ -2773,8 +2772,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const text = payloadText(payload);
     updateQueueState((prev) => enqueueQueuedInput(prev, { sessionId: sid, payload }));
     if (text.trim()) recordInputHistory(text);
-    if (!ref?.title) setTranscriptTitle(text || '附件消息');
-  }, [recordInputHistory, ref?.title, setTranscriptTitle, sid, updateQueueState]);
+    // 标题不在本地用消息全文改写:服务端落盘后经 session_updated{summary} 下发
+    // 截断后的摘要,顶部与侧栏同源。
+  }, [recordInputHistory, sid, updateQueueState]);
 
   const cancelQueued = useCallback((queuedId) => {
     updateQueueState((prev) => cancelQueuedInput(prev, queuedId));
@@ -3291,7 +3291,6 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           });
         }
         if (payload.text.trim()) recordInputHistory(payload.text);
-        if (!ref?.title) setTranscriptTitle(payload.text || activeAttachments[0]?.name || '附件消息');
         if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
       })
       .catch((e) => {
@@ -3299,7 +3298,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, updateQueueState, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, updateQueueState, applyEvent, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;

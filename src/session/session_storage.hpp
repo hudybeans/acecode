@@ -228,6 +228,17 @@ public:
     static bool purge_session_files(const std::string& project_dir,
                                     const std::string& session_id,
                                     std::string* error = nullptr);
+
+    // 用户消息的「显示文本」:daemon 侧 skill / @session 引用 / 选区展开会把
+    // 原文存进 metadata.display_text,模型看到的 content 是展开后的长文本。
+    // 界面气泡、会话摘要、自动标题输入都以显示文本为准;没有时回退 content。
+    static std::string visible_user_message_text(const ChatMessage& msg);
+
+    // 会话摘要 = 没有标题时的显示标题(侧栏、顶部标题栏、搜索面板共用同一份)。
+    // 单行(空白折成一个空格)、UTF-8 安全截到 80 字节并补 "..."。
+    // SessionManager 的内存摘要与 list_sessions 补齐旧 meta 走同一实现,
+    // 两边逐字节一致。
+    static std::string summarize_user_message_text(const std::string& text);
 };
 
 } // namespace acecode

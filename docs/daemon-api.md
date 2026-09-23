@@ -1068,6 +1068,9 @@ When `since=0` or omitted, returns a full snapshot object:
   "messages": [],
   "busy": false,
   "active_turn_id": "",
+  "title": "Investigate daemon routes",
+  "title_source": "generated",
+  "summary": "latest user summary",
   "turn_count": 4,
   "permission_mode": "default",
   "token_usage": null,
@@ -4384,6 +4387,17 @@ Session event `type` values from `SessionEventKind`:
 - `busy_changed`
 - `done`
 - `error`
+
+`session_updated` carries the session's display-title fields, which are the
+only source clients may use for a session's name. A rename or a generated title
+sends `{"title", "title_source"}`. After each visible user message is persisted
+the daemon sends `{"summary"}`: the latest user message's display text
+(`metadata.display_text` when present, otherwise `content`) collapsed to one
+line and truncated to 80 UTF-8 bytes plus `...`. The same three fields appear in
+session listings and in the `GET .../messages?since=0` snapshot. Clients show
+`title` when it is non-empty (ignoring generated titles that start with
+`[Error]`) and `summary` otherwise, in both the session list and the chat
+header; they must not derive a title from message bodies.
 
 For a successful `task_complete` call, the `tool_end` payload also includes
 `message_id`, the canonical id of the persisted tool-role result. Live and

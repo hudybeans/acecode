@@ -1,12 +1,7 @@
-export function titleFromMessages(messages = []) {
-  for (let i = messages.length - 1; i >= 0; --i) {
-    const m = messages[i] || {};
-    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
-      return m.content.trim();
-    }
-  }
-  return '';
-}
+// 会话显示标题只有一个来源:服务端的 title(用户改名 / 大模型生成)与 summary
+// (无标题时的兜底,daemon 已按显示文本截到 80 字节)。侧栏、顶部标题栏、网格、
+// 搜索面板、托盘菜单全部经 sessionDisplayTitle 派生;前端不再从消息正文现推标题
+// (曾经的 titleFromMessages 把最后一条 user 消息全文当顶部标题,长度不受限且与侧栏不一致)。
 
 export function isGeneratedErrorTitle(session) {
   const s = session || {};

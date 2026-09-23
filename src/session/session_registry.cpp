@@ -2310,6 +2310,9 @@ std::vector<SessionInfo> SessionRegistry::list_active() const {
             // v1 不读磁盘(list_active 是热路径),只填 id + active + title。
             info.title = entry->sm->current_title();
             info.title_source = entry->sm->current_title_source();
+            // 摘要也是内存值(不读磁盘):它是无标题会话的显示名,列表必须与
+            // session_updated{summary} 事件、messages 快照同源。
+            info.summary = entry->sm->current_summary();
             info.turn_count = entry->sm->current_turn_count();
             info.last_token_usage = entry->sm->current_last_token_usage();
             info.session_token_usage = entry->sm->current_session_token_usage();

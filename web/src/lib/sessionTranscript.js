@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { createApi } from './api.js';
 import { connection } from './connection.js';
 import { attachmentsFromContentParts, normalizeAttachmentList } from './messageAttachments.js';
-import { sessionDisplayTitle, titleFromMessages } from './sessionTitle.js';
+import { sessionDisplayTitle } from './sessionTitle.js';
 import { transcriptTimestampMs } from './timestamps.js';
 import { fallbackToolSummary } from './toolSummaryFallback.js';
 import { normalizeToolInvocationItems } from './transcriptProjection.js';
@@ -125,6 +125,30 @@ function normalizeSessionRef(sessionRef) {
     sessionId,
     workspaceHash: sessionRef.workspaceHash || sessionRef.workspace_hash || '',
   };
+}
+
+// 从侧栏 / 跳转目标的会话对象里抄出显示标题的三个服务端字段,作为 store 的初值;
+// 之后由 session_updated 与 messages 快照刷新。
+function sessionTitleFieldsFromRef(ref) {
+  const s = ref && typeof ref === 'object' ? ref : {};
+  return {
+    title: typeof s.title === 'string' ? s.title : '',
+    titleSource: String(s.title_source ?? s.titleSource ?? ''),
+    summary: typeof s.summary === 'string' ? s.summary : '',
+  };
+}
+
+// 顶部标题 = 侧栏同一条规则(sessionDisplayTitle):title > summary > 计数兜底。
+// ref 仍提供 message_count / displayTitle(「新会话N」)等兜底字段。
+export function transcriptDisplayTitle(state, ref) {
+  const base = ref && typeof ref === 'object' ? ref : {};
+  if (!state) return sessionDisplayTitle(base);
+  return sessionDisplayTitle({
+    ...base,
+    title: state.title || '',
+    title_source: state.titleSource || '',
+    summary: state.summary || '',
+  });
 }
 
 function cloneToolMap(toolMap) {
@@ -1232,7 +1256,12 @@ export function createTranscriptState(overrides = {}) {
     abortPending: false,
     activeTurnId: '',
     turns: 0,
+    // 会话显示标题的三个服务端字段(与侧栏会话列表同源):title 是用户改名 /
+    // 大模型生成的标题,summary 是无标题时的兜底(最近一条用户消息显示文本的
+    // 80 字节截断)。对外暴露的 title 由 sessionDisplayTitle 从这三者派生。
     title: '',
+    titleSource: '',
+    summary: '',
     status: 'idle',
     lastSeq: 0,
     isLive: false,
@@ -1305,8 +1334,8 @@ export function reduceTranscriptEvent(state, msg) {
       next.turnNetDiffs = turnNetDiffs;
       next.items = applyTurnMetadataToItems(
         historyItemsFromMessages(next, messages), turnTimings, turnNetDiffs);
-      const restoredTitle = titleFromMessages(messages);
-      if (restoredTitle) next.title = restoredTitle;
+      // 标题不从消息正文现推:title / summary 只认服务端(session_updated 与
+      // messages 快照),否则顶部标题会变成最后一条 user 消息的全文,与侧栏不一致。
       next.tokenUsage = null;
       next.error = '';
       break;
@@ -1735,8 +1764,14 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     }
     case 'session_updated': {
+      // 显示标题的唯一来源:title(用户改名 / 大模型生成)与 summary(无标题时
+      // 的兜底,服务端已截到 80 字节)。侧栏 Sidebar 对同一事件做同样的合并。
       if (Object.prototype.hasOwnProperty.call(p, 'title')) {
         next.title = p.title || '';
+        next.titleSource = String(p.title_source || '');
+      }
+      if (Object.prototype.hasOwnProperty.call(p, 'summary')) {
+        next.summary = typeof p.summary === 'string' ? p.summary : '';
       }
       break;
     }
@@ -1845,6 +1880,8 @@ export function loadTranscriptHistory(state, data = {}) {
   const current = state || createTranscriptState();
   let next = createTranscriptState({
     title: current.title || '',
+    titleSource: current.titleSource || '',
+    summary: current.summary || '',
     status: current.status || 'idle',
     isLive: !!current.isLive,
     lastSeq: 0,
@@ -1858,8 +1895,13 @@ export function loadTranscriptHistory(state, data = {}) {
   next.items = applyTurnMetadataToItems(
     historyItemsFromMessages(next, msgs), turnTimings, turnNetDiffs);
 
-  const restoredTitle = titleFromMessages(msgs);
-  if (restoredTitle) next.title = restoredTitle;
+  // messages 快照(GET /messages?since=0)随历史一并带回服务端的标题三件套;
+  // 深链 / 刷新打开的会话没有侧栏对象可抄,顶部标题靠它对齐侧栏。
+  if (typeof data.title === 'string') {
+    next.title = data.title;
+    next.titleSource = typeof data.title_source === 'string' ? data.title_source : '';
+  }
+  if (typeof data.summary === 'string') next.summary = data.summary;
 
   const seenMessages = new Set(msgs.map((m) => messageKey(m.role || 'system', m.content || '')));
   let pendingStreamEvents = [];
@@ -1974,14 +2016,17 @@ export function useSessionTranscript(sessionRef, options = {}) {
     0,
     Number(options.refreshIntervalMs) || 0,
   );
-  const initialTitle = sid ? sessionDisplayTitle(ref) : '';
   // 实时状态归 store 所有,React 只订阅。历史上这里是 useState + 一个可变
   // 引用的双写:被动 effect 把渲染快照写回引用,吞掉这之后已到达的 token,
   // 表现为长会话流式出字时正文中间随机缺字(见 singleWriterStore.js 顶部注释)。
   const storeRef = useRef(null);
   if (storeRef.current === null) {
     storeRef.current = createSingleWriterStore(
-      createTranscriptState({ title: initialTitle, isLive, loadState: sid ? 'loading' : 'idle' }),
+      createTranscriptState({
+        ...sessionTitleFieldsFromRef(ref),
+        isLive,
+        loadState: sid ? 'loading' : 'idle',
+      }),
     );
   }
   const store = storeRef.current;
@@ -2016,10 +2061,6 @@ export function useSessionTranscript(sessionRef, options = {}) {
     return nextState;
   }, [sid, store]);
 
-  const setTitle = useCallback((title) => {
-    store.commit((prevState) => ({ ...prevState, title: title || '' }));
-  }, [store]);
-
   const getState = useCallback(() => store.getState(), [store]);
 
   // 只接受 producer:值形式允许调用方传入一份过期快照,正是本次修复要根除的
@@ -2028,7 +2069,7 @@ export function useSessionTranscript(sessionRef, options = {}) {
 
   useEffect(() => {
     stateSessionIdRef.current = sid;
-    const baseTitle = sid ? sessionDisplayTitle(sessionRefRef.current) : '';
+    const baseTitleFields = sessionTitleFieldsFromRef(sessionRefRef.current);
     const sameHistory = historyScopeRef.current?.sid === sid
       && historyScopeRef.current?.api === api;
     historyScopeRef.current = { sid, api };
@@ -2038,7 +2079,7 @@ export function useSessionTranscript(sessionRef, options = {}) {
       store.commit((previous) => ({ ...previous, isLive }));
     } else {
       store.commit(() => createTranscriptState({
-        title: baseTitle,
+        ...baseTitleFields,
         isLive,
         loadState: sid ? 'loading' : 'idle',
       }));
@@ -2192,7 +2233,9 @@ export function useSessionTranscript(sessionRef, options = {}) {
   const activelyRunning = isTranscriptActivelyRunning(state);
   return {
     ...state,
-    title: state.title || initialTitle,
+    // 顶部标题栏显示的就是它:与侧栏同一份 sessionDisplayTitle 派生规则,
+    // 只是 title / summary 取 store 里被 session_updated 实时刷新过的值。
+    title: transcriptDisplayTitle(state, sessionRefRef.current),
     isLive,
     busy: activelyRunning,
     status: activelyRunning ? 'running' : state.status,
@@ -2200,7 +2243,6 @@ export function useSessionTranscript(sessionRef, options = {}) {
       ? state.loadState
       : (sid ? 'loading' : 'idle'),
     applyEvent,
-    setTitle,
     getState,
     updateState,
   };

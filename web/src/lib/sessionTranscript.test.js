@@ -12,6 +12,7 @@ import {
   projectCompactTranscriptItems,
   reduceTranscriptEvent,
   replaySinceForLiveCatchup,
+  transcriptDisplayTitle,
 } from './sessionTranscript.js';
 import { projectCollapsedTranscriptItems } from './transcriptProjection.js';
 import { createdFileSource } from './createdFileSource.js';
@@ -891,13 +892,118 @@ run('error 和用户中断清除未完成文本且不发完成通知', () => {
   }
 });
 
-run('session_updated 更新 transcript title', () => {
-  const state = reduceTranscriptEvent(createTranscriptState({ title: 'Old title' }), {
-    type: 'session_updated',
-    payload: { title: 'New title', title_source: 'generated' },
-    seq: 1,
-  }).state;
+// ---- 会话显示标题:单一来源 ---------------------------------------------------
+// 顶部标题栏与侧栏必须显示同一个字段:服务端 title(用户改名 / 大模型生成)优先,
+// 否则 summary(daemon 按显示文本截到 80 字节)。回归(bug 表现):会话
+// 20260923-163126-e7e3 的首条 user 消息是 @session 引用展开后的 9k 字符长文,历史加载
+// 把它整段当成顶部标题(长度不受限),侧栏却显示 80 字节的 summary,两处从此不一致。
+
+// 触发场景:大模型标题就绪,daemon 推 session_updated{title,title_source}。
+// 期望行为:title 与来源一起进 store,summary 不动。
+run('session_updated 更新 transcript title 与 title_source', () => {
+  const state = reduceTranscriptEvent(
+    createTranscriptState({ title: 'Old title', summary: '旧摘要' }),
+    {
+      type: 'session_updated',
+      payload: { title: 'New title', title_source: 'generated' },
+      seq: 1,
+    },
+  ).state;
   assert.equal(state.title, 'New title');
+  assert.equal(state.titleSource, 'generated');
+  assert.equal(state.summary, '旧摘要');
+});
+
+// 触发场景:用户消息落盘,daemon 只推 session_updated{summary}。
+// 期望行为:summary 刷新,已有的 title / title_source 保持。
+run('session_updated 只带 summary 时刷新 summary,不动 title', () => {
+  const state = reduceTranscriptEvent(
+    createTranscriptState({ title: '生成的标题', titleSource: 'generated', summary: '旧摘要' }),
+    { type: 'session_updated', payload: { summary: '新的用户请求...' }, seq: 1 },
+  ).state;
+  assert.equal(state.summary, '新的用户请求...');
+  assert.equal(state.title, '生成的标题');
+  assert.equal(state.titleSource, 'generated');
+});
+
+// 触发场景:切进会话加载历史,messages 快照带回标题三件套。
+// 期望行为:标题取快照字段,绝不从消息正文推 —— 9k 字符的展开文本不能变成标题。
+run('loadTranscriptHistory 采用快照里的 title / summary,不从消息正文推标题', () => {
+  const expanded = 'Referenced ACECode session context follows. ' + 'x'.repeat(9000);
+  const loaded = loadTranscriptHistory(createTranscriptState(), {
+    messages: [
+      { role: 'user', content: expanded, metadata: { display_text: '@规划 继续' } },
+      { role: 'assistant', content: '好的' },
+    ],
+    title: '',
+    title_source: '',
+    summary: '@规划 继续',
+  }).state;
+  assert.equal(loaded.title, '');
+  assert.equal(loaded.summary, '@规划 继续');
+  const displayed = transcriptDisplayTitle(loaded, { sessionId: 's1', message_count: 2 });
+  assert.equal(displayed, '@规划 继续');
+  assert.ok(displayed.length < 100, '标题长度必须受服务端截断约束');
+});
+
+// 触发场景:快照没有标题字段(旧 daemon),但 store 已从侧栏 ref / 事件拿到过值。
+// 期望行为:保留已有值,不被清空。
+run('loadTranscriptHistory 在快照缺少标题字段时保留 store 里的值', () => {
+  const loaded = loadTranscriptHistory(
+    createTranscriptState({ title: '侧栏标题', titleSource: 'user', summary: '侧栏摘要' }),
+    { messages: [{ role: 'user', content: '正文全文不该成为标题' }] },
+  ).state;
+  assert.equal(loaded.title, '侧栏标题');
+  assert.equal(loaded.titleSource, 'user');
+  assert.equal(loaded.summary, '侧栏摘要');
+});
+
+// 触发场景:transcript_replace(重试 / compact 后整份替换)。
+// 期望行为:同样不从消息正文推标题。
+run('transcript_replace 不从消息正文推标题', () => {
+  const state = reduceTranscriptEvent(
+    createTranscriptState({ title: '', summary: '摘要...' }),
+    {
+      type: 'transcript_replace',
+      payload: { messages: [{ role: 'user', content: 'y'.repeat(5000) }] },
+      seq: 1,
+    },
+  ).state;
+  assert.equal(state.title, '');
+  assert.equal(state.summary, '摘要...');
+});
+
+// 期望行为:顶部标题与侧栏走同一条派生规则 —— 生成标题压过 summary,generated 的
+// "[Error]" 标题被忽略回退 summary,什么都没有时落到「新会话N」/ 计数兜底。
+run('transcriptDisplayTitle 与侧栏 sessionDisplayTitle 同规则', () => {
+  const ref = { sessionId: 's1', displayTitle: '新会话3' };
+  assert.equal(transcriptDisplayTitle(createTranscriptState(), ref), '新会话3');
+  assert.equal(
+    transcriptDisplayTitle(createTranscriptState({ summary: '摘要...' }), ref),
+    '摘要...',
+  );
+  assert.equal(
+    transcriptDisplayTitle(
+      createTranscriptState({ title: '生成标题', titleSource: 'generated', summary: '摘要...' }),
+      ref,
+    ),
+    '生成标题',
+  );
+  assert.equal(
+    transcriptDisplayTitle(
+      createTranscriptState({ title: '[Error] 上游不可用', titleSource: 'generated', summary: '摘要...' }),
+      ref,
+    ),
+    '摘要...',
+  );
+  // 侧栏 ref 自带的旧 title 不能压过 store 里被事件刷新后的空标题:store 是权威。
+  assert.equal(
+    transcriptDisplayTitle(
+      createTranscriptState({ title: '', summary: '摘要...' }),
+      { ...ref, title: '侧栏旧标题', summary: '侧栏旧摘要' },
+    ),
+    '摘要...',
+  );
 });
 
 // ---- lastTurnOutcome:回合收尾方式 -------------------------------------------
