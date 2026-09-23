@@ -346,10 +346,12 @@ std::string sanitize_sidecar_title(const std::string& raw) {
 namespace {
 
 constexpr const char* kToolParameterDescription =
-    "Status line shown to the user while this call runs: one short line, 8-12 words "
-    "or up to 16 Chinese characters, in the user's language, present-participle "
-    "phrasing like \"Reading registry sections\". Put this key first in the arguments. "
-    "It is stripped before the tool runs and never affects the call.";
+    "Required on every call, including each call of a parallel batch: one short "
+    "status line the UI shows while this call runs, 8-12 words or up to 16 Chinese "
+    "characters, present-participle phrasing like \"Reading registry sections\" or "
+    "\"正在读取注册表段落\", always in the language of the user's latest message (Chinese "
+    "user -> Chinese line). Put this key first in the arguments. It is stripped before "
+    "the tool runs and never affects the call.";
 
 }  // namespace
 
@@ -380,6 +382,19 @@ std::size_t inject_preamble_parameter(std::vector<ToolDef>& definitions) {
             {"type", "string"},
             {"description", kToolParameterDescription},
         };
+        // 进 required:只当可选参数时,grok 这类模型在并行读批次里几乎从不填(实测会话
+        // 20260923-164654-8908 六步只填了一步,GPT 系则每步都填);function-calling 模型
+        // 对 required 的参数基本必填。执行前会剥掉,工具本身不受影响;没填也不报错。
+        auto& required = params["required"];
+        if (!required.is_array()) required = nlohmann::json::array();
+        bool listed = false;
+        for (const auto& item : required) {
+            if (item.is_string() && item.get<std::string>() == kToolParameterName) {
+                listed = true;
+                break;
+            }
+        }
+        if (!listed) required.push_back(kToolParameterName);
         ++injected;
     }
     return injected;
