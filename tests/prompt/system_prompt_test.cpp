@@ -683,6 +683,39 @@ TEST_F(SystemPromptTest, PowerShellTerminalSwitchesGuidance) {
         << "cmd 专属的删除语法不该出现在 PowerShell 指引里";
 }
 
+// 场景:PowerShell 终端下的编码指引(fix-feedback-0924 第 4 条:agent 在 5.1 下用
+// Get-Content 读无 BOM 的 UTF-8 源码得到乱码,随后 110 次迭代都在猜原文案)。
+// 期望:PowerShell 家族出现编码说明(UTF-8 写法、乱码时重读而不是猜原文);同一环境
+// 两次构建逐字节相同(prompt cache 前缀不变量);cmd / Git Bash 家族不出现;
+// 新增文案不写死文件工具的原生名(模型侧工具名必须动态取)。
+TEST_F(SystemPromptTest, PowerShellGuidanceWarnsAboutEncoding) {
+    acecode::SystemPromptEnvironment env;
+    env.terminal_family = "powershell";
+    env.terminal_program = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    const std::string out = build_with_env(temp_home, env);
+    for (const char* needle : {"- Text encoding:", "[Text.UTF8Encoding]::new($false)",
+                               "Join-Path $PWD", "mojibake", "-Encoding Default",
+                               "Never guess the original wording"}) {
+        EXPECT_NE(out.find(needle), std::string::npos) << needle;
+    }
+    EXPECT_EQ(out, build_with_env(temp_home, env));
+    const auto begin = out.find("- Text encoding:");
+    const auto end = out.find('\n', begin);
+    ASSERT_NE(begin, std::string::npos);
+    const std::string bullet = out.substr(begin, end - begin);
+    for (const char* native : {"file_read", "file_edit", "file_write"}) {
+        EXPECT_EQ(bullet.find(native), std::string::npos) << native;
+    }
+
+    for (const char* family : {"cmd", "bash"}) {
+        acecode::SystemPromptEnvironment other;
+        other.terminal_family = family;
+        other.terminal_program = "C:\\x.exe";
+        EXPECT_EQ(build_with_env(temp_home, other).find("mojibake"), std::string::npos)
+            << family;
+    }
+}
+
 // 场景:解析出的终端是 cmd(用户手动选回)。
 // 期望:原有的 Windows cmd 指引段完整保留(mkdir -p / rd /s /q / %VAR% 三个哨兵)。
 TEST_F(SystemPromptTest, CmdTerminalKeepsLegacyGuidance) {

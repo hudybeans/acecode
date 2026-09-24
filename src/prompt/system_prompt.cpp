@@ -74,6 +74,21 @@ static std::string get_powershell_guidance(const std::string& multiline_tool,
         << "`Get-Content` (`cat`), `Select-String` (`grep`).\n"
         << "- Native executables get their arguments after PowerShell parsing: quote arguments "
         << "containing spaces or special characters, or use `--%` to pass the rest verbatim.\n"
+        // 与 shell_command_line.cpp::powershell_utf8_prelude 的实际行为逐项一致,
+        // 改任何一边都要同步另一边(fix-feedback-0924 第 4 条)。纯静态 ASCII、
+        // 不含工具名,不打穿 prompt cache 前缀。
+        << "- Text encoding: project files are usually UTF-8 without a BOM. Commands start with "
+        << "the console and native-program pipes set to UTF-8, and under Windows PowerShell 5.1 "
+        << "`Get-Content`, `Set-Content`, `Add-Content`, `Out-File`/`>`, `Select-String`, "
+        << "`Import-Csv` and `Export-Csv` default to UTF-8 (5.1 writes a BOM when it creates a "
+        << "file). Nested `powershell.exe`/`pwsh` processes and scripts that start with "
+        << "`using`/`param` do not get these defaults; pass `-Encoding` explicitly there. Read "
+        << "and edit source files with the file tools rather than PowerShell; if a script must "
+        << "write a file, use `[IO.File]::WriteAllText((Join-Path $PWD 'REL_PATH'), TEXT, "
+        << "[Text.UTF8Encoding]::new($false))`. If text comes back garbled (mojibake or U+FFFD "
+        << "replacement characters), the file is in another encoding, often legacy ANSI/GBK: "
+        << "re-read it with the file tools or with `-Encoding Default` under 5.1. Never guess "
+        << "the original wording and never write garbled text back to a file.\n"
         << "- Use `$env:ACECODE_TMPDIR` for temporary scripts; ACECode rejects this placeholder "
         << "if no active session scratch directory is available.\n";
     if (!multiline_tool.empty()) {
