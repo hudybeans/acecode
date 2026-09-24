@@ -12,6 +12,7 @@
 #include "utils/logger.hpp"
 #include "utils/stream_processing.hpp"
 #include "utils/text_file_buffer.hpp"
+#include "utils/tool_errors.hpp"
 #include "utils/uuid.hpp"
 #include "commands/compact.hpp"
 #include "session/compact_checkpoint.hpp"
@@ -4523,7 +4524,10 @@ bool AgentLoop::execute_tool_calls(
             }
         } else {
             LOG_WARN("Unknown tool: " + tool_name);
-            return ToolResult{"Unknown tool: " + tool_name, false};
+            return ToolResult{
+                ToolErrors::unknown_tool(tool_name,
+                                         current_request_model_tool_names_),
+                false};
         }
     };
 
@@ -6162,6 +6166,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // Phase 2: Build API request messages
         auto bundle = build_api_request_messages(emergency_request_profile);
         publish_side_question_context(bundle.messages_with_system);
+        current_request_model_tool_names_.clear();
+        current_request_model_tool_names_.reserve(bundle.tool_defs.size());
+        for (const auto& def : bundle.tool_defs) {
+            current_request_model_tool_names_.push_back(def.name);
+        }
 
         // Get provider snapshot
         std::shared_ptr<LlmProvider> provider_snapshot;

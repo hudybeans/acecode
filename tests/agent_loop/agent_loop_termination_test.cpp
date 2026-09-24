@@ -25,6 +25,7 @@
 #include "stub_provider.hpp"
 #include "tool/task_complete_tool.hpp"
 #include "tool/tool_executor.hpp"
+#include "tool/tool_protocol_names.hpp"
 #include "permissions.hpp"
 #include "provider/llm_provider.hpp"
 #include "provider/retry_policy.hpp"
@@ -1369,6 +1370,77 @@ TEST(AgentLoopTermination, AskUserQuestionDoesNotTerminate) {
     ASSERT_TRUE(h.submit_and_wait("do it"));
     EXPECT_EQ(h.turn_count(), 2);
     EXPECT_EQ(h.count_nudges(), 0);
+}
+
+namespace {
+
+std::string first_tool_result_content(const std::vector<ChatMessage>& messages) {
+    for (const auto& m : messages) {
+        if (m.role == "tool") return m.content;
+    }
+    return {};
+}
+
+} // namespace
+
+// 场景:模型调了一个不存在的工具 `nope`(yubo2 现场是 `exec`)。
+// 期望:工具结果除了 Unknown tool 外,还列出**本次请求**发给模型的模型侧工具名
+// (noop / task_complete),让模型照抄;「工具重写」生效时列表里是模型侧名
+// do_nothing,不出现它不认识的原生名 noop。
+// 回归:旧文案只有 "Unknown tool: nope",模型只能继续瞎猜工具名。
+TEST(AgentLoopTermination, UnknownToolErrorListsModelFacingNames) {
+    {
+        acecode::ScopedModelToolNameMappings none(acecode::ToolProtocolNameMappings{});
+        AgentLoopHarness h;
+        h.push_tool_call("nope", "{}", "c-unknown");
+        h.push_text("done");
+        ASSERT_TRUE(h.submit_and_wait("do it"));
+
+        const std::string result = first_tool_result_content(h.persisted_messages());
+        EXPECT_NE(result.find("Unknown tool: nope"), std::string::npos) << result;
+        EXPECT_NE(result.find("Available tools:"), std::string::npos) << result;
+        EXPECT_NE(result.find("noop"), std::string::npos) << result;
+        EXPECT_NE(result.find("task_complete"), std::string::npos) << result;
+    }
+    {
+        acecode::ScopedModelToolNameMappings mapped{{"noop", "do_nothing"}};
+        AgentLoopHarness h;
+        h.push_tool_call("nope", "{}", "c-unknown");
+        h.push_text("done");
+        ASSERT_TRUE(h.submit_and_wait("do it"));
+
+        const std::string result = first_tool_result_content(h.persisted_messages());
+        EXPECT_NE(result.find("Available tools:"), std::string::npos) << result;
+        EXPECT_NE(result.find("do_nothing"), std::string::npos) << result;
+        EXPECT_EQ(result.find("noop"), std::string::npos) << result;
+    }
+}
+
+// 场景:模型把工具名写成 `NOOP`(只大小写不同,且只有一个候选)。
+// 期望:大小写容错解析到原生 noop 并成功执行,结果里没有 Unknown tool。
+// 回归:旧实现原样透传 `NOOP`,工具不执行、报 Unknown tool。
+TEST(AgentLoopTermination, MixedCaseToolCallExecutesRegisteredTool) {
+    acecode::ScopedModelToolNameMappings none(acecode::ToolProtocolNameMappings{});
+    AgentLoopHarness h;
+    h.push_tool_call("NOOP", "{}", "c-mixed");
+    h.push_text("done");
+    ASSERT_TRUE(h.submit_and_wait("do it"));
+
+    const auto messages = h.persisted_messages();
+    const std::string result = first_tool_result_content(messages);
+    EXPECT_EQ(result.find("Unknown tool"), std::string::npos) << result;
+    EXPECT_NE(result.find("ok"), std::string::npos) << result;
+    bool saw_native_call = false;
+    for (const auto& m : messages) {
+        if (m.role != "assistant" || !m.tool_calls.is_array()) continue;
+        for (const auto& tc : m.tool_calls) {
+            if (tc.value("function", nlohmann::json::object())
+                    .value("name", std::string()) == "noop") {
+                saw_native_call = true;
+            }
+        }
+    }
+    EXPECT_TRUE(saw_native_call);
 }
 
 // 场景 (e):用户 abort 立刻生效。让 stub 的 chat_stream 阻塞 ~200ms 轮询

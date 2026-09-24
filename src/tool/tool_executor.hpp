@@ -305,7 +305,10 @@ public:
         const ToolCapabilityPolicy* policy = nullptr) const;
 
     // Accept an exact registered native name first, then resolve a compatible
-    // public alias only when its native handler is registered.
+    // public alias only when its native handler is registered. 两步都没命中时
+    // 再做一次 ASCII 大小写不敏感匹配(原生名 + 当前映射的 public 名),候选
+    // **恰好一个**才采用(模型写 Bash → bash);同时有 foo / Foo 时不猜,
+    // 原样返回(fail-open,由调用方报 Unknown tool)。
     std::string resolve_model_tool_name_to_native(
         const std::string& model_name) const;
 

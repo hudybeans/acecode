@@ -894,6 +894,10 @@ private:
     ToolPreambleTitle current_step_preamble_;
     // 落盘前没等到结果的旁路任务:工具执行完再看一眼,到了就补发 late 事件。
     std::shared_ptr<ToolPreambleSidecarTask> late_sidecar_task_;
+    // 本次模型请求实际发出的模型侧工具名(bundle.tool_defs[i].name,已经过
+    // 「工具重写」映射)。主循环每次组装请求后刷新;只在 worker 线程的工具批次
+    // 之间写入,并行工具线程只读。Unknown tool 错误文本据此列出可用名。
+    std::vector<std::string> current_request_model_tool_names_;
     LoopExecutionPolicy loop_execution_policy_;
     // spawn_subagent 透传的父会话写边界根;见 write_root()。
     std::string inherited_write_root_;
