@@ -310,6 +310,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
 
     // 日志进文件,不镜像 stderr —— stdout/stderr 必须保持干净给管道消费。
     Logger::instance().init_with_rotation(get_logs_dir(), "headless", /*mirror_stderr=*/false);
+    // 数据目录重定向的解析告警发生在日志初始化之前(被 Logger 丢掉),这里补记。
+    acecode::log_deferred_data_dir_resolution_warning();
     Logger::instance().set_level(LogLevel::Dbg);
 
     headless::set_active(true);

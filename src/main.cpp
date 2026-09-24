@@ -102,6 +102,7 @@
 #include "tool/web_search/region_detector.hpp"
 #include "tool/web_search/web_search_tool.hpp"
 #include "utils/logger.hpp"
+#include "utils/paths.hpp"
 #include "permissions.hpp"
 #include "agent_loop.hpp"
 #include "tui/tui_ask_channel.hpp"
@@ -3054,6 +3055,8 @@ static void set_startup_terminal_title() {
 static void initialize_logger_for_working_dir(const std::string& working_dir) {
     const std::string logs_dir = get_logs_dir();
     Logger::instance().init_with_rotation(logs_dir, "tui", /*mirror_stderr=*/false);
+    // 数据目录重定向的解析告警发生在日志初始化之前(被 Logger 丢掉),这里补记。
+    acecode::log_deferred_data_dir_resolution_warning();
 #ifdef _WIN32
     _putenv_s("ACECODE_FTXUI_INPUT_TRACE_DIR", logs_dir.c_str());
 #else

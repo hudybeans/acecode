@@ -86,7 +86,21 @@ std::string resolve_default_data_dir(RunMode mode);
 // 默认目录随环境变量变化时会重新解析(测试改 HOME 之后仍正确)。
 std::string resolve_data_dir(RunMode mode);
 
-// 测试专用:清掉 resolve_data_dir 的缓存(写了指针之后重新解析)。
+// 重定向解析告警的补记。resolve_data_dir 在「指针目标不可用」和「指针文件存在
+// 但读不出 / 内容无效」两种情况下回退默认目录;这发生在 Logger 初始化之前(日志
+// 目录本身就由它决定),当场的 LOG_WARN 会被静默丢掉。所以首次发生时把告警文本
+// 另存一份,等入口初始化日志之后再补记。
+//
+// take_...:取出待补告警并清空(没有则 nullopt)。
+// log_deferred_...:取出后以 `[paths] (deferred) ` 前缀 LOG_WARN;没有则什么都不做。
+// 调用点:worker / main(TUI)/ headless / Windows 服务(service_win.cpp)四处
+// init_with_rotation 的下一行。服务那处不能省:它的 config 校验失败会在 run_worker 之前返回。
+// 不要挪进 environment bootstrap:daemon 的 bootstrap 早于日志初始化。
+std::optional<std::string> take_data_dir_resolution_warning();
+void log_deferred_data_dir_resolution_warning();
+
+// 测试专用:清掉 resolve_data_dir 的缓存(写了指针之后重新解析),同时清空待补
+// 的解析告警,避免跨测试污染。
 void reset_data_dir_cache_for_test();
 
 // 进程级 run/ 目录覆盖。非空时 config::get_run_dir() 直接返回这个,而不再
