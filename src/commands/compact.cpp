@@ -468,6 +468,9 @@ CompactResult compact_messages(
     const std::vector<ChatMessage> original_history =
         normalize_messages_for_api(messages);
     std::vector<ChatMessage> request_history = original_history;
+    // 被总结的模型同样不该看到旧的文本工具调用样本(与主请求同一套清洗),
+    // 否则 dots 这类模型会接着把调用写进摘要(yubo2 现场)。
+    sanitize_text_tool_call_history(request_history, get_compact_summary_prefix());
 
     if (provider.supports_native_compaction()) {
         LOG_WARN("Provider advertises native compaction but the active LlmProvider contract "

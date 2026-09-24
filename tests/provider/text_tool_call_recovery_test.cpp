@@ -665,3 +665,112 @@ TEST(TextToolCallRecoveryTest, ChunkingDoesNotChangeOutcome) {
         }
     }
 }
+
+// ---- 历史清洗(Commit F) --------------------------------------------------
+
+namespace {
+
+using acecode::ChatMessage;
+using acecode::kTextToolCallHistoryPlaceholder;
+using acecode::sanitize_text_tool_call_history;
+
+const std::string kTestSummaryPrefix = "[Conversation summary]";
+
+ChatMessage history_msg(std::string role, std::string content) {
+    ChatMessage m;
+    m.role = std::move(role);
+    m.content = std::move(content);
+    return m;
+}
+
+std::string legacy_bash_call() {
+    return "\n\n\n<invoke name=\"Bash\">\n<parameter name=\"command\">\n"
+           "Get-ChildItem src\n</parameter>\n</invoke>";
+}
+
+} // namespace
+
+// 场景:修复上线前落盘的老会话里,assistant 消息整条就是一段文本调用(yubo2 现场
+// 第 1760 行的形态,也包括带 <dots_function_call> 外壳的、以及写到一半被截断的)。
+// 期望:发给模型前换成固定说明,不再保留可模仿的调用样本。
+// 回归表现:升级后老会话在下一次压缩前,模型继续照着历史里的 11 条样本写文本调用。
+TEST(TextToolCallRecoveryTest, SanitizeReplacesPureTextCallAssistant) {
+    std::vector<ChatMessage> history{
+        history_msg("assistant", legacy_bash_call()),
+        history_msg("assistant",
+                    "\n<dots_function_call>\n<invoke name=\"Bash\">\n"
+                    "<parameter name=\"command\">\nls\n</parameter>\n</invoke>\n"
+                    "</dots_function_call>"),
+        history_msg("assistant",
+                    "\n<invoke name=\"Bash\">\n<parameter name=\"command\">\nls"),
+    };
+    sanitize_text_tool_call_history(history, kTestSummaryPrefix);
+    for (const auto& m : history) {
+        EXPECT_EQ(m.content, kTextToolCallHistoryPlaceholder);
+    }
+}
+
+// 场景:用户自己粘贴的标记、块前有正文的解释性回复、带原生 tool_calls 的消息、
+// 代码围栏里的示例。期望:一律原样保留 —— 它们是数据或解释,不是模仿样本。
+TEST(TextToolCallRecoveryTest, SanitizeKeepsUserPastedMarkupAndProse) {
+    ChatMessage with_native = history_msg("assistant", legacy_bash_call());
+    with_native.tool_calls = nlohmann::json::array(
+        {{{"id", "c1"}, {"type", "function"},
+          {"function", {{"name", "bash"}, {"arguments", "{}"}}}}});
+    std::vector<ChatMessage> history{
+        history_msg("user", legacy_bash_call()),
+        history_msg("assistant", "Here is an example:\n" + legacy_bash_call()),
+        with_native,
+        history_msg("assistant", "```xml\n" + legacy_bash_call() + "\n```"),
+        history_msg("assistant", "plain answer without markup"),
+    };
+    const auto before = history;
+    sanitize_text_tool_call_history(history, kTestSummaryPrefix);
+    ASSERT_EQ(history.size(), before.size());
+    for (std::size_t i = 0; i < history.size(); ++i) {
+        EXPECT_EQ(history[i].content, before[i].content) << "message " << i;
+    }
+}
+
+// 场景:压缩摘要被工具调用文本污染(yubo2 第 1002 行:摘要正文只剩
+// <dots_function_call>…;以及摘要正文后面跟着一段调用)。期望:只剩调用块时
+// 换成固定说明 + "(summary unavailable)";块前有正文时保留正文、末尾换成固定
+// 说明;只打 is_compact_summary 标记、没有前缀的摘要同样处理。
+TEST(TextToolCallRecoveryTest, SanitizeScrubsPollutedSummary) {
+    const std::string head = kTestSummaryPrefix + "\n";
+    ChatMessage flagged = history_msg("user", legacy_bash_call());
+    flagged.is_compact_summary = true;
+    std::vector<ChatMessage> history{
+        history_msg("user", head +
+                    "<dots_function_call>\n<invoke name=\"Bash\">\n"
+                    "<parameter name=\"command\">\nls\n</parameter>\n</invoke>\n"
+                    "</dots_function_call>"),
+        history_msg("user", head + "Done so far: listed src.\n" + legacy_bash_call()),
+        flagged,
+    };
+    sanitize_text_tool_call_history(history, kTestSummaryPrefix);
+    EXPECT_EQ(history[0].content, head + kTextToolCallHistoryPlaceholder +
+                                      std::string("\n(summary unavailable)"));
+    EXPECT_EQ(history[1].content, head + "Done so far: listed src.\n\n" +
+                                      kTextToolCallHistoryPlaceholder);
+    EXPECT_EQ(history[2].content, std::string(kTextToolCallHistoryPlaceholder) +
+                                      "\n(summary unavailable)");
+}
+
+// 场景:清洗在每次请求时都会跑一遍(model_facing_provider_messages)。期望:
+// 幂等、只由内容决定 —— 再跑一次结果逐字节相同,不打穿 prompt cache 前缀。
+TEST(TextToolCallRecoveryTest, SanitizeIsIdempotentAndByteStable) {
+    std::vector<ChatMessage> history{
+        history_msg("assistant", legacy_bash_call()),
+        history_msg("user", kTestSummaryPrefix + "\nnotes\n" + legacy_bash_call()),
+        history_msg("user", "keep me"),
+    };
+    sanitize_text_tool_call_history(history, kTestSummaryPrefix);
+    const auto once = history;
+    sanitize_text_tool_call_history(history, kTestSummaryPrefix);
+    ASSERT_EQ(history.size(), once.size());
+    for (std::size_t i = 0; i < history.size(); ++i) {
+        EXPECT_EQ(history[i].content, once[i].content) << "message " << i;
+    }
+    EXPECT_EQ(history[2].content, "keep me");
+}

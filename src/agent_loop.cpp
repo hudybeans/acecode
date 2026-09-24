@@ -15,6 +15,7 @@
 #include "utils/tool_errors.hpp"
 #include "utils/uuid.hpp"
 #include "commands/compact.hpp"
+#include "commands/compact_prompt.hpp"
 #include "session/compact_checkpoint.hpp"
 #include "session/compact_notice.hpp"
 #include "session/system_notice.hpp"
@@ -99,6 +100,9 @@ std::vector<ChatMessage> model_facing_provider_messages(
     const std::vector<ChatMessage>& messages,
     const char* boundary) {
     auto history = recovered_provider_messages(messages, boundary);
+    // 旧的纯文本工具调用 / 被污染的摘要换成固定说明(只由内容决定、逐字节
+    // 稳定),模型不再照着历史里的样本继续写文本调用。
+    sanitize_text_tool_call_history(history, get_compact_summary_prefix());
     rewrite_tool_calls_for_model(history);
     return history;
 }

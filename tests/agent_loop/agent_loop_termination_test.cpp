@@ -29,6 +29,7 @@
 #include "permissions.hpp"
 #include "provider/llm_provider.hpp"
 #include "provider/retry_policy.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include "session/session_manager.hpp"
 #include "session/tool_result_storage.hpp"
 #include "session/turn_net_diff.hpp"
@@ -2185,4 +2186,48 @@ TEST(AgentLoopTermination, CorrectionDoesNotUnderflowIterationCounter) {
     EXPECT_EQ(h.count_by_role("error"), 0);
     EXPECT_TRUE(notice_params_for(h.snapshot_events(), "iteration_limit").empty());
     EXPECT_EQ(h.last_system_message().find("max_iterations"), std::string::npos);
+}
+
+// 场景:修复上线前落盘的老会话里有一条 assistant 消息整条是文本工具调用(测试
+// stub 不经过 provider 的文本调用恢复,原样返回,等价于旧版本落盘的消息)。
+// 期望:下一回合发给模型的历史里它被换成固定说明,不再出现 <invoke;同一回合
+// 相邻两次请求的公共前缀逐字节相同(清洗只由内容决定);落盘的历史保持原样。
+// 回归表现:yubo2 的活跃会话在下一次压缩前,模型一直照着历史里的样本写文本调用。
+TEST(AgentLoopTermination, LegacyTextToolCallHistoryIsScrubbedInRequest) {
+    AgentLoopHarness h;
+    h.push_text("\n\n<invoke name=\"Bash\">\n<parameter name=\"command\">\nls\n"
+                "</parameter>\n</invoke>");
+    ASSERT_TRUE(h.submit_and_wait("look around"));
+
+    h.push_tool_call("noop", "{}", "c1");
+    h.push_text("done");
+    ASSERT_TRUE(h.submit_and_wait("continue"));
+    ASSERT_EQ(h.turn_count(), 3);
+
+    const auto second = h.request_messages_for_turn(1);
+    const auto third = h.request_messages_for_turn(2);
+    bool found_placeholder = false;
+    for (const auto& m : second) {
+        EXPECT_EQ(m.content.find("<invoke"), std::string::npos)
+            << "legacy text tool call leaked into the request";
+        if (m.role == "assistant" &&
+            m.content == acecode::kTextToolCallHistoryPlaceholder) {
+            found_placeholder = true;
+        }
+    }
+    EXPECT_TRUE(found_placeholder);
+
+    ASSERT_GT(third.size(), second.size());
+    for (std::size_t i = 0; i < second.size(); ++i) {
+        EXPECT_EQ(second[i].content, third[i].content)
+            << "prompt prefix changed at message " << i;
+    }
+
+    bool raw_persisted = false;
+    for (const auto& m : h.persisted_messages()) {
+        if (m.role == "assistant" && m.content.find("<invoke") != std::string::npos) {
+            raw_persisted = true;
+        }
+    }
+    EXPECT_TRUE(raw_persisted) << "sanitizing must not rewrite persisted history";
 }

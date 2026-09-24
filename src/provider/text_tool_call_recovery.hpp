@@ -121,4 +121,22 @@ std::string build_text_tool_call_correction_prompt(
 std::string build_text_tool_call_ignored_note(
     const TextToolCallDiagnostic& diagnostic);
 
+// 发给模型的历史里确定性清洗旧的文本工具调用(fix-feedback-0924 第 3 条)。
+// 修复上线前落盘的会话里留着模型把调用写成正文的 assistant 消息、以及内容被
+// 调用文本污染的压缩摘要;只要它们还在历史里,模型就会照着继续写文本调用
+// (yubo2 现场「越模仿越多、换模型也照样模仿」)。规则:
+//   - role=assistant、没有 tool_calls、去掉调用块后只剩空白(块前只有空白,
+//     语法完整或写到一半被截断都算)→ content 换成 kTextToolCallHistoryPlaceholder;
+//   - 压缩摘要(is_compact_summary,或 content 以 summary_prefix + "\n" 开头):
+//     摘要正文末尾的调用块换成同一句话,块前的正文保留;正文只剩调用块时
+//     再补 "(summary unavailable)";
+//   - user 消息一律不动(用户粘贴的标记属于数据);已有 tool_calls 的消息不动;
+//     块前有正文的非摘要消息不动(那是被拒纠正路径已处理过的,或是解释性内容)。
+// 结果只由消息内容决定、逐字节稳定、幂等:受影响的老会话升级后只丢一次
+// prompt cache,之后前缀照常稳定。
+inline constexpr const char* kTextToolCallHistoryPlaceholder =
+    "(A tool call was written here as plain text and was not executed.)";
+void sanitize_text_tool_call_history(std::vector<ChatMessage>& history,
+                                     const std::string& summary_prefix);
+
 } // namespace acecode

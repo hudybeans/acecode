@@ -1320,4 +1320,68 @@ std::string build_text_tool_call_ignored_note(
            "need them, issue them through the native tool-calling interface.";
 }
 
+// ---- 历史清洗 ---------------------------------------------------------------
+
+namespace {
+
+bool is_blank_text(std::string_view text) {
+    return text.find_first_not_of(" \t\r\n") == std::string_view::npos;
+}
+
+std::string rtrim_copy(std::string_view text) {
+    const auto last = text.find_last_not_of(" \t\r\n");
+    if (last == std::string_view::npos) return {};
+    return std::string(text.substr(0, last + 1));
+}
+
+// 对一段正文做结构判定(不校验工具名,工具表传空):有调用块、块前只有空白
+// 时返回 true,visible_out 为块前的可见正文;块前有正文时同样返回 true,
+// visible_out 为那段正文(摘要场景要保留它)。没有调用块返回 false。
+bool strip_trailing_text_tool_call(std::string_view text, std::string& visible_out) {
+    static const std::vector<ToolDef> kNoTools;
+    auto result = recover_text_tool_calls(text, kNoTools);
+    if (result.diagnostic.outcome == TextToolCallDiagnostic::Outcome::None) {
+        return false;
+    }
+    visible_out = std::move(result.visible_text);
+    return true;
+}
+
+} // namespace
+
+void sanitize_text_tool_call_history(std::vector<ChatMessage>& history,
+                                     const std::string& summary_prefix) {
+    const std::string placeholder = kTextToolCallHistoryPlaceholder;
+    const std::string summary_head = summary_prefix + "\n";
+    for (auto& msg : history) {
+        // 快速路径:没有 '<' 就不可能有调用块。
+        if (msg.content.find('<') == std::string::npos) continue;
+        const bool has_head = !summary_prefix.empty() &&
+            msg.content.rfind(summary_head, 0) == 0;
+        const bool is_summary = msg.is_compact_summary || has_head;
+        if (is_summary) {
+            const std::string head = has_head ? summary_head : std::string{};
+            const std::string_view body =
+                std::string_view(msg.content).substr(head.size());
+            std::string visible;
+            if (!strip_trailing_text_tool_call(body, visible)) continue;
+            std::string kept = rtrim_copy(visible);
+            std::string rebuilt = head;
+            if (kept.empty()) {
+                rebuilt += placeholder + "\n(summary unavailable)";
+            } else {
+                rebuilt += kept + "\n\n" + placeholder;
+            }
+            msg.content = std::move(rebuilt);
+            continue;
+        }
+        if (msg.role != "assistant") continue;
+        if (msg.tool_calls.is_array() && !msg.tool_calls.empty()) continue;
+        std::string visible;
+        if (!strip_trailing_text_tool_call(msg.content, visible)) continue;
+        if (!is_blank_text(visible)) continue; // 块前有正文:不是纯文本调用
+        msg.content = placeholder;
+    }
+}
+
 } // namespace acecode
