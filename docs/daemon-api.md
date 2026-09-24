@@ -249,6 +249,8 @@ update their transcript presentation.
 | GET | `/api/workspaces/:hash/draft` | read the workspace's single new-session draft |
 | PUT | `/api/workspaces/:hash/draft` | replace the new-session draft without creating a session |
 | DELETE | `/api/workspaces/:hash/draft` | clear only a matching submitted new-session draft |
+| POST | `/api/workspaces/:hash/draft/attachments` | store pasted text for the new-session draft |
+| GET | `/api/workspaces/:hash/draft/attachments/:attachment_id/blob` | download a new-session draft attachment |
 | GET | `/api/workspaces/:hash/sessions` | list sessions in workspace; `limit=N` returns `{sessions,total,total_exact,has_more}` |
 | POST | `/api/workspaces/:hash/sessions` | create workspace session |
 | POST | `/api/workspaces/:hash/sessions/:id/resume` | resume workspace session |
@@ -289,7 +291,7 @@ update their transcript presentation.
 | POST | `/api/sessions/:id/turn/steer` | append input to the matching active turn |
 | POST | `/api/sessions/:id/turn/interrupt` | interrupt the matching active turn and start a priority replacement turn |
 | POST | `/api/sessions/:id/questions/interject` | resolve a pending AskUserQuestion with a free-form message and continue the same turn |
-| POST | `/api/sessions/:id/attachments` | upload a session snapshot or create a Desktop source reference |
+| POST | `/api/sessions/:id/attachments` | upload a session snapshot, create a Desktop source reference, or import a new-session draft attachment |
 | GET | `/api/sessions/:id/attachments/:attachment_id/blob` | download attachment bytes |
 | POST | `/api/sessions/:id/commands` | run daemon builtin slash command |
 | POST | `/api/sessions/:id/side-question` | run isolated one-turn `/btw` question |
@@ -1101,7 +1103,50 @@ log a warning and treat it as empty: PUT overwrites it and DELETE reports
 The home composer autosaves in order and restores on entry. A late response
 cannot replace newer edits; failed sends retain the draft. Structured references
 are durable, but unsent browser File bytes keep their existing in-memory
-lifetime: after reload an unavailable upload must be attached again.
+lifetime: after reload an unavailable upload must be attached again. Pasted text
+too large to stay inline is the exception: it is stored on the server as a
+new-session draft attachment and survives reloads (below).
+
+#### New-session draft attachments
+
+`POST /api/workspaces/:hash/draft/attachments` stores one pasted-text file for
+the new-session draft (`hash` may be `__no_workspace__`). The body is a snapshot
+upload that must be pasted text:
+
+```json
+{"name":"pasted-text-20260924-101010.txt","mime_type":"text/plain",
+ "data_base64":"...","origin":"pasted_text",
+ "paste":{"chars":120000,"lines":2400,"part":1,"parts":2}}
+```
+
+`origin:"pasted_text"` is required and the MIME type must be `text/plain`;
+`source_path`, `reference_only` and `from_workspace_draft` are rejected (`400`).
+`paste` follows the session upload rules below. Returns `201 {"attachment":{...}}`
+whose `blob_url` is
+`/api/workspaces/:hash/draft/attachments/:attachment_id/blob`; that `GET` route
+returns the raw bytes like the session blob route. The `blob_url` stored in the
+attachment's own metadata file is session-shaped and is never served: clients
+compute the workspace URL from the draft part's `store_scope` and `id`.
+
+Storage: a real workspace uses `projects/<hash>/attachments/.workspace-draft/`.
+No-workspace drafts use `attachments/.workspace-draft/` under the project data
+directory of the no-workspace cache root, not the cache root itself (every
+subdirectory there is read as a no-workspace session cwd). The owner name starts
+with a dot, so it can never equal a session ID.
+
+The draft references the file through an attachment part with
+`"store":"workspace_draft"` and `"store_scope"`. Before sending, the client copies
+it into the target session with `POST /api/sessions/:id/attachments`
+`{"from_workspace_draft":{"workspace":"<store_scope>","id":"..."}}` and sends the
+new session attachment ID. The scope comes from the part, not from the session:
+a no-workspace draft may be sent into a real workspace. The message route never
+accepts a draft attachment ID directly (`404`).
+
+Cleanup: after a successful draft PUT, or a DELETE that cleared the draft, the
+daemon removes draft attachments that the saved draft no longer references and
+whose metadata file is older than 10 minutes. The age gate protects an upload
+whose referencing draft save is still debounced or in flight. Failures are only
+logged.
 
 Workspace-scoped and compatibility paths share the same behavior:
 
@@ -1448,6 +1493,12 @@ deduplicate backend execution; callers that omit it retain the existing behavior
 
 If the text is a skill slash command for the session workspace, the daemon
 expands it to the skill invocation prompt and records `metadata.display_text`.
+Skill and OpenCode command expansion is skipped when the message has
+`attachments` or `contexts`, except when every attachment is a stored pasted-text
+attachment (`metadata.origin == "pasted_text"`, read from the session's records):
+such a file is the user's own material, so `/<skill> args` expands the same way
+whether a paste stayed inline or became a file. Expansion is also skipped when
+the first non-empty composer piece is an inline pasted block.
 Returns `202 {"queued":true}`.
 
 ### `POST /api/sessions/:id/turn/steer`
@@ -1741,6 +1792,20 @@ bytes. There is no 25 MiB snapshot limit for this form:
   "reference_only": true
 }
 ```
+
+A snapshot upload may be marked as pasted text with `"origin":"pasted_text"`
+and an optional `"paste":{"chars","lines","part","parts"}` (non-negative
+integers; `part`/`parts` together, `1 <= part <= parts <= 1024`; other keys
+dropped). The MIME type must then be `text/plain`. The record's `metadata` gets
+`"origin":"pasted_text"` and `"pasted_text":{...}`. Any other `origin`, `paste`
+without `origin`, or `origin` on a `reference_only` request returns `400`.
+
+To import a new-session draft attachment (see "New-session draft attachments"),
+send only `{"from_workspace_draft":{"workspace":"<hash or __no_workspace__>","id":"att-..."}}`.
+The pasted-text file is copied into this session under a new ID, keeping its
+metadata. Combining it with `data_base64`, `source_path`, `reference_only`,
+`origin` or `paste`, or a malformed value, returns `400`; an unknown workspace,
+attachment or missing file returns `404`.
 
 Returns `201`:
 

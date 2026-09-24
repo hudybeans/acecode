@@ -163,6 +163,21 @@ struct ParsedSessionUserInputRequest {
     std::string question_request_id;
 };
 
+// Where a home (workspace) draft lives. draft_dir holds input_draft.json;
+// attachment_project_dir is the project dir whose attachments/.workspace-draft/
+// holds the draft's pasted-text attachments. For a real workspace both are
+// projects_dir()/<hash>. For "__no_workspace__" the draft stays in the
+// no-workspace cache root, but the attachments go to the project dir of that
+// root: every subdirectory of the cache root is treated as a no-workspace
+// session cwd (list_no_workspace_session_cwds), so an attachments/ folder there
+// would show up as a phantom session.
+struct WorkspaceDraftLocation {
+    std::filesystem::path draft_dir;
+    std::filesystem::path attachment_project_dir;
+    // Empty for "__no_workspace__" (the draft route reports it that way).
+    std::string workspace_hash;
+};
+
 // =====================================================================
 // Anonymous-namespace free functions shared across route TUs
 // (defined in server_helpers.cpp, declared here so routes can use them)
@@ -384,6 +399,7 @@ struct WebServer::Impl {
     std::string projects_dir() const;
     acecode::desktop::WorkspaceMeta compatibility_workspace() const;
     std::optional<acecode::desktop::WorkspaceMeta> resolve_workspace(const std::string& hash) const;
+    std::optional<WorkspaceDraftLocation> workspace_draft_location(const std::string& hash) const;
     bool archived_query_requested(const crow::request& req) const;
     UsageLedgerQuery usage_query_from_request(const crow::request& req) const;
     std::vector<UsageLedgerScope> usage_scopes_for_request(const std::string& workspace_hash) const;

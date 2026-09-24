@@ -43,6 +43,7 @@
 #include "provider/models_dev_registry.hpp"
 #include "session/local_session_client.hpp"
 #include "session/attachment_store.hpp"
+#include "session/pasted_text_attachment.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_pin_store.hpp"
 #include "session/session_registry.hpp"
@@ -62,6 +63,7 @@
 #include "tool/task_suggestion_tools.hpp"
 #include "upgrade/manifest.hpp"
 #include "../agent_loop/stub_provider.hpp"
+#include "utils/base64.hpp"
 #include "utils/encoding.hpp"
 #include "utils/cwd_hash.hpp"
 #include "utils/state_file.hpp"
@@ -11637,6 +11639,338 @@ TEST(WebServerHttp, WorkspaceDraftPutOverwritesUnreadableOldDraft) {
     const auto read_back = cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000});
     ASSERT_EQ(read_back.status_code, 200) << read_back.text;
     EXPECT_EQ(json::parse(read_back.text)["text"], "fresh draft");
+}
+
+namespace {
+
+// 以 origin=pasted_text 上传一段粘贴文本;返回 201 响应里的 attachment(失败为 null)。
+json upload_pasted_text(WebServerFixture& fx, const std::string& endpoint,
+                        const std::string& text, const std::string& name = "pasted-text.txt") {
+    const auto response = cpr::Post(cpr::Url{fx.url(endpoint)},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"name", name}, {"mime_type", "text/plain"},
+            {"data_base64", acecode::base64_encode(text)}, {"origin", "pasted_text"},
+            {"paste", {{"chars", text.size()}, {"lines", 1}}}}.dump()},
+        cpr::Timeout{10000});
+    if (response.status_code != 201) {
+        ADD_FAILURE() << "upload " << endpoint << " -> " << response.status_code << " " << response.text;
+        return nullptr;
+    }
+    return json::parse(response.text)["attachment"];
+}
+
+json paste_attachment_part(const json& attachment, const std::string& key) {
+    return json{{"type", "attachment"}, {"key", key},
+        {"id", attachment["id"]}, {"name", attachment["name"]}, {"kind", "file"},
+        {"mime_type", "text/plain"}, {"paste", {{"title", "粘贴的日志"}, {"chars", 3}, {"lines", 1}}}};
+}
+
+std::vector<std::string> subdirectory_names(const std::filesystem::path& dir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (entry.is_directory()) names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+} // namespace
+
+// 触发场景:会话内粘贴 200 KiB 文本,前端以 origin=pasted_text 上传成附件,再发
+// 「看下这个」+ 该附件(composer 里是带 paste 描述的 attachment 部件)。
+// 期望:上传 201 且记录带 metadata.origin / pasted_text;blob 读回逐字节相等;发送
+// 202,消息正文只有编辑器文本(粘贴正文不进 content),content_parts 带 file 部件
+// 且附件元数据 origin=pasted_text,composer 部件保留 paste 描述。
+TEST(WebServerHttp, PastedTextUploadIsSentAsFileReference) {
+    WebServerFixture fx;
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    std::string pasted;
+    while (pasted.size() < 200 * 1024) pasted += "2026-09-24 ERROR 日志行\n";
+    const auto attachment = upload_pasted_text(fx, "/api/sessions/" + sid + "/attachments", pasted);
+    ASSERT_TRUE(attachment.is_object());
+    EXPECT_EQ(attachment["metadata"]["origin"], "pasted_text");
+    EXPECT_EQ(attachment["metadata"]["pasted_text"]["lines"], 1);
+    const auto blob = cpr::Get(cpr::Url{fx.url(attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(blob.status_code, 200);
+    EXPECT_EQ(blob.text, pasted);
+
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "看下这个"}},
+        paste_attachment_part(attachment, "paste-1"),
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "看下这个"}, {"composer_content", content},
+            {"attachments", json::array({attachment["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    EXPECT_EQ(users[0].content, "看下这个");
+    bool has_file_part = false;
+    for (const auto& part : users[0].content_parts) {
+        if (part.value("type", "") != "file") continue;
+        has_file_part = true;
+        EXPECT_EQ(part["attachment"]["id"], attachment["id"]);
+        EXPECT_EQ(part["attachment"]["metadata"]["origin"], "pasted_text");
+    }
+    EXPECT_TRUE(has_file_part);
+    EXPECT_EQ(users[0].metadata["attachments"][0]["metadata"]["origin"], "pasted_text");
+    const auto& part = users[0].metadata["composer_content"]["parts"][1];
+    EXPECT_EQ(part["paste"]["title"], "粘贴的日志");
+    EXPECT_FALSE(part.contains("store"));
+}
+
+// 触发场景:首页(还没有会话)粘贴大段文本 → 上传到工作区草稿附件区 → 首页草稿引用
+// 它 → 新建会话 → 发送前用 from_workspace_draft 导入 → 以新 id 发送;之后草稿不再
+// 引用它,且它已超过 10 分钟年龄门。
+// 期望:草稿附件区只收 pasted_text 快照(没有 origin、带 source_path 都 400);响应
+// blob_url 是工作区路由且读回相等;草稿 GET 带回 store / store_scope;导入得到本会话
+// 的新 id,内容相等、来源元数据随行;发送 202 且消息里的部件不再带 store;再次保存
+// 不引用它的草稿后,旧草稿附件被回收,会话里的副本不受影响。
+TEST(WebServerHttp, WorkspaceDraftPasteSurvivesAndImportsIntoNewSession) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const std::string pasted(150 * 1024, 'p');
+
+    const auto no_origin = cpr::Post(cpr::Url{fx.url(draft_endpoint + "/attachments")}, headers,
+        cpr::Body{json{{"name", "a.txt"}, {"mime_type", "text/plain"},
+            {"data_base64", acecode::base64_encode("abc")}}.dump()});
+    EXPECT_EQ(no_origin.status_code, 400) << no_origin.text;
+    const auto reference = cpr::Post(cpr::Url{fx.url(draft_endpoint + "/attachments")}, headers,
+        cpr::Body{json{{"name", "a.txt"}, {"mime_type", "text/plain"}, {"origin", "pasted_text"},
+            {"source_path", fx.cwd}, {"reference_only", true}}.dump()});
+    EXPECT_EQ(reference.status_code, 400) << reference.text;
+
+    const auto draft_attachment = upload_pasted_text(fx, draft_endpoint + "/attachments", pasted);
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto draft_id = draft_attachment["id"].get<std::string>();
+    EXPECT_EQ(draft_attachment["blob_url"],
+              "/api/workspaces/" + hash + "/draft/attachments/" + draft_id + "/blob");
+    const auto draft_blob = cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(draft_blob.status_code, 200);
+    EXPECT_EQ(draft_blob.text, pasted);
+    const auto draft_dir = fx.projects_dir / hash / "attachments" / acecode::kWorkspaceDraftAttachmentOwner;
+    ASSERT_TRUE(std::filesystem::exists(draft_dir / (draft_id + ".json")));
+
+    auto part = paste_attachment_part(draft_attachment, "paste-home");
+    part["store"] = "workspace_draft";
+    part["store_scope"] = hash;
+    const json content{{"version", 1}, {"parts", json::array({part})}};
+    const auto saved = cpr::Put(cpr::Url{fx.url(draft_endpoint)}, headers,
+        cpr::Body{json{{"text", ""}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto restored = cpr::Get(cpr::Url{fx.url(draft_endpoint)});
+    ASSERT_EQ(restored.status_code, 200) << restored.text;
+    const auto restored_part = json::parse(restored.text)["composer_content"]["parts"][0];
+    EXPECT_EQ(restored_part["store"], "workspace_draft");
+    EXPECT_EQ(restored_part["store_scope"], hash);
+    EXPECT_EQ(restored_part["id"], draft_id);
+
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        headers, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto imported = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")}, headers,
+        cpr::Body{json{{"from_workspace_draft", {{"workspace", hash}, {"id", draft_id}}}}.dump()});
+    ASSERT_EQ(imported.status_code, 201) << imported.text;
+    const auto session_attachment = json::parse(imported.text)["attachment"];
+    EXPECT_NE(session_attachment["id"], draft_id);
+    EXPECT_EQ(session_attachment["session_id"], sid);
+    EXPECT_EQ(session_attachment["metadata"]["origin"], "pasted_text");
+    const auto session_blob = cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(session_blob.status_code, 200);
+    EXPECT_EQ(session_blob.text, pasted);
+
+    auto sent_part = part;
+    sent_part["id"] = session_attachment["id"];
+    const json sent_content{{"version", 1}, {"parts", json::array({sent_part})}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")}, headers,
+        cpr::Body{json{{"text", ""}, {"composer_content", sent_content},
+            {"attachments", json::array({session_attachment["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    const auto& message_part = users[0].metadata["composer_content"]["parts"][0];
+    EXPECT_EQ(message_part["id"], session_attachment["id"]);
+    EXPECT_FALSE(message_part.contains("store"));
+    EXPECT_FALSE(message_part.contains("store_scope"));
+
+    // 草稿已发送、不再引用该附件,且它早于 10 分钟年龄门 → 下一次保存时回收。
+    std::filesystem::last_write_time(draft_dir / (draft_id + ".json"),
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(1));
+    const auto cleared = cpr::Put(cpr::Url{fx.url(draft_endpoint)}, headers,
+        cpr::Body{json{{"text", ""}}.dump()});
+    ASSERT_EQ(cleared.status_code, 200) << cleared.text;
+    EXPECT_FALSE(std::filesystem::exists(draft_dir / (draft_id + ".json")));
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())}).status_code, 404);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())}).text, pasted);
+}
+
+// 触发场景:首页处于「无工作区」时粘贴(草稿 scope = __no_workspace__),随后把消息
+// 发到一个真实 workspace 的新会话。
+// 期望:按部件上的 scope(而不是会话所属 workspace)导入成功、内容相等;草稿附件落在
+// no-workspace 缓存根的 project dir 下,缓存根本身没有新增子目录。
+// 回归:附件目录若放在缓存根下,list_no_workspace_session_cwds 会把 attachments/
+// 当成一个无工作区会话的 cwd,侧栏凭空多出会话。
+TEST(WebServerHttp, NoWorkspaceDraftPasteImportsIntoRealWorkspaceSession) {
+    WebServerFixture fx;
+    const RemoveTreeOnExit no_workspace_project{path_from_utf8(
+        acecode::SessionStorage::get_project_dir(fx.no_workspace_cache_root.string()))};
+    const auto before = subdirectory_names(fx.no_workspace_cache_root);
+    const std::string pasted = "no workspace paste\nline 2\n";
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/__no_workspace__/draft/attachments", pasted);
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto draft_id = draft_attachment["id"].get<std::string>();
+    EXPECT_EQ(draft_attachment["blob_url"],
+              "/api/workspaces/__no_workspace__/draft/attachments/" + draft_id + "/blob");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())}).text, pasted);
+    EXPECT_TRUE(std::filesystem::exists(no_workspace_project.path / "attachments" /
+        acecode::kWorkspaceDraftAttachmentOwner / (draft_id + ".json")));
+    EXPECT_EQ(subdirectory_names(fx.no_workspace_cache_root), before);
+
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto imported = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"from_workspace_draft",
+            {{"workspace", "__no_workspace__"}, {"id", draft_id}}}}.dump()});
+    ASSERT_EQ(imported.status_code, 201) << imported.text;
+    const auto session_attachment = json::parse(imported.text)["attachment"];
+    EXPECT_EQ(session_attachment["session_id"], sid);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())}).text, pasted);
+    // 同一个 id 在会话所属 workspace 的草稿区里不存在:scope 不能靠会话推断。
+    const auto wrong_scope = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"from_workspace_draft", {{"workspace", hash}, {"id", draft_id}}}}.dump()});
+    EXPECT_EQ(wrong_scope.status_code, 404) << wrong_scope.text;
+    EXPECT_EQ(subdirectory_names(fx.no_workspace_cache_root), before);
+}
+
+// 触发场景:客户端没有先导入,直接拿首页草稿附件的 id 发消息。
+// 期望:404 —— 消息路由只认本会话的附件记录,草稿附件区不是会话附件。
+TEST(WebServerHttp, WorkspaceDraftAttachmentIdIsRejectedByMessageRoute) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/" + hash + "/draft/attachments", "draft only");
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "hi"}, {"attachments", json::array({draft_attachment["id"]})}}.dump()});
+    EXPECT_EQ(sent.status_code, 404) << sent.text;
+}
+
+// 触发场景:会话上传请求同时带 from_workspace_draft 与 data_base64(或导入参数形状
+// 不对、id 不存在)。
+// 期望:混用 400、形状错误 400、找不到 404,都不产生新附件。
+TEST(WebServerHttp, SessionUploadRejectsMixedImportAndData) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/" + hash + "/draft/attachments", "mixed");
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto endpoint = fx.url("/api/sessions/" + sid + "/attachments");
+    const auto post = [&](const json& body) {
+        return cpr::Post(cpr::Url{endpoint}, cpr::Header{{"Content-Type", "application/json"}},
+                         cpr::Body{body.dump()});
+    };
+    const json import{{"workspace", hash}, {"id", draft_attachment["id"]}};
+    EXPECT_EQ(post(json{{"from_workspace_draft", import}, {"name", "a.txt"},
+        {"mime_type", "text/plain"}, {"data_base64", "YWJj"}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", import}, {"reference_only", true},
+        {"source_path", fx.cwd}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", "not-an-object"}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", {{"workspace", hash}, {"id", "att_missing"}}}})
+        .status_code, 404);
+    const auto project_dir = acecode::SessionStorage::get_project_dir(fx.registry->acquire(sid)->cwd);
+    EXPECT_FALSE(std::filesystem::exists(path_from_utf8(project_dir) / "attachments" / sid));
+}
+
+// 触发场景:用户输入「/<已注册 skill> 分析」并附带一个大段粘贴落成的文件块;对照组
+// 是同样的命令附带一个普通文本附件。
+// 期望:粘贴来源的附件不挡 skill 展开 —— content 是 skill 提示、display_text 是原文、
+// content_parts 仍带 file 部件;普通附件保持原行为,命令按字面发送。
+// 回归:粘贴内容跨过 128 KiB 变成文件块后,同一条命令就从「展开 skill」翻成「字面
+// 发送 /xxx」,行为随一条看不见的大小线翻转。
+TEST(WebServerHttp, SkillCommandWithPastedFileBlockStillExpands) {
+    WebServerFixture fx;
+    fx.cfg.skills.reuse_opencode = false;
+    write_text(
+        fx.cwd_dir / ".acecode" / "skills" / "paste-probe" / "SKILL.md",
+        "---\nname: paste-probe\ndescription: Paste probe workflow\n---\n\n"
+        "Follow the paste probe workflow.\n");
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto skills = fx.registry->skill_registry_snapshot(sid);
+    ASSERT_NE(skills, nullptr);
+    ASSERT_TRUE(skills->find("paste-probe").has_value());
+
+    const auto pasted = upload_pasted_text(
+        fx, "/api/sessions/" + sid + "/attachments", "ERROR 1\nERROR 2\n");
+    ASSERT_TRUE(pasted.is_object());
+    const std::string command = "/paste-probe 分析";
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", command}},
+        paste_attachment_part(pasted, "paste-1"),
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", command}, {"composer_content", content},
+            {"attachments", json::array({pasted["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_GE(users.size(), 1u);
+    EXPECT_NE(users[0].content, command);
+    EXPECT_NE(users[0].content.find("paste-probe"), std::string::npos);
+    EXPECT_EQ(users[0].metadata.value("display_text", ""), command);
+    bool has_file_part = false;
+    for (const auto& part : users[0].content_parts) {
+        if (part.value("type", "") == "file") has_file_part = true;
+    }
+    EXPECT_TRUE(has_file_part);
+
+    const auto ordinary = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"name":"notes.txt","mime_type":"text/plain","data_base64":"YWJj"})"});
+    ASSERT_EQ(ordinary.status_code, 201) << ordinary.text;
+    const auto ordinary_id = json::parse(ordinary.text)["attachment"]["id"];
+    const auto literal = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "/paste-probe inspect"},
+            {"attachments", json::array({ordinary_id})}}.dump()});
+    ASSERT_EQ(literal.status_code, 202) << literal.text;
+    users = wait_for_user_messages(*entry, 2);
+    ASSERT_GE(users.size(), 2u);
+    EXPECT_EQ(users[1].content, "/paste-probe inspect");
+    EXPECT_FALSE(users[1].metadata.contains("display_text"));
 }
 
 // 场景(openspec add-security-center):安全中心的沙盒配置路由。GET 默认快照 →
