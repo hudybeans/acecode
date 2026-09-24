@@ -32,7 +32,16 @@ std::string migration_os_error_text(const std::error_code& ec) {
     return ensure_utf8(ec.message());
 }
 
-bool data_dir_has_other_daemons(const std::string& directory) {
+std::string describe_daemon_pid_holder(const fs::path& data_root, const fs::path& pid_file,
+                                       long long pid) {
+    // legacy = 相对数据目录的第一段是 projects(projects/<hash>/run/**)。
+    const fs::path relative = pid_file.lexically_relative(data_root);
+    const bool legacy = !relative.empty() && path_to_utf8(*relative.begin()) == "projects";
+    return "pid=" + std::to_string(pid) + " file=" + path_to_utf8(pid_file) +
+           " legacy=" + (legacy ? "yes" : "no");
+}
+
+bool data_dir_has_other_daemons(const std::string& directory, std::string* holder) {
     const auto root = path_from_utf8(directory);
     std::vector<fs::path> runs{root / "run"};
     std::error_code ec;
@@ -42,12 +51,19 @@ bool data_dir_has_other_daemons(const std::string& directory) {
     for (const auto& run : runs) {
         if (!fs::is_directory(run, ec)) continue;
         for (fs::recursive_directory_iterator it(run, ec), end; it != end; it.increment(ec)) {
-            if (ec) return true;
+            if (ec) {
+                // 扫不清就按「有占用」处理(fail-closed),但要把原因带进拒绝日志。
+                if (holder) *holder = "scan error: " + path_to_utf8(run) + ": " + migration_os_error_text(ec);
+                return true;
+            }
             if (it->is_symlink(ec)) { it.disable_recursion_pending(); continue; }
             if (it->path().filename() != "daemon.pid") continue;
             long long pid = 0;
             std::ifstream(it->path()) >> pid;
-            if (pid > 0 && pid != daemon::current_pid() && daemon::is_pid_alive(pid)) return true;
+            if (pid > 0 && pid != daemon::current_pid() && daemon::is_pid_alive(pid)) {
+                if (holder) *holder = describe_daemon_pid_holder(root, it->path(), pid);
+                return true;
+            }
         }
     }
     return false;

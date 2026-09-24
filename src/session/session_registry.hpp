@@ -358,6 +358,11 @@ public:
     // 有会话落盘会让新目录少数据)。
     bool any_busy() const;
 
+    // 判定条件与 any_busy 相同的会话 id 列表(按字典序排序)。用途是数据目录迁移被
+    // SESSIONS_BUSY 拒绝时,在日志与 409 响应里列出到底是哪些会话占着 —— 只给一个
+    // bool 时,用户看到「有会话在运行」却找不到是哪个。
+    std::vector<std::string> busy_session_ids() const;
+
     // checkout 成功后标记该 workspace 全部会话的 gitStatus 快照过期
     // (AgentLoop::invalidate_git_snapshot,线程安全)。
     void invalidate_git_snapshots_in_cwd(const std::string& cwd);

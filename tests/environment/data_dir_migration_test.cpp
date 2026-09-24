@@ -28,6 +28,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -809,4 +811,36 @@ TEST_F(DataDirMigrationTest, NewEntryDuringMigrationNamesThePath) {
     EXPECT_NE(result.error.find("memory"), std::string::npos) << result.error;
     EXPECT_NE(result.error.find("new.md"), std::string::npos) << result.error;
     EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)).has_value());
+}
+
+// 场景:迁移 / 清理被 OTHER_INSTANCES_ACTIVE 拦下时,拒绝日志要说清是哪个 pid 文件拦的。
+// 「造一个活着的别人的 pid」在集成层不好做,这里直接测 holder 的格式化函数。
+// 期望:projects/<hash>/run 下的 pid 文件(旧版 per-workspace daemon 的遗留目录)标
+// legacy=yes;顶层 run/desktop-shared 下的标 legacy=no;两者都带 pid 与文件路径。
+// bug 表现:0913 反馈「移动工作目录提示程序占用」时日志里没有任何 [data-dir] 行,
+// 分不清是真有别的实例,还是遗留 pid 被无关进程复用。
+TEST_F(DataDirMigrationTest, HolderReportsLegacyRunDir) {
+    const fs::path legacy_pid = default_dir / "projects" / "abc" / "run" / "daemon.pid";
+    const std::string legacy = describe_daemon_pid_holder(default_dir, legacy_pid, 4242);
+    EXPECT_NE(legacy.find("pid=4242"), std::string::npos) << legacy;
+    EXPECT_NE(legacy.find("file=" + s(legacy_pid)), std::string::npos) << legacy;
+    EXPECT_NE(legacy.find("legacy=yes"), std::string::npos) << legacy;
+
+    const fs::path shared_pid = default_dir / "run" / "desktop-shared" / "daemon.pid";
+    const std::string shared = describe_daemon_pid_holder(default_dir, shared_pid, 7);
+    EXPECT_NE(shared.find("pid=7"), std::string::npos) << shared;
+    EXPECT_NE(shared.find("legacy=no"), std::string::npos) << shared;
+
+    // 没有任何活着的别的 daemon 时不拦截,holder 保持为空(populate_source 写的
+    // run/daemon.pid 是 123;为免撞上真实进程,这里改成自己的 pid,必然被跳过)。
+    write_file(default_dir / "run" / "daemon.pid", std::to_string(
+#ifdef _WIN32
+        static_cast<long long>(GetCurrentProcessId())
+#else
+        static_cast<long long>(getpid())
+#endif
+    ));
+    std::string holder;
+    EXPECT_FALSE(data_dir_has_other_daemons(s(default_dir), &holder));
+    EXPECT_TRUE(holder.empty()) << holder;
 }

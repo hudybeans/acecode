@@ -960,6 +960,8 @@ TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurt
     EXPECT_FALSE(json::parse(keep.text)["cleanup_pending"].get<bool>());
 }
 
+// 场景:某个会话的 worker 上挂着一个还没执行完的 control,此时发起数据目录迁移。
+// 期望:409 SESSIONS_BUSY,并在 busy_sessions 里列出该会话 id。
 TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
     EnvironmentRuntimeRestore restore;
     WebServerFixture fx;
@@ -977,10 +979,19 @@ TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
         return true;
     });
     EXPECT_TRUE(fx.registry->any_busy());
+    // busy_session_ids 与 any_busy 同一判定:挂着未执行完的 control 的会话要被列出来。
+    const std::string sid = entry->id;
+    EXPECT_EQ(fx.registry->busy_session_ids(), std::vector<std::string>{sid});
     auto migration = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
         cpr::Header{{"Content-Type", "application/json"}},
         cpr::Body{json{{"target", (fx.tmp_dir / "moved").string()}}.dump()});
     EXPECT_EQ(migration.status_code, 409) << migration.text;
+    // 409 响应附带 busy_sessions(附加字段,error / message 不变)。修复前只有一个
+    // 「有会话在运行」,用户与日志都无从知道是哪个会话占着。
+    const auto refused = json::parse(migration.text);
+    EXPECT_EQ(refused.value("error", ""), "SESSIONS_BUSY");
+    ASSERT_TRUE(refused.contains("busy_sessions")) << migration.text;
+    EXPECT_EQ(refused["busy_sessions"].get<std::vector<std::string>>(), std::vector<std::string>{sid});
     { std::lock_guard<std::mutex> lock(mu); released = true; }
     cv.notify_all();
     // Join the callback before destroying its synchronization state.

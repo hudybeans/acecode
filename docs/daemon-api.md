@@ -4284,9 +4284,14 @@ Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
 Target validation returns `400` with `TARGET_REQUIRED`, `TARGET_NOT_ABSOLUTE`,
 `TARGET_SAME_AS_CURRENT`, `TARGET_INSIDE_CURRENT`, `TARGET_CONTAINS_CURRENT`,
 `TARGET_NOT_A_DIRECTORY`, `TARGET_NOT_EMPTY` or `TARGET_NOT_WRITABLE`. Paths are
-compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY`, another
+compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY` with an
+additional sorted `busy_sessions:[<session id>, ...]` field, another
 live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals return
-`409 CONSOLES_ACTIVE`.
+`409 CONSOLES_ACTIVE`. Every refusal of the migrate and cleanup routes is logged as
+`[data-dir] migration refused: <CODE> ...` / `[data-dir] cleanup refused: <CODE> ...`
+with the busy session ids, the blocking `daemon.pid` (`pid=<n> file=<path>
+legacy=<yes|no>`, `legacy` meaning it lives under `projects/*/run`), the running
+console ids or the rejected target.
 
 The job pauses the scheduler and copies through a private staging directory,
 excluding top-level `run/`, `tmp/`, `edge-app-profile/` (the Edge `--app` profile of

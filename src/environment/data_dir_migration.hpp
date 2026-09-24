@@ -41,7 +41,17 @@ namespace acecode::environment {
 std::shared_mutex& data_dir_write_mutex();
 bool data_dir_writes_blocked();
 void reset_data_dir_write_gate_for_test();
-bool data_dir_has_other_daemons(const std::string& directory);
+// 数据目录下(run/** 与 projects/*/run/**)是否有别的 daemon 在用。命中时若 holder 非空,
+// 填入 describe_daemon_pid_holder 的描述;扫描出错(按「有占用」处理)时填出错原因。
+// holder 只用于拒绝日志,不进响应体。
+bool data_dir_has_other_daemons(const std::string& directory, std::string* holder = nullptr);
+
+// 拒绝日志里的占用者描述:`pid=<n> file=<utf8> legacy=<yes|no>`。legacy 表示 pid 文件
+// 位于 projects/*/run(旧版 per-workspace daemon 的遗留目录;Desktop 现在用
+// run/desktop-shared),用来区分「真有别的实例」与「遗留 pid 被无关进程复用」。
+std::string describe_daemon_pid_holder(const std::filesystem::path& data_root,
+                                       const std::filesystem::path& pid_file,
+                                       long long pid);
 
 // OS 错误文本(ec.message())统一转 UTF-8。MSVC 的 system_category().message() 走 ANSI
 // 代码页,中文 Windows 上是 GBK;原样进 progress.error 后 json dump 抛 type_error.316,
