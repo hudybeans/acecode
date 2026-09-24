@@ -81,6 +81,7 @@ import './desktopNativeFilesystemDropArchitecture.test.js';
 import './macNativeFileDrag.test.js';
 import './richComposerModel.test.js';
 import './composerContent.test.js';
+import './pastedText.test.js';
 import './composerTranscript.test.js';
 import './composerMessageRendering.test.js';
 import './composerLifecycle.test.js';

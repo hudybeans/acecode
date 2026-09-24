@@ -1691,4 +1691,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '爱心': 'Heart',
   '盆栽': 'Potted plant',
   '会话标题': 'Session title',
+  // 粘贴的文本块(第 2 条反馈 f300)
+  '粘贴的文本': 'Pasted text',
+  '[粘贴的文本: {{p0}}]': '[Pasted text: {{p0}}]',
 });

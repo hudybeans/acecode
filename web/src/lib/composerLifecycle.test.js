@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { composerContentText, composerContentAttachments, normalizeComposerContent } from './composerContent.js';
-import { composerDraftSnapshot, composerDraftEditFingerprint, removeComposerAttachmentReference, mergeComposerAttachmentResources, completeDetachedComposerUpload } from './composerDraft.js';
+import { composerDraftSnapshot, composerDraftEditFingerprint, removeComposerAttachmentReference, mergeComposerAttachmentResources, completeDetachedComposerUpload, composerContentForGuidance } from './composerDraft.js';
 import { updateHomeComposerDrafts, homeComposerDraft, clearHomeComposerDraftIfMatch } from './homeComposerDrafts.js';
 import { buildComposerHistoryEntries } from './inputHistoryNavigation.js';
 import { buildQueueCardItem } from './queueCardItem.js';
@@ -82,3 +82,23 @@ api.getSessionDraft = async () => ({ text, composer_content: removed });
 assert.equal(await completeDetachedComposerUpload(api, 'session', resources[0]), false);
 assert.equal(saved, null, 'late upload completion must not resurrect a removed reference');
 console.log('[pass] upload completion updates a detached draft without restoring removed references');
+
+// 触发场景:输入框里有内联粘贴块与落文件的粘贴块。
+// 期望:编辑指纹对内联块只记 [offset,'pasted_text',key](不读 token,不推进 offset),同一份内容指纹稳定;
+// 文件块上传完成只回填 id / store,不算用户编辑;换 key(编辑块)算编辑。/turn 引导内容原样保留两种块。
+// 回归:指纹计算读 part.token.length,遇到内联块直接抛 TypeError。
+{
+  const inlineBlock = { type: 'pasted_text', key: 'paste-1', text: 'L1\nL2' };
+  const pendingFile = { type: 'attachment', key: 'paste-f', id: '', name: 'pasted-text.txt', kind: 'file', mime_type: 'text/plain', paste: { title: 'log', chars: 3, lines: 1 } };
+  const draft = { version: 1, parts: [{ type: 'text', text: '看下' }, inlineBlock, pendingFile] };
+  const draftText = composerContentText(draft);
+  assert.equal(composerDraftEditFingerprint(draftText, draft), composerDraftEditFingerprint(draftText, JSON.parse(JSON.stringify(draft))));
+  const uploaded = { ...draft, parts: [draft.parts[0], inlineBlock, { ...pendingFile, id: 'd1', store: 'workspace_draft', store_scope: 'abc' }] };
+  assert.equal(composerDraftEditFingerprint(draftText, uploaded), composerDraftEditFingerprint(draftText, draft),
+    'upload completion (id/store backfill) is not a user edit');
+  const edited = { ...draft, parts: [draft.parts[0], { ...inlineBlock, key: 'paste-2' }, pendingFile] };
+  assert.notEqual(composerDraftEditFingerprint(draftText, edited), composerDraftEditFingerprint(draftText, draft));
+  const guidance = composerContentForGuidance({ version: 1, parts: [inlineBlock, { type: 'text', text: '/turn 换个方向' }, pendingFile] });
+  assert.deepEqual(guidance.parts, [inlineBlock, { type: 'text', text: '换个方向' }, pendingFile]);
+  console.log('[pass] paste blocks keep draft edit fingerprints stable and survive /turn guidance');
+}

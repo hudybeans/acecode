@@ -209,6 +209,47 @@ await run('structured drafts persist references and retain live File resources o
   assert.deepEqual((await fixture().store.load(api, 'a')).composer_content, homeComposerDraftPayload(draft).composer_content);
 });
 
+// 触发场景:首页粘贴的文件块还在上传,用户离开首页前又改了草稿(输入了新文字),随后上传才完成,
+// 回填经 store.patch 进行。
+// 期望:updater 拿到的是 store 里的最新草稿,回填后「新文字」与「附件 id」两处改动都在,并走同一条
+// 保存路径落盘;updater 返回 null 时不写、不产生保存。回归:用离开首页那一刻的 React prop 快照回填,
+// 把之后的编辑覆盖掉。
+await run('patch applies late upload results to the latest draft instead of a stale snapshot', async () => {
+  const api = backend();
+  const { store, timers } = fixture();
+  const block = { type: 'attachment', key: 'paste-f', id: '', name: 'pasted.txt', kind: 'file', mime_type: 'text/plain', paste: { title: 'log' } };
+  store.update(api, 'a', { text: 'first', composer_content: { version: 1, parts: [{ type: 'text', text: 'first' }, block] } });
+  const staleSnapshot = store.read(api, 'a');
+  store.update(api, 'a', { text: 'first and more', composer_content: { version: 1, parts: [{ type: 'text', text: 'first and more' }, block] } });
+  const seen = [];
+  const changed = store.patch(api, 'a', (draft) => {
+    seen.push(draft);
+    return {
+      ...draft,
+      composer_content: {
+        ...draft.composer_content,
+        parts: draft.composer_content.parts.map((part) => (
+          part.key === 'paste-f' ? { ...part, id: 'd1', store: 'workspace_draft', store_scope: 'a' } : part
+        )),
+      },
+    };
+  });
+  assert.equal(changed, true);
+  assert.notEqual(seen[0], staleSnapshot);
+  assert.equal(seen[0].text, 'first and more');
+  await store.flush();
+  const saved = api.drafts.get('a');
+  assert.equal(saved.text, 'first and more');
+  assert.equal(saved.composer_content.parts[1].id, 'd1');
+  assert.equal(saved.composer_content.parts[1].store_scope, 'a');
+
+  const puts = api.calls.filter(([kind]) => kind === 'put').length;
+  assert.equal(store.patch(api, 'a', () => null), false);
+  assert.equal(timers.size, 0, 'a null updater schedules no save');
+  await store.flush();
+  assert.equal(api.calls.filter(([kind]) => kind === 'put').length, puts);
+});
+
 await run('connection scopes and isolated AI-theme prompts never share durable draft state', async () => {
   const first = backend(), second = backend();
   const { store } = fixture();

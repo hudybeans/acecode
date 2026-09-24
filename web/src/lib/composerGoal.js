@@ -10,7 +10,8 @@ export function projectComposerGoal(text, content) {
   let remaining = prefix.length;
   const parts = [];
   for (const part of normalized?.parts || []) {
-    if (part.type === 'attachment' || !remaining) {
+    // Inline pasted blocks carry no token; they are never part of the /goal prefix.
+    if (part.type === 'attachment' || part.type === 'pasted_text' || !remaining) {
       parts.push(part);
       continue;
     }

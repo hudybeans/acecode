@@ -82,9 +82,37 @@ export function createHomeComposerDraftStore({
     return String(workspace).startsWith('__ai_theme__:');
   }
 
+  function update(api, workspace, value) {
+    const state = connection(api);
+    activeConnection = state;
+    const next = updateHomeComposerDrafts(state.drafts, workspace, value);
+    if (next === state.drafts) return;
+    state.drafts = next;
+    publish(state);
+    const entry = entryFor(state, api, workspace);
+    entry.version += 1;
+    if (isTransient(workspace)) return;
+    entry.dirty = { value: homeComposerDraftPayload(value) };
+    if (entry.timer !== null) cancel(entry.timer);
+    entry.timer = schedule(() => { void flushEntry(state, entry); }, delay);
+  }
+
   return {
     read(api, workspace) {
       return homeComposerDraft(connection(api).drafts, workspace);
+    },
+
+    // Apply `updater` to the draft currently held by the store (not a caller's
+    // React snapshot) and save it through the same path as update(). Used when an
+    // upload finishes after the user left the home composer: the draft may have
+    // been edited meanwhile, and a stale snapshot would overwrite that edit.
+    // An updater returning null/undefined means "nothing to change".
+    patch(api, workspace, updater) {
+      const current = homeComposerDraft(connection(api).drafts, workspace);
+      const next = typeof updater === 'function' ? updater(current) : null;
+      if (next === null || next === undefined) return false;
+      update(api, workspace, next);
+      return true;
     },
 
     async load(api, workspace) {
@@ -110,20 +138,7 @@ export function createHomeComposerDraftStore({
       return homeComposerDraft(state.drafts, workspace);
     },
 
-    update(api, workspace, value) {
-      const state = connection(api);
-      activeConnection = state;
-      const next = updateHomeComposerDrafts(state.drafts, workspace, value);
-      if (next === state.drafts) return;
-      state.drafts = next;
-      publish(state);
-      const entry = entryFor(state, api, workspace);
-      entry.version += 1;
-      if (isTransient(workspace)) return;
-      entry.dirty = { value: homeComposerDraftPayload(value) };
-      if (entry.timer !== null) cancel(entry.timer);
-      entry.timer = schedule(() => { void flushEntry(state, entry); }, delay);
-    },
+    update,
 
     accept(api, workspace, submitted) {
       const state = connection(api);
