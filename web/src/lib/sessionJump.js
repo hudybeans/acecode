@@ -89,6 +89,30 @@ export function sessionJumpWorkspaceHash(target = {}, fallback = {}) {
   );
 }
 
+export async function resumeSessionFromTarget(client, sessionId, {
+  noWorkspace = false,
+  workspaceHash = '',
+  shouldResume = true,
+} = {}) {
+  if (!shouldResume) return {};
+  if (noWorkspace || !workspaceHash) return client.resumeSession(sessionId);
+  try {
+    return await client.resumeWorkspaceSession(workspaceHash, sessionId);
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+    // A stale Desktop target can name a no-workspace session under the last
+    // active workspace. Only the canonical no-workspace response may recover it.
+    let resumed;
+    try {
+      resumed = await client.resumeSession(sessionId);
+    } catch {
+      throw error;
+    }
+    if (resumed?.no_workspace === true) return resumed;
+    throw error;
+  }
+}
+
 // Missing visibility is the legacy/visible-workspace behavior. Only an
 // explicit false marker from the global session catalog bypasses Desktop's
 // visible-workspace activation bridge.

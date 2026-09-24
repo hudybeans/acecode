@@ -139,6 +139,7 @@ import {
   sessionJumpWorkspaceHash,
   sessionJumpWorkspaceVisible,
   sessionRefFromJumpTarget,
+  resumeSessionFromTarget,
   stripOpenSessionParams,
 } from './lib/sessionJump.js';
 import { threadSessionTargetFromClickEvent } from './lib/fileLink.js';
@@ -714,11 +715,9 @@ export function App() {
       const commitRef = suppliedHistory
         ? (nextRef) => replaceNavigationState(nextRef, suppliedHistory)
         : (options.replace ? replaceActiveRef : navigateToRef);
-      const resumeWith = async (client, workspaceHash) => {
-        if (!shouldResume) return {};
-        if (noWorkspace || !workspaceHash) return client.resumeSession(sessionId);
-        return client.resumeWorkspaceSession(workspaceHash, sessionId);
-      };
+      const resumeWith = (client, workspaceHash) => resumeSessionFromTarget(client, sessionId, {
+        noWorkspace, workspaceHash, shouldResume,
+      });
 
       if (!noWorkspace
           && targetHash
@@ -753,7 +752,8 @@ export function App() {
               port: r.port,
               token: r.token,
               sessionId,
-              workspaceHash: targetHash,
+              workspaceHash: nextRef.workspaceHash,
+              noWorkspace: nextRef.noWorkspace,
               readOnly,
               messageOrdinal: sessionJumpMessageOrdinal(target),
               navigationHistory: redirectHistory,

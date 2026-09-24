@@ -817,7 +817,13 @@ void WebServer::Impl::register_workspaces() {
             opts.workspace_hash = ws->hash;
             auto project_dir = SessionStorage::get_project_dir(ws->cwd);
             auto meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, id));
-            if (meta.no_workspace) {
+            auto active_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            // resume_session() also returns true for an already-active id. A
+            // missing project-local meta must not let another workspace claim it.
+            if (meta.id.empty() || meta.no_workspace ||
+                (active_entry && !session_entry_matches_workspace(*active_entry, *ws))) {
                 crow::response r(404);
                 r.body = R"({"error":"session not found"})";
                 r.add_header("Content-Type", "application/json");
@@ -865,7 +871,9 @@ void WebServer::Impl::register_workspaces() {
             }
             LOG_INFO("[web] workspace session resumed hash=" + ws->hash + " id=" + id);
             crow::response r(200);
-            r.body = json{{"session_id", id}, {"id", id}, {"active", true}, {"workspace_hash", ws->hash}, {"cwd", ws->cwd}}.dump();
+            r.body = json{{"session_id", id}, {"id", id}, {"active", true},
+                          {"workspace_hash", ws->hash}, {"cwd", ws->cwd},
+                          {"working_cwd", ws->cwd}, {"no_workspace", false}}.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
         });

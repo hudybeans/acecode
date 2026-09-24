@@ -3441,6 +3441,16 @@ TEST(WebServerHttp, CreateNoWorkspaceSessionIsListedOutsideWorkspaces) {
         return item.value("id", std::string{}) == sid;
     }));
 
+    // An active id must not make a wrong workspace-scoped resume look valid.
+    auto wrong_resume = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + default_hash + "/sessions/" + sid + "/resume")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({})"});
+    EXPECT_EQ(wrong_resume.status_code, 404) << wrong_resume.text;
+    auto* still_active = fx.registry->lookup(sid);
+    ASSERT_NE(still_active, nullptr);
+    EXPECT_TRUE(still_active->no_workspace);
+    EXPECT_EQ(still_active->cwd, expected_cwd);
+
     fx.client->destroy_session(sid);
     auto inactive_list = cpr::Get(cpr::Url{fx.url("/api/sessions")});
     ASSERT_EQ(inactive_list.status_code, 200) << inactive_list.text;

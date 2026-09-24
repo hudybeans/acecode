@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   desktopOpenSessionUrl,
   openSessionTargetFromSearch,
+  resumeSessionFromTarget,
   sessionJumpMessageOrdinal,
   sessionJumpReadOnly,
   sessionJumpWorkspaceVisible,
@@ -9,11 +10,21 @@ import {
   stripOpenSessionParams,
 } from './sessionJump.js';
 import { navigationHistoryFromHash } from './navigationHistory.js';
-import { sessionWorkingCwd } from './previewTabs.js';
+import { previewFileLocation, sessionWorkingCwd } from './previewTabs.js';
 
 function test(name, fn) {
   try {
     fn();
+    console.log(`[pass] ${name}`);
+  } catch (error) {
+    console.error(`[fail] ${name}`);
+    throw error;
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     console.log(`[pass] ${name}`);
   } catch (error) {
     console.error(`[fail] ${name}`);
@@ -249,4 +260,65 @@ test('no-workspace session without working_cwd yields no preview root at all', (
   });
 
   assert.equal(previewRoot, '');
+});
+
+await testAsync('stale workspace target recovers a no-workspace file preview root', async () => {
+  const sessionId = '20260924-072030-b1fe';
+  const actualCwd = `C:/Users/shao/.acecode/cache/no-workspace/${sessionId}`;
+  const calls = [];
+  const client = {
+    resumeWorkspaceSession: async (hash, id) => {
+      calls.push(`workspace:${hash}:${id}`);
+      throw { status: 404 };
+    },
+    resumeSession: async (id) => {
+      calls.push(`session:${id}`);
+      return { session_id: id, no_workspace: true, cwd: '', working_cwd: actualCwd };
+    },
+  };
+  const resumed = await resumeSessionFromTarget(client, sessionId, {
+    workspaceHash: 'stale-workspace',
+  });
+  const ref = sessionRefFromJumpTarget(
+    { sessionId, workspaceHash: 'stale-workspace' }, resumed,
+  );
+  const root = sessionWorkingCwd({
+    cwd: ref.workingCwd || ref.cwd || '',
+    fallbackCwd: ref.noWorkspace ? '' : 'N:/wrong-worktree',
+  });
+  assert.deepEqual(calls, [
+    `workspace:stale-workspace:${sessionId}`,
+    `session:${sessionId}`,
+  ]);
+  assert.equal(ref.noWorkspace, true);
+  assert.equal(ref.workspaceHash, '');
+  assert.deepEqual(previewFileLocation({ cwd: root, path: 'pelican-bicycle.html' }), {
+    cwd: actualCwd,
+    path: 'pelican-bicycle.html',
+  });
+  assert.equal(new URL(desktopOpenSessionUrl({
+    port: 4567, sessionId, workspaceHash: ref.workspaceHash,
+    noWorkspace: ref.noWorkspace,
+  })).searchParams.get('no_workspace'), '1');
+});
+
+await testAsync('workspace resume does not fall back unless a no-workspace session is confirmed', async () => {
+  let compatibilityCalls = 0;
+  const client = {
+    resumeWorkspaceSession: async () => { throw { status: 404 }; },
+    resumeSession: async () => {
+      compatibilityCalls += 1;
+      return { session_id: 's1', no_workspace: false, cwd: 'N:/other' };
+    },
+  };
+  await assert.rejects(resumeSessionFromTarget(client, 's1', {
+    workspaceHash: 'wrong-workspace',
+  }), (error) => error?.status === 404);
+  assert.equal(compatibilityCalls, 1);
+
+  client.resumeWorkspaceSession = async () => ({ session_id: 's1', cwd: 'N:/repo' });
+  assert.equal((await resumeSessionFromTarget(client, 's1', {
+    workspaceHash: 'right-workspace',
+  })).cwd, 'N:/repo');
+  assert.equal(compatibilityCalls, 1);
 });
