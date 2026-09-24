@@ -10,8 +10,24 @@ function textFromValue(value) {
   }
 }
 
+// 归一化最多只看这么多个码元(且不少于 limit 的 8 倍,给大段空白折叠留余量)。
+// 回合滚动条对每条用户消息都调一次;f300 那条 2400 万字符的消息曾在这里被
+// split / Array.from 成 2400 万元素的数组,切进会话即卡死。
+const PREVIEW_SCAN_MIN_CHARS = 4096;
+
 export function compactOneLinePreview(value, limit = DEFAULT_PREVIEW_LIMIT) {
-  const text = textFromValue(value);
+  const whole = textFromValue(value);
+  const max = Math.max(8, Number(limit) || DEFAULT_PREVIEW_LIMIT);
+  const scan = Math.max(PREVIEW_SCAN_MIN_CHARS, max * 8);
+  const start = whole.search(/\S/);
+  if (start < 0) return '空内容';
+  const sourceTruncated = whole.length - start > scan;
+  let text = whole;
+  if (sourceTruncated) {
+    text = whole.slice(start, start + scan);
+    const last = text.charCodeAt(text.length - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) text = text.slice(0, -1);
+  }
   const normalized = text
     .replace(/\r\n/g, '\n')
     .split('\n')
@@ -22,8 +38,8 @@ export function compactOneLinePreview(value, limit = DEFAULT_PREVIEW_LIMIT) {
     .trim();
   if (!normalized) return '空内容';
   const chars = Array.from(normalized);
-  const max = Math.max(8, Number(limit) || DEFAULT_PREVIEW_LIMIT);
-  if (chars.length <= max) return normalized;
+  // 源文本被截断时结果一定以 ... 结尾,即使扫描窗口里的内容恰好不超过 limit。
+  if (chars.length <= max) return sourceTruncated ? `${normalized}...` : normalized;
   return chars.slice(0, max).join('') + '...';
 }
 

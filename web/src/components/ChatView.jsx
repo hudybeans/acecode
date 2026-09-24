@@ -51,6 +51,7 @@ import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
+import { AttachmentTextLoaderContext } from './AttachmentTextLoaderContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
 import { sessionContentLoadingPhase } from '../lib/sessionContentLoading.js';
 import { SidePanel } from './SidePanel.jsx';
@@ -5496,6 +5497,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               </button>
             </div>
           )}
+          <AttachmentTextLoaderContext.Provider value={api.readAttachmentText}>
           <TranscriptItems
             items={windowedItems}
             messageAutoCollapse={messageAutoCollapse}
@@ -5535,6 +5537,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               ))
             )}
           />
+          </AttachmentTextLoaderContext.Provider>
           {/* tail = 当前最后一轮的文件列表。回合进行中(busy)不渲染 ——
               流式期间变更集随 tool_end 实时增长,列表会先于/夹着正文出现,
               观感突兀;等整轮吐完(busy 结束)再一次性显示在正文之后。

@@ -1,7 +1,12 @@
 // Sticky user context helper 单元测试:覆盖滚动位置到当前用户问题的纯逻辑映射。
 
 import assert from 'node:assert/strict';
-import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from './stickyUserContext.js';
+import {
+  STICKY_USER_CONTEXT_MAX_CHARS,
+  findStickyUserContext,
+  sameStickyUserContext,
+  scrollTopForStickySourceRow,
+} from './stickyUserContext.js';
 
 function run(name, fn) {
   try {
@@ -114,4 +119,19 @@ run('sticky 源消息跳转不会产生负 scrollTop', () => {
     rowTop: 120,
     topInset: 12,
   }), 0);
+});
+
+// 回归(f300):吸顶条把 2400 万字符的 user 消息整段放进正文、title 与 aria-label。
+// 期望行为:吸顶内容最多 600 字符,去掉首尾空白。
+run('sticky 用户问题内容最多取 600 字符', () => {
+  const huge = `  ${'问'.repeat(1_000_000)}`;
+  const context = findStickyUserContext({
+    items: [{ id: 1, kind: 'msg', role: 'user', messageId: 'u1', content: huge }, items[1]],
+    rowMetrics: [{ id: 1, top: 0, bottom: 80 }, { id: 2, top: 92, bottom: 900 }],
+    scrollTop: 180,
+    clientHeight: 260,
+    scrollHeight: 2000,
+  });
+  assert.equal(context.content, '问'.repeat(STICKY_USER_CONTEXT_MAX_CHARS));
+  assert.equal(STICKY_USER_CONTEXT_MAX_CHARS, 600);
 });
