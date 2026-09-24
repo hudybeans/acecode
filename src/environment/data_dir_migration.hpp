@@ -3,7 +3,9 @@
 // 数据目录迁移(openspec: data-directory-relocation)。
 //
 // 流程:校验目标 → 后台复制整个数据目录(排除 run/、tmp/、*.lock 与指针文件本身)
-// → 在**平台默认目录**写 data-dir.redirect.json → 要求重启。复制不是移动:失败时
+// → 在**平台默认目录**写 data-dir.redirect.json → 要求重启。Windows 上复制与清理的
+// 文件 IO 走扩展长度路径(to_extended_length_path),超过 MAX_PATH 的文件也能复制 / 删除;
+// 但 ACECode 运行时不是 longPathAware,这只保证迁移成功,不保证运行期能读到这些文件。复制不是移动:失败时
 // 删掉半成品目标即可重试,回滚只需删指针。迁移后首次启动若旧数据超过 100 MB,
 // 由 status 端点报 cleanup 提示,用户决定删还是留。
 //
@@ -35,6 +37,15 @@ bool data_dir_has_other_daemons(const std::string& directory);
 std::string migration_os_error_text(const std::error_code& ec);
 
 inline constexpr unsigned long long kCleanupPromptThresholdBytes = 100ULL * 1024 * 1024;
+
+// 私有 staging 目录名前缀(建在目标的父目录里,复制完整后整体 rename 成目标)。
+// 曾经是 ".acecode-migration-" + 完整 uuid,共 55 字符,正是它把 staging 下的深层路径
+// 先于最终路径顶破 MAX_PATH。现在前缀 + 8 位 hex 共 21 字符。IO 虽然已走扩展长度路径,
+// 短名仍有意义:失败清理、杀软扫描、用户手工查看时路径不会比最终路径先撞线。
+inline constexpr const char* kMigrationStagingPrefix = ".acecode-mig-";
+
+// kMigrationStagingPrefix + uuid 前 8 位 hex。
+std::string make_migration_staging_name();
 
 enum class MigrationTargetError {
     None,

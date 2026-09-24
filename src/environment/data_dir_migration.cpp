@@ -86,7 +86,26 @@ std::string lower_ascii(std::string s) {
     return s;
 }
 
+// SQLite 打开路径默认保持展示形态:daemon 自己的长连接(audit_log、state store)用的是
+// 普通路径,同一进程再用 `\\?\` 形态打开同一个 WAL 库,SQLite 会按全路径建出两个
+// winShmNode,改变现有的并发行为。只有普通形态已经逼近 MAX_PATH 时才换扩展形态;
+// 阈值取 240 而不是 260,给 SQLite 追加的 -journal / -wal 后缀(8 字节)与结尾 NUL 留余量。
+constexpr std::size_t kSqliteExtendedPathThreshold = 240;
+
+std::string sqlite_open_path(const fs::path& display, const fs::path& io) {
+    return path_to_utf8(display.native().size() >= kSqliteExtendedPathThreshold ? io : display);
+}
+
+// 运行期普通 API 的 MAX_PATH 上限;迁移后最终路径达到它的文件只统计告警。
+constexpr std::size_t kWindowsMaxPath = 260;
+
 }  // namespace
+
+std::string make_migration_staging_name() {
+    std::string id = generate_uuid();
+    id.resize(8);  // uuid 前 8 位恒为 hex,没有分隔符
+    return std::string(kMigrationStagingPrefix) + id;
+}
 
 const char* migration_target_error_code(MigrationTargetError error) {
     switch (error) {
@@ -222,24 +241,36 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     if (check.error != MigrationTargetError::None) {
         return fail(std::string(migration_target_error_code(check.error)) + ": " + check.message);
     }
+    // 每个路径有两种形态:展示形态(source / dest / final_dest)用于错误文案、指针、日志
+    // 与前缀比较;IO 形态(*_io,Windows 上是 `\\?\` 扩展长度路径)只用于文件系统调用,
+    // 超过 MAX_PATH 的深层文件才能被枚举 / 复制 / 删除。
     const fs::path source = path_from_utf8(current_dir);
-    if (!fs::is_directory(source)) return fail("source directory does not exist");
+    const fs::path source_io = to_extended_length_path(source);
+    {
+        std::error_code dir_ec;
+        if (!fs::is_directory(source_io, dir_ec)) return fail("source directory does not exist");
+    }
     const fs::path final_dest = path_from_utf8(check.normalized_target);
-    const fs::path dest = final_dest.parent_path() / (".acecode-migration-" + generate_uuid());
+    const fs::path final_io = to_extended_length_path(final_dest);
+    const fs::path dest = final_dest.parent_path() / make_migration_staging_name();
+    const fs::path dest_io = to_extended_length_path(dest);
     std::error_code staging_error;
-    if (!fs::create_directory(dest, staging_error) || staging_error) return fail("cannot create migration staging directory");
-    owned_staging = dest;
+    if (!fs::create_directory(dest_io, staging_error) || staging_error) return fail("cannot create migration staging directory");
+    owned_staging = dest_io;
     progress.target = check.normalized_target;
 
     // 第一遍:清点(总字节数供进度条),同时把文件分成普通与 sqlite 两组。
     struct Item { fs::path relative; bool is_dir; std::uintmax_t size; fs::file_time_type modified{}; bool is_link = false; };
     std::vector<Item> regular;
     std::vector<Item> sqlite;
+    // 最终路径 >= MAX_PATH 的文件:迁移能复制过去,但运行期普通 API 读不到,只告警留痕。
+    std::size_t over_max_path_files = 0;
+    std::string over_max_path_sample;
     std::error_code ec;
-    for (fs::recursive_directory_iterator it(source, ec), end;
+    for (fs::recursive_directory_iterator it(source_io, ec), end;
          it != end; it.increment(ec)) {
         if (ec) return fail("cannot enumerate source: " + migration_os_error_text(ec));
-        const fs::path relative = it->path().lexically_relative(source);
+        const fs::path relative = it->path().lexically_relative(source_io);
         if (migration_excludes_entry(relative)) {
             if (it->is_directory(ec)) it.disable_recursion_pending();
             continue;
@@ -259,6 +290,11 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
         if (type_ec) return fail("cannot read source file metadata");
         Item item{relative, false, size, it->last_write_time(type_ec)};
         if (type_ec) return fail("cannot read source file timestamp");
+#ifdef _WIN32
+        if (const fs::path final_path = final_dest / relative; final_path.native().size() >= kWindowsMaxPath) {
+            if (over_max_path_files++ == 0) over_max_path_sample = path_to_utf8(final_path);
+        }
+#endif
         if (migration_is_sqlite_family(relative)) sqlite.push_back(item);
         else regular.push_back(item);
         progress.total_bytes += item.size;
@@ -272,29 +308,33 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
 
     std::set<std::string> snapshots;
     auto copy_item = [&](const Item& item) -> std::string {
+        // from / to 是展示形态(错误文案、符号链接目标计算);*_io 只给文件系统调用。
         const fs::path from = source / item.relative;
         const fs::path to = dest / item.relative;
+        const fs::path from_io = source_io / item.relative;
+        const fs::path to_io = dest_io / item.relative;
         std::error_code cec;
         if (item.is_link) {
-            fs::create_directories(to.parent_path(), cec);
-            auto link = fs::read_symlink(from, cec);
+            fs::create_directories(to_io.parent_path(), cec);
+            auto link = fs::read_symlink(from_io, cec);
             if (cec) return "cannot read symbolic link: " + path_to_utf8(from);
             auto resolved = canonical_or_normal(link.is_absolute() ? link : from.parent_path() / link);
             const auto source_root = canonical_or_normal(source);
             if (starts_with(prefix_key(resolved), prefix_key(source_root))) {
                 resolved = final_dest / resolved.lexically_relative(source_root);
             }
-            if (item.is_dir) fs::create_directory_symlink(resolved, to, cec);
-            else fs::create_symlink(resolved, to, cec);
+            // 链接内容写展示形态:它会被运行期普通 API 解析,不能带 `\\?\`。
+            if (item.is_dir) fs::create_directory_symlink(resolved, to_io, cec);
+            else fs::create_symlink(resolved, to_io, cec);
             if (cec) return "cannot preserve symbolic link: " + path_to_utf8(from) + ": " + migration_os_error_text(cec);
             return {};
         }
         if (item.is_dir) {
-            fs::create_directories(to, cec);
+            fs::create_directories(to_io, cec);
             if (cec) return "cannot create " + path_to_utf8(to) + ": " + migration_os_error_text(cec);
             return {};
         }
-        fs::create_directories(to.parent_path(), cec);
+        fs::create_directories(to_io.parent_path(), cec);
         if (cec) return "cannot create " + path_to_utf8(to.parent_path()) + ": " + migration_os_error_text(cec);
         const std::string relative_name = path_to_utf8(item.relative);
         for (const auto& database : snapshots) {
@@ -303,7 +343,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
             }
         }
         char header[16]{};
-        std::ifstream header_stream(from, std::ios::binary);
+        std::ifstream header_stream(from_io, std::ios::binary);
         header_stream.read(header, sizeof(header));
         const bool is_database = header_stream.gcount() == 16 &&
             std::string(header, 16) == std::string("SQLite format 3\0", 16);
@@ -311,9 +351,9 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
         if (is_database) {
             sqlite3* input = nullptr;
             sqlite3* output = nullptr;
-            const int opened = sqlite3_open_v2(path_to_utf8(from).c_str(), &input, SQLITE_OPEN_READONLY, nullptr);
+            const int opened = sqlite3_open_v2(sqlite_open_path(from, from_io).c_str(), &input, SQLITE_OPEN_READONLY, nullptr);
             int result = opened;
-            if (opened == SQLITE_OK) result = sqlite3_open(path_to_utf8(to).c_str(), &output);
+            if (opened == SQLITE_OK) result = sqlite3_open(sqlite_open_path(to, to_io).c_str(), &output);
             if (result == SQLITE_OK) {
                 sqlite3_busy_timeout(input, 5000);
                 auto* backup = sqlite3_backup_init(output, "main", input, "main");
@@ -328,7 +368,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
             if (result != SQLITE_OK) return "cannot snapshot database: " + path_to_utf8(from);
             snapshots.insert(relative_name);
         } else {
-            fs::copy_file(from, to, fs::copy_options::none, cec);
+            fs::copy_file(from_io, to_io, fs::copy_options::none, cec);
         }
         if (cec) return "cannot copy " + path_to_utf8(from) + ": " + migration_os_error_text(cec);
         progress.copied_bytes += item.size;
@@ -348,7 +388,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     // Refuse a changing source rather than publishing a partial conversation/config.
     for (const auto& item : regular) {
         if (item.is_dir || item.is_link || path_to_utf8(*item.relative.begin()) == "logs") continue;
-        const auto file = source / item.relative;
+        const auto file = source_io / item.relative;
         if (fs::file_size(file, ec) != item.size || ec ||
                 fs::last_write_time(file, ec) != item.modified || ec) {
             return fail("source changed during migration: " + path_to_utf8(item.relative) + "; retry when ACECode is idle");
@@ -357,9 +397,9 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     std::set<fs::path> expected;
     for (const auto& item : regular) expected.insert(item.relative);
     for (const auto& item : sqlite) expected.insert(item.relative);
-    for (fs::recursive_directory_iterator it(source, ec), end; it != end; it.increment(ec)) {
+    for (fs::recursive_directory_iterator it(source_io, ec), end; it != end; it.increment(ec)) {
         if (ec) return fail("cannot recheck source: " + migration_os_error_text(ec));
-        const auto relative = it->path().lexically_relative(source);
+        const auto relative = it->path().lexically_relative(source_io);
         if (migration_excludes_entry(relative) || path_to_utf8(*relative.begin()) == "logs") {
             it.disable_recursion_pending();
             continue;
@@ -371,8 +411,8 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     // Revalidate the actual target: the user may have added a file while copying.
     const auto final_check = validate_migration_target(current_dir, check.normalized_target);
     if (final_check.error != MigrationTargetError::None) return fail(final_check.message);
-    if (!fs::remove(final_dest, ec) || ec) return fail("target is no longer empty");
-    fs::rename(dest, final_dest, ec);
+    if (!fs::remove(final_io, ec) || ec) return fail("target is no longer empty");
+    fs::rename(dest_io, final_io, ec);
     if (ec) return fail("cannot publish copied workspace: " + migration_os_error_text(ec));
     owned_staging.clear();
 
@@ -392,6 +432,11 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     progress.finished_at_ms = now_ms();
     LOG_INFO("[data-dir] migration complete: target=" + check.normalized_target +
              " bytes=" + std::to_string(progress.copied_bytes));
+    if (over_max_path_files > 0) {
+        // ACECode 运行时不是 longPathAware:这些文件已复制,但运行期普通 API 可能读不到。
+        LOG_WARN("[data-dir] migrated files with paths >= 260 characters: count=" +
+                 std::to_string(over_max_path_files) + " sample=" + over_max_path_sample);
+    }
     return progress;
 }
 
@@ -478,24 +523,28 @@ std::string cleanup_previous_data_dir(const std::string& previous_dir,
     if (!prev.is_absolute() || prev == prev.root_path() || starts_with(active_key, previous_key) || starts_with(previous_key, active_key)) {
         return "refusing to remove the active workspace or its parent";
     }
+    // 删除走扩展长度路径:Agent 用 node / python 等长路径感知工具生成的超长文件,普通
+    // 路径删不掉,以前会报 CLEANUP_FAILED。错误文案仍用展示形态。
+    const fs::path prev_io = to_extended_length_path(prev);
     std::error_code ec;
-    if (!fs::is_directory(prev, ec)) return {};
+    if (!fs::is_directory(prev_io, ec)) return {};
     const bool keep_pointer =
         prefix_key(canonical_or_normal(prev)) ==
         prefix_key(canonical_or_normal(path_from_utf8(default_dir)));
     std::string first_error;
-    for (const auto& entry : fs::directory_iterator(prev, ec)) {
+    for (const auto& entry : fs::directory_iterator(prev_io, ec)) {
         if (keep_pointer && entry.path().filename() == kDataDirRedirectFileName) continue;
         std::error_code rm_ec;
         fs::remove_all(entry.path(), rm_ec);
         if (rm_ec && first_error.empty()) {
-            first_error = "cannot remove " + path_to_utf8(entry.path()) + ": " + migration_os_error_text(rm_ec);
+            first_error = "cannot remove " + path_to_utf8(prev / entry.path().filename()) + ": " +
+                          migration_os_error_text(rm_ec);
         }
     }
     if (ec && first_error.empty()) first_error = "cannot list " + previous_dir + ": " + migration_os_error_text(ec);
     if (!keep_pointer && first_error.empty()) {
         std::error_code rm_ec;
-        fs::remove(prev, rm_ec);  // 旧目录本身也删(不是默认目录时)
+        fs::remove(prev_io, rm_ec);  // 旧目录本身也删(不是默认目录时)
     }
     return first_error;
 }

@@ -94,3 +94,37 @@ TEST(EncodingTest, EnsureUtf8ConvertsUtf16LeBomText) {
     EXPECT_EQ(acecode::ensure_utf8(bytes), u8"name: 中文\n");
     EXPECT_TRUE(acecode::is_valid_utf8(acecode::ensure_utf8(bytes)));
 }
+
+// 场景:数据目录迁移要复制 / 删除超过 MAX_PATH(260)的深层文件,IO 前把绝对路径转成
+// Windows 扩展长度形式。
+// 期望:盘符路径先 lexically_normal(统一分隔符、消掉 `..`)再加 `\\?\`;UNC 路径转成
+// `\\?\UNC\srv\share\...`;已带扩展 / 设备前缀的原样返回(不能重复加前缀);相对路径原样返回。
+// bug 表现:修复前迁移遇到 >260 字符的文件报「cannot copy …: 系统找不到指定的路径」,
+// 迁移必然失败。先规范化是必要的:`\\?\` 会跳过 Win32 规范化,`..` 与 `/` 不再被解析。
+TEST(Utf8PathTest, ExtendedLengthPathPrefixesAbsoluteWindowsPaths) {
+#ifdef _WIN32
+    EXPECT_EQ(acecode::to_extended_length_path(fs::path(L"C:/a/b/../c")).native(),
+              std::wstring(L"\\\\?\\C:\\a\\c"));
+    EXPECT_EQ(acecode::to_extended_length_path(fs::path(L"\\\\srv\\share\\x")).native(),
+              std::wstring(L"\\\\?\\UNC\\srv\\share\\x"));
+    const fs::path already(L"\\\\?\\C:\\already\\x");
+    EXPECT_EQ(acecode::to_extended_length_path(already).native(), already.native());
+    const fs::path device(L"\\\\.\\pipe\\name");
+    EXPECT_EQ(acecode::to_extended_length_path(device).native(), device.native());
+    const fs::path relative(L"relative\\dir");
+    EXPECT_EQ(acecode::to_extended_length_path(relative).native(), relative.native());
+#else
+    GTEST_SKIP() << "extended-length paths are Windows-only";
+#endif
+}
+
+// 场景:POSIX 没有 `\\?\` 语法,也不需要绕 MAX_PATH。
+// 期望:to_extended_length_path 是恒等函数,绝对 / 相对路径都原样返回(不做规范化)。
+TEST(Utf8PathTest, ExtendedLengthPathIsIdentityOnPosix) {
+#ifdef _WIN32
+    GTEST_SKIP() << "POSIX-only identity check";
+#else
+    EXPECT_EQ(acecode::to_extended_length_path(fs::path("/a/b/../c")), fs::path("/a/b/../c"));
+    EXPECT_EQ(acecode::to_extended_length_path(fs::path("rel/x")), fs::path("rel/x"));
+#endif
+}

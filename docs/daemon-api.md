@@ -4289,6 +4289,16 @@ preserved (internal targets follow the new root); inability to preserve them fai
 the copy. Source changes and a newly occupied target abort publication. Failure
 removes only private staging, preserves the source and existing target files,
 and re-enables writes. A pointer-write failure retains the copied target for recovery.
+The staging directory is a sibling of the target named `.acecode-mig-<8 hex>`.
+
+On Windows, migration and cleanup perform file IO (enumeration, stat, directory
+creation, copy, rename and recursive removal) through extended-length `\\?\` paths,
+so files beyond `MAX_PATH` (260 characters) can be copied and deleted. Extended
+paths never appear in responses, the redirect pointer or logs. SQLite databases are
+still opened by their normal path unless it reaches 240 characters. The ACECode
+runtime is not long-path aware: a copied file whose final path reaches 260
+characters may be unreadable at runtime, and completion logs a warning with the
+count and one sample path.
 
 Success atomically publishes the copied directory, writes `data-dir.redirect.json`
 in the platform default data directory, and sets `restart_required:true`. The

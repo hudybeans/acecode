@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -78,7 +79,8 @@ protected:
         if (had_home) set_env(kHomeEnv, prev_home);
         acecode::reset_run_mode_for_test();
         std::error_code ec;
-        fs::remove_all(root, ec);
+        // 走扩展长度路径:超长路径用例留下的深层文件普通路径删不掉,会残留在 %TEMP%。
+        fs::remove_all(acecode::to_extended_length_path(root), ec);
     }
 
     // 造一棵典型的数据目录:配置、会话、运行时文件、锁文件、sqlite 三件套。
@@ -122,8 +124,9 @@ TEST_F(DataDirMigrationTest, ChangingSourceDoesNotPublishPointer) {
     EXPECT_EQ(result.state, "failed");
     EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)));
     EXPECT_TRUE(fs::exists(default_dir / "new-session.jsonl"));
+    // staging 前缀取常量:写死旧前缀的话,前缀改名后这条断言会永远空过。
     for (const auto& entry : fs::directory_iterator(root)) {
-        EXPECT_EQ(entry.path().filename().string().find(".acecode-migration-"), std::string::npos);
+        EXPECT_EQ(entry.path().filename().string().find(kMigrationStagingPrefix), std::string::npos);
     }
 }
 
@@ -441,4 +444,83 @@ TEST_F(DataDirMigrationTest, JobExceptionTextIsSanitizedToUtf8) {
     EXPECT_EQ(job.progress()->state, "failed");
     EXPECT_TRUE(acecode::is_valid_utf8(job.progress()->error)) << job.progress()->error;
     EXPECT_NE(job.progress()->error.find("cannot pause writer: "), std::string::npos);
+}
+
+namespace {
+
+// 5 层、每层 60 字符的相对目录(约 305 字符),接在任何临时根后面都超过 MAX_PATH。
+fs::path deep_relative_dir() {
+    fs::path rel;
+    for (int i = 0; i < 5; ++i) rel /= std::string(60, static_cast<char>('a' + i));
+    return rel;
+}
+
+// 用扩展长度路径建目录 / 写文件:普通路径在 Windows 上建不出 >260 字符的文件。
+void write_file_long(const fs::path& p, const std::string& content) {
+    const fs::path io = acecode::to_extended_length_path(p);
+    fs::create_directories(io.parent_path());
+    std::ofstream ofs(io, std::ios::binary | std::ios::trunc);
+    ofs << content;
+}
+
+std::string read_file_long(const fs::path& p) {
+    std::ifstream ifs(acecode::to_extended_length_path(p), std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+}
+
+bool exists_long(const fs::path& p) {
+    std::error_code ec;
+    return fs::exists(acecode::to_extended_length_path(p), ec);
+}
+
+}  // namespace
+
+// 场景:staging 目录名生成。
+// 期望:以 kMigrationStagingPrefix 开头、总长 ≤ 21(前缀 13 + 8 位 hex),两次调用不同。
+// 来由:原来是 ".acecode-migration-" + 完整 uuid,共 55 字符,staging 下的深层路径因此
+// 比最终路径先顶破 MAX_PATH(260),正是 0923 反馈里「系统找不到指定的路径」的最后一截。
+TEST_F(DataDirMigrationTest, StagingDirectoryNameIsShort) {
+    const std::string a = make_migration_staging_name();
+    const std::string b = make_migration_staging_name();
+    EXPECT_EQ(a.rfind(kMigrationStagingPrefix, 0), 0u) << a;
+    EXPECT_LE(a.size(), 21u) << a;
+    EXPECT_NE(a, b);
+}
+
+// 场景:数据目录里有一个绝对路径超过 300 字符的文件(5 层 × 60 字符目录)。
+// 期望:迁移成功(state=done),目标里同一相对路径的文件存在且内容一致。
+// bug 表现:修复前 std::filesystem 走普通路径,受 MAX_PATH 限制,迁移报
+// 「cannot copy …: 系统找不到指定的路径」(错误码 3),每次重试都必然失败。
+TEST_F(DataDirMigrationTest, CopiesFilesBeyondMaxPath) {
+    populate_source(default_dir);
+    const fs::path rel = deep_relative_dir() / "deep.txt";
+    const fs::path source_file = default_dir / rel;
+    ASSERT_GT(s(source_file).size(), 300u) << "前提:源文件路径必须超过 MAX_PATH";
+    write_file_long(source_file, "deep content");
+    ASSERT_TRUE(exists_long(source_file));
+
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_TRUE(exists_long(target / rel));
+    EXPECT_EQ(read_file_long(target / rel), "deep content");
+    EXPECT_TRUE(fs::exists(target / "config.json"));
+}
+
+// 场景:用户选择删除旧数据目录,旧目录里有超过 MAX_PATH 的文件(Agent 用 node / python
+// 等长路径感知工具生成的深层产物)。
+// 期望:cleanup_previous_data_dir 返回空串,旧目录整个被删除。
+// bug 表现:修复前 remove_all 走普通路径删不掉深层文件,返回 CLEANUP_FAILED,旧目录残留。
+TEST_F(DataDirMigrationTest, CleanupRemovesFilesBeyondMaxPath) {
+    const fs::path old_dir = root / "old-elsewhere";
+    write_file_long(old_dir / deep_relative_dir() / "deep.txt", "x");
+    write_file(old_dir / "config.json", "{}");
+    acecode::DataDirRedirect r;
+    r.data_dir = s(root / "elsewhere");
+    r.previous_data_dir = s(old_dir);
+    r.cleanup_pending = true;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(s(default_dir), r));
+
+    EXPECT_EQ(cleanup_previous_data_dir(s(old_dir), s(default_dir)), "");
+    EXPECT_FALSE(exists_long(old_dir));
 }
