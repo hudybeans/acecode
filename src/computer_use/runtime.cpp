@@ -3,6 +3,7 @@
 #endif
 #include "runtime.hpp"
 #include "pointer_appearance.hpp"
+#include "helper_process_posix.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -11,6 +12,10 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+#ifdef __APPLE__
+#include <cerrno>
+#include <unistd.h>
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -53,6 +58,10 @@ struct Broker {
         input = output = process = job = nullptr;
         owner.clear();
     }
+#elif defined(__APPLE__)
+    PosixHelperProcess worker;
+    void terminate() { worker.terminate(); }
+    void close() { worker.close(); owner.clear(); }
 #else
     void terminate() {}
     void close() { owner.clear(); }
@@ -156,6 +165,9 @@ json start_worker(Broker& state, const std::string& owner) {
 bool supported() {
 #ifdef _WIN32
     return true;
+#elif defined(__APPLE__)
+    if (__builtin_available(macOS 14.0, *)) return true;
+    return false;
 #else
     return false;
 #endif
@@ -347,8 +359,69 @@ json execute(const std::string& session_id, const json& request,
         }
         if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+#elif defined(__APPLE__)
+    const auto interrupted = [&] {
+        return !enabled() || state.epoch.load() != epoch || (abort_flag && abort_flag->load());
+    };
+    {
+        std::lock_guard<std::mutex> lock(state.process_mu);
+        if (interrupted()) return failure("COMPUTER_USE_CANCELLED", "Computer use cancelled or disabled.");
+        if (state.worker.started() && !state.worker.alive()) state.close();
+        if (!state.owner.empty() && state.owner != session_id)
+            return failure("COMPUTER_USE_BUSY", "Another session owns this desktop. Wait for its turn to finish.");
+        if (!state.worker.started()) {
+            const auto path = computer_use_helper_path();
+            if (path.empty() || access(path.c_str(), X_OK) != 0)
+                return failure("COMPUTER_USE_HELPER_MISSING", "Install acecode-computer-use beside the ACECode executable.");
+            if (!state.worker.start(path))
+                return failure("COMPUTER_USE_START_ERROR", "Could not start the macOS Computer Use helper.");
+            state.owner = session_id;
+        }
+    }
+    std::size_t sent = 0;
+    std::string response;
+    while (true) {
+        bool progressed = false;
+        {
+            std::lock_guard<std::mutex> lock(state.process_mu);
+            const auto stop = [&](const char* code, const char* message) {
+                state.close();
+                return failure(code, message);
+            };
+            if (interrupted())
+                return stop("COMPUTER_USE_CANCELLED", "Computer use cancelled or disabled; observe again.");
+            if (std::chrono::steady_clock::now() >= deadline)
+                return stop("COMPUTER_USE_TIMEOUT", "Application did not respond within 20 seconds; observe again.");
+            if (sent < wire.size()) {
+                const auto count = state.worker.write(wire.data() + sent, wire.size() - sent);
+                if (count > 0) { sent += static_cast<std::size_t>(count); progressed = true; }
+                else if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                    return stop("COMPUTER_USE_DISCONNECTED", "Helper input closed; observe again.");
+            }
+            char buffer[65536];
+            const auto count = state.worker.read(buffer, sizeof(buffer));
+            if (count > 0) {
+                progressed = true;
+                response.append(buffer, static_cast<std::size_t>(count));
+                if (response.size() > 32 * 1024 * 1024)
+                    return stop("COMPUTER_USE_RESPONSE_TOO_LARGE", "Helper response exceeds the 32 MiB limit.");
+                const auto newline = response.find('\n');
+                if (newline != std::string::npos) {
+                    auto result = json::parse(response.substr(0, newline), nullptr, false);
+                    if (sent != wire.size() || !result.is_object() || !result.contains("success") ||
+                        !result["success"].is_boolean() || !result.contains("protocol_version") ||
+                        result["protocol_version"] != 1 || newline + 1 != response.size())
+                        return stop("COMPUTER_USE_PROTOCOL_ERROR", "Invalid helper response; observe again.");
+                    return result;
+                }
+            } else if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                return stop("COMPUTER_USE_DISCONNECTED", "Helper exited before completing the request.");
+            }
+        }
+        if (!progressed) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 #else
-    return failure("COMPUTER_USE_UNSUPPORTED", "Computer use is currently available on Windows only.");
+    return failure("COMPUTER_USE_UNSUPPORTED", "Computer Use requires Windows or macOS 14 or later.");
 #endif
 }
 } // namespace acecode::computer_use

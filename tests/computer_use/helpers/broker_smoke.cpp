@@ -4,6 +4,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#ifdef __APPLE__
+#include <unistd.h>
+#endif
 
 using namespace acecode::computer_use;
 using json = nlohmann::json;
@@ -14,8 +17,18 @@ void require(bool condition, const char* message) {
 json call(const std::string& owner, const char* action, const std::atomic<bool>* abort = nullptr) {
     return execute(owner, {{"action", action}}, abort);
 }
-int main() {
+int main(int argc, char** argv) {
     try {
+#ifdef __APPLE__
+        if (argc == 2 && std::string(argv[1]) == "--closed-stdio") {
+            close(STDIN_FILENO);
+            close(STDOUT_FILENO);
+            set_enabled(true);
+            require(call("closed-stdio", "ping").value("success", false), "helper must support daemon with closed stdio");
+            shutdown();
+            return 0;
+        }
+#endif
         set_enabled(false);
         require(!call("a", "ping")["success"].get<bool>(), "disabled must reject");
         set_pointer_appearance("ace", "#2563eb");

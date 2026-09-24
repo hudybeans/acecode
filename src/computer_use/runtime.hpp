@@ -7,7 +7,7 @@
 namespace acecode::computer_use {
 
 // One process-wide broker, one session lease; the helper also arbitrates across
-// daemon processes on the same Windows desktop. Disabled until configured.
+// daemon processes on the same interactive desktop. Disabled until configured.
 bool supported();
 bool enabled();
 void set_enabled(bool value);

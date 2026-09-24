@@ -221,3 +221,38 @@ assert.equal(await staleAcknowledgment.setPointerStyle('plain'), true, 'read-bac
 assert.equal(staleAcknowledgment.getSnapshot().snapshot.pointer_style, 'plain');
 
 console.log('[pass] Computer Use confirmed saves, pointer configuration, serialized theme updates, navigation, retry and connection gates');
+
+let permissionRequests = 0;
+let failPermission = false;
+let macSnapshot = { ...initial, platform: 'macos', availability: {
+  helper_available: true, accessibility: 'required', screen_recording: 'granted', ready: false,
+} };
+const macStore = computerUseSettingsStore({
+  getComputerUse: async () => copy(macSnapshot),
+  setComputerUse: async (patch) => { macSnapshot = { ...macSnapshot, ...patch }; return copy(macSnapshot); },
+  requestComputerUsePermission: async (permission) => {
+    permissionRequests++;
+    assert.equal(permission, 'accessibility');
+    if (failPermission) throw new ApiError(500, { error: 'COMPUTER_USE_PERMISSION_ERROR' });
+    return copy(macSnapshot);
+  },
+});
+await macStore.load();
+assert.equal(permissionRequests, 0, 'reading settings cannot request OS permission');
+assert.equal(await macStore.requestPermission('arbitrary'), false);
+assert.equal(await macStore.setEnabled(true), true);
+assert.equal(macStore.getSnapshot().snapshot.availability.ready, false, 'enabled intent does not imply OS authorization');
+assert.equal(permissionRequests, 0, 'enabling does not implicitly prompt for permission');
+assert.equal(await macStore.requestPermission('accessibility'), true);
+assert.equal(permissionRequests, 1);
+assert.equal(macStore.getSnapshot().snapshot.availability.ready, false, 'an opened authorization dialog is not a grant');
+failPermission = true;
+assert.equal(await macStore.requestPermission('accessibility'), false, 'read-back cannot turn a failed request into success');
+assert.equal(macStore.getSnapshot().error.action, 'permission');
+failPermission = false;
+assert.equal(await macStore.retry(), true);
+macSnapshot.availability.accessibility = 'granted';
+macSnapshot.availability.ready = true;
+await macStore.load();
+assert.equal(macStore.getSnapshot().snapshot.availability.ready, true);
+console.log('[pass] macOS permission requests are explicit, bounded to known permissions, and separate from enabled intent');

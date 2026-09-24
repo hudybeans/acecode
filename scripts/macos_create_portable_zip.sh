@@ -154,8 +154,10 @@ echo "== incrementally building current binaries =="
 echo "$current_hash" > "$embed_marker"
 
 for binary in "$build_dir/acecode" \
+    "$build_dir/acecode-computer-use" \
     "$build_dir/ACECode.app/Contents/MacOS/ACECode" \
-    "$build_dir/ACECode.app/Contents/MacOS/acecode-daemon"; do
+    "$build_dir/ACECode.app/Contents/MacOS/acecode-daemon" \
+    "$build_dir/ACECode.app/Contents/MacOS/acecode-computer-use"; do
     if [[ ! -x "$binary" ]] || ! "$LIPO_BIN" "$binary" -verify_arch "$arch"; then
         echo "ERROR: missing executable or wrong architecture ($arch): $binary" >&2
         exit 1
@@ -193,6 +195,7 @@ if [[ ! -f "$build_dir/acecode" ]]; then
     exit 1
 fi
 cp "$build_dir/acecode" "$package_dir/"
+"$CMAKE_BIN" --install "$build_dir" --prefix "$package_dir" --component computer_use_runtime >/dev/null
 cp "$repo_root/README.md" "$repo_root/README_CN.md" "$package_dir/"
 
 "$CMAKE_BIN" --install "$build_dir" --prefix "$package_dir" --component models_dev_registry >/dev/null
@@ -231,8 +234,10 @@ trap 'rm -rf -- "$verify_root"' EXIT
 extracted="$verify_root/$package_name"
 
 [[ -x "$extracted/acecode" ]] || { echo "extracted acecode not executable" >&2; exit 1; }
+[[ -x "$extracted/acecode-computer-use" ]] || { echo "extracted Computer Use helper missing" >&2; exit 1; }
 [[ -x "$extracted/ACECode.app/Contents/MacOS/ACECode" ]] || { echo "extracted app main missing" >&2; exit 1; }
 [[ -x "$extracted/ACECode.app/Contents/MacOS/acecode-daemon" ]] || { echo "extracted daemon missing" >&2; exit 1; }
+[[ -x "$extracted/ACECode.app/Contents/MacOS/acecode-computer-use" ]] || { echo "extracted app Computer Use helper missing" >&2; exit 1; }
 if ! grep -aq "provider-logos" "$extracted/acecode"; then
     echo "ERROR: built binary does NOT contain embedded web UI (provider-logos absent)." >&2
     echo "       The embed step silently fell back to an empty asset map. Reconfigure cmake." >&2

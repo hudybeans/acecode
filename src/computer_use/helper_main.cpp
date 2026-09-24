@@ -1,4 +1,4 @@
-#include "native_windows.hpp"
+#include "native_backend.hpp"
 
 #include <iostream>
 #include <cwchar>
@@ -13,7 +13,11 @@
 #include <io.h>
 #endif
 
+#ifdef __APPLE__
+int computer_use_protocol_main() {
+#else
 int main() {
+#endif
 #ifdef _WIN32
     // Keep the protocol byte-oriented even when a Windows console is attached.
     _setmode(_fileno(stdin), _O_BINARY);

@@ -470,6 +470,27 @@ if(WIN32)
     add_executable(acecode-computer-use src/computer_use/helper_main.cpp)
     target_link_libraries(acecode-computer-use PRIVATE acecode_computer_use_native)
     install(TARGETS acecode-computer-use RUNTIME DESTINATION . COMPONENT computer_use_runtime)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    add_library(acecode_computer_use_native STATIC
+        src/computer_use/native_macos.mm
+        src/computer_use/macos_windows.mm
+        src/computer_use/macos_accessibility.mm
+        src/computer_use/macos_capture.mm
+        src/computer_use/macos_input.mm
+        src/computer_use/macos_pointer.mm)
+    set_target_properties(acecode_computer_use_native PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
+    target_include_directories(acecode_computer_use_native PUBLIC ${CMAKE_SOURCE_DIR}/src)
+    target_compile_options(acecode_computer_use_native PRIVATE -fobjc-arc -mmacosx-version-min=14.0)
+    target_link_libraries(acecode_computer_use_native PUBLIC nlohmann_json::nlohmann_json
+        "-framework AppKit" "-framework ApplicationServices" "-framework ScreenCaptureKit"
+        "-framework ImageIO" "-framework Carbon")
+    add_executable(acecode-computer-use src/computer_use/helper_main.cpp src/computer_use/helper_main_macos.mm)
+    set_target_properties(acecode-computer-use PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
+    target_compile_options(acecode-computer-use PRIVATE -mmacosx-version-min=14.0 "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_link_options(acecode-computer-use PRIVATE -mmacosx-version-min=14.0)
+    target_link_libraries(acecode-computer-use PRIVATE acecode_computer_use_native)
+    install(TARGETS acecode-computer-use RUNTIME DESTINATION . COMPONENT computer_use_runtime)
 endif()
 
 add_executable(acecode
@@ -484,7 +505,7 @@ target_link_libraries(acecode PRIVATE
     ftxui::dom
     ftxui::component
 )
-if(WIN32)
+if(WIN32 OR APPLE)
     add_dependencies(acecode acecode-computer-use)
 endif()
 
@@ -532,7 +553,7 @@ endif()
 # desktop shell 子目标(opt-in,默认 OFF)。include 后只有当 ACECODE_BUILD_DESKTOP=ON
 # 才会真添加 acecode-desktop 这个 target,否则文件本身做无操作 return。
 include(${CMAKE_SOURCE_DIR}/cmake/acecode_desktop.cmake)
-if(WIN32 AND TARGET acecode-desktop)
+if((WIN32 OR APPLE) AND TARGET acecode-desktop)
     add_dependencies(acecode-desktop acecode-computer-use)
 endif()
 

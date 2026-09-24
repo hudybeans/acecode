@@ -4,6 +4,9 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #include <fcntl.h>
@@ -27,6 +30,8 @@ int main() {
         output["pointer_appearance"] = request.value("pointer_appearance", nlohmann::json::object());
 #ifdef _WIN32
         output["pid"] = GetCurrentProcessId();
+#else
+        output["pid"] = getpid();
 #endif
         if (action == "observe") {
             observation = "owned-fixture-observation";
