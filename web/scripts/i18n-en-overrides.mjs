@@ -388,6 +388,7 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '无法获取迁移进度': 'Could not get migration progress',
   '重新获取': 'Retry',
   '迁移任务已不存在，请重新发起迁移': 'The migration task no longer exists. Start the migration again.',
+  'Agent Browser 的部分浏览器数据未能复制，重启后可能需要重新登录': 'Some Agent Browser data could not be copied. You may need to sign in again after restarting.',
   '迁移完成，重启后使用新路径': 'Migration complete. Restart to use the new path.',
   '清理旧工作空间？': 'Clean up the previous workspace?',
   '请等待正在运行的任务完成后再迁移': 'Wait for running tasks to finish before migrating.',

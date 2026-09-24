@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import {
   MIGRATION_POLL_INTERVAL_MS, TOOLCHAIN_FIELDS, applyMigrationPollOutcome, environmentError, migrationFailureMessage,
-  migrationPercent, migrationPollOutcome, pickEnvironmentPath, terminalPath, toolchainPillState,
+  migrationPercent, migrationPollOutcome, migrationSkippedFilesHint, pickEnvironmentPath, terminalPath, toolchainPillState,
 } from '../lib/environmentSettings.js';
 import { desktopUpdateRestartAvailable, requestDesktopUpdateRestart } from '../lib/updateJob.js';
 import { VsIcon } from './Icon.jsx';
@@ -236,7 +236,8 @@ export function SettingsConfigSection() {
         {progressUnknown && <div className="ace-settings-row"><span className="text-[13px]">无法获取迁移进度</span>
           <button className="ace-settings-button" disabled={!!busy} onClick={refetchMigration}>
             <VsIcon name="refresh" size={15} />重新获取</button></div>}
-        {restartRequired && <div className="ace-settings-row"><span className="text-[13px]">迁移完成，重启后使用新路径</span>
+        {restartRequired && <div className="ace-settings-row"><div className="min-w-0 text-[13px]"><span>迁移完成，重启后使用新路径</span>
+          {migrationSkippedFilesHint(job) && <small className="block mt-1 text-[12px] text-warn">{migrationSkippedFilesHint(job)}</small>}</div>
           {desktopUpdateRestartAvailable() ? <button className="ace-settings-button ace-settings-primary" disabled={!!busy}
             onClick={() => perform('restart', () => requestDesktopUpdateRestart())}>立即重启</button>
             : <span className="text-[12px] text-fg-mute">请完全退出并重新启动 ACECode</span>}</div>}

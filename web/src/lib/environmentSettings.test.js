@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   MIGRATION_POLL_MAX_FAILURES, applyMigrationPollOutcome, migrationFailureMessage, migrationPercent, migrationPollOutcome,
+  migrationSkippedFilesHint,
   pickEnvironmentPath, shouldOfferCleanup, terminalPath, toolchainPillState,
 } from './environmentSettings.js';
 import { ApiError } from './api.js';
@@ -161,3 +162,11 @@ for (const next of [{ state: 'idle' }, {}]) {
 assert.equal(migrationFailureMessage({ state: 'failed', error: '' }), '迁移失败');
 assert.equal(migrationFailureMessage({ state: 'failed', error: 'disk full' }), '迁移失败：disk full');
 console.log('[pass] migration poll outcome stops on failure and never rolls progress back');
+// 场景:迁移完成,服务端 skipped_files 为 0 / 缺失 / 大于 0。
+// 期望:只有大于 0 时才给出 Agent Browser 可能需要重新登录的提示,其余情况为空串(不显示小字)。
+assert.equal(migrationSkippedFilesHint({ state: 'done', skipped_files: 0 }), '');
+assert.equal(migrationSkippedFilesHint({ state: 'done' }), '');
+assert.equal(migrationSkippedFilesHint(null), '');
+assert.equal(migrationSkippedFilesHint({ state: 'done', skipped_files: 2 }),
+  'Agent Browser 的部分浏览器数据未能复制，重启后可能需要重新登录');
+console.log('[pass] migration skipped-files hint only appears when browser profile files were skipped');

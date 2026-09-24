@@ -40,6 +40,15 @@ export function migrationFailureMessage(job) {
   return detail ? `迁移失败：${detail}` : '迁移失败';
 }
 
+// 迁移完成后,Agent Browser 的 WebView2 profile 是「尽力复制」:被浏览器占用、复制不了的文件
+// 由服务端计入 skipped_files。大于 0 时提示用户重启后 Agent Browser 可能需要重新登录;
+// ACECode 自己的会话数据不受影响。
+export function migrationSkippedFilesHint(job) {
+  const skipped = Number(job?.skipped_files);
+  return Number.isFinite(skipped) && skipped > 0
+    ? 'Agent Browser 的部分浏览器数据未能复制，重启后可能需要重新登录' : '';
+}
+
 function isMigrationNotFound(error) {
   return error?.status === 404
     || error?.code === 'MIGRATION_NOT_FOUND'
