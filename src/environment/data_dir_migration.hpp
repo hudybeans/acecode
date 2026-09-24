@@ -24,9 +24,11 @@
 //
 // 纯逻辑(校验、排除规则、阈值)不依赖 web 层,进 acecode_testable 单测。
 
+#include "../daemon/runtime_files.hpp"
 #include "../utils/paths.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -52,6 +54,25 @@ bool data_dir_has_other_daemons(const std::string& directory, std::string* holde
 std::string describe_daemon_pid_holder(const std::filesystem::path& data_root,
                                        const std::filesystem::path& pid_file,
                                        long long pid);
+
+// 某个 daemon.pid 是否构成「别的实例在用」。纯函数,进程探测结果由调用方传入。
+//   - pid 无效、已死、或就是自己 → 不拦;
+//   - daemon::runtime_pid_reuse_is_proven 为真(进程镜像已不是 acecode,或进程启动晚于
+//     该目录心跳)→ 不拦,reason 以 "pid reused" 开头;与 Desktop daemon_pool 的复用
+//     判定同一口径;
+//   - 其余(Match,或身份未知、没有心跳)一律拦,fail-closed。
+// 起因:projects/*/run 下旧版 per-workspace daemon 的遗留 pid 文件没人清理,Windows 的
+// PID 复用又很频繁,只看「pid 存活」时它一撞上无关进程,迁移就永远 OTHER_INSTANCES_ACTIVE。
+struct DaemonPidHolderVerdict {
+    bool blocks = false;
+    std::string reason;
+};
+DaemonPidHolderVerdict evaluate_daemon_pid_holder(
+    const daemon::RuntimeSnapshot& snapshot,
+    std::int64_t current_pid,
+    bool pid_alive,
+    daemon::DaemonProcessIdentity identity,
+    const std::optional<std::int64_t>& start_ms);
 
 // OS 错误文本(ec.message())统一转 UTF-8。MSVC 的 system_category().message() 走 ANSI
 // 代码页,中文 Windows 上是 GBK;原样进 progress.error 后 json dump 抛 type_error.316,

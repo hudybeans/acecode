@@ -58,15 +58,50 @@ bool data_dir_has_other_daemons(const std::string& directory, std::string* holde
             }
             if (it->is_symlink(ec)) { it.disable_recursion_pending(); continue; }
             if (it->path().filename() != "daemon.pid") continue;
-            long long pid = 0;
-            std::ifstream(it->path()) >> pid;
-            if (pid > 0 && pid != daemon::current_pid() && daemon::is_pid_alive(pid)) {
-                if (holder) *holder = describe_daemon_pid_holder(root, it->path(), pid);
+            // 同目录的 pid / heartbeat 一起读,交给 evaluate_daemon_pid_holder 判定;
+            // 进程身份与启动时间只对「活着且不是自己」的 pid 才去探测。
+            const auto snapshot = daemon::read_runtime_snapshot(path_to_utf8(it->path().parent_path()));
+            const std::int64_t pid = snapshot.pid.value_or(0);
+            const std::int64_t self = static_cast<std::int64_t>(daemon::current_pid());
+            bool alive = false;
+            auto identity = daemon::DaemonProcessIdentity::Unknown;
+            std::optional<std::int64_t> start_ms;
+            if (pid > 0 && pid != self) {
+                alive = daemon::is_pid_alive(static_cast<daemon::pid_t_compat>(pid));
+                if (alive) {
+                    identity = daemon::inspect_daemon_process_identity(pid);
+                    start_ms = daemon::process_start_time_ms(pid);
+                }
+            }
+            const auto verdict = evaluate_daemon_pid_holder(snapshot, self, alive, identity, start_ms);
+            const std::string described = describe_daemon_pid_holder(root, it->path(), pid);
+            if (verdict.blocks) {
+                if (holder) *holder = described + " reason=" + verdict.reason;
                 return true;
             }
+            LOG_INFO("[data-dir] daemon.pid does not block: " + described + " reason=" + verdict.reason);
         }
     }
     return false;
+}
+
+DaemonPidHolderVerdict evaluate_daemon_pid_holder(
+    const daemon::RuntimeSnapshot& snapshot,
+    std::int64_t current_pid,
+    bool pid_alive,
+    daemon::DaemonProcessIdentity identity,
+    const std::optional<std::int64_t>& start_ms) {
+    if (!snapshot.pid.has_value() || *snapshot.pid <= 0) return {false, "invalid pid"};
+    if (*snapshot.pid == current_pid) return {false, "current process"};
+    if (!pid_alive) return {false, "pid not alive"};
+    if (daemon::runtime_pid_reuse_is_proven(snapshot, identity, start_ms)) {
+        return {false, identity == daemon::DaemonProcessIdentity::Mismatch
+                           ? "pid reused: process is not acecode"
+                           : "pid reused: process started after heartbeat"};
+    }
+    return {true, identity == daemon::DaemonProcessIdentity::Match
+                      ? "live acecode process"
+                      : "process identity unknown"};
 }
 
 namespace {

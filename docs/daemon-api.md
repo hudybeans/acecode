@@ -4293,6 +4293,16 @@ with the busy session ids, the blocking `daemon.pid` (`pid=<n> file=<path>
 legacy=<yes|no>`, `legacy` meaning it lives under `projects/*/run`), the running
 console ids or the rejected target.
 
+A `daemon.pid` under `run/**` or `projects/*/run/**` blocks migration (and cleanup
+delete of the previous directory) only when its process is alive, is not the
+current process, and PID reuse is not proven. Reuse is proven, with the same rule
+the Desktop daemon pool uses, when the live process image is not ACECode or the
+process started more than 2 seconds after the heartbeat recorded in that run
+directory; such pid files are ignored and logged at INFO. An unreadable process
+identity without a usable heartbeat still blocks (fail-closed). This keeps stale
+pid files left under the legacy `projects/*/run` directories from blocking
+migration forever once Windows reassigns their PID to an unrelated process.
+
 The job pauses the scheduler and copies through a private staging directory,
 excluding top-level `run/`, `tmp/`, `edge-app-profile/` (the Edge `--app` profile of
 webapp compatibility mode, recreated on every launch), the redirect pointer, lock

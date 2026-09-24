@@ -844,3 +844,87 @@ TEST_F(DataDirMigrationTest, HolderReportsLegacyRunDir) {
     EXPECT_FALSE(data_dir_has_other_daemons(s(default_dir), &holder));
     EXPECT_TRUE(holder.empty()) << holder;
 }
+
+namespace {
+
+using acecode::daemon::DaemonProcessIdentity;
+using acecode::daemon::RuntimeSnapshot;
+
+constexpr std::int64_t kSelfPid = 100;
+constexpr std::int64_t kHolderPid = 4242;
+constexpr std::int64_t kHeartbeatMs = 1'800'000'000'000;
+
+// 一份「pid 与心跳一致」的 runtime snapshot:心跳时间固定为 kHeartbeatMs。
+RuntimeSnapshot snapshot_with_heartbeat(std::int64_t pid) {
+    RuntimeSnapshot snapshot;
+    snapshot.pid = pid;
+    acecode::daemon::Heartbeat hb;
+    hb.pid = pid;
+    hb.timestamp_ms = kHeartbeatMs;
+    snapshot.heartbeat = hb;
+    return snapshot;
+}
+
+}  // namespace
+
+// 场景:daemon.pid 记录的进程已经不在了(最常见的遗留文件)。
+// 期望:不拦截。
+TEST(EvaluateDaemonPidHolder, DeadPidDoesNotBlock) {
+    const auto verdict = evaluate_daemon_pid_holder(snapshot_with_heartbeat(kHolderPid), kSelfPid,
+        /*pid_alive=*/false, DaemonProcessIdentity::Unknown, std::nullopt);
+    EXPECT_FALSE(verdict.blocks) << verdict.reason;
+}
+
+// 场景:daemon.pid 就是发起迁移的本进程(run/desktop-shared 下自己的 pid 文件)。
+// 期望:不拦截,即使探测结果显示它是活着的 acecode。
+TEST(EvaluateDaemonPidHolder, OwnPidDoesNotBlock) {
+    const auto verdict = evaluate_daemon_pid_holder(snapshot_with_heartbeat(kSelfPid), kSelfPid,
+        /*pid_alive=*/true, DaemonProcessIdentity::Match, kHeartbeatMs - 60'000);
+    EXPECT_FALSE(verdict.blocks) << verdict.reason;
+}
+
+// 场景:pid 活着,但进程镜像已经不是 acecode(Mismatch)—— 遗留 pid 被无关进程复用。
+// 期望:不拦截,reason 以 "pid reused" 开头。没有心跳也一样:Mismatch 本身就是证明。
+// bug 表现:projects/*/run 下的遗留 pid 被 chrome 等进程复用后,迁移永远报「请关闭
+// 其他 ACECode 窗口」,用户关掉所有窗口也没用。
+TEST(EvaluateDaemonPidHolder, MismatchedImageDoesNotBlock) {
+    RuntimeSnapshot no_heartbeat;
+    no_heartbeat.pid = kHolderPid;
+    const auto verdict = evaluate_daemon_pid_holder(no_heartbeat, kSelfPid,
+        /*pid_alive=*/true, DaemonProcessIdentity::Mismatch, std::nullopt);
+    EXPECT_FALSE(verdict.blocks) << verdict.reason;
+    EXPECT_EQ(verdict.reason.rfind("pid reused", 0), 0u) << verdict.reason;
+}
+
+// 场景:pid 活着且镜像同名(甚至就是另一个 acecode),但进程启动时间晚于该目录的心跳。
+// 期望:不拦截 —— 写心跳的那个 daemon 早已退出,这是后来复用了同一个 pid 的新进程。
+// 阈值:runtime_pid_reuse_is_proven 默认 2 秒容差(平台时钟粒度),这里晚 5 秒,明确越过;
+// 另取晚 1 秒的一例确认容差内仍按「未证明」拦截。
+TEST(EvaluateDaemonPidHolder, ProcessStartedAfterHeartbeatDoesNotBlock) {
+    const auto later = evaluate_daemon_pid_holder(snapshot_with_heartbeat(kHolderPid), kSelfPid,
+        /*pid_alive=*/true, DaemonProcessIdentity::Match, kHeartbeatMs + 5'000);
+    EXPECT_FALSE(later.blocks) << later.reason;
+    EXPECT_EQ(later.reason.rfind("pid reused", 0), 0u) << later.reason;
+
+    const auto within_tolerance = evaluate_daemon_pid_holder(snapshot_with_heartbeat(kHolderPid),
+        kSelfPid, /*pid_alive=*/true, DaemonProcessIdentity::Match, kHeartbeatMs + 1'000);
+    EXPECT_TRUE(within_tolerance.blocks) << within_tolerance.reason;
+}
+
+// 场景:pid 活着、镜像是 acecode、进程启动早于心跳 —— 真有另一个实例在用这个数据目录。
+// 期望:拦截(OTHER_INSTANCES_ACTIVE 的正当情形)。
+TEST(EvaluateDaemonPidHolder, LiveMatchingDaemonBlocks) {
+    const auto verdict = evaluate_daemon_pid_holder(snapshot_with_heartbeat(kHolderPid), kSelfPid,
+        /*pid_alive=*/true, DaemonProcessIdentity::Match, kHeartbeatMs - 60'000);
+    EXPECT_TRUE(verdict.blocks) << verdict.reason;
+}
+
+// 场景:pid 活着,但身份读不出来(Unknown,如权限不足),目录里也没有心跳。
+// 期望:拦截(fail-closed)—— 证明不了是复用,就不能冒着复制期间有人写的风险放行。
+TEST(EvaluateDaemonPidHolder, UnknownIdentityWithoutHeartbeatBlocks) {
+    RuntimeSnapshot no_heartbeat;
+    no_heartbeat.pid = kHolderPid;
+    const auto verdict = evaluate_daemon_pid_holder(no_heartbeat, kSelfPid,
+        /*pid_alive=*/true, DaemonProcessIdentity::Unknown, kHeartbeatMs + 60'000);
+    EXPECT_TRUE(verdict.blocks) << verdict.reason;
+}
