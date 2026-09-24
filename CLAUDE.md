@@ -39,6 +39,12 @@ write gate remains closed after success until restart; failure reopens it and
 resumes the scheduler. Never delete a failed validation target or the live root.
 Backup deletion verifies the pointer and preserves it when cleaning the default root.
 
+**数据目录迁移的几条铁律(fix-feedback-0924 第 1 条,YTB 反馈:迁移出错后界面卡死 / 迁移必然失败)。**
+(1) OS 错误文本(`ec.message()` / `e.what()`)先单独经 `migration_os_error_text` / `ensure_utf8` 转 UTF-8 再拼接 —— 不要对拼好的整串转,整串里的 UTF-8 中文路径会被按 GBK 重解成乱码;`routes_environment.cpp::json_response` 的 `dump(..., error_handler_t::replace)` 是出口兜底,不能去掉(曾经 GBK 的「系统找不到指定的路径」让 /migration 每次轮询都 500,前端永远停在「迁移中」)。前端轮询由 `migrationPollOutcome` 给出动作、组件函数式 `setJob`,连续 3 次失败就停并标 unknown。构造非法 UTF-8 测试数据时注意 GBK「一」= `D2 BB` 恰好是合法 UTF-8。
+(2) `to_extended_length_path`(`\\?\`)只用于迁移与清理的文件 IO,绝不进 JSON / 指针 / 日志;SQLite 打开 ≥240 字符才换扩展形式(同进程两种形式打开同一 WAL 库会分裂 winShmNode);staging 名是 `.acecode-mig-` + 8 hex。运行期仍不是 longPathAware。
+(3) `agent-browser/webview2`(Desktop 启动即创建、持续写)只能「尽力复制 + 不参与变更复检」,SQLite 仍优先 backup;`edge-app-profile/` 整个排除;已快照主库的 `-wal/-shm/-journal` 都不复制(热 journal 会把快照回滚坏)。排除 `cache/no-workspace/<id>/.acecode/tmp` 的代价:删旧目录后历史里对 scratch 的引用失效。`previous_size_bytes` 含未复制但留在旧目录的数据。
+(4) 「其他实例」判定只在已被证明 PID 复用时放行(`evaluate_daemon_pid_holder`,与 daemon_pool 同口径,身份未知一律拦);每个拒绝分支都记日志(SESSIONS_BUSY 带 `busy_session_ids()`)。redirect 解析告警发生在日志初始化之前,由 worker / TUI / headless / Windows 服务四处在 `init_with_rotation` 之后调 `log_deferred_data_dir_resolution_warning()` 补记。
+
 The Settings shell uses open groups in `globals.css`; user-provided Claude-style
 references supersede the older boxed-card guidance for this surface.
 `settingsSearch.js` indexes bilingual labels and aliases; SettingsPage locates the
@@ -191,6 +197,21 @@ Codex 截图里红框那行 "Reading registry sections" 是 OpenAI 推理摘要�
 - **Web 不按批次拆组**:投影仍是一段活动一条 `activity_summary`、落定后一条「已处理」,前言只影响实时行与运行中的工具行 —— 按批次拆成多行就是被用户否掉的那版。reducer:`tool_start.preamble` 直接挂 `tool.preamble`;批次标题模式的 `tool_preamble` 事件先于 tool_start 到达,暂存在 `pendingToolPreambles`(按 tool_call_id)建项时取走,迟到的原地打标;历史加载由 `tagHistoryToolPreambles` 从 assistant metadata 传播到同批次结果项(`calls` 按 id 各取各的,`title` 给整批;结构化结果挂 `tool.preamble`,legacy 文本结果挂 metadata,`makeLegacyInvocationItem` 归并时带上,`preambleOfItem` 对 msg 项也会按自己的 tool_call_id 查 `calls`)。`tool_preamble` 在 `STREAM_NEUTRAL_EVENT_TYPES` 里,不切断流式草稿。
 - **REST** `GET/PUT /api/config/tool-preamble`(`routes_tool_preamble.cpp` + `handlers/tool_preamble_handler.cpp` 纯函数,PUT 是 patch,落盘后 `SessionRegistry::refresh_tool_preamble_config` 直接下发,AgentLoop 每次用时取快照不必等回合边界)。前端 `lib/toolPreamble.js`(三选一定义 + 说明文案 + 归一化)+ `components/ToolPreambleSettings.jsx`。
 - 回归测试:`tests/tool_preamble/`、`tests/config/config_tool_preamble_test.cpp`、`tests/prompt/system_prompt_tool_preamble_test.cpp`、`tests/agent_loop/agent_loop_tool_preamble_test.cpp`(三模式端到端 + 迟到 + 关闭)、`tests/web/tool_preamble_handler_test.cpp`、`tests/session/session_replay_tool_preamble_test.cpp`;前端 `toolPreamble` / `transcriptProjectionToolPreamble` / `sessionTranscriptToolPreamble` 三个 test。
+
+### 文本形式工具调用恢复与纠正(fix-feedback-0924 第 3 条)
+
+起因(yubo2,dots3-note-prev):模型把调用写进正文(裸 `<invoke name="Bash">`、`<dots_function_call>` 外壳、不存在的 `exec`),provider 返回 tool_calls=0,回合静默结束;压缩请求不带工具表,模型把调用写进了摘要并原样落盘,之后历史里没有原生调用可参照,换模型也照样模仿。
+
+- **接入点与 DSML 相同**:`OpenAiCompatProvider::chat()` / `parse_sse_stream()` 在 DSML 过滤器之后串 `TextToolCallStreamFilter`(`src/provider/text_tool_call_recovery.cpp`),只在请求带工具时启用;标记在 provider 内扣住,界面看不到半截 `<invoke`;诊断经 `ChatResponse::text_tool_calls` / Done 事件上报。解析是增量的(`HeldScanIsLinearInInputSize` 守着),文本 file_write 参数可能几百 KB 且在 cpr 回调线程上。
+- **执行级判定五条都不要放宽**:行首、不在围栏内、语法完整、**块前可见正文只有空白**(用户拍板:正文后面的调用不执行、改走纠正 —— 防「解释 XML / 转述文件或网页」被执行,yolo 与 goal 下没有确认兜底)、块后只有空白 / 特殊 token / 孤立外壳闭合标签。可疑级(行中 `<invoke name=` 等)只触发纠正,绝不执行。混合形态只执行原生调用,文本调用先按(规范名 + 参数 JSON)剔除回显。
+- **AgentLoop**:Rejected 处理放在 `response_is_blank` 之前;被拒 assistant 去掉标记后落盘(只剩空白清成空串,headless 的 `headless_final_assistant_text` 靠它以退出码 1 结束);纠正提示是 hidden user 消息,工具名取本次请求的模型侧名;连续计数,XML/JSON 2 次、DSML 1 次,耗尽后可见 error 并停 goal。
+- **压缩摘要校验**只看 tool_calls / 空 / 任意位置的调用标记,**不设长度下限**(中文合法摘要可能只有几个字)。
+- **老会话清洗** `sanitize_text_tool_call_history` 在 `model_facing_provider_messages` 唯一入口和压缩请求构造历史时调用,只改请求不改落盘、只由内容决定(不打穿 prompt cache);user 消息不动。
+- 工具名解析第 3 步是 ASCII 大小写不敏感、候选唯一才采用;Unknown tool 错误列出本次请求的模型侧工具名。没有改 system prompt。
+
+### PowerShell 编码前置脚本(fix-feedback-0924 第 4 条)
+
+Windows PowerShell 5.1 的 `Get-Content` 按 ANSI(GBK)读无 BOM 的 UTF-8 源码,agent 写回后整份中文永久损坏;`$x = git show` 按 [Console]::OutputEncoding 解码,bash 工具开的隐藏控制台是 936(**pwsh 7 也是**)。`shell_command_line.cpp::build_shell_command_line` 的 PowerShell 分支现在编码的是 `powershell_utf8_prelude() + command`:两个独立 try 设 `[Console]::OutputEncoding` 与 `$OutputEncoding` 为无 BOM UTF-8、补 `PYTHONIOENCODING`;仅 5.1 关闭进度记录并把 7 个文件 cmdlet 默认编码设为 utf8(写入带 BOM,用户拍板的取舍)。守住:前置脚本里不能调用 New-Object 等会触发模块自动加载的 cmdlet(5.1 会往 stderr 喷 GBK 的 CLIXML);`using` / `param` / `[特性]param` / 具名块开头的命令不加前置脚本(否则变解析错误);只作用于 bash 工具执行路径,探测、ConsoleDock、hooks 不加;`get_powershell_guidance` 的 Text encoding 条目要与前置脚本行为逐项一致。真实 powershell.exe 集成测试在 `tests/tool/bash_tool_powershell_encoding_test.cpp`(CI 无 Windows 单测,只能本机跑)。
 
 ### Thread Goals(/goal,复刻 Codex ext/goal)
 
@@ -512,6 +533,23 @@ SidePanel 折叠 UI:`ChatView` 把 `SidePanel` 包到 `<div class="ace-side-pane
 排队卡片栈(`redesign-webui-queue-cards`):busy 期间提交的待发送消息**不进 transcript**,改由 `<QueueCardList>`(在 `<InputBar>` 上方)渲染成卡片堆。状态机(`lib/chatInputQueue.js`)与 `enqueueQueuedInput` / `cancelQueuedInput` / `markQueuedInput*` / `nextQueuedInput` / `completeQueuedInputForMessage` 全部不变;只是渲染分支换地方。每张卡片左侧 3px `.ace-queue-card-indicator` 色条标注状态(QUEUED 灰 / FAILED 红),右侧恒挂"取消"(close 图标),FAILED 多一个"重试"。状态↔标签映射收敛在 `lib/queueCardItem.js::buildQueueCardItem`(纯函数,Node 单测覆盖);DOM 端只是把这份结构映射到 className。`Message.jsx::UserBubble` 已剥离 `queued`/`onCancelQueued`/`onRetryQueued` props——transcript 里出现的 user 气泡一定是后端真实落库的消息。
 
 **中断回合后队列暂停,不自动出队。** 曾经的 bug:排了一堆消息后点停止,busy 一翻 false,ChatView 的 drain effect 就把下一条排队消息发了出去 —— 用户刚说「停」界面却替他继续。现在队列状态多一份按会话的 `paused`(`chatInputQueue.js::pauseQueuedInput / resumeQueuedInput / queuedInputPause`),`shouldDrainQueuedInput` 带 `paused` 时拒绝 drain;暂停有两条入口:(1) 本端点停止 —— `ChatView::abort()` **先** `pauseQueuedInput` 再本地应用 `turn_aborted`,顺序反了 drain effect 会先看到 busy=false 把下一条发出去;(2) TUI / 其它标签页 / IM 通道发起的中断只以 `outcome=aborted` 的 `busy_changed` / `done` 到达,靠 transcript reducer 新增的 `lastTurnOutcome`(`'' | completed | error | aborted`,新回合开始清空,只在真正的 busy→false 转换上按 outcome 记;本地 `turn_aborted` 直接记 aborted,服务端补发的 busy_changed(false) 到达时 wasBusy 已 false 不覆盖)+ `shouldPauseQueuedInputAfterAbort` 在 drain effect 里兜底。界面:`QueueCardList` 顶部横幅「由于你中断了当前响应,队列已暂停」+「继续」(`queueCardItem.js::buildQueuePausedBanner`);输入栏空输入 + 暂停时发送按钮变「继续」(`inputBarState.js` 的 `mode='resume'`,压过「重发末尾用户消息」,图标换播放三角,`InputBar::submit` 走 `onResumeQueue` 而不是 `onSubmit`)。解除暂停只认用户明确动作:点「继续」/ 空输入按发送 / 再次发送或排队一条新消息(新消息先走,旧排队随后照常出队)/ 重试失败卡片;删掉最后一张卡片时暂停标记顺带清除,避免一个看不见的暂停态把之后的排队卡住。`pauseQueuedInput` 对没有待发送消息的会话是 no-op。回归:`chatInputQueue.test.js` 的暂停一组、`inputBarState.test.js` 的「继续」两条、`queueCardItem.test.js` 的横幅两条、`sessionTranscript.test.js` 的 `lastTurnOutcome` 两条。
+
+### Web UI: 粘贴的文本块(fix-feedback-0924 第 2 条)
+
+起因(LIUXIN557 f300):一条 2460 万字符的粘贴原样进了用户气泡、回合滚动条和吸顶条,切进会话必然卡死。用户不接受输入限长,决定:达到 20 行 / 2000 字符的粘贴变成输入框上方的卡片(点开在单独文本框编辑);很大的粘贴落文件、消息里只带引用。
+- **内联块** `{type:"pasted_text", key, text}`:发送时以 `"\n\n"` 拼到编辑器内容之后。**文件块**:UTF-8 ≥ 128 KiB 或加入后内联合计 > 256 KiB(`web/src/lib/pastedText.js` 常量)时上传成会话附件,composer 里是带 `paste:{...}` 的 attachment 部件,模型只收到 `[Attached file reference]`(`origin:"pasted_text"`,按需 `file_read`);> 24 MiB 按字节切段顺序上传。首页粘贴落工作区草稿附件区(no-workspace 的**不能放在缓存根下**,那里每个子目录都被当作会话 cwd),发送前复制成会话附件,刷新不丢;回收有 10 分钟年龄门。
+- **文本有两份**:`composerContentText()` / C++ `result.text` 是编辑器文本(不含粘贴块),`composerContentSubmissionText()` / `submission_text` 才是正文;分隔规则两端各一份,同一组样例守住。不要再引入「超预算剥块 + 内存缓存」(被否决)。
+- 判定粘贴资源用 `isPasteResource`(资源 `paste` / 服务端 `metadata.origin` / 部件 key),上传回填会整体替换资源;所有文本入口(粘贴、文件传输 insertText、结构化剪贴板、text/plain 拖放)都先过 `foldLargePaste`。
+- 命令路由:内联块并进命令参数,文件块算 extras;编辑器为空时一律普通消息;`/goal`、`/btw` 超上限提示「太长」而不是改发普通消息。文件引用在 Codex 输入与压缩后的保留消息里都要在(`build_codex_input_text`、`build_compacted_history`)。
+- 对话记录纯文本只渲染前 20000 字符 / 400 行 +「查看全文」;编辑框是不受控原生 textarea,50 万字符以上只读、最多装载 500 万字符。已知未做:会话删除不清 `attachments/<sid>/`,fork 整份复制文件块。
+
+### 其它反馈修复备忘(fix-feedback-0924)
+
+- **429 硬配额**:message 明确说额度 / 余额用完(`quota exhausted`、`exceeded your current quota`、余额不足…)也按硬配额,不再重试;按分钟的配额与普通限流仍重试(`retry_policy.cpp::is_hard_quota_message`)。
+- **上下文超限识别**补了 LiteLLM/vLLM 的 `ContextWindowExceededError ... longer than the model's context length`;压缩连续超限时前 3 次各删一条,之后每次至少删约 1/4 估算 token。只有图片的 user 消息压缩后保留占位文字,不留空内容(部分服务端 400)。
+- **搜索索引签名**:JSONL 的非搜索追加(检查点、净差异、压缩检查点)一律走 `SessionManager::append_non_searchable_locked`,否则下一条消息落盘时索引判定过期、在会话锁里整份重读重建(长会话发消息越来越慢)。
+- **侧栏补位**:`reconcileSidebarSessions` 里「上一轮没见过」的会话只有比同工作区已显示的都新才置顶,归档后补进来的旧会话按时间插回。
+- macOS 自更新的安装位置检查提前到拉清单之前;cmd 指引点明同一行 `set` 的变量取不到、未定义 `%VAR%` 原样留成文字(用户项目里出现 `%T%` 目录)。
 
 ### Web UI: HTTP / WS 协议增量
 
