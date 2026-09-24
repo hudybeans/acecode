@@ -66,6 +66,18 @@ bool is_context_overflow_error(const ProviderErrorInfo& info);
 bool is_context_overflow_error(const std::string& error_message);
 bool is_retryable_compaction_error(const ProviderErrorInfo& info);
 
+// Validate a summarization reply before it is installed as the compact
+// summary. Returns "" when acceptable, otherwise a short reason:
+// "tool_calls" (native tool calls), "empty" (blank after trimming) or
+// "tool_call_markup" (tool-call tags anywhere outside code fences/inline
+// code). There is intentionally no minimum length: a valid Chinese summary
+// can be only a few characters.
+std::string compact_summary_rejection_reason(const ChatResponse& response);
+
+// Rejected summaries are retried at most this many times (3 attempts total)
+// before compaction fails without installing anything.
+constexpr int kMaxInvalidCompactSummaryRetries = 2;
+
 using CompactRetryCallback =
     std::function<void(const ProviderErrorInfo& info, bool waiting)>;
 

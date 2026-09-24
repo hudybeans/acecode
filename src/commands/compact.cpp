@@ -3,6 +3,8 @@
 #include "../session/compact_checkpoint.hpp"
 #include "../session/session_history_recovery.hpp"
 #include "../pa/pa_quirks.hpp"
+#include "../provider/text_tool_call_recovery.hpp"
+#include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
 
 #include <algorithm>
@@ -439,6 +441,22 @@ void insert_context_before_last_real_user_or_summary(
         std::make_move_iterator(context.end()));
 }
 
+std::string compact_summary_rejection_reason(const ChatResponse& response) {
+    // 压缩请求不带工具表,仍有模型(实测 dots3)接着历史里的 tool_calls「做下一步」:
+    // 要么真的回原生 tool_calls,要么把调用写成正文。两种都不是摘要,绝不能落盘。
+    if (response.has_tool_calls()) return "tool_calls";
+    const bool blank = std::all_of(
+        response.content.begin(), response.content.end(), [](char c) {
+            return std::isspace(static_cast<unsigned char>(c)) != 0;
+        });
+    // DSML 标记会被 provider 的 DSML 过滤器吞掉,剩下的空内容在这里被拦住。
+    if (blank) return "empty";
+    // 任意位置出现调用标记都算污染(标记后面还跟着正文也一样);围栏与行内代码里的
+    // 不算 —— 摘要引用命令、代码是允许的。刻意不设长度下限:中文合法摘要可能只有几个字。
+    if (text_contains_tool_call_markup(response.content)) return "tool_call_markup";
+    return {};
+}
+
 CompactResult compact_messages(
     LlmProvider& provider,
     const std::vector<ChatMessage>& messages,
@@ -462,6 +480,8 @@ CompactResult compact_messages(
 
     std::string summary_suffix;
     std::uint64_t transient_retries = 0;
+    // 与上下文溢出、瞬时错误的重试互不共享计数。
+    int invalid_summary_retries = 0;
     for (;;) {
         if (abort_flag && abort_flag->load()) {
             result.error = "Compaction cancelled.";
@@ -476,7 +496,10 @@ CompactResult compact_messages(
 
         ChatMessage prompt;
         prompt.role = "user";
-        prompt.content = get_compact_prompt();
+        prompt.content = invalid_summary_retries > 0
+            ? get_compact_prompt() + "\n\n" +
+                  get_compact_invalid_summary_reminder()
+            : get_compact_prompt();
         request.push_back(std::move(prompt));
 
         try {
@@ -557,6 +580,29 @@ CompactResult compact_messages(
                 result.error = context_overflow
                     ? "Context window exceeded while compacting with no removable history item."
                     : "Summarization failed: " + provider_message;
+                return result;
+            }
+
+            const std::string rejection =
+                compact_summary_rejection_reason(response);
+            if (!rejection.empty()) {
+                LOG_WARN("Compact summary rejected; reason=" + rejection +
+                         " attempt=" +
+                         std::to_string(invalid_summary_retries + 1) + "/" +
+                         std::to_string(kMaxInvalidCompactSummaryRetries + 1) +
+                         " tool_calls=" +
+                         std::to_string(response.tool_calls.size()) +
+                         " excerpt=" +
+                         truncate_utf8_prefix(response.content, 300));
+                if (invalid_summary_retries < kMaxInvalidCompactSummaryRetries) {
+                    ++invalid_summary_retries;
+                    continue;
+                }
+                // 不安装任何摘要:自动压缩由 AgentLoop 现有的丢弃最旧历史兜底接手。
+                result.error = "Summarization returned an invalid summary (" +
+                               rejection + ") after " +
+                               std::to_string(kMaxInvalidCompactSummaryRetries + 1) +
+                               " attempts.";
                 return result;
             }
 

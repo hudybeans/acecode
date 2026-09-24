@@ -119,6 +119,9 @@ void expect_same_request(const std::vector<acecode::ChatMessage>& lhs,
 
 } // namespace
 
+// 注意:这里比较的是 get_compact_prompt() 的返回值。提示词从 fix-feedback-0924
+// 起在末尾有意偏离 Codex 原文(追加「Output requirements」一段,禁止调工具 /
+// 输出调用标签),见 PromptForbidsToolCallsButAllowsQuotingCommands。
 TEST(CompactCore, UsesExactCodexPromptAndSummaryShape) {
     ChatStubProvider provider;
     std::vector<acecode::ChatMessage> initial_context{
@@ -642,4 +645,214 @@ TEST(CompactCore, ContextOverflowClassificationHandlesProviderShapes) {
     retryable_timeout.kind = acecode::ProviderErrorKind::Timeout;
     retryable_timeout.retryable = true;
     EXPECT_TRUE(acecode::is_retryable_compaction_error(retryable_timeout));
+}
+
+// ---- 压缩摘要校验(fix-feedback-0924 第 3 条)--------------------------------
+
+namespace {
+
+// yubo2 会话第 1002 行 `[Conversation summary]` 的形态:压缩请求不带工具表,
+// dots 模型接着历史「做下一步」,整段回复只有一个 dots 外壳包着的文本调用。
+std::string yubo2_markup_only_summary() {
+    return "\n\n<dots_function_call>\n"
+           "<invoke name=\"Bash\">\n"
+           "<parameter name=\"command\">\nGet-ChildItem -Recurse src\n</parameter>\n"
+           "</invoke>\n"
+           "</dots_function_call>";
+}
+
+std::string reminder_prompt() {
+    return acecode::get_compact_prompt() + "\n\n" +
+           acecode::get_compact_invalid_summary_reminder();
+}
+
+} // namespace
+
+// 触发场景:模型把工具调用写成正文当摘要(yubo2 第 1002 行形态),第二次给出合法摘要。
+// 期望行为:第一次被拒;第二次请求的提示词末尾带上「上次不是合法摘要」的提醒;
+// 最终安装的是第二次的纯文本摘要。
+// 回归:修复前 compact.cpp 原样收下 response.content,落盘的 `[Conversation summary]`
+// 里只剩 `<dots_function_call>…`,之后模型越来越多地模仿文本调用。
+TEST(CompactCore, ToolCallMarkupSummaryIsRetriedWithReminder) {
+    ChatStubProvider provider;
+    provider.responses.push_back(
+        ChatStubProvider::response(yubo2_markup_only_summary()));
+    provider.responses.push_back(
+        ChatStubProvider::response("Progress: listed src; next run the tests."));
+
+    auto result = acecode::compact_messages(
+        provider, {msg("user", "inspect the repo", "u1")});
+
+    ASSERT_TRUE(result.performed) << result.error;
+    ASSERT_EQ(provider.calls.size(), 2u);
+    EXPECT_EQ(provider.calls[0].back().content, acecode::get_compact_prompt());
+    EXPECT_EQ(provider.calls[1].back().content, reminder_prompt());
+    EXPECT_EQ(result.summary_text, "Progress: listed src; next run the tests.");
+    EXPECT_EQ(result.compacted_messages.back().content,
+              acecode::get_compact_summary_prefix() +
+                  "\nProgress: listed src; next run the tests.");
+}
+
+// 触发场景:调用标记后面还跟着一段「下一步」正文。
+// 期望行为:仍判为污染并重试 —— 标记出现在任意位置都算,不要求在末尾。
+TEST(CompactCore, MarkupFollowedByProseIsStillRejected) {
+    ChatStubProvider provider;
+    provider.responses.push_back(ChatStubProvider::response(
+        "<invoke name=\"Bash\">\n"
+        "<parameter name=\"command\">ls</parameter>\n"
+        "</invoke>\n\nNext steps: run the unit tests and fix failures."));
+    provider.responses.push_back(ChatStubProvider::response("clean summary"));
+
+    EXPECT_EQ(acecode::compact_summary_rejection_reason(
+                  ChatStubProvider::response(
+                      "Done so far.\n<invoke name=\"Bash\">\n</invoke>\nMore text.")),
+              "tool_call_markup");
+
+    auto result = acecode::compact_messages(provider, {msg("user", "request")});
+
+    ASSERT_TRUE(result.performed) << result.error;
+    ASSERT_EQ(provider.calls.size(), 2u);
+    EXPECT_EQ(provider.calls[1].back().content, reminder_prompt());
+    EXPECT_EQ(result.summary_text, "clean summary");
+}
+
+// 触发场景:模型在不带工具的压缩请求里回了原生 tool_calls,接着又回了只有空白的内容
+// (DSML 标记被 provider 的 DSML 过滤器吞掉后就是这种空内容)。
+// 期望行为:两次都被拒并重试,第三次的合法摘要被采用;原因分别是 tool_calls / empty。
+TEST(CompactCore, NativeToolCallsOrBlankSummaryAreRetried) {
+    auto with_tool_calls =
+        ChatStubProvider::response("I will look at the files first.");
+    with_tool_calls.tool_calls.push_back({"call-1", "bash", "{\"command\":\"ls\"}"});
+    auto blank = ChatStubProvider::response(" \n\t\r\n ");
+
+    EXPECT_EQ(acecode::compact_summary_rejection_reason(with_tool_calls),
+              "tool_calls");
+    EXPECT_EQ(acecode::compact_summary_rejection_reason(blank), "empty");
+    EXPECT_EQ(acecode::compact_summary_rejection_reason(
+                  ChatStubProvider::response("")),
+              "empty");
+
+    ChatStubProvider provider;
+    provider.responses.push_back(with_tool_calls);
+    provider.responses.push_back(blank);
+    provider.responses.push_back(ChatStubProvider::response("final summary"));
+
+    auto result = acecode::compact_messages(provider, {msg("user", "request")});
+
+    ASSERT_TRUE(result.performed) << result.error;
+    ASSERT_EQ(provider.calls.size(), 3u);
+    EXPECT_EQ(provider.calls[1].back().content, reminder_prompt());
+    EXPECT_EQ(provider.calls[2].back().content, reminder_prompt());
+    EXPECT_EQ(result.summary_text, "final summary");
+}
+
+// 触发场景:模型连续 3 次都给出被污染的摘要。
+// 期望行为:共请求 3 次(首次 + kMaxInvalidCompactSummaryRetries=2 次重试)后失败,
+// 不安装任何摘要、不返回 compacted_messages;自动压缩由 AgentLoop 的丢弃最旧历史兜底接手。
+// 上限 2 与 AgentLoop 的 kMaxEmptyResponseRetries 一致:两次仍不改就是在白烧 token。
+TEST(CompactCore, InvalidSummaryExhaustsRetriesWithoutInstallingHistory) {
+    ChatStubProvider provider;
+    for (int i = 0; i < 4; ++i) {
+        provider.responses.push_back(
+            ChatStubProvider::response(yubo2_markup_only_summary()));
+    }
+
+    auto result = acecode::compact_messages(
+        provider, {msg("user", "request")}, {}, true, nullptr);
+
+    EXPECT_FALSE(result.performed);
+    EXPECT_TRUE(result.compacted_messages.empty());
+    EXPECT_TRUE(result.summary_text.empty());
+    EXPECT_EQ(provider.calls.size(),
+              static_cast<std::size_t>(
+                  acecode::kMaxInvalidCompactSummaryRetries + 1));
+    EXPECT_EQ(result.error,
+              "Summarization returned an invalid summary (tool_call_markup) "
+              "after 3 attempts.");
+}
+
+// 触发场景:摘要里在代码围栏和行内代码中引用了调用标签(例如记录「用户问过 XML 格式」)。
+// 期望行为:一次通过 —— 围栏 / 行内代码里的内容是数据,不算污染。
+TEST(CompactCore, FencedMarkupInsideSummaryIsAccepted) {
+    const std::string summary =
+        "The user asked how the XML tool format looks. Example shown:\n"
+        "```xml\n"
+        "<invoke name=\"Bash\">\n"
+        "<parameter name=\"command\">ls</parameter>\n"
+        "</invoke>\n"
+        "```\n"
+        "Inline mention: `<invoke name=\"Bash\">` is not supported.\n"
+        "Next: run `cmake --build build`.";
+    ChatStubProvider provider;
+    provider.responses.push_back(ChatStubProvider::response(summary));
+
+    auto result = acecode::compact_messages(provider, {msg("user", "request")});
+
+    ASSERT_TRUE(result.performed) << result.error;
+    EXPECT_EQ(provider.calls.size(), 1u);
+    EXPECT_EQ(result.summary_text, summary);
+}
+
+// 触发场景:合法的中文短摘要,只有几个字。
+// 期望行为:一次通过。故意不设长度下限:中文合法摘要可能只有几个字,
+// 且大量现有用例的 stub 摘要就是 "summary" / "ok" 这样的短词。
+TEST(CompactCore, ShortChineseSummaryIsAccepted) {
+    const std::string summary = "\xE5\xB0\x9A\xE6\x97\xA0\xE8\xBF\x9B\xE5\xB1\x95\xE3\x80\x82";  // 尚无进展。
+    ChatStubProvider provider;
+    provider.responses.push_back(ChatStubProvider::response(summary));
+
+    auto result = acecode::compact_messages(provider, {msg("user", "request")});
+
+    ASSERT_TRUE(result.performed) << result.error;
+    EXPECT_EQ(provider.calls.size(), 1u);
+    EXPECT_EQ(result.summary_text, summary);
+    EXPECT_EQ(acecode::compact_summary_rejection_reason(
+                  ChatStubProvider::response(summary)),
+              "");
+}
+
+// 触发场景:检查压缩提示词本身。
+// 期望行为:保留 Codex 原文开头;末尾追加「不能调工具、不要输出调用标签、用纯文本」,
+// 同时明确允许引用命令、路径和代码(原提示词要求保留关键数据与引用,不能被削弱)。
+TEST(CompactCore, PromptForbidsToolCallsButAllowsQuotingCommands) {
+    const std::string& prompt = acecode::get_compact_prompt();
+    EXPECT_EQ(prompt.rfind("You are performing a CONTEXT CHECKPOINT COMPACTION.", 0), 0u);
+    EXPECT_NE(prompt.find("Any critical data, examples, or references needed to continue"),
+              std::string::npos);
+    EXPECT_NE(prompt.find("tools are not available for this request"), std::string::npos);
+    EXPECT_NE(prompt.find("do not call any tool"), std::string::npos);
+    EXPECT_NE(prompt.find("do not emit tool-call or function-call tags"), std::string::npos);
+    EXPECT_NE(prompt.find("You may still quote commands, paths and code"), std::string::npos);
+
+    const std::string& reminder = acecode::get_compact_invalid_summary_reminder();
+    EXPECT_NE(reminder.find("not a valid summary"), std::string::npos);
+    EXPECT_NE(reminder.find("plain text"), std::string::npos);
+}
+
+// 触发场景:第一次摘要被污染,重试请求又撞上下文溢出,第三次成功。
+// 期望行为:两套重试计数互不共享 —— 溢出照常丢一条最旧历史,而提醒在溢出重试的
+// 请求里依然保留(说明「摘要不合格」的状态没有被溢出重试清掉)。
+TEST(CompactCore, InvalidSummaryCounterIsIndependentOfOverflowRetries) {
+    ChatStubProvider provider;
+    provider.responses.push_back(
+        ChatStubProvider::response(yubo2_markup_only_summary()));
+    provider.responses.push_back(ChatStubProvider::response(
+        "maximum context length exceeded", "error"));
+    provider.responses.push_back(ChatStubProvider::response("summary"));
+    std::vector<acecode::ChatMessage> messages{
+        msg("user", "oldest"),
+        msg("assistant", "middle"),
+        msg("user", "newest"),
+    };
+
+    auto result = acecode::compact_messages(provider, messages);
+
+    ASSERT_TRUE(result.performed) << result.error;
+    ASSERT_EQ(provider.calls.size(), 3u);
+    EXPECT_EQ(provider.calls[0].back().content, acecode::get_compact_prompt());
+    EXPECT_EQ(provider.calls[1].back().content, reminder_prompt());
+    EXPECT_EQ(provider.calls[2].back().content, reminder_prompt());
+    EXPECT_EQ(provider.calls[2].size(), provider.calls[1].size() - 1);
+    EXPECT_EQ(result.compaction_request_items_removed, 1);
+    EXPECT_EQ(result.summary_text, "summary");
 }
