@@ -439,14 +439,24 @@ bool SessionManager::replace_active_messages(const std::vector<ChatMessage>& mes
     return true;
 }
 
+bool SessionManager::append_non_searchable_locked(const ChatMessage& msg) {
+    const auto before = session_user_message_file_signature(jsonl_path_);
+    if (!SessionStorage::append_message(jsonl_path_, msg)) return false;
+    std::string index_error;
+    SessionUserMessageIndex index(project_dir_);
+    if (!index.note_non_searchable_append(session_id_, jsonl_path_, before, &index_error)) {
+        log_user_message_index_error("note append", session_id_, index_error);
+    }
+    return true;
+}
+
 bool SessionManager::append_compact_checkpoint(const CompactCheckpoint& checkpoint) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!started_) return false;
     if (!ensure_created()) return false;
     if (!created_) return false;
 
-    if (!SessionStorage::append_message(
-            jsonl_path_, encode_compact_checkpoint(checkpoint))) {
+    if (!append_non_searchable_locked(encode_compact_checkpoint(checkpoint))) {
         last_error_ = "failed to append compact checkpoint";
         LOG_WARN("[session] " + last_error_ + " session=" + session_id_);
         return false;
@@ -462,8 +472,7 @@ void SessionManager::begin_user_turn_checkpoint(const std::string& user_message_
     if (!ensure_created()) return;
 
     FileCheckpointSnapshot snapshot = checkpoint_store_.make_snapshot(user_message_uuid);
-    if (!SessionStorage::append_message(
-            jsonl_path_, FileCheckpointStore::encode_snapshot_message(snapshot))) {
+    if (!append_non_searchable_locked(FileCheckpointStore::encode_snapshot_message(snapshot))) {
         last_error_ = "failed to append file checkpoint";
         LOG_WARN("[session] " + last_error_ + " session=" + session_id_);
         return;
@@ -479,8 +488,7 @@ void SessionManager::track_file_write_before(const std::string& file_path) {
 
     auto snapshot = checkpoint_store_.track_before_write(file_path);
     if (!snapshot.has_value()) return;
-    if (!SessionStorage::append_message(
-            jsonl_path_, FileCheckpointStore::encode_snapshot_message(*snapshot))) {
+    if (!append_non_searchable_locked(FileCheckpointStore::encode_snapshot_message(*snapshot))) {
         last_error_ = "failed to append file checkpoint";
         LOG_WARN("[session] " + last_error_ + " session=" + session_id_);
         return;
@@ -505,7 +513,7 @@ std::optional<TurnNetDiffRecord> SessionManager::finalize_user_turn_net_diff(
 
     const ChatMessage message = make_turn_net_diff_message(
         record, SessionStorage::now_iso8601());
-    if (!SessionStorage::append_message(jsonl_path_, message)) {
+    if (!append_non_searchable_locked(message)) {
         last_error_ = "failed to append turn net diff";
         LOG_WARN("[session] " + last_error_ + " session=" + session_id_);
         return std::nullopt;
