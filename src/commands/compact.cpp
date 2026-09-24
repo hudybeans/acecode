@@ -275,7 +275,27 @@ std::vector<ChatMessage> build_compacted_history(
             }
 
             retained.role = "user";
-            retained.content_parts = nlohmann::json::array();
+            // Structured parts are dropped (images, contexts), except `file`
+            // parts: a file reference is a few hundred bytes, and dropping it
+            // takes away the only read path the model has for that file. A
+            // large paste stored as a file would otherwise vanish from the
+            // model's input after every compaction. When parts are kept, the
+            // (possibly truncated) text goes first as a text part, because
+            // providers render content_parts instead of content.
+            nlohmann::json retained_parts = nlohmann::json::array();
+            if (it->content_parts.is_array()) {
+                for (const auto& part : it->content_parts) {
+                    if (part.is_object() &&
+                        part.value("type", std::string{}) == "file") {
+                        retained_parts.push_back(part);
+                    }
+                }
+            }
+            if (!retained_parts.empty() && !retained.content.empty()) {
+                retained_parts.insert(retained_parts.begin(), nlohmann::json{
+                    {"type", "text"}, {"text", retained.content}});
+            }
+            retained.content_parts = std::move(retained_parts);
             retained.tool_calls = nlohmann::json();
             retained.tool_call_id.clear();
             retained.reasoning_content.clear();

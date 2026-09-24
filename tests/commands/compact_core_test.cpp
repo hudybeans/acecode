@@ -238,6 +238,57 @@ TEST(CompactCore, ExcludesPriorSummaryAndNonUserItems) {
               acecode::get_compact_summary_prefix() + "\nnew summary");
 }
 
+// 触发场景:用户消息带「粘贴的文本」文件块(content_parts = [text, file]),
+// 以及只有文件块、编辑器里什么都没打的消息(content 为空,只有 file 部件),
+// 之后会话被压缩。
+// 期望行为:保留下来的 user 消息 content_parts 变为 [text(= content), file],
+// 只有文件块的消息保留为 [file](不补空 text 部件);其它结构化部件(图片、
+// 浏览器上下文)照旧丢弃。
+// 回归:压缩一律把 content_parts 清空,provider 只剩 content,文件引用连同
+// read_path 一起消失,压缩后模型再也读不到用户粘贴的大段材料。
+TEST(CompactCore, RetainedUserMessageKeepsFileReferenceParts) {
+    const nlohmann::json file_part = {
+        {"type", "file"},
+        {"attachment", {
+            {"id", "att_paste"},
+            {"session_id", "session-a"},
+            {"name", "粘贴的文本.txt"},
+            {"kind", "file"},
+            {"mime_type", "text/plain"},
+            {"path", "C:/acecode/attachments/session-a/att_paste.txt"},
+            {"size_bytes", 400000},
+            {"metadata", {{"origin", "pasted_text"}}},
+        }},
+    };
+    auto with_text = msg("user", "分析这份日志", "with-text");
+    with_text.content_parts = nlohmann::json::array({
+        {{"type", "text"}, {"text", "分析这份日志"}},
+        file_part,
+        {{"type", "image"}, {"attachment", {{"id", "att_image"}}}},
+        {{"type", "browser_context"}, {"context", {{"url", "https://x"}}}},
+    });
+    auto file_only = msg("user", "", "file-only");
+    file_only.content_parts = nlohmann::json::array({file_part});
+    std::vector<acecode::ChatMessage> messages{
+        std::move(with_text),
+        msg("assistant", "done"),
+        std::move(file_only),
+    };
+
+    auto compacted = acecode::build_compacted_history(messages, "summary");
+
+    ASSERT_EQ(compacted.size(), 3u);
+    EXPECT_EQ(compacted[0].uuid, "with-text");
+    const nlohmann::json expected_with_text = nlohmann::json::array({
+        {{"type", "text"}, {"text", "分析这份日志"}},
+        file_part,
+    });
+    EXPECT_EQ(compacted[0].content_parts, expected_with_text);
+    EXPECT_EQ(compacted[1].uuid, "file-only");
+    EXPECT_EQ(compacted[1].content_parts, nlohmann::json::array({file_part}));
+    EXPECT_TRUE(compacted[2].is_compact_summary);
+}
+
 TEST(CompactCore, ExcludesInternalUserContextRows) {
     auto internal = [](const char* key, const char* content) {
         auto message = msg("user", content);
