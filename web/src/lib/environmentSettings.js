@@ -30,6 +30,67 @@ export function migrationPercent(job) {
     ? Math.min(100, Math.max(0, Math.floor(job.copied_bytes / job.total_bytes * 100))) : 0;
 }
 
+// 迁移进度轮询间隔与连续失败上限。3 次(约 2 秒)能容忍迁移期间的单次抖动,
+// 又不至于让界面长时间停在「迁移中」、所有设置项被禁用。
+export const MIGRATION_POLL_INTERVAL_MS = 750;
+export const MIGRATION_POLL_MAX_FAILURES = 3;
+
+export function migrationFailureMessage(job) {
+  const detail = typeof job?.error === 'string' ? job.error.trim() : '';
+  return detail ? `迁移失败：${detail}` : '迁移失败';
+}
+
+function isMigrationNotFound(error) {
+  return error?.status === 404
+    || error?.code === 'MIGRATION_NOT_FOUND'
+    || error?.body?.error === 'MIGRATION_NOT_FOUND';
+}
+
+// 一次迁移进度轮询的判定。输入是本次请求的结果(next 或 error)与此前的连续失败次数,
+// 输出一个由组件执行的动作:
+//   replace      用服务端返回的 job 整体替换(outcome.job)
+//   clear        job 置 null(daemon 已重启,任务不存在)
+//   keep         瞬时失败,不动 job(组件用函数式更新,不会用闭包里的旧 job 回退进度)
+//   mark-unknown 连续失败达到上限,停止轮询并把 job 标为 unknown
+// stop 为真时组件不再安排下一次轮询;refreshDirectory 为真时组件在轮询之外单独刷新目录状态。
+export function migrationPollOutcome({ next, error, failures = 0 } = {}) {
+  const outcome = { action: 'keep', stop: false, failures: 0, message: '', refreshDirectory: false, job: null };
+  if (error) {
+    if (isMigrationNotFound(error)) {
+      return { ...outcome, action: 'clear', stop: true, message: environmentError({ code: 'MIGRATION_NOT_FOUND' }) };
+    }
+    const count = Math.max(0, Number(failures) || 0) + 1;
+    if (count >= MIGRATION_POLL_MAX_FAILURES) {
+      return {
+        ...outcome,
+        action: 'mark-unknown',
+        stop: true,
+        failures: count,
+        message: `无法获取迁移进度：${environmentError(error)}`,
+      };
+    }
+    return { ...outcome, failures: count };
+  }
+  if (!next || typeof next !== 'object') {
+    return { ...outcome, action: 'clear', stop: true };
+  }
+  const base = { ...outcome, action: 'replace', job: next };
+  if (next.state === 'running') return base;
+  if (next.state === 'done') return { ...base, stop: true, refreshDirectory: true };
+  if (next.state === 'failed') return { ...base, stop: true, message: migrationFailureMessage(next) };
+  // idle / 缺 state 等未知状态:停止轮询,防止无限请求。
+  return { ...base, stop: true };
+}
+
+export function applyMigrationPollOutcome(prev, outcome) {
+  switch (outcome?.action) {
+    case 'replace': return outcome.job ?? null;
+    case 'clear': return null;
+    case 'mark-unknown': return prev ? { ...prev, state: 'unknown' } : prev;
+    default: return prev;
+  }
+}
+
 export function environmentError(error) {
   const code = error?.body?.error || error?.code;
   const messages = {
@@ -48,6 +109,7 @@ export function environmentError(error) {
     CONSOLES_ACTIVE: '请关闭控制台终端后再迁移',
     DATA_DIR_MIGRATION_ACTIVE: '工作空间正在迁移，请等待完成并重启',
     MIGRATION_ACTIVE: '工作空间正在迁移，请等待完成并重启',
+    MIGRATION_NOT_FOUND: '迁移任务已不存在，请重新发起迁移',
     PICKER_UNAVAILABLE: '当前环境不支持选择对话框，请手动输入路径',
     PERSIST_FAILED: '保存失败，请检查文件写入权限',
   };
