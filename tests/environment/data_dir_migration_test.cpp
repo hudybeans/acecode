@@ -210,7 +210,9 @@ TEST_F(DataDirMigrationTest, ValidateTargetUsesCanonicalComparison) {
 
 // 场景:排除规则。
 // 期望:顶层 run/、tmp/、指针文件、任意 *.lock 被排除;projects/ 下的会话文件与
-// 深层目录不排除;sqlite 三件套被识别为最后复制的一组。
+// 深层目录不排除;sqlite 主库 / wal / shm / journal 被识别为最后复制的一组。
+// 另含 edge-app-profile、无工作区会话临时目录的锚定排除,尽力复制子树根的判定,
+// 以及浏览器可再生缓存的跳过规则。
 TEST_F(DataDirMigrationTest, ExclusionRules) {
     EXPECT_TRUE(migration_excludes_entry(fs::path("run")));
     EXPECT_TRUE(migration_excludes_entry(fs::path("run") / "daemon.pid"));
@@ -222,9 +224,40 @@ TEST_F(DataDirMigrationTest, ExclusionRules) {
     EXPECT_FALSE(migration_excludes_entry(fs::path("runbook.md")));
     EXPECT_FALSE(migration_excludes_entry(fs::path("memory")));
 
+    // edge-app-profile:webapp 兼容模式每次启动都重建的 Edge profile,整个排除。
+    EXPECT_TRUE(migration_excludes_entry(fs::path("edge-app-profile")));
+    EXPECT_TRUE(migration_excludes_entry(fs::path("edge-app-profile") / "u1" / "Default" / "x"));
+    // 无工作区会话的 ACECODE_TMPDIR 锚定到 cache/no-workspace/<id>/.acecode/tmp 这一层;
+    // 同一会话目录下 Agent 的产出文件与 .acecode 下的其它内容照常迁移。
+    const fs::path nw = fs::path("cache") / "no-workspace" / "20260924-abc";
+    EXPECT_TRUE(migration_excludes_entry(nw / ".acecode" / "tmp"));
+    EXPECT_TRUE(migration_excludes_entry(nw / ".acecode" / "tmp" / "session-1" / "shot.png"));
+    EXPECT_FALSE(migration_excludes_entry(nw / "report.md"));
+    EXPECT_FALSE(migration_excludes_entry(nw / ".acecode" / "skills"));
+    EXPECT_FALSE(migration_excludes_entry(nw / ".acecode"));
+    EXPECT_FALSE(migration_excludes_entry(fs::path("projects") / "x" / ".acecode" / "tmp"));
+
+    // 尽力复制子树的根恰好是 agent-browser/webview2,父目录与兄弟文件不算。
+    EXPECT_TRUE(migration_is_best_effort_root(fs::path("agent-browser") / "webview2"));
+    EXPECT_FALSE(migration_is_best_effort_root(fs::path("agent-browser") / "macos-profile-id"));
+    EXPECT_FALSE(migration_is_best_effort_root(fs::path("agent-browser")));
+    EXPECT_FALSE(migration_is_best_effort_root(fs::path("agent-browser") / "webview2" / "Default"));
+
+    // 可再生缓存与锁文件跳过;登录态相关的库与配置不跳过。
+    EXPECT_TRUE(migration_skips_rebuildable_browser_entry(fs::path("Cache")));
+    EXPECT_TRUE(migration_skips_rebuildable_browser_entry(
+        fs::path("agent-browser") / "webview2" / "Default" / "Code Cache" / "js" / "index"));
+    EXPECT_TRUE(migration_skips_rebuildable_browser_entry(fs::path("lockfile")));
+    EXPECT_TRUE(migration_skips_rebuildable_browser_entry(fs::path("Default") / "Local Storage" / "leveldb" / "LOCK"));
+    EXPECT_FALSE(migration_skips_rebuildable_browser_entry(fs::path("Cookies")));
+    EXPECT_FALSE(migration_skips_rebuildable_browser_entry(fs::path("Local State")));
+    EXPECT_FALSE(migration_skips_rebuildable_browser_entry(fs::path("Default") / "Network" / "Cookies"));
+
     EXPECT_TRUE(migration_is_sqlite_family(fs::path("scheduled-loops.sqlite3")));
     EXPECT_TRUE(migration_is_sqlite_family(fs::path("scheduled-loops.sqlite3-wal")));
     EXPECT_TRUE(migration_is_sqlite_family(fs::path("x") / "state.sqlite3-shm"));
+    // -journal 也归入 sqlite 组:排在主库之后复制,主库快照后才能按旁路文件跳过。
+    EXPECT_TRUE(migration_is_sqlite_family(fs::path("x") / "state.sqlite3-journal"));
     EXPECT_FALSE(migration_is_sqlite_family(fs::path("config.json")));
 }
 
@@ -240,6 +273,7 @@ TEST_F(DataDirMigrationTest, MigrationCopiesAndWritesPointer) {
         [&](unsigned long long, unsigned long long total) { last_total = total; });
     ASSERT_EQ(result.state, "done") << result.error;
     EXPECT_TRUE(result.restart_required);
+    EXPECT_EQ(result.skipped_files, 0u) << "没有浏览器 profile 时不应有任何跳过";
     EXPECT_TRUE(fs::exists(target / "config.json"));
     EXPECT_TRUE(fs::exists(target / "projects" / "abc" / "sessions" / "s1.jsonl"));
     EXPECT_TRUE(fs::exists(target / "memory" / "MEMORY.md"));
@@ -265,7 +299,12 @@ TEST_F(DataDirMigrationTest, MigrationCopiesAndWritesPointer) {
     ASSERT_TRUE(pointer.has_value());
     EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(pointer->data_dir), target));
     EXPECT_TRUE(fs::equivalent(acecode::path_from_utf8(pointer->previous_data_dir), default_dir));
-    EXPECT_EQ(pointer->previous_size_bytes, expected);
+    // 指针记的是旧目录占用:复制量 + 未迁移但仍留在旧目录的 run/、tmp/ 与锁文件。
+    unsigned long long left_behind = 0;
+    for (const char* rel : {"run/daemon.pid", "tmp/scratch.txt", "config.json.lock"}) {
+        left_behind += fs::file_size(default_dir / rel);
+    }
+    EXPECT_EQ(pointer->previous_size_bytes, expected + left_behind);
     EXPECT_TRUE(pointer->cleanup_pending);
     EXPECT_GT(pointer->migrated_at_ms, 0);
 
@@ -523,4 +562,251 @@ TEST_F(DataDirMigrationTest, CleanupRemovesFilesBeyondMaxPath) {
 
     EXPECT_EQ(cleanup_previous_data_dir(s(old_dir), s(default_dir)), "");
     EXPECT_FALSE(exists_long(old_dir));
+}
+
+namespace {
+
+// 造一个最小的 WebView2 profile(Desktop 的 Agent Browser user data):配置、会话库、
+// 可再生缓存与锁文件。DIPS 用非 SQLite 内容,走原始复制路径。
+fs::path populate_browser_profile(const fs::path& data_dir) {
+    const fs::path profile = data_dir / "agent-browser" / "webview2";
+    write_file(profile / "Local State", R"({"browser":{}})");
+    write_file(profile / "lockfile", "");
+    write_file(profile / "Default" / "Preferences", R"({"profile":{}})");
+    write_file(profile / "Default" / "DIPS", "dips");
+    write_file(profile / "Default" / "DIPS-shm", "shm");
+    write_file(profile / "Default" / "Cache" / "Cache_Data" / "data_0", "cache");
+    write_file(profile / "Default" / "Code Cache" / "js" / "index", "code cache");
+    write_file(profile / "Default" / "Local Storage" / "leveldb" / "LOCK", "");
+    write_file(profile / "Default" / "Local Storage" / "leveldb" / "000003.log", "leveldb");
+    return profile;
+}
+
+void append_file(const fs::path& p, const std::string& content) {
+    std::ofstream ofs(p, std::ios::binary | std::ios::app);
+    ofs << content;
+}
+
+#ifdef _WIN32
+// 以 share=0 独占打开文件,模拟被别的进程锁住;析构时关闭。
+class ExclusiveFileLock {
+public:
+    explicit ExclusiveFileLock(const fs::path& p)
+        : handle_(CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr)) {}
+    ~ExclusiveFileLock() { if (valid()) CloseHandle(handle_); }
+    ExclusiveFileLock(const ExclusiveFileLock&) = delete;
+    ExclusiveFileLock& operator=(const ExclusiveFileLock&) = delete;
+    bool valid() const { return handle_ != INVALID_HANDLE_VALUE; }
+private:
+    HANDLE handle_;
+};
+#endif
+
+}  // namespace
+
+// 场景:Desktop 开着,Agent Browser 的 WebView2 profile 在迁移过程中持续变动 —— 追加写
+// DIPS-shm、新建临时文件、删掉一个已清点的文件(第一次进度回调里做,此时刚清点完、还没复制)。
+// 期望:迁移成功并写指针;目标里有 Local State,没有 Cache / Code Cache / lockfile / LOCK;
+// 被删的文件属于 not-found,不计入 skipped_files(否则几乎每次迁移都会弹「需要重新登录」)。
+// bug 表现:0912 反馈日志连续 8 次在复检阶段失败:
+// 「source changed during migration: ...DIPS-shm」,只要 Desktop 开着迁移就必然失败。
+TEST_F(DataDirMigrationTest, BrowserProfileChurnDoesNotFailMigration) {
+    populate_source(default_dir);
+    const fs::path profile = populate_browser_profile(default_dir);
+    bool churned = false;
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target),
+        [&](unsigned long long, unsigned long long) {
+            if (churned) return;
+            churned = true;
+            append_file(profile / "Default" / "DIPS-shm", "more shared memory");
+            write_file(profile / "Default" / "new.tmp", "tmp");
+            fs::remove(profile / "Default" / "Preferences");
+        });
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_TRUE(churned);
+    EXPECT_EQ(result.skipped_files, 0u);
+    EXPECT_TRUE(acecode::read_data_dir_redirect(s(default_dir)).has_value());
+    const fs::path moved = target / "agent-browser" / "webview2";
+    EXPECT_TRUE(fs::exists(moved / "Local State"));
+    EXPECT_TRUE(fs::exists(moved / "Default" / "DIPS"));
+    EXPECT_TRUE(fs::exists(moved / "Default" / "Local Storage" / "leveldb" / "000003.log"));
+    EXPECT_FALSE(fs::exists(moved / "Default" / "Preferences"));
+    EXPECT_FALSE(fs::exists(moved / "Default" / "Cache"));
+    EXPECT_FALSE(fs::exists(moved / "Default" / "Code Cache"));
+    EXPECT_FALSE(fs::exists(moved / "lockfile"));
+    EXPECT_FALSE(fs::exists(moved / "Default" / "Local Storage" / "leveldb" / "LOCK"));
+    // 进度条要能走满:尽力子树的字节无论成败都计入 copied。
+    EXPECT_EQ(result.copied_bytes, result.total_bytes);
+}
+
+// 场景:profile 里的 Cookies 库是 WAL 模式,浏览器连接一直开着,已提交的数据还在 -wal 里;
+// 旁边还躺着一个 Cookies-journal。
+// 期望:目标库能读到那一行(走了在线 backup 的一致快照);目标里没有 -wal 和 -journal。
+// 这是 Agent Browser 登录态迁移后得以保留的前提。journal 首字节写 0:非零首字节会让
+// SQLite 把它当热日志、只读打开直接拒绝(那种情况由原始复制兜底,不是本用例要测的)。
+TEST_F(DataDirMigrationTest, BrowserProfileDatabaseIsSnapshotted) {
+    populate_source(default_dir);
+    const fs::path network = default_dir / "agent-browser" / "webview2" / "Default" / "Network";
+    fs::create_directories(network);
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(s(network / "Cookies").c_str(), &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL; CREATE TABLE cookies(name TEXT); INSERT INTO cookies VALUES('session-cookie');", nullptr, nullptr, nullptr), SQLITE_OK);
+    ASSERT_TRUE(fs::exists(network / "Cookies-wal")) << "前提:已提交的数据留在 wal 里";
+    write_file(network / "Cookies-journal", std::string("\0stale journal bytes", 20));
+
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    sqlite3_close(db);
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_EQ(result.skipped_files, 0u);
+
+    const fs::path moved = target / "agent-browser" / "webview2" / "Default" / "Network";
+    EXPECT_FALSE(fs::exists(moved / "Cookies-wal"));
+    EXPECT_FALSE(fs::exists(moved / "Cookies-journal"));
+    ASSERT_EQ(sqlite3_open(s(moved / "Cookies").c_str(), &db), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db, "SELECT name FROM cookies", -1, &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)), "session-cookie");
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+}
+
+// 场景:profile 里某个文件被别的进程独占锁住(share=0),原始复制读不了。
+// 期望:迁移仍然成功,skipped_files == 1,目标里没有这个文件,其余 profile 内容照常复制。
+// 注:这是防御性场景 —— 0912 实测并没有遇到锁,失败全在复检;但真遇到锁时不能让整个
+// 迁移失败,最坏结果只是 Agent Browser 需要重新登录。
+TEST_F(DataDirMigrationTest, LockedBrowserProfileFileIsSkipped) {
+#ifdef _WIN32
+    populate_source(default_dir);
+    const fs::path profile = populate_browser_profile(default_dir);
+    ExclusiveFileLock lock(profile / "Default" / "Preferences");
+    ASSERT_TRUE(lock.valid());
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_EQ(result.skipped_files, 1u);
+    const fs::path moved = target / "agent-browser" / "webview2";
+    EXPECT_FALSE(fs::exists(moved / "Default" / "Preferences"));
+    EXPECT_TRUE(fs::exists(moved / "Local State"));
+    EXPECT_TRUE(fs::exists(moved / "Default" / "DIPS"));
+#else
+    GTEST_SKIP() << "share-mode exclusive locks are Windows-only";
+#endif
+}
+
+// 场景:profile 子树之外的文件(memory/MEMORY.md)被独占锁住。
+// 期望:迁移失败且不写指针 —— 尽力复制只放宽 agent-browser/webview2 这一个子树,
+// ACECode 自己的数据复制不全绝不能发布。这是防止尽力模式被扩大化的哨兵。
+TEST_F(DataDirMigrationTest, LockedFileOutsideBrowserProfileStillFails) {
+#ifdef _WIN32
+    populate_source(default_dir);
+    populate_browser_profile(default_dir);
+    ExclusiveFileLock lock(default_dir / "memory" / "MEMORY.md");
+    ASSERT_TRUE(lock.valid());
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(root / "moved"));
+    EXPECT_EQ(result.state, "failed");
+    EXPECT_NE(result.error.find("MEMORY.md"), std::string::npos) << result.error;
+    EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)).has_value());
+#else
+    GTEST_SKIP() << "share-mode exclusive locks are Windows-only";
+#endif
+}
+
+// 场景:webapp 兼容模式下 Edge --app 的 profile(edge-app-profile/u<pid>)在迁移中持续写入。
+// 期望:迁移成功,目标里根本没有 edge-app-profile —— 它每次启动都重建,没有要保留的数据。
+// bug 表现:修复前它和 WebView2 profile 一样会让变更复检必然失败。
+TEST_F(DataDirMigrationTest, EdgeAppProfileChurnIsExcluded) {
+    populate_source(default_dir);
+    write_file(default_dir / "edge-app-profile" / "u1" / "Default" / "x", "edge");
+    bool churned = false;
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target),
+        [&](unsigned long long, unsigned long long) {
+            if (churned) return;
+            churned = true;
+            append_file(default_dir / "edge-app-profile" / "u1" / "Default" / "x", "more");
+            write_file(default_dir / "edge-app-profile" / "u1" / "Default" / "y", "new");
+        });
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_TRUE(churned);
+    EXPECT_FALSE(fs::exists(target / "edge-app-profile"));
+}
+
+// 场景:无工作区会话目录 cache/no-workspace/<id>/ 下既有 Agent 的产出文件,也有
+// .acecode/tmp 下的 ACECODE_TMPDIR 临时脚本 / 截图。
+// 期望:产出文件 out.md 迁移过去;.acecode/tmp 不复制(bash 每次调用会按需重建)。
+TEST_F(DataDirMigrationTest, NoWorkspaceScratchIsNotCopied) {
+    populate_source(default_dir);
+    const fs::path session = fs::path("cache") / "no-workspace" / "20260924-120000-abcd";
+    write_file(default_dir / session / "out.md", "deliverable");
+    write_file(default_dir / session / ".acecode" / "tmp" / "session-1" / "shot.png", "png");
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_EQ(read_file_long(target / session / "out.md"), "deliverable");
+    EXPECT_FALSE(fs::exists(target / session / ".acecode" / "tmp"));
+}
+
+// 场景:旧目录里有大量不迁移的数据 —— Agent Browser 的可再生缓存(Cache / Code Cache)、
+// webapp 兼容模式的 edge-app-profile、无工作区会话的 .acecode/tmp,外加 run/、tmp/ 与锁文件。
+// 期望:指针的 previous_size_bytes = 清点总量 + 这些留在旧目录里的字节之和,而不是复制量。
+// bug 表现:修复前 previous_size_bytes 取 copied_bytes,排除项全被漏掉。例如 60 MB 会话数据
+// + 300 MB 浏览器缓存,记成 60 MB,低于 100 MiB 的清理提示阈值,旧目录实际占着 360 MB
+// 却永远不提示清理,清理界面报的大小也偏小。
+TEST_F(DataDirMigrationTest, PreviousSizeCountsDataLeftBehind) {
+    populate_source(default_dir);
+    const fs::path profile = populate_browser_profile(default_dir);
+    // 缓存写大一点(64 KiB),让「漏算」在断言里一眼可见。
+    const std::string big_cache(64 * 1024, 'c');
+    write_file(profile / "Default" / "Cache" / "Cache_Data" / "data_1", big_cache);
+    write_file(default_dir / "edge-app-profile" / "u1" / "Default" / "x", "edge");
+    const fs::path scratch = fs::path("cache") / "no-workspace" / "20260924-120000-abcd" /
+                             ".acecode" / "tmp" / "session-1" / "shot.png";
+    write_file(default_dir / scratch, "png");
+
+    unsigned long long left_behind = 0;
+    for (const fs::path rel : {fs::path("run/daemon.pid"), fs::path("tmp/scratch.txt"),
+                               fs::path("config.json.lock"),
+                               fs::path("agent-browser/webview2/lockfile"),
+                               fs::path("agent-browser/webview2/Default/Cache/Cache_Data/data_0"),
+                               fs::path("agent-browser/webview2/Default/Cache/Cache_Data/data_1"),
+                               fs::path("agent-browser/webview2/Default/Code Cache/js/index"),
+                               fs::path("agent-browser/webview2/Default/Local Storage/leveldb/LOCK"),
+                               fs::path("edge-app-profile/u1/Default/x"), scratch}) {
+        left_behind += fs::file_size(default_dir / rel);
+    }
+    ASSERT_GE(left_behind, big_cache.size());
+
+    const fs::path target = root / "moved";
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(target));
+    ASSERT_EQ(result.state, "done") << result.error;
+    EXPECT_FALSE(fs::exists(target / "agent-browser" / "webview2" / "Default" / "Cache"));
+
+    auto pointer = acecode::read_data_dir_redirect(s(default_dir));
+    ASSERT_TRUE(pointer.has_value());
+    EXPECT_EQ(pointer->previous_size_bytes, result.total_bytes + left_behind);
+    EXPECT_GT(pointer->previous_size_bytes, result.copied_bytes + big_cache.size() - 1)
+        << "缓存字节必须计入旧目录大小,否则清理提示阈值判断偏小";
+}
+
+// 场景:迁移过程中 ACECode 自己的数据目录里新出现一个文件(memory/new.md)。
+// 期望:迁移失败(不发布不完整的数据),错误文本带上新增条目的相对路径。
+// bug 表现:0912 反馈第一次失败只有「source changed during migration; retry when ACECode
+// is idle」,没有路径,无从定位是谁在写。
+TEST_F(DataDirMigrationTest, NewEntryDuringMigrationNamesThePath) {
+    populate_source(default_dir);
+    bool changed = false;
+    const auto result = run_data_dir_migration(s(default_dir), s(default_dir), s(root / "moved"),
+        [&](unsigned long long, unsigned long long) {
+            if (changed) return;
+            changed = true;
+            write_file(default_dir / "memory" / "new.md", "new");
+        });
+    EXPECT_EQ(result.state, "failed");
+    EXPECT_NE(result.error.find("memory"), std::string::npos) << result.error;
+    EXPECT_NE(result.error.find("new.md"), std::string::npos) << result.error;
+    EXPECT_FALSE(acecode::read_data_dir_redirect(s(default_dir)).has_value());
 }

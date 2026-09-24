@@ -9,6 +9,19 @@
 // 删掉半成品目标即可重试,回滚只需删指针。迁移后首次启动若旧数据超过 100 MB,
 // 由 status 端点报 cleanup 提示,用户决定删还是留。
 //
+// 排除规则:顶层 run/、tmp/、edge-app-profile/(webapp 兼容模式每次启动都重建的 Edge
+// profile)、指针文件本身、任何 *.lock,以及 cache/no-workspace/<id>/.acecode/tmp(无工作区
+// 会话的 ACECODE_TMPDIR,可再生;代价是旧目录删除后历史里对这些 scratch 文件的别名引用失效)。
+//
+// 尽力复制:agent-browser/webview2 是 Desktop 启动即建立、持续在写的 WebView2 profile,
+// 迁移又只能从 Desktop 发起,它会让变更复检每次都失败。所以这个子树单独容错遍历、跳过
+// 可再生缓存,复制失败(not-found 除外)只计入 skipped_files,且不参与变更复检;其它路径
+// 仍然严格失败。
+//
+// SQLite:文件头是 SQLite 的库走在线 backup 拿一致快照,快照成功后同名 -wal / -shm /
+// -journal 一律不复制 —— 把热 journal 原样放在一致快照旁边,SQLite 打开时会把旧页回滚进
+// 快照把它写坏。
+//
 // 纯逻辑(校验、排除规则、阈值)不依赖 web 层,进 acecode_testable 单测。
 
 #include "../utils/paths.hpp"
@@ -74,10 +87,20 @@ struct MigrationTargetCheck {
 MigrationTargetCheck validate_migration_target(const std::string& current_dir,
                                                const std::string& target);
 
-// 相对数据根的条目是否被排除:顶层 run/、tmp/、指针文件,以及任何 *.lock。
+// 相对数据根的条目是否被排除:顶层 run/、tmp/、edge-app-profile/、指针文件、任何 *.lock,
+// 以及锚定到 cache/no-workspace/<id>/.acecode/tmp 的无工作区会话临时目录(同一会话目录下的
+// 其它产出文件照常复制)。
 bool migration_excludes_entry(const std::filesystem::path& relative);
 
-// sqlite 主库 / wal / shm 要作为一组最后复制,尽量拿到一致快照。
+// 相对数据根的路径是否恰好是尽力复制子树的根(generic 形态 == "agent-browser/webview2")。
+bool migration_is_best_effort_root(const std::filesystem::path& relative);
+
+// 尽力复制子树里可以直接跳过的可再生条目:任一路径段是 Chromium 缓存目录(Cache、
+// Code Cache、GPUCache、GrShaderCache、GraphiteDawnCache、DawnCache、DawnGraphiteCache、
+// DawnWebGPUCache、ShaderCache、Crashpad,大小写不敏感),或文件名是 lockfile / LOCK。
+bool migration_skips_rebuildable_browser_entry(const std::filesystem::path& relative);
+
+// sqlite 主库 / wal / shm / journal 要作为一组最后复制,尽量拿到一致快照。
 bool migration_is_sqlite_family(const std::filesystem::path& relative);
 
 struct MigrationProgress {
@@ -85,6 +108,9 @@ struct MigrationProgress {
     std::string target;
     unsigned long long copied_bytes = 0;
     unsigned long long total_bytes = 0;
+    // 尽力复制子树里复制失败而被跳过的文件数(not-found 不计)。> 0 时 Agent Browser
+    // 重启后可能需要重新登录;ACECode 自己的数据不受影响。
+    unsigned long long skipped_files = 0;
     std::string error;
     bool restart_required = false;
     long long started_at_ms = 0;

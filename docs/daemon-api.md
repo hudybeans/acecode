@@ -4267,11 +4267,17 @@ These endpoints use the normal authenticated API access policy.
 `redirect_target`, `migrated_at_ms`, `cleanup_pending` and `migration` (null or the
 job below). Existing backups add `previous_dir` and `previous_size_bytes`. After
 restart, a pending backup larger than 100 MiB also adds
-`cleanup:{previous_dir,size_bytes}`.
+`cleanup:{previous_dir,size_bytes}`. `previous_size_bytes` is the old directory's
+footprint at migration time: every enumerated file plus the excluded entries and
+skipped Agent Browser caches listed below, which stay in the old directory until it
+is cleaned up (it is not the copied byte count).
 
 `POST /api/config/data-dir/migrate` accepts `{target:"<absolute path>"}` and returns
-`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`, `error`,
-`restart_required`, `started_at_ms` and `finished_at_ms`. Poll
+`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`,
+`skipped_files`, `error`, `restart_required`, `started_at_ms` and `finished_at_ms`.
+`skipped_files` counts Agent Browser profile files that could not be copied (see
+below); when it is greater than zero the Agent Browser may need to sign in again
+after restart. Poll
 `GET /api/config/data-dir/migration`; states are `running`, `done` or `failed`.
 Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
 
@@ -4283,13 +4289,32 @@ live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals ret
 `409 CONSOLES_ACTIVE`.
 
 The job pauses the scheduler and copies through a private staging directory,
-excluding top-level `run/`, `tmp/`, the redirect pointer and lock files. SQLite
-databases use online backups, including committed WAL transactions. Symlinks are
+excluding top-level `run/`, `tmp/`, `edge-app-profile/` (the Edge `--app` profile of
+webapp compatibility mode, recreated on every launch), the redirect pointer, lock
+files and `cache/no-workspace/<id>/.acecode/tmp` (the scratch `ACECODE_TMPDIR` of
+no-workspace sessions; other files in that session directory are copied). Once the
+old directory is deleted, history references to those scratch files (including
+Agent Browser screenshots) no longer resolve. SQLite databases use online backups,
+including committed WAL transactions; after a database is snapshotted its `-wal`,
+`-shm` and `-journal` files are not copied, because a hot journal next to a
+consistent snapshot would roll it back. Symlinks are
 preserved (internal targets follow the new root); inability to preserve them fails
-the copy. Source changes and a newly occupied target abort publication. Failure
+the copy. Source changes and a newly occupied target abort publication; the error
+names the changed or new entry by its relative path. Failure
 removes only private staging, preserves the source and existing target files,
 and re-enables writes. A pointer-write failure retains the copied target for recovery.
 The staging directory is a sibling of the target named `.acecode-mig-<8 hex>`.
+
+`agent-browser/webview2` (the Desktop Agent Browser profile, open and written for
+the whole Desktop lifetime) is copied best-effort: it is enumerated separately and
+tolerates entries vanishing mid-walk, skips rebuildable caches (`Cache`,
+`Code Cache`, `GPUCache`, `GrShaderCache`, `GraphiteDawnCache`, `DawnCache`,
+`DawnGraphiteCache`, `DawnWebGPUCache`, `ShaderCache`, `Crashpad`) and `lockfile` /
+`LOCK`, snapshots SQLite files with a 500 ms busy timeout and falls back to a raw
+copy, and counts a file in `skipped_files` only when that also fails (a file that
+disappeared is not counted). The subtree is excluded from the source-change
+recheck. Data written after the snapshot is lost, so the worst case is signing in
+to the Agent Browser again; ACECode's own data is never copied best-effort.
 
 On Windows, migration and cleanup perform file IO (enumeration, stat, directory
 creation, copy, rename and recursive removal) through extended-length `\\?\` paths,

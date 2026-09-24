@@ -31,7 +31,7 @@ struct DataDirRedirect {
     std::string data_dir;                    // 新数据根(绝对路径),必填
     std::string previous_data_dir;           // 迁移前的数据根(可空)
     long long migrated_at_ms = 0;            // 迁移完成时间(epoch ms,0 = 未知)
-    unsigned long long previous_size_bytes = 0;  // 迁移时复制的字节数
+    unsigned long long previous_size_bytes = 0;  // 迁移时旧目录的占用(复制量 + 未迁移的排除项 / 缓存)
     bool cleanup_pending = false;            // 是否还没问过用户要不要删旧目录
 };
 

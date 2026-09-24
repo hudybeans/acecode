@@ -936,6 +936,10 @@ TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurt
         std::this_thread::sleep_for(20ms);
     }
     ASSERT_EQ(progress["state"], "done") << progress;
+    // 进度 JSON 带 skipped_files(Agent Browser profile 尽力复制跳过的文件数);
+    // 这个数据目录里没有浏览器 profile,应为 0。前端据它决定是否提示需要重新登录。
+    ASSERT_TRUE(progress.contains("skipped_files")) << progress;
+    EXPECT_EQ(progress["skipped_files"].get<unsigned long long>(), 0u);
     EXPECT_EQ(read_text(target / "memory/MEMORY.md"), "keep this memory");
     EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
     auto blocked = cpr::Put(cpr::Url{fx.url("/api/config/toolchains")},

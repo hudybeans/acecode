@@ -62,6 +62,7 @@ json migration_progress_json(const env::MigrationProgress& p) {
         {"target", p.target},
         {"copied_bytes", p.copied_bytes},
         {"total_bytes", p.total_bytes},
+        {"skipped_files", p.skipped_files},
         {"error", p.error},
         {"restart_required", p.restart_required},
         {"started_at_ms", p.started_at_ms},
