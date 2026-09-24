@@ -347,6 +347,11 @@ export function App() {
   const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText, client = api) => {
     void homeDraftStore.accept(client, workspaceHash, submittedText);
   }, [homeDraftStore]);
+  // 首页粘贴的文件块上传完成时用户已离开首页:在 store 里的最新草稿上回填,
+  // 不能用 ChatView 手里的旧快照覆盖期间的编辑。
+  const patchHomeComposerDraft = useCallback((workspaceHash, updater, client = api) => {
+    homeDraftStore.patch(client, workspaceHash, updater);
+  }, [homeDraftStore]);
   useEffect(() => {
     const flush = () => { void homeDraftStore.flush(); };
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
@@ -2215,6 +2220,7 @@ export function App() {
                 homeComposerAttentionRequest={homeComposerAttentionRequest}
                 onHomeComposerDraftChange={updateHomeComposerDraft}
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}
+                onHomeComposerDraftPatch={patchHomeComposerDraft}
                 modelProfileRevision={modelProfileRevision}
                 onSessionPromoted={navigateToRef}
                 onRegisterPreviewLeaveGuard={registerPreviewLeaveGuard}

@@ -1709,4 +1709,9 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '粘贴的文本 · {{p0}}': 'Pasted text · {{p0}}',
   '粘贴的文本 · 待上传': 'Pasted text · Waiting to upload',
   '粘贴的文本 · 上传中…': 'Pasted text · Uploading…',
+  '粘贴内容较大（{{p0}}），将分 {{p1}} 段上传': 'The pasted content is large ({{p0}}) and will be uploaded in {{p1}} parts',
+  '粘贴的文本上传失败:': 'Pasted text upload failed: ',
+  '粘贴的文本已失效，请删除后重新粘贴': 'The pasted text is no longer available; remove it and paste again',
+  '粘贴的文本正在上传，完成后请再发送': 'The pasted text is uploading; send again when it finishes',
+  '粘贴的文本太长，超出 /{{p0}} 的上限（{{p1}} 字节）。去掉命令可作为普通消息发送，或缩短内容': 'The pasted text is too long for the /{{p0}} limit ({{p1}} bytes). Remove the command to send it as a normal message, or shorten it',
 });

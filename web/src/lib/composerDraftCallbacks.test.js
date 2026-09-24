@@ -51,7 +51,10 @@ function content({ id = '', leading = false, repeated = false } = {}) {
   return { version: 1, parts };
 }
 
-function fixture({ activeKey = 'workspace:task-a', current = content(), text = 'before after' } = {}) {
+function fixture({
+  activeKey = 'workspace:task-a', current = content(), text = 'before after',
+  historyText = '/turn before after', routeDisplayText = '/turn before after',
+} = {}) {
   const state = { sets: [], saves: [], extraClears: 0, history: [], notifications: [] };
   const context = vm.createContext({
     composerDraftEditFingerprint,
@@ -63,7 +66,8 @@ function fixture({ activeKey = 'workspace:task-a', current = content(), text = '
     clearComposerExtras: () => { state.extraClears += 1; },
     recordInputHistory: (value) => state.history.push(value),
     toast: (value) => state.notifications.push(value),
-    route: { display_text: '/turn before after' },
+    route: { display_text: routeDisplayText },
+    historyText,
     submittedComposerText: 'before after', submittedComposerContent: content(),
     sidRef: { current: activeKey.split(':').at(-1) }, id: 'task-a',
   });
@@ -118,6 +122,19 @@ run('the actual turn-interruption receipt retains later edits and their attachme
   assert.deepEqual(test.state.history, ['/turn before after']);
 });
 
+// 触发场景:运行中的会话里输入 `/turn 按这个改` 并粘贴一段 200 KiB 日志(内联块),插话提交成功。
+// 期望行为:cwd 输入历史只记编辑器文本 `/turn 按这个改`,不含内联块正文。
+// 回归 bug 表现:历史记的是 route.display_text(已拼上块正文),input_history.jsonl 每条膨胀到
+// 几百 KB;上箭头翻回这条时整段(连同 /turn)被折叠成粘贴块,再发送就成了普通消息而不是插话。
+run('the actual turn-interruption receipt records editor text without inline paste bodies', () => {
+  const test = fixture({
+    historyText: '/turn 按这个改',
+    routeDisplayText: '/turn 按这个改\n\n<200 KiB log body>',
+  });
+  vm.runInContext(`(${callbacks.get('turnReceipt')})`, test.context)();
+  assert.deepEqual(test.state.history, ['/turn 按这个改']);
+});
+
 run('the actual turn-interruption receipt only clears extras after its matching draft clears', () => {
   const test = fixture();
   vm.runInContext(`(${callbacks.get('turnReceipt')})`, test.context)();
@@ -136,6 +153,8 @@ function homeFixture({ workspace = 'workspace', attachments = false, failSend = 
     sid: '', draftSessionKey: '', draftReadyKey: '', acceptedHomeSubmission: null,
     sessionCreated: false, createdSessionId: '', pendingAttachmentFiles: [],
     payload: { text: 'before after', composer_content: submittedContent },
+    // submit 里算好的 cwd 输入历史文本(只含编辑器文本,不含内联粘贴块正文)。
+    historyText: 'before after',
     submittedComposerContent: submittedContent,
     payloadWithAttachmentIds: (payload) => payload,
     setPendingNewSessionFirstUserMessage() {}, applyEvent() {},
