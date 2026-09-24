@@ -444,6 +444,52 @@ TEST(CompactCore, OverflowRetryRemovesMatchingToolOutputWithOldestCall) {
     EXPECT_EQ(result.compaction_request_items_removed, 3);
 }
 
+// 场景:vLLM / LiteLLM 转发的上下文超限原文(yubo2 切到 agnes-2.5-flash 后)。
+// 期望:认作上下文超限,压缩走「删最旧历史再重试」。
+// 回归表现:认不出时压缩退化成机械裁剪,一次丢掉 527 条消息且没有摘要。
+TEST(CompactCore, ContextOverflowRecognizesLiteLlmContextWindowExceeded) {
+    acecode::ProviderErrorInfo info;
+    info.kind = acecode::ProviderErrorKind::Http;
+    info.status_code = 400;
+    info.raw_body =
+        R"({"error":{"message":"litellm.ContextWindowExceededError: litellm.BadRequestError: ContextWindowExceededError: OpenAIException - {\"object\":\"error\",\"message\":\"The input (564686 tokens) is longer than the model's context length (524288 tokens).\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}"}})";
+    EXPECT_TRUE(acecode::is_context_overflow_error(info));
+    EXPECT_TRUE(acecode::is_context_overflow_error(
+        "The input (564686 tokens) is longer than the model's context length (524288 tokens)."));
+}
+
+// 场景:换到窗口更小的模型后压缩,被总结的历史远超新窗口,服务端连续报超限。
+// 期望:前 3 次每次只删最旧的一条(尽量多保留可总结的内容),第 4 次起每次至少
+// 删掉约 1/4 的估算 token,重试次数有上限。
+// 回归表现:修复前每次只删一条,几百条旧历史要来回请求几百次。
+TEST(CompactCore, RepeatedOverflowShrinksHistoryGeometrically) {
+    ChatStubProvider provider;
+    for (int i = 0; i < 4; ++i) {
+        provider.responses.push_back(ChatStubProvider::response(
+            "maximum context length exceeded", "error"));
+    }
+    provider.responses.push_back(ChatStubProvider::response("summary"));
+    std::vector<acecode::ChatMessage> messages;
+    for (int i = 0; i < 40; ++i) {
+        messages.push_back(msg(i % 2 == 0 ? "user" : "assistant",
+                               "turn " + std::to_string(i) + std::string(200, 'x')));
+    }
+
+    auto result = acecode::compact_messages(provider, messages);
+
+    ASSERT_TRUE(result.performed) << result.error;
+    ASSERT_EQ(provider.calls.size(), 5u);
+    // 每次请求 = 历史 + 压缩提示词;前 3 次重试各少一条。
+    EXPECT_EQ(provider.calls[1].size(), provider.calls[0].size() - 1);
+    EXPECT_EQ(provider.calls[2].size(), provider.calls[1].size() - 1);
+    EXPECT_EQ(provider.calls[3].size(), provider.calls[2].size() - 1);
+    // 第 4 次重试:37 条等长历史至少删掉 1/4(>= 10 条)。
+    const std::size_t before = provider.calls[3].size() - 1;
+    const std::size_t after = provider.calls[4].size() - 1;
+    EXPECT_LE(after, before - before / 4);
+    EXPECT_GT(after, 0u);
+}
+
 TEST(CompactCore, TerminalFailureDoesNotInstallHistory) {
     ChatStubProvider provider;
     provider.responses.push_back(

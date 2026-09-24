@@ -174,6 +174,36 @@ int remove_oldest_history_item(
     return removed_count;
 }
 
+// 压缩请求被判上下文超限时收缩被总结的历史。前 kSingleItemOverflowRetries 次
+// 每次只删最旧的一条(连同配对的 tool 结果),尽量多保留可总结的内容;之后每次
+// 至少删掉约 1/4 的估算 token。起因(yubo2):换到窗口更小的模型后,旧历史比新
+// 窗口多出几十万 token,一次删一条要来回请求几百次。
+constexpr int kSingleItemOverflowRetries = 3;
+
+int estimate_history_tokens(const std::vector<acecode::ChatMessage>& history) {
+    std::size_t bytes = 0;
+    for (const auto& msg : history) bytes += message_payload_bytes(msg);
+    const std::size_t tokens = (bytes + 3) / 4;
+    return tokens > static_cast<std::size_t>(std::numeric_limits<int>::max())
+        ? std::numeric_limits<int>::max()
+        : static_cast<int>(tokens);
+}
+
+int shrink_history_for_overflow(std::vector<acecode::ChatMessage>& history,
+                                int overflow_retries) {
+    if (history.empty()) return 0;
+    if (overflow_retries <= kSingleItemOverflowRetries) {
+        return remove_oldest_history_item(history);
+    }
+    const int before = estimate_history_tokens(history);
+    const int target = before - before / 4;
+    int removed = 0;
+    do {
+        removed += remove_oldest_history_item(history);
+    } while (!history.empty() && estimate_history_tokens(history) > target);
+    return removed;
+}
+
 } // namespace
 
 namespace acecode {
@@ -390,6 +420,13 @@ bool is_context_overflow_error(const std::string& error_message) {
         "prompt is too long",
         "input is too long",
         "too many input tokens",
+        // vLLM / LiteLLM 转发的写法(yubo2 切到 agnes-2.5-flash 后的原文):
+        // "ContextWindowExceededError: ... The input (564686 tokens) is longer than
+        // the model's context length (524288 tokens)." 认不出时压缩内部「删最旧历史
+        // 再重试」不启动,退化成机械裁剪,一次丢掉 527 条消息且没有摘要。
+        "contextwindowexceeded",
+        "longer than the model's context length",
+        "exceeds the model's context length",
     };
     return contains_any(text, needles);
 }
@@ -485,6 +522,7 @@ CompactResult compact_messages(
     std::uint64_t transient_retries = 0;
     // 与上下文溢出、瞬时错误的重试互不共享计数。
     int invalid_summary_retries = 0;
+    int overflow_retries = 0;
     for (;;) {
         if (abort_flag && abort_flag->load()) {
             result.error = "Compaction cancelled.";
@@ -527,12 +565,13 @@ CompactResult compact_messages(
                     : is_context_overflow_error(response.content);
                 if (context_overflow &&
                     !request_history.empty()) {
-                    const int removed =
-                        remove_oldest_history_item(request_history);
+                    const int removed = shrink_history_for_overflow(
+                        request_history, ++overflow_retries);
                     result.compaction_request_items_removed += removed;
                     transient_retries = 0;
-                    LOG_WARN("Context window exceeded while compacting; removed one oldest "
-                             "history item and any paired tool item");
+                    LOG_WARN("Context window exceeded while compacting; removed " +
+                             std::to_string(removed) + " oldest history item(s) (retry " +
+                             std::to_string(overflow_retries) + ")");
                     continue;
                 }
 
@@ -614,11 +653,13 @@ CompactResult compact_messages(
         } catch (const std::exception& error) {
             const std::string message = error.what();
             if (is_context_overflow_error(message) && !request_history.empty()) {
-                const int removed = remove_oldest_history_item(request_history);
+                const int removed = shrink_history_for_overflow(
+                    request_history, ++overflow_retries);
                 result.compaction_request_items_removed += removed;
                 transient_retries = 0;
-                LOG_WARN("Context window exceeded while compacting; removed one oldest "
-                         "history item and any paired tool item");
+                LOG_WARN("Context window exceeded while compacting; removed " +
+                         std::to_string(removed) + " oldest history item(s) (retry " +
+                         std::to_string(overflow_retries) + ")");
                 continue;
             }
             result.error = is_context_overflow_error(message)
