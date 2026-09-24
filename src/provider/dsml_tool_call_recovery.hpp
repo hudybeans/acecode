@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llm_provider.hpp"
+#include "markdown_fence_tracker.hpp"
 
 #include <cstddef>
 #include <string>
@@ -35,9 +36,6 @@ private:
         std::unordered_set<std::string> allowed_tools);
 
     void append_visible_byte(char c, std::string& output);
-    void update_fence_state(char c);
-    void finish_markdown_line();
-    void reset_markdown_line();
     bool marker_can_start_here() const;
 
     std::unordered_set<std::string> allowed_tools_;
@@ -46,16 +44,7 @@ private:
     std::string candidate_;
     bool capturing_ = false;
 
-    bool in_fence_ = false;
-    char fence_char_ = '\0';
-    std::size_t fence_length_ = 0;
-    std::size_t line_leading_spaces_ = 0;
-    bool line_prefix_active_ = true;
-    bool line_fence_run_active_ = false;
-    char line_fence_char_ = '\0';
-    std::size_t line_fence_run_ = 0;
-    bool line_opening_fence_ = false;
-    bool line_nonspace_after_fence_ = false;
+    MarkdownFenceTracker fence_;
 };
 
 DsmlToolCallRecoveryResult recover_dsml_tool_calls(
