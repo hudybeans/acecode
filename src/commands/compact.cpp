@@ -327,6 +327,17 @@ std::vector<ChatMessage> build_compacted_history(
                 retained_parts.insert(retained_parts.begin(), nlohmann::json{
                     {"type", "text"}, {"text", retained.content}});
             }
+            // 只有图片的用户消息:图片部件在上面被丢掉,content 又是空的,留下一条
+            // 空内容的 user 消息 —— 部分服务端直接 400「message content cannot be
+            // empty」(yubo2 反馈:压缩后切到 agnes-3.0-flash 每次请求都失败)。
+            // 留一句占位说明;本来就什么都没有的消息直接跳过。
+            if (retained_parts.empty() &&
+                retained.content.find_first_not_of(" \t\r\n") == std::string::npos) {
+                const bool had_parts =
+                    it->content_parts.is_array() && !it->content_parts.empty();
+                if (!had_parts) continue;
+                retained.content = "[Image attachment omitted during context compaction]";
+            }
             retained.content_parts = std::move(retained_parts);
             retained.tool_calls = nlohmann::json();
             retained.tool_call_id.clear();

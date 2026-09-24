@@ -215,6 +215,30 @@ TEST(CompactCore, RetainsNewestUserTextWithinTwentyThousandTokenBudget) {
               acecode::get_compact_summary_prefix() + "\nsummary");
 }
 
+// 场景:用户只发了一张图片(content 为空,content_parts 只有 image),随后发生压缩。
+// 期望:保留下来的这条 user 消息带一句占位说明,不是空内容;纯空消息直接跳过。
+// 回归表现:压缩后留下一条空内容的 user 消息,切到 agnes-3.0-flash 后每次请求都被
+// 400「message content cannot be empty」拒绝(yubo2 反馈)。
+TEST(CompactCore, ImageOnlyUserMessageKeepsPlaceholderText) {
+    auto image_only = msg("user", "", "img");
+    image_only.content_parts = nlohmann::json::array({
+        {{"type", "image_url"}, {"image_url", "data:image/png;base64,abc"}},
+    });
+    std::vector<acecode::ChatMessage> messages{
+        std::move(image_only),
+        msg("user", "   "),
+        msg("user", "follow-up question"),
+    };
+
+    auto compacted = acecode::build_compacted_history(messages, "summary");
+
+    ASSERT_EQ(compacted.size(), 3u);
+    EXPECT_EQ(compacted[0].content,
+              "[Image attachment omitted during context compaction]");
+    EXPECT_TRUE(compacted[0].content_parts.empty());
+    EXPECT_EQ(compacted[1].content, "follow-up question");
+}
+
 TEST(CompactCore, ExcludesPriorSummaryAndNonUserItems) {
     auto previous_summary = msg(
         "user",
