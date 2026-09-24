@@ -2072,17 +2072,16 @@ export function App() {
 
   const sidebarCollapsed = view !== 'single'
     || (projectSidebarCollapsed && !guidedTourPreparing && !guidedTourRun);
-  const visibleQuestionReq = !visiblePermissionUnresolved
-    ? (() => {
-        const request = visibleQuestionRequest(questionReqs, activeId, permissionOwnership);
-        return request
-          ? {
-              ...request,
-              origin_label: questionOriginLabel(request, permissionOwnership),
-            }
-          : null;
-      })()
-    : null;
+  const visibleQuestionReq = useMemo(() => {
+    if (visiblePermissionUnresolved) return null;
+    const request = visibleQuestionRequest(questionReqs, activeId, permissionOwnership);
+    return request
+      ? {
+          ...request,
+          origin_label: questionOriginLabel(request, permissionOwnership),
+        }
+      : null;
+  }, [visiblePermissionUnresolved, questionReqs, activeId, permissionOwnership]);
   const nativeSurfacesVisible = !showSettings
     && !showFeedback
     && !searchOpen

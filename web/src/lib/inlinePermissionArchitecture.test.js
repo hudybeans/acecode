@@ -88,7 +88,10 @@ run('App reconciles server close events and sends decisions to the request sessi
 run('permission is conversation-scoped and is not a global focus/search/tour blocker', () => {
   const app = source('App.jsx');
   assert.match(app, /visiblePermissionRequests\(permReqs, activeId, permissionOwnership\)/);
-  assert.match(app, /const visibleQuestionReq = !visiblePermissionUnresolved/);
+  assert.match(app, /visibleQuestionRequest\(questionReqs, activeId, permissionOwnership\)/);
+  // 权限未解决时问题必须让位(permission 优先于 question);memoize 后以提前 return 表达。
+  assert.match(app, /const visibleQuestionReq = useMemo\(/);
+  assert.match(app, /if \(visiblePermissionUnresolved\) return null/);
   assert.match(app, /permissionOpen: false/);
 
   const tourBlock = between(app, 'const guidedTourBlocked', 'useEffect(() => initInactiveSelection');
