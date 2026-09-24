@@ -19,6 +19,7 @@ import './expertMenuPosition.test.js';
 import './anchoredMenuPosition.test.js';
 import './stickyUserContext.test.js';
 import './desktopContextMenu.test.js';
+import './sessionHeaderContextMenu.test.js';
 import './sessionExplorerArchitecture.test.js';
 import './topBarQuickActions.test.js';
 import './themePackages.test.js';

@@ -93,6 +93,9 @@ export const SESSION_PIN_TOGGLE_EVENT = 'acecode:session-pin-toggle';
 export const DESKTOP_CONTEXT_ACTION_EVENT = 'acecode:desktop-context-action';
 export const OPEN_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:open-desktop-context-menu';
 export const CLOSE_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:close-desktop-context-menu';
+export const CONTEXT_MENU_DELEGATE_EVENT = 'acecode:context-menu-delegate';
+export const CONTEXT_MENU_DELEGATE_SELECTOR = '[data-desktop-context-menu-delegate]';
+export const SESSION_HEADER_CONTEXT_MENU_DELEGATE = 'session-header';
 
 // Explicit toolbar entry point; native right-click continues through contextmenu.
 export function openDesktopContextMenu(options) {
@@ -101,6 +104,35 @@ export function openDesktopContextMenu(options) {
 
 export function closeDesktopContextMenu() {
   document.dispatchEvent(new Event(CLOSE_DESKTOP_CONTEXT_MENU_EVENT));
+}
+
+// 右键委托:区域根节点标 data-desktop-context-menu-delegate="<name>",右键时
+// DesktopContextMenu 先把点位广播给认领方,认领了就不再走通用菜单。输入框内右键
+// 仍是复制 / 粘贴菜单,不委托。
+export function contextMenuDelegateFromElement(target) {
+  if (editableTargetFromElement(target)) return null;
+  const element = closest(target, CONTEXT_MENU_DELEGATE_SELECTOR);
+  const name = getAttr(element, 'data-desktop-context-menu-delegate', 'desktopContextMenuDelegate');
+  return name ? { name, element } : null;
+}
+
+export function dispatchContextMenuDelegate(delegate, { x = 0, y = 0, target = null } = {}, eventTarget = globalThis.window) {
+  if (!delegate?.name || !eventTarget || typeof eventTarget.dispatchEvent !== 'function') return false;
+  const detail = { name: delegate.name, element: delegate.element || null, x, y, target, handled: false };
+  eventTarget.dispatchEvent(new CustomEvent(CONTEXT_MENU_DELEGATE_EVENT, { detail }));
+  return !!detail.handled;
+}
+
+// 显式打开菜单的一方可以接管个别动作(例如顶栏的「重命名」就地编辑标题,
+// 而不是派发给侧栏行)。只替换 onSelect,文案 / 分组 / 可用态保持不变。
+export function applyContextMenuActionOverrides(items = [], overrides = null) {
+  if (!overrides || typeof overrides !== 'object') return items;
+  return items.map((item) => {
+    const id = typeof item === 'string' ? item : item?.id;
+    const onSelect = id ? overrides[id] : null;
+    if (typeof onSelect !== 'function') return item;
+    return typeof item === 'string' ? { id, onSelect } : { ...item, onSelect };
+  });
 }
 export const CONTEXT_MENU_REOPEN_DELAY_MS = 10;
 

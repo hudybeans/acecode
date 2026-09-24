@@ -1,11 +1,14 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
+  applyContextMenuActionOverrides,
   buildDesktopContextMenuItems,
   canRunContextMenuAction,
   clampContextMenuPosition,
+  contextMenuDelegateFromElement,
   contextTargetsFromElement,
   contextMenuOpenDelay,
+  dispatchContextMenuDelegate,
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
   editableTargetFromElement,
@@ -483,6 +486,21 @@ export function DesktopContextMenu() {
       const rawTarget = explicit?.target || event.target;
       if (rawTarget instanceof Element && rawTarget.closest('.ace-console-term')) return;
 
+      // 顶栏等区域右键委托给认领方(会话头部 = 与「会话菜单」按钮左键同一份菜单);
+      // 没人认领(例如首页没有打开会话)时回落到通用菜单。
+      if (!explicit) {
+        const delegate = contextMenuDelegateFromElement(rawTarget);
+        if (delegate && dispatchContextMenuDelegate(delegate, {
+          x: event.clientX,
+          y: event.clientY,
+          target: rawTarget,
+        })) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+
       const candidateTargets = contextTargetsFromElement(rawTarget);
       event.preventDefault();
       event.stopPropagation();
@@ -523,9 +541,15 @@ export function DesktopContextMenu() {
         ...contextTargets,
         sessionPinTarget,
       });
-      const items = withMenuSeparators([...(explicit?.leadingItems || []), ...contextItems]);
+      const items = withMenuSeparators(applyContextMenuActionOverrides(
+        [...(explicit?.leadingItems || []), ...contextItems],
+        explicit?.actionOverrides,
+      ));
       const width = explicit ? ICON_MENU_WIDTH : MENU_WIDTH;
-      const x = explicit ? explicit.x - width : event.clientX;
+      // 按钮触发时菜单右缘对齐按钮;右键委托(placement=pointer)时像原生右键一样从光标处展开。
+      const x = explicit
+        ? (explicit.placement === 'pointer' ? explicit.x : explicit.x - width)
+        : event.clientX;
       const y = explicit ? explicit.y : event.clientY;
       const pos = clampContextMenuPosition({
         x, y, width,

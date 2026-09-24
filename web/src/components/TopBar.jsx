@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { clsx } from '../lib/format.js';
+import { SESSION_HEADER_CONTEXT_MENU_DELEGATE } from '../lib/desktopContextMenu.js';
 import { shouldInsetMacTopBar } from '../lib/desktopShellMode.js';
 import { withSearchPaletteShortcutHint } from '../lib/searchPaletteShortcut.js';
 import { NavigationArrowIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
@@ -150,6 +151,7 @@ export function TopBar({
   return (
     <div
       ref={topBarRef}
+      data-desktop-context-menu-delegate={SESSION_HEADER_CONTEXT_MENU_DELEGATE}
       className={clsx(
         'ace-topbar px-2 flex items-center gap-1 bg-surface relative z-10 shrink-0',
         framelessDesktop && 'ace-desktop-frameless-topbar',

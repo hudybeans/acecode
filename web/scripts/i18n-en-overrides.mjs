@@ -1684,4 +1684,5 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   '大脑': 'Brain',
   '爱心': 'Heart',
   '盆栽': 'Potted plant',
+  '会话标题': 'Session title',
 });

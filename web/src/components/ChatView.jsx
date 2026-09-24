@@ -276,9 +276,12 @@ import {
 import {
   closeDesktopContextMenu,
   openDesktopContextMenu,
+  CONTEXT_MENU_DELEGATE_EVENT,
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
+  SESSION_HEADER_CONTEXT_MENU_DELEGATE,
 } from '../lib/desktopContextMenu.js';
+import { resolveSessionTitleRename, sessionTitleRenameWorkspaceHash } from '../lib/sessionTitleRename.js';
 import { normalizeReferencePath } from '../lib/pathReference.js';
 import {
   createSelectionAnnotation,
@@ -3921,24 +3924,63 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   useEffect(() => () => closeDesktopContextMenu(), [sid]);
   const sessionPath = ref?.sessionPath || ref?.session_path || '';
   const sessionPinned = !!(ref?.pinned || ref?.isPinned || ref?.is_pinned);
-  const openSessionContextMenu = useCallback((event) => {
+  // 顶栏就地重命名:从会话头部菜单(「会话菜单」按钮左键 / 顶栏任意处右键)进入时,
+  // 输入框出现在顶部标题位置,而不是跳去侧栏那一行里编辑。
+  const [headerRenaming, setHeaderRenaming] = useState(false);
+  useEffect(() => { setHeaderRenaming(false); }, [sid]);
+  const sessionTitleLabelRef = useRef(null);
+  const sessionMenuButtonRef = useRef(null);
+  const startHeaderRename = useCallback(() => {
+    if (!sid || readOnlyExternalSession) return;
+    setHeaderRenaming(true);
+  }, [sid, readOnlyExternalSession]);
+  const cancelHeaderRename = useCallback(() => setHeaderRenaming(false), []);
+  const commitHeaderRename = useCallback(async (draft) => {
+    setHeaderRenaming(false);
+    const targetSid = sid;
+    const next = resolveSessionTitleRename(draft, title);
+    if (!targetSid || !next.changed) return;
+    try {
+      const updated = await api.setSessionTitle(targetSid, next.title, sessionTitleRenameWorkspaceHash({
+        workspaceHash: sessionWorkspaceHash,
+        noWorkspace: !!(ref?.noWorkspace || ref?.no_workspace),
+      }));
+      const nextTitle = updated?.title ?? next.title;
+      // daemon 也会经 session_updated 推送新标题(侧栏据此同步);这里先本地合并,
+      // 顶栏不必等 WS 往返才变。
+      if (sidRef.current === targetSid) {
+        applyEvent({
+          type: 'session_updated',
+          payload: {
+            session_id: targetSid,
+            title: nextTitle,
+            title_source: updated?.title_source ?? (nextTitle ? 'user' : ''),
+          },
+        }, { emitEffects: false });
+      }
+      toast({ kind: 'ok', text: next.title ? '已重命名' : '已清除标题' });
+    } catch (e) {
+      toast({ kind: 'err', text: '重命名失败:' + (e?.message || '') });
+    }
+  }, [api, applyEvent, ref?.noWorkspace, ref?.no_workspace, sessionWorkspaceHash, sid, title]);
+
+  // 「会话菜单」按钮左键、按钮右键、顶栏其它位置右键共用这一份菜单。
+  const openSessionMenu = useCallback(({ x, y, placement, anchorRect }) => {
     if (!sid || typeof window === 'undefined') return;
-    event.preventDefault();
-    event.stopPropagation();
-    const button = event.currentTarget;
-    const rect = button.getBoundingClientRect();
+    const button = sessionMenuButtonRef.current;
     const target = readOnlyExternalSession ? button : sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
     openDesktopContextMenu({
       target,
       trigger: button,
-      x: rect.right,
-      y: rect.bottom + 4,
+      x,
+      y,
+      placement,
       leadingItems: [
         ...(!readOnlyExternalSession ? [{
           id: 'side_chat', label: '侧边聊天', icon: 'chat', group: 'session-view',
           onSelect: () => {
             openSideQuestionComposer();
-            setSideChatAnchor({ left: rect.left, top: rect.top });
+            setSideChatAnchor({ left: anchorRect.left, top: anchorRect.top });
           },
         }] : []),
         ...(onFindInConversation ? [{
@@ -3947,8 +3989,37 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         }] : []),
       ],
       includeContextActions: !readOnlyExternalSession,
+      actionOverrides: readOnlyExternalSession ? null : {
+        [DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION]: startHeaderRename,
+      },
     });
-  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation]);
+  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation, startHeaderRename]);
+  const openSessionContextMenu = useCallback((event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    openSessionMenu({ x: rect.right, y: rect.bottom + 4, anchorRect: rect });
+  }, [openSessionMenu]);
+  useEffect(() => {
+    if (!sid) return undefined;
+    const handler = (event) => {
+      const detail = event.detail || {};
+      if (detail.handled || detail.name !== SESSION_HEADER_CONTEXT_MENU_DELEGATE) return;
+      // 同一时刻可能有多个 ChatView(网格视图),只认领标题渲染在这块头部里的那个。
+      const label = sessionTitleLabelRef.current;
+      if (!label || !detail.element?.contains?.(label)) return;
+      detail.handled = true;
+      const button = sessionMenuButtonRef.current;
+      openSessionMenu({
+        x: detail.x,
+        y: detail.y,
+        placement: 'pointer',
+        anchorRect: button?.getBoundingClientRect?.() || { left: detail.x, top: detail.y },
+      });
+    };
+    window.addEventListener(CONTEXT_MENU_DELEGATE_EVENT, handler);
+    return () => window.removeEventListener(CONTEXT_MENU_DELEGATE_EVENT, handler);
+  }, [openSessionMenu, sid]);
 
   const modelListEmptyLoaded = modelListLoaded && modelOptions.length === 0;
   const noModelLabel = '未配置模型';
@@ -5317,7 +5388,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         />
       )}
       <SessionTitleBar titleTarget={titleTarget} actionsTarget={actionsTarget}
-        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}>
+        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}
+        labelRef={sessionTitleLabelRef}
+        renaming={headerRenaming && !!sid && !readOnlyExternalSession}
+        onRenameCommit={commitHeaderRename}
+        onRenameCancel={cancelHeaderRename}>
           {sid && (
             <button
               type="button"
@@ -5365,6 +5440,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           )}
           {sid && (
             <button
+              ref={sessionMenuButtonRef}
               type="button"
               data-desktop-session-id={readOnlyExternalSession ? undefined : sid || undefined}
               data-desktop-session-workspace={sessionWorkspaceHash || undefined}
