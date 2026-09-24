@@ -1093,6 +1093,10 @@ content, using the same normalization as session drafts. GET/PUT return
 DELETE takes the submitted draft in the same format, atomically clears only
 when the stored content matches, and returns the current draft with
 `"cleared":true/false`. Invalid input returns `400`; disk failures return `500`.
+A stored draft this build cannot read (for example one written by a later
+version with unknown part types) makes GET return `500`, while PUT and DELETE
+log a warning and treat it as empty: PUT overwrites it and DELETE reports
+`"cleared":false` without touching it.
 
 The home composer autosaves in order and restores on entry. A late response
 cannot replace newer edits; failed sends retain the draft. Structured references
@@ -1315,7 +1319,8 @@ must successfully load that record from the target session. Display name, kind,
 MIME and path are then hydrated from those verified records. Client preview URLs
 and unknown fields are stripped.
 
-The limit is 4096 parts and 2 MiB of declared string fields. Path/token fields
+The limit is 4096 parts and one shared 2 MiB budget for all declared string
+fields, including pasted text (drafts and messages use the same budget). Path/token fields
 allow 64 KiB, names 16 KiB, MIME 1024 bytes, kind 64 bytes and key/id 256 bytes.
 Unknown versions/types, invalid field types or unresolved attachment identities
 return HTTP 400. Canonical text concatenates text parts and path/skill tokens;
@@ -1323,6 +1328,35 @@ attachment parts contribute no text. Messages normally derive their text from
 this structure; the compatibility `text` is retained when `session_references`
 requires its existing display projection. Skills activate through the existing
 explicit-mention mechanism; their visual order does not define execution order.
+
+Pasted text uses two part shapes that the Web composer shows as the same card:
+
+- **Inline block** `{"type":"pasted_text","key":"...","text":"..."}`. `key` is
+  optional (at most 256 bytes); `text` must be a string without NUL, and an empty
+  block is dropped. It is **not** part of the canonical (editor) text, so draft
+  responses, `restored_prompt` and input history never contain it. The message
+  body is the *submission text*: text parts, path/skill tokens and inline blocks
+  in part order, where each inline block is separated from neighbouring non-empty
+  pieces by a blank line (`"\n\n"`). Examples: `[text "A", pasted "B"]` →
+  `"A\n\nB"`; `[pasted "A", text "B", pasted "C"]` → `"A\n\nB\n\nC"`; a single
+  block → its text. When the first non-empty piece is a pasted block (nothing was
+  typed before it), the message never triggers skill or OpenCode slash-command
+  expansion, whatever the pasted text starts with. The Web client keeps inline
+  blocks at or below 256 KiB in total and turns larger pastes into files.
+- **File-backed block**: an ordinary `attachment` part with an optional
+  `paste` descriptor `{"title","chars","lines","part","parts"}`. `title` is a
+  string of at most 1024 bytes (counted in the budget); `chars` and `lines` are
+  non-negative integers; `part`/`parts` appear together for a paste split into
+  several files, with `1 <= part <= parts <= 1024`. Other descriptor keys are
+  dropped. The text lives in the uploaded file and reaches the model as the usual
+  attachment file reference.
+
+A home (new-session) draft attachment may also carry
+`"store":"workspace_draft"` with `"store_scope"` set to the draft's workspace
+hash or `__no_workspace__` (`[A-Za-z0-9_]{1,128}`, required whenever `store` is
+present; no other `store` value is accepted). A submitted message resolves every
+attachment part against the session's verified records, which removes
+`store`/`store_scope` and keeps `paste`.
 
 The sanitized structure is persisted as `metadata.composer_content` and returned
 in live message events and history. Provider `content_parts` retain their existing
@@ -1332,7 +1366,10 @@ Draft GET/PUT responses return optional `composer_content`; PUT derives its text
 from the content and saves both atomically. A text-only PUT or explicit null
 clears the structured draft. Forking a structured user prompt returns
 `restored_composer_content` plus `restored_attachments`, copies referenced uploads
-into the new session with new IDs, and saves the restored structured draft.
+into the new session with new IDs, and saves the restored structured draft. For
+such a prompt `restored_prompt` (and the new session's plain draft text) is the
+canonical editor text, without inline pasted blocks, which are restored only
+through `restored_composer_content`.
 Structured attachment references in the retained history are also copied and
 remapped, including their provider content parts and preview records; recalling
 those messages does not depend on the source session's attachment storage.

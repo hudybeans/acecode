@@ -11453,6 +11453,192 @@ TEST(WebServerHttp, ComposerContentForkRetainsEarlierUploadsAfterSourceAttachmen
     EXPECT_EQ(sent.status_code, 202) << sent.text;
 }
 
+namespace {
+
+// 轮询会话里第 expected_count 条 user 消息(AgentLoop 内存历史),等回合结束。
+std::vector<acecode::ChatMessage> wait_for_user_messages(
+    acecode::SessionEntry& entry, std::size_t expected_count) {
+    std::vector<acecode::ChatMessage> users;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        users.clear();
+        for (const auto& message : entry.loop->messages()) {
+            if (message.role == "user") users.push_back(message);
+        }
+        if (users.size() >= expected_count && !entry.loop->is_busy()) break;
+        std::this_thread::sleep_for(10ms);
+    }
+    return users;
+}
+
+} // namespace
+
+// 触发场景:输入框里手打「分析」,再粘贴一段 200 KiB 的内联粘贴块;顶层 text
+// 故意给一个过期的兼容值 "stale"(旧客户端只会带编辑器文本)。
+// 期望:202;消息正文 = 编辑器文本 + "\n\n" + 粘贴原文(服务端按 composer_content
+// 重算 submission_text,不信顶层 text);metadata.composer_content 保留粘贴块;
+// 落盘的消息与内存一致。
+TEST(WebServerHttp, PastedTextPartBecomesMessageBody) {
+    WebServerFixture fx;
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const std::string block(200 * 1024, 'x');
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "分析"}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", block}},
+    })}};
+    const auto accepted = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "stale"}, {"composer_content", content},
+            {"client_message_id", "pasted-inline"}}.dump()});
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    EXPECT_EQ(users[0].content, "分析\n\n" + block);
+    EXPECT_FALSE(users[0].metadata.contains("display_text"));
+    ASSERT_TRUE(users[0].metadata.contains("composer_content"));
+    const auto& parts = users[0].metadata["composer_content"]["parts"];
+    ASSERT_EQ(parts.size(), 2u);
+    EXPECT_EQ(parts[1]["type"], "pasted_text");
+    EXPECT_EQ(parts[1]["key"], "paste-1");
+    EXPECT_EQ(parts[1]["text"], block);
+    const auto disk = entry->sm->load_active_messages();
+    ASSERT_FALSE(disk.empty());
+    EXPECT_EQ(disk.front().content, users[0].content);
+    EXPECT_EQ(disk.front().metadata["composer_content"], users[0].metadata["composer_content"]);
+}
+
+// 触发场景:编辑器为空,只粘贴了一段以「/<已注册 skill>」开头的材料(比如一段
+// 聊天记录或日志正好以斜杠命令开头)。
+// 期望:按普通消息发送 —— content 等于粘贴原文,没有 display_text。同一条命令
+// 手打在编辑器里则照常展开(对照组,证明 skill 确实已注册)。
+// 回归:粘贴材料被当成 skill 命令展开,模型收到的是 skill 提示而不是用户材料。
+TEST(WebServerHttp, LeadingPastedTextSkipsSkillExpansion) {
+    WebServerFixture fx;
+    fx.cfg.skills.reuse_opencode = false;
+    write_text(
+        fx.cwd_dir / ".acecode" / "skills" / "paste-probe" / "SKILL.md",
+        "---\nname: paste-probe\ndescription: Paste probe workflow\n---\n\n"
+        "Follow the paste probe workflow.\n");
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto skills = fx.registry->skill_registry_snapshot(sid);
+    ASSERT_NE(skills, nullptr);
+    ASSERT_TRUE(skills->find("paste-probe").has_value());
+
+    const std::string pasted = "/paste-probe 分析这段日志\nERROR at line 1";
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", ""}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", pasted}},
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", ""}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_GE(users.size(), 1u);
+    EXPECT_EQ(users[0].content, pasted);
+    EXPECT_FALSE(users[0].metadata.contains("display_text"));
+
+    const json typed{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "/paste-probe inspect"}},
+    })}};
+    const auto typed_sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "/paste-probe inspect"}, {"composer_content", typed}}.dump()});
+    ASSERT_EQ(typed_sent.status_code, 202) << typed_sent.text;
+    users = wait_for_user_messages(*entry, 2);
+    ASSERT_GE(users.size(), 2u);
+    EXPECT_NE(users[1].content, "/paste-probe inspect");
+    EXPECT_EQ(users[1].metadata.value("display_text", ""), "/paste-probe inspect");
+}
+
+// 触发场景:在一条「手打文字 + 内联粘贴块」的 user 消息上分叉(点提示词回填)。
+// 期望:响应的 restored_prompt 与新会话 meta 的 input_draft 都只是编辑器文本
+// 「请分析」,粘贴正文只在 restored_composer_content 里出现一次;前端据此把
+// 编辑器文本放回输入框、把粘贴块还原成卡片。
+// 回归:restored_prompt 取消息全文,粘贴正文被整段塞回编辑器(几百 KB 进 Slate
+// 就卡死),草稿 meta 里还重复存了一份。
+TEST(WebServerHttp, ForkFromPastedMessageRestoresEditorTextAsPrompt) {
+    WebServerFixture fx;
+    const auto sid = create_workspace_session(fx, fx.cwd_dir.string());
+    ASSERT_FALSE(sid.empty());
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const std::string body = "PASTED BODY LINE 1\nPASTED BODY LINE 2";
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.uuid = "pasted-fork-user";
+    message.content = "请分析\n\n" + body;
+    message.metadata["composer_content"] = json{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "请分析"}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", body}},
+    })}};
+    entry->sm->on_message(message);
+    const auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"at_message_id":"pasted-fork-user"})"});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    const auto response = json::parse(fork.text);
+    EXPECT_EQ(response["restored_prompt"], "请分析");
+    ASSERT_TRUE(response.contains("restored_composer_content"));
+    EXPECT_EQ(response["restored_composer_content"]["parts"][1]["text"], body);
+    const auto target = response["session_id"].get<std::string>();
+    const auto project_dir = acecode::SessionStorage::get_project_dir(entry->cwd);
+    const auto meta = acecode::SessionStorage::read_meta(
+        acecode::SessionStorage::meta_path(project_dir, target));
+    EXPECT_EQ(meta.input_draft, "请分析");
+    EXPECT_EQ(meta.input_draft.find("PASTED BODY"), std::string::npos);
+    const auto draft = cpr::Get(cpr::Url{fx.url("/api/sessions/" + target + "/draft")});
+    ASSERT_EQ(draft.status_code, 200) << draft.text;
+    const auto draft_body = json::parse(draft.text);
+    EXPECT_EQ(draft_body["text"], "请分析");
+    EXPECT_EQ(draft_body["composer_content"], response["restored_composer_content"]);
+}
+
+// 触发场景:首页草稿文件 input_draft.json 含本版本不认识的部件类型(比如以后的
+// 版本写出、再降级回来)。
+// 期望:GET 仍报 500(如实暴露读不懂);PUT 不再先读旧草稿失败 → 记日志后当作空
+// 草稿覆盖写,200,之后 GET 恢复 200;DELETE 对读不懂的旧草稿返回 200 且
+// cleared=false,不动文件。
+// 回归:PUT 先读旧草稿就抛异常,首页输入框从此每次保存都 500、永远恢复不了。
+TEST(WebServerHttp, WorkspaceDraftPutOverwritesUnreadableOldDraft) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto path = fx.projects_dir / hash / "input_draft.json";
+    const auto unreadable = json{{"text", "future"}, {"composer_content", {
+        {"version", 1}, {"parts", json::array({json{{"type", "future_part"}, {"x", 1}}})}}}}.dump();
+    std::filesystem::create_directories(path.parent_path());
+    write_text(path, unreadable);
+
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000}).status_code, 500);
+    const auto cleared = cpr::Delete(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{json{{"text", "future"}}.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(cleared.status_code, 200) << cleared.text;
+    EXPECT_EQ(json::parse(cleared.text)["cleared"], false);
+    EXPECT_EQ(read_text(path), unreadable);
+
+    const auto saved = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{json{{"text", "fresh draft"}}.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["text"], "fresh draft");
+    const auto read_back = cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000});
+    ASSERT_EQ(read_back.status_code, 200) << read_back.text;
+    EXPECT_EQ(json::parse(read_back.text)["text"], "fresh draft");
+}
+
 // 场景(openspec add-security-center):安全中心的沙盒配置路由。GET 默认快照 →
 // PUT 网络开关 + deny 清单 → 落到 fixture 的临时 config.json → GET 回读一致;
 // 非法条目(相对路径)400 且带 field,配置不变。

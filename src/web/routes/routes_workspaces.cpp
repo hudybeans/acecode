@@ -19,7 +19,7 @@ using nlohmann::json;
 
 namespace {
 
-json read_workspace_draft(const std::filesystem::path& path) {
+json read_workspace_draft_strict(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) return json{{"text", ""}};
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("failed to read workspace draft");
@@ -35,6 +35,22 @@ json read_workspace_draft(const std::filesystem::path& path) {
         result["composer_content"] = std::move(normalized.content);
     }
     return result;
+}
+
+// GET reports an unreadable draft as an error. PUT and DELETE pass
+// tolerate_invalid: a draft this build cannot read (for example one written by
+// a later version with part types it does not know) is treated as empty, so a
+// PUT overwrites it and DELETE simply does not match. Without this, one such
+// file would make the home composer fail with 500 forever.
+json read_workspace_draft(const std::filesystem::path& path, bool tolerate_invalid) {
+    if (!tolerate_invalid) return read_workspace_draft_strict(path);
+    try {
+        return read_workspace_draft_strict(path);
+    } catch (const std::exception& e) {
+        LOG_WARN("[web] unreadable workspace draft treated as empty path=" +
+                 path_to_utf8(path) + " error=" + e.what());
+        return json{{"text", ""}};
+    }
 }
 
 json opencode_import_status_to_json(const OpencodeImportJobStatus& status) {
@@ -138,7 +154,8 @@ void WebServer::Impl::register_workspaces() {
                 static std::mutex draft_mutex;
                 std::lock_guard<std::mutex> lock(draft_mutex);
                 const auto path = directory / "input_draft.json";
-                auto draft = read_workspace_draft(path);
+                auto draft = read_workspace_draft(
+                    path, /*tolerate_invalid=*/req.method != crow::HTTPMethod::GET);
                 const bool clearing = req.method == crow::HTTPMethod::DELETE;
                 const bool matched = clearing && draft == requested;
                 if (req.method == crow::HTTPMethod::PUT || matched) {

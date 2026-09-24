@@ -184,6 +184,7 @@ WebServer::Impl::parse_session_user_input_request(
     json contexts = json::array();
     json composer_content;
     std::string composer_text;
+    bool leads_with_pasted_text = false;
     std::vector<SessionReferenceDescriptor> session_references;
     bool swarm_mode = false;
 
@@ -219,7 +220,11 @@ WebServer::Impl::parse_session_user_input_request(
                 return result;
             }
             composer_content = std::move(normalized.content);
-            composer_text = std::move(normalized.text);
+            // The message body is the submission text: editor pieces plus
+            // inline pasted blocks. normalized.text (editor text only) is
+            // for drafts and restore, never the body.
+            composer_text = std::move(normalized.submission_text);
+            leads_with_pasted_text = normalized.leads_with_pasted_text;
             // Session-reference tokens have a separately normalized display
             // string. Preserve that compatibility projection when supplied.
             if (session_references.empty() || !payload.contains("text")) text = composer_text;
@@ -415,7 +420,9 @@ WebServer::Impl::parse_session_user_input_request(
     const bool session_references_expanded =
         !session_reference_context.prompt.empty();
 
-    if (attachment_refs.empty() && contexts.empty() &&
+    // A message whose first piece is a pasted block is pasted material, not a
+    // typed command: pasting a log that starts with "/<skill>" must not expand.
+    if (attachment_refs.empty() && contexts.empty() && !leads_with_pasted_text &&
         deps.session_registry && deps.app_config) {
         if (auto entry = deps.session_registry->acquire(session_id)) {
             if (!entry->cwd.empty()) {
@@ -430,7 +437,7 @@ WebServer::Impl::parse_session_user_input_request(
         }
     }
     if (!expanded && attachment_refs.empty() && contexts.empty() &&
-        deps.session_registry) {
+        !leads_with_pasted_text && deps.session_registry) {
         if (auto skills =
                 deps.session_registry->skill_registry_snapshot(session_id)) {
             auto skill = web::try_expand_skill_command(text, *skills);
@@ -2447,6 +2454,12 @@ void WebServer::Impl::register_sessions() {
                         r.add_header("Content-Type", "application/json");
                         return with_cors(req, std::move(r));
                     }
+                    // The composer restores its pasted blocks from
+                    // restored_composer_content; the plain prompt (and the
+                    // new session's input_draft) is the editor text only, so
+                    // pasted bodies are neither duplicated in the draft meta
+                    // nor typed back into the editor.
+                    restored_prompt = std::move(normalized.text);
                     restored_composer_content = std::move(normalized.content);
                     // Validate source records before creating the target session.
                     std::unordered_set<std::string> seen;
