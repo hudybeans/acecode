@@ -47,6 +47,7 @@
 #include "pa/pa_context_budget.hpp"
 #include "pa/pa_overflow_rescue.hpp"
 #include "pa/pa_quirks.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <set>
@@ -282,6 +283,48 @@ std::string human_bytes(std::size_t bytes) {
 
 std::string format_bytes_detail(std::size_t bytes) {
     return "参数 " + human_bytes(bytes);
+}
+
+const char* text_tool_call_outcome_name(TextToolCallDiagnostic::Outcome outcome) {
+    switch (outcome) {
+    case TextToolCallDiagnostic::Outcome::Recovered: return "recovered";
+    case TextToolCallDiagnostic::Outcome::Rejected: return "rejected";
+    case TextToolCallDiagnostic::Outcome::IgnoredWithNative: return "ignored_with_native";
+    case TextToolCallDiagnostic::Outcome::None: break;
+    }
+    return "none";
+}
+
+// 文本工具调用诊断 → JSON(trajectory payload / 被拒消息 metadata 共用)。
+// raw_excerpt 只进这里(诊断用),绝不进发给模型的正文。
+nlohmann::json text_tool_call_diagnostic_to_json(const TextToolCallDiagnostic& diag) {
+    nlohmann::json out{
+        {"outcome", text_tool_call_outcome_name(diag.outcome)},
+        {"format", diag.format},
+        {"reason", diag.reason},
+        {"error", diag.error},
+        {"tools", diag.attempted_tools},
+        {"raw_excerpt", diag.raw_excerpt},
+    };
+    if (!diag.unexecuted_detail.empty()) out["unexecuted"] = diag.unexecuted_detail;
+    if (diag.recovered_count > 0) out["count"] = diag.recovered_count;
+    return out;
+}
+
+// 被拒文本工具调用的落盘正文:provider 已去掉的标记不再出现;可疑级(标记
+// 已经流出)截到 visible_cut;去掉末尾空白,只剩空白时清成空串 —— 切断
+// 「历史里越多文本调用样本、模型越模仿」的循环,headless 也不会把 "\n\n\n"
+// 当成最终回复。
+std::string text_tool_call_rejected_persisted_content(
+    const std::string& content, const TextToolCallDiagnostic& diag) {
+    std::string persisted = content;
+    if (diag.visible_cut != std::string::npos && diag.visible_cut < persisted.size()) {
+        persisted.resize(diag.visible_cut);
+    }
+    const auto last = persisted.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos) return {};
+    persisted.resize(last + 1);
+    return persisted;
 }
 
 std::string ascii_lower(std::string value) {
@@ -3663,6 +3706,16 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             events_.emit(SessionEventKind::Reasoning, nlohmann::json{{"text", evt.content}});
             break;
         case StreamEventType::ToolCallDelta:
+            if (evt.text_tool_call_hold) {
+                // provider 正在扣住一段疑似文本工具调用:只是进度提示,不代表
+                // 模型已经开始输出原生调用,所以不记 model_first_output 的
+                // channel(等真正的正文或调用出现时再记),也不走工具名解析 /
+                // 前言抽取(tool_index=-1、工具名为空)。
+                emit_progress("tool_planning", "正在准备工具调用",
+                    human_bytes(evt.tool_call_argument_bytes),
+                    std::string{}, std::string{}, -1, false);
+                break;
+            }
             if (!first_output_recorded) {
                 first_output_recorded = true;
                 if (session_manager_) {
@@ -3745,6 +3798,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             if (evt.content_parts.is_array() && !evt.content_parts.empty()) {
                 result.accumulated.content_parts = evt.content_parts;
             }
+            // 文本形式工具调用的诊断(fix-feedback-0924 第 3 条):主循环据此
+            // 决定是否注入纠正提示重试,而不是把被拒的回复当纯文本静默结束。
+            result.accumulated.text_tool_calls = evt.text_tool_calls;
             break;
         }
         case StreamEventType::Usage: {
@@ -4327,6 +4383,18 @@ bool AgentLoop::execute_tool_calls(
     std::string& turn_timing_status) {
     // Record the assistant message with tool_calls in the history
     auto tc_msg = ToolExecutor::format_assistant_tool_calls(accumulated);
+    // 文本工具调用恢复成功:消息本体与原生调用字节级同形(不会发给模型的
+    // metadata 只多一个诊断字段),让后续历史里出现原生调用可供模仿。
+    if (accumulated.text_tool_calls.outcome ==
+        TextToolCallDiagnostic::Outcome::Recovered) {
+        if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
+        tc_msg.metadata["text_tool_call_recovery"] = {
+            {"format", accumulated.text_tool_calls.format},
+            {"count", accumulated.text_tool_calls.recovered_count > 0
+                          ? accumulated.text_tool_calls.recovered_count
+                          : static_cast<int>(accumulated.tool_calls.size())},
+        };
+    }
     // 工具前言(add-tool-preamble):标题挂在这条 assistant(tool_calls) 消息的
     // metadata 上落盘,Web / TUI 回放据此把批次折成带标题的分组;同时发一条
     // tool_preamble 事件给实时界面 —— 空正文的工具回合没有 Message 帧可搭。
@@ -5932,6 +6000,14 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     // 一旦某轮产出有效输出(文本或工具调用)即清零。
     constexpr int kMaxEmptyResponseRetries = 2;
     int empty_response_retries = 0;
+    // 文本形式工具调用纠正(fix-feedback-0924 第 3 条):模型把调用写进正文、
+    // provider 认出了意图却无法执行(非法名 / 参数 / 截断 / 块前有正文 / 可疑
+    // 标记)时,注入隐藏纠正提示重试。按连续次数计,某一步产出工具调用即清零;
+    // XML / JSON 形态上限 2 次(与空回复一致,每次都是带全量工具表的整段请求),
+    // DSML 只 1 次(那是网关把 DeepSeek 原生协议漏进了正文,纠正文本作用有限)。
+    constexpr int kMaxTextToolCallCorrections = 2;
+    constexpr int kMaxDsmlToolCallCorrections = 1;
+    int text_tool_call_corrections = 0;
     AgentLoopDoomGuard doom_guard;
     std::mutex doom_guard_mu;
     int observed_compact_generation = compact_generation_.load(std::memory_order_relaxed);
@@ -6113,6 +6189,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             payload["error"] = provider_error_to_json(
                 result.provider_error_info);
         }
+        if (result.accumulated.text_tool_calls.outcome !=
+            TextToolCallDiagnostic::Outcome::None) {
+            payload["text_tool_calls"] = text_tool_call_diagnostic_to_json(
+                result.accumulated.text_tool_calls);
+        }
         if (!result.accumulated.content.empty()) {
             ChatMessage id_basis;
             id_basis.role = "assistant";
@@ -6279,6 +6360,96 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
         // Text-only response (no tool calls) → end the loop
         if (!provider_result.accumulated.has_tool_calls()) {
+            // 文本工具调用被拒:必须放在 response_is_blank 判断之前 —— provider
+            // 藏起标记后内容往往只剩空白,会被误判成空回复(错误的纠正文案)。
+            const TextToolCallDiagnostic& text_diag =
+                provider_result.accumulated.text_tool_calls;
+            if (text_diag.outcome == TextToolCallDiagnostic::Outcome::Rejected) {
+                TextToolCallDiagnostic diag = text_diag;
+                if (diag.reason == "truncated" &&
+                    provider_result.accumulated.finish_reason == "length") {
+                    diag.reason = "truncated_by_length";
+                }
+                const int limit = diag.format == "dsml"
+                    ? kMaxDsmlToolCallCorrections
+                    : kMaxTextToolCallCorrections;
+
+                // 被拒的 assistant 消息去掉标记后落盘(原始标记只进 metadata /
+                // 日志 / trajectory);只剩空白时清成空串。
+                ChatMessage rejected_msg;
+                rejected_msg.role = "assistant";
+                rejected_msg.content = text_tool_call_rejected_persisted_content(
+                    provider_result.accumulated.content, diag);
+                rejected_msg.reasoning_content =
+                    provider_result.accumulated.reasoning_content;
+                rejected_msg.metadata = nlohmann::json{
+                    {"text_tool_call_rejected", text_tool_call_diagnostic_to_json(diag)},
+                };
+                messages_.push_back(rejected_msg);
+                if (session_manager_) session_manager_->on_message(rejected_msg);
+                if (!rejected_msg.content.empty()) {
+                    // 定稿消息替换流式草稿:可疑级已经流出的标记在界面上随之消失。
+                    dispatch_message("assistant", rejected_msg.content, false);
+                }
+
+                if (text_tool_call_corrections < limit) {
+                    ++text_tool_call_corrections;
+                    LOG_WARN("Text-form tool call rejected (format=" + diag.format +
+                             " reason=" + diag.reason + "); correction " +
+                             std::to_string(text_tool_call_corrections) + "/" +
+                             std::to_string(limit) + ": " + diag.error +
+                             " excerpt=" + log_truncate(diag.raw_excerpt, 300));
+
+                    // 与空回复重试同款注入:role=user + hidden_goal_context,
+                    // 进 API、持久化,TUI / Web 不显示。工具名取本次请求实际
+                    // 发给模型的模型侧名。
+                    ChatMessage correction;
+                    correction.role = "user";
+                    correction.content = build_text_tool_call_correction_prompt(
+                        diag, current_request_model_tool_names_);
+                    correction.metadata = nlohmann::json{
+                        {"hidden_goal_context", true},
+                        {"text_tool_call_correction", true},
+                    };
+                    ensure_user_message_identity(correction);
+                    messages_.push_back(correction);
+                    if (session_manager_) session_manager_->on_message(correction);
+
+                    emit_transcript_system_message(
+                        std::string(u8"[文本工具调用] 模型把工具调用写成了正文文本,未执行(") +
+                            diag.error + u8"),已要求其改用原生工具调用重发 " +
+                            std::to_string(text_tool_call_corrections) + "/" +
+                            std::to_string(limit) + u8"…",
+                        make_system_notice_metadata("response_text_tool_call_retry",
+                            {{"attempt", text_tool_call_corrections},
+                             {"attempts", limit},
+                             {"error", diag.error}}));
+
+                    if (total_iterations > 0) {
+                        --total_iterations; // 纠正轮不计入 max_iterations
+                    }
+                    emit_model_step_finish(
+                        current_model_step, "text_tool_call_retry", step_usage);
+                    continue;
+                }
+
+                LOG_ERROR("Text-form tool call still rejected after " +
+                          std::to_string(limit) + " correction(s); ending turn "
+                          "with error (format=" + diag.format + " reason=" +
+                          diag.reason + "): " + diag.error);
+                turn_timing_status = "error";
+                dispatch_message(
+                    "error",
+                    std::string(u8"[Error] 模型连续 ") + std::to_string(limit + 1) +
+                        u8" 次把工具调用写成正文文本,无法执行(最后一次:" +
+                        diag.error +
+                        u8")。任务未完成,请重试或换用支持原生工具调用的模型。",
+                    false);
+                stop_active_goal_after_turn_error(ProviderErrorInfo{});
+                emit_model_step_finish(current_model_step, "error", step_usage);
+                break;
+            }
+
             const bool has_content_parts =
                 provider_result.accumulated.content_parts.is_array() &&
                 !provider_result.accumulated.content_parts.empty();
@@ -6408,8 +6579,9 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             break;
         }
 
-        // 本轮产出了有效输出(工具调用),连续空回复计数清零。
+        // 本轮产出了有效输出(工具调用),连续空回复 / 文本调用纠正计数清零。
         empty_response_retries = 0;
+        text_tool_call_corrections = 0;
 
         // 工具前言(add-tool-preamble):在 assistant(tool_calls) 消息落盘之前把
         // 本步标题定下来(sidecar 模式在这里有界等待),execute_tool_calls 开头
@@ -6422,6 +6594,28 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             emit_agent_progress, doom_guard, doom_guard_mu,
             turn_timing_status);
         flush_late_tool_preamble(false);
+        // 混合形态:同一回复里既有原生调用,又有与之不一致的文本调用(回显在
+        // provider 那边已剔除,记为 None 不会走到这里)。只执行了原生调用,
+        // 批次跑完后追加隐藏说明,免得模型以为文本里那几个也执行了。不消耗
+        // 纠正预算,不发界面通知。
+        if (provider_result.accumulated.text_tool_calls.outcome ==
+                TextToolCallDiagnostic::Outcome::IgnoredWithNative &&
+            !terminator_fired && !abort_requested_) {
+            const std::string note = build_text_tool_call_ignored_note(
+                provider_result.accumulated.text_tool_calls);
+            if (!note.empty()) {
+                ChatMessage ignored;
+                ignored.role = "user";
+                ignored.content = note;
+                ignored.metadata = nlohmann::json{
+                    {"hidden_goal_context", true},
+                    {"text_tool_call_ignored", true},
+                };
+                ensure_user_message_identity(ignored);
+                messages_.push_back(ignored);
+                if (session_manager_) session_manager_->on_message(ignored);
+            }
+        }
         emit_model_step_finish(
             current_model_step, provider_result.accumulated.finish_reason,
             step_usage);

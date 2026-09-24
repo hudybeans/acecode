@@ -127,3 +127,17 @@ run('all notice catalogs have matching translated keys', () => {
     assert.notEqual(en(`systemNotice.${key}`), `systemNotice.${key}`);
   }
 });
+
+// 场景：模型把工具调用写成正文文本（fix-feedback-0924 第 3 条），AgentLoop 注入纠正提示重试时
+// 发出 response_text_tool_call_retry 通知。期望：中英文标题与详情都来自目录，带上重试次数，
+// 不出现未替换的占位符。回归表现：新通知代码缺目录项时界面只能显示原始的回退文本。
+run('text-form tool call retry notice is localized with attempt counters', () => {
+  const message = notice('response_text_tool_call_retry', { attempt: 1, attempts: 2, error: 'tool "Bash" is not available' });
+  const cn = presentSystemNotice(message, zh);
+  const english = presentSystemNotice(message, en);
+  assert.equal(cn.title, '文本工具调用重试中');
+  assert.equal(english.title, 'Retrying text-form tool call');
+  assert.match(cn.text, /原生工具调用重发 1\/2/);
+  assert.match(english.text, /\(1\/2\)/);
+  for (const text of [cn.text, english.text]) assert.doesNotMatch(text, /\{\{|Original fallback/);
+});

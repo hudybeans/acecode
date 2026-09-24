@@ -3,6 +3,7 @@
 #include "headless_runner.hpp"
 
 #include "headless_capability_catalog.hpp"
+#include "headless_final_text.hpp"
 #include "headless_jsonl.hpp"
 #include "headless_mode.hpp"
 #include "headless_name_selection.hpp"
@@ -162,14 +163,11 @@ std::string build_effective_prompt(const std::string& arg_prompt) {
     return piped + "\n\n" + arg;
 }
 
-// 从最终消息列表里取 baseline 之后最后一条非空 assistant 回复。
+// 从最终消息列表里取 baseline 之后的最终 assistant 回复(规则见
+// headless_final_text.hpp:跳过纯空白,回合以文本工具调用被拒告终时返回空)。
 std::string last_assistant_text_after(SessionManager& sm, std::size_t baseline) {
-    auto messages = sm.load_active_messages();
-    for (std::size_t i = messages.size(); i > baseline; --i) {
-        const auto& m = messages[i - 1];
-        if (m.role == "assistant" && !m.content.empty()) return m.content;
-    }
-    return {};
+    return acecode::headless::headless_final_assistant_text(
+        sm.load_active_messages(), baseline);
 }
 
 // 配置字符串 → PermissionMode(与 daemon worker.cpp 的 permission_mode_from_config
