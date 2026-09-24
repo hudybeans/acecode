@@ -32,7 +32,11 @@ namespace {
 crow::response json_response(int status, const json& body) {
     crow::response r(status);
     r.add_header("Content-Type", "application/json");
-    r.body = body.dump();
+    // 出口兜底:错误文本里混进非法 UTF-8(GBK 的 OS 错误文本、BAD_JSON 里 nlohmann
+    // parse_error 原样带出的请求体字节)时,默认 dump 抛 type_error.316,整个请求变 500;
+    // 迁移失败的 progress 会一直留着那条错误,/migration 与 /data-dir 于是每次都 500,
+    // 前端永远停在「迁移中」。replace 把非法字节换成 U+FFFD,响应永远是合法 JSON。
+    r.body = body.dump(-1, ' ', false, json::error_handler_t::replace);
     return r;
 }
 

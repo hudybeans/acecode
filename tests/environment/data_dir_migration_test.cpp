@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "environment/data_dir_migration.hpp"
+#include "utils/encoding.hpp"
 #include "utils/paths.hpp"
 #include "utils/utf8_path.hpp"
 #include "utils/state_file.hpp"
@@ -13,8 +14,20 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <sqlite3.h>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace acecode::environment;
@@ -372,4 +385,60 @@ TEST_F(DataDirMigrationTest, StatusReportsCleanupPromptAboveThreshold) {
     auto acked = data_dir_status(acecode::RunMode::User);
     EXPECT_FALSE(acked.cleanup_pending);
     EXPECT_FALSE(acked.cleanup_prompt);
+}
+
+namespace {
+
+// 模拟 MSVC 的 system_category().message():中文 Windows 上它走 ANSI 代码页,返回的是
+// GBK 字节。这里固定返回「系统找不到」的 GBK 编码(CF B5 CD B3 D5 D2 B2 BB B5 BD),
+// 其中 D5 D2 不是合法 UTF-8 序列,整串一定是非法 UTF-8。
+class GbkMessageCategory : public std::error_category {
+public:
+    const char* name() const noexcept override { return "gbk-test"; }
+    std::string message(int) const override {
+        return "\xCF\xB5\xCD\xB3\xD5\xD2\xB2\xBB\xB5\xBD";
+    }
+};
+
+const GbkMessageCategory& gbk_message_category() {
+    static const GbkMessageCategory category;
+    return category;
+}
+
+}  // namespace
+
+// 场景:迁移过程中某个文件系统调用失败,ec.message() 是 GBK 字节(中文 Windows 的常态,
+// 0923 反馈日志原文就是 GBK 的「系统找不到指定的路径。」)。
+// 期望:migration_os_error_text 的结果恒为合法 UTF-8;在 ACP=936 的机器上还要准确还原成
+// 「系统找不到」,而不是被替换成 '?'。
+// bug 表现:修复前这段文本原样进 progress.error,json dump 抛 type_error.316,
+// /migration 与 /data-dir 每次轮询都 500,前端永远卡在「迁移中」只能重启。
+TEST_F(DataDirMigrationTest, OsErrorTextIsAlwaysValidUtf8) {
+    const std::error_code ec(3, gbk_message_category());
+    ASSERT_FALSE(acecode::is_valid_utf8(ec.message()));  // 前提:原文确实是非法 UTF-8
+    const auto text = migration_os_error_text(ec);
+    EXPECT_TRUE(acecode::is_valid_utf8(text)) << text;
+    EXPECT_FALSE(text.empty());
+#ifdef _WIN32
+    if (GetACP() == 936) {
+        // 「系统找不到」的 UTF-8 字节,直接写字节避免依赖源文件编码 / char8_t。
+        EXPECT_EQ(text, "\xE7\xB3\xBB\xE7\xBB\x9F\xE6\x89\xBE\xE4\xB8\x8D\xE5\x88\xB0");
+    }
+#endif
+}
+
+// 场景:后台迁移线程里抛出的异常 what() 带 GBK 字节(例如 before_copy 暂停写入方失败,
+// 或标准库异常里拼进了 OS 错误文本)。
+// 期望:任务失败(state=failed),progress.error 是合法 UTF-8,可以安全序列化成 JSON。
+// bug 表现:修复前 result.error = e.what() 原样保存,同样让 /migration 永久 500。
+TEST_F(DataDirMigrationTest, JobExceptionTextIsSanitizedToUtf8) {
+    DataDirMigrationJob job;
+    std::string error;
+    ASSERT_TRUE(job.start(s(default_dir), s(default_dir), s(root / "moved"), &error,
+        [] { throw std::runtime_error(std::string("cannot pause writer: ") + "\xCF\xB5\xCD\xB3\xD5\xD2"); }));
+    job.wait_for_test();
+    ASSERT_TRUE(job.progress());
+    EXPECT_EQ(job.progress()->state, "failed");
+    EXPECT_TRUE(acecode::is_valid_utf8(job.progress()->error)) << job.progress()->error;
+    EXPECT_NE(job.progress()->error.find("cannot pause writer: "), std::string::npos);
 }

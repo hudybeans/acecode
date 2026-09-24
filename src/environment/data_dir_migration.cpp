@@ -1,5 +1,6 @@
 #include "data_dir_migration.hpp"
 
+#include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
 #include "../utils/uuid.hpp"
@@ -26,6 +27,10 @@ std::atomic<bool> writes_blocked{false};
 std::shared_mutex& data_dir_write_mutex() { return write_gate; }
 bool data_dir_writes_blocked() { return writes_blocked.load(); }
 void reset_data_dir_write_gate_for_test() { writes_blocked.store(false); set_state_file_writes_paused(false); }
+
+std::string migration_os_error_text(const std::error_code& ec) {
+    return ensure_utf8(ec.message());
+}
 
 bool data_dir_has_other_daemons(const std::string& directory) {
     const auto root = path_from_utf8(directory);
@@ -139,13 +144,13 @@ MigrationTargetCheck validate_migration_target(const std::string& current_dir,
         }
         if (ec) {
             return fail(MigrationTargetError::NotWritable,
-                        "cannot list target directory: " + ec.message());
+                        "cannot list target directory: " + migration_os_error_text(ec));
         }
     } else {
         fs::create_directories(target_c, ec);
         if (ec) {
             return fail(MigrationTargetError::NotWritable,
-                        "cannot create target directory: " + ec.message());
+                        "cannot create target directory: " + migration_os_error_text(ec));
         }
     }
 
@@ -233,7 +238,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     std::error_code ec;
     for (fs::recursive_directory_iterator it(source, ec), end;
          it != end; it.increment(ec)) {
-        if (ec) return fail("cannot enumerate source: " + ec.message());
+        if (ec) return fail("cannot enumerate source: " + migration_os_error_text(ec));
         const fs::path relative = it->path().lexically_relative(source);
         if (migration_excludes_entry(relative)) {
             if (it->is_directory(ec)) it.disable_recursion_pending();
@@ -258,7 +263,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
         else regular.push_back(item);
         progress.total_bytes += item.size;
     }
-    if (ec) return fail("cannot enumerate source: " + ec.message());
+    if (ec) return fail("cannot enumerate source: " + migration_os_error_text(ec));
 
     auto report = [&]() {
         if (on_progress) on_progress(progress.copied_bytes, progress.total_bytes);
@@ -281,16 +286,16 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
             }
             if (item.is_dir) fs::create_directory_symlink(resolved, to, cec);
             else fs::create_symlink(resolved, to, cec);
-            if (cec) return "cannot preserve symbolic link: " + path_to_utf8(from) + ": " + cec.message();
+            if (cec) return "cannot preserve symbolic link: " + path_to_utf8(from) + ": " + migration_os_error_text(cec);
             return {};
         }
         if (item.is_dir) {
             fs::create_directories(to, cec);
-            if (cec) return "cannot create " + path_to_utf8(to) + ": " + cec.message();
+            if (cec) return "cannot create " + path_to_utf8(to) + ": " + migration_os_error_text(cec);
             return {};
         }
         fs::create_directories(to.parent_path(), cec);
-        if (cec) return "cannot create " + path_to_utf8(to.parent_path()) + ": " + cec.message();
+        if (cec) return "cannot create " + path_to_utf8(to.parent_path()) + ": " + migration_os_error_text(cec);
         const std::string relative_name = path_to_utf8(item.relative);
         for (const auto& database : snapshots) {
             if (relative_name == database + "-wal" || relative_name == database + "-shm") {
@@ -325,7 +330,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
         } else {
             fs::copy_file(from, to, fs::copy_options::none, cec);
         }
-        if (cec) return "cannot copy " + path_to_utf8(from) + ": " + cec.message();
+        if (cec) return "cannot copy " + path_to_utf8(from) + ": " + migration_os_error_text(cec);
         progress.copied_bytes += item.size;
         report();
         return {};
@@ -353,7 +358,7 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
     for (const auto& item : regular) expected.insert(item.relative);
     for (const auto& item : sqlite) expected.insert(item.relative);
     for (fs::recursive_directory_iterator it(source, ec), end; it != end; it.increment(ec)) {
-        if (ec) return fail("cannot recheck source: " + ec.message());
+        if (ec) return fail("cannot recheck source: " + migration_os_error_text(ec));
         const auto relative = it->path().lexically_relative(source);
         if (migration_excludes_entry(relative) || path_to_utf8(*relative.begin()) == "logs") {
             it.disable_recursion_pending();
@@ -362,13 +367,13 @@ MigrationProgress run_data_dir_migration(const std::string& current_dir,
         if (it->is_symlink(ec)) it.disable_recursion_pending();
         if (!expected.count(relative)) return fail("source changed during migration; retry when ACECode is idle");
     }
-    if (ec) return fail("cannot recheck source: " + ec.message());
+    if (ec) return fail("cannot recheck source: " + migration_os_error_text(ec));
     // Revalidate the actual target: the user may have added a file while copying.
     const auto final_check = validate_migration_target(current_dir, check.normalized_target);
     if (final_check.error != MigrationTargetError::None) return fail(final_check.message);
     if (!fs::remove(final_dest, ec) || ec) return fail("target is no longer empty");
     fs::rename(dest, final_dest, ec);
-    if (ec) return fail("cannot publish copied workspace: " + ec.message());
+    if (ec) return fail("cannot publish copied workspace: " + migration_os_error_text(ec));
     owned_staging.clear();
 
     DataDirRedirect redirect;
@@ -423,7 +428,7 @@ bool DataDirMigrationJob::start(const std::string& current_dir, const std::strin
                 }
             }); } catch (const std::exception& e) {
             result.state = "failed";
-            result.error = e.what();
+            result.error = ensure_utf8(e.what());
             result.target = target;
         }
         {
@@ -435,7 +440,7 @@ bool DataDirMigrationJob::start(const std::string& current_dir, const std::strin
             writes_blocked.store(false);
             set_state_file_writes_paused(false);
             try { if (on_failure) on_failure(); }
-            catch (const std::exception& e) { LOG_WARN(std::string("[data-dir] resume failed: ") + e.what()); }
+            catch (const std::exception& e) { LOG_WARN("[data-dir] resume failed: " + ensure_utf8(e.what())); }
         }
     });
     return true;
@@ -484,10 +489,10 @@ std::string cleanup_previous_data_dir(const std::string& previous_dir,
         std::error_code rm_ec;
         fs::remove_all(entry.path(), rm_ec);
         if (rm_ec && first_error.empty()) {
-            first_error = "cannot remove " + path_to_utf8(entry.path()) + ": " + rm_ec.message();
+            first_error = "cannot remove " + path_to_utf8(entry.path()) + ": " + migration_os_error_text(rm_ec);
         }
     }
-    if (ec && first_error.empty()) first_error = "cannot list " + previous_dir + ": " + ec.message();
+    if (ec && first_error.empty()) first_error = "cannot list " + previous_dir + ": " + migration_os_error_text(ec);
     if (!keep_pointer && first_error.empty()) {
         std::error_code rm_ec;
         fs::remove(prev, rm_ec);  // 旧目录本身也删(不是默认目录时)

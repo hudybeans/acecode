@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <shared_mutex>
 
@@ -26,6 +27,12 @@ std::shared_mutex& data_dir_write_mutex();
 bool data_dir_writes_blocked();
 void reset_data_dir_write_gate_for_test();
 bool data_dir_has_other_daemons(const std::string& directory);
+
+// OS 错误文本(ec.message())统一转 UTF-8。MSVC 的 system_category().message() 走 ANSI
+// 代码页,中文 Windows 上是 GBK;原样进 progress.error 后 json dump 抛 type_error.316,
+// /migration 与 /data-dir 每次轮询都 500。只转换 OS 文本这一段再拼接:对拼好的整串调
+// ensure_utf8 时,整串里的 UTF-8 中文路径会让它按 GBK 重新解码,路径反而变乱码。
+std::string migration_os_error_text(const std::error_code& ec);
 
 inline constexpr unsigned long long kCleanupPromptThresholdBytes = 100ULL * 1024 * 1024;
 

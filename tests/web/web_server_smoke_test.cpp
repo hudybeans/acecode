@@ -983,6 +983,38 @@ TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
     entry->loop->shutdown();
 }
 
+// 场景:请求体里带非法 UTF-8 字节。nlohmann 的 parse_error 会把读到的原始字节原样放进
+// 「last read: '...'」,于是 BAD_JSON 的 message 本身就是非法 UTF-8。
+// 期望:环境路由的 json_response 用 error_handler_t::replace 序列化,响应仍是 400 + 合法
+// JSON,error=BAD_JSON,message 是合法 UTF-8(非法字节被换成 U+FFFD)。
+// bug 表现:修复前 body.dump() 抛 type_error.316,被全局异常处理收成 500;迁移失败时
+// GBK 的 OS 错误文本走的是同一条出口,/migration 与 /data-dir 因此每次轮询都 500。
+// 字节选择:GBK 的「一」= D2 BB 恰好是合法 UTF-8(解码为 U+04BB),不能拿来当反例;
+// 这里用 D2 后面紧跟引号(前导字节缺续字节)和单独的 FF(永远不是合法 UTF-8)。
+TEST(SettingsEnvironmentSmoke, InvalidUtf8InErrorTextStillReturnsJson) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    const std::vector<std::string> bodies = {
+        std::string("{\"target\":\"") + "\xD2" + "\"}",
+        std::string("\xFF"),
+    };
+    for (const std::string route : {"/api/config/data-dir/migrate", "/api/config/toolchains"}) {
+        for (const auto& body : bodies) {
+            ASSERT_FALSE(acecode::is_valid_utf8(body));
+            const auto response = route == "/api/config/toolchains"
+                ? cpr::Put(cpr::Url{fx.url(route)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body})
+                : cpr::Post(cpr::Url{fx.url(route)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+            EXPECT_EQ(response.status_code, 400) << route << " " << response.text;
+            json parsed;
+            ASSERT_NO_THROW(parsed = json::parse(response.text)) << route;
+            EXPECT_EQ(parsed.value("error", ""), "BAD_JSON") << route;
+            const auto message = parsed.value("message", "");
+            EXPECT_FALSE(message.empty()) << route;
+            EXPECT_TRUE(acecode::is_valid_utf8(message)) << route;
+        }
+    }
+}
+
 std::string lower_ascii(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
