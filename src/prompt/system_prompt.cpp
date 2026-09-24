@@ -128,6 +128,12 @@ static std::string get_cmd_guidance(const std::string& multiline_tool) {
         << "- Copy: `copy SRC DST`, or `xcopy /e /i SRC DST` for directories. There is no `cp -r`.\n"
         << "- Rename/move: `move` or `ren`. There is no `mv`.\n"
         << "- Variables: `%VAR%` (not `$VAR`). Set with `set VAR=value` (not `export`).\n"
+        // 用户反馈项目里出现名为 `%T%` 的目录:cmd 在解析整行时就展开 %VAR%,
+        // 同一行里刚 set 的变量还取不到,而未定义的 %VAR% 会原样留成文字。
+        << "- cmd expands `%VAR%` when it parses the whole line, so a variable set earlier on the "
+        << "same line (`set T=x && mkdir %T%`) is not visible yet, and an undefined `%VAR%` stays "
+        << "as literal text (this creates a directory literally named `%T%`). Set variables in a "
+        << "separate command before using them.\n"
         << "- Quoting: use double quotes for arguments containing spaces; cmd.exe does NOT strip "
         << "single quotes — they become literal characters.\n";
     if (!multiline_tool.empty()) {

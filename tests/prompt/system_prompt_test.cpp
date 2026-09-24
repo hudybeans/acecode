@@ -729,6 +729,8 @@ TEST_F(SystemPromptTest, CmdTerminalKeepsLegacyGuidance) {
     EXPECT_NE(out.find("rd /s /q"), std::string::npos);
     EXPECT_NE(out.find("%VAR%"), std::string::npos);
     EXPECT_EQ(out.find("(PowerShell)"), std::string::npos);
+    // 同一行 set 的变量取不到、未定义变量原样留成文字(用户项目里出现 `%T%` 目录)。
+    EXPECT_NE(out.find("directory literally named `%T%`"), std::string::npos);
 }
 
 // 场景:Windows 上的 Git Bash。
