@@ -3885,8 +3885,8 @@ TEST(WebServerHttp, SessionRoutesReportEscapedExceptionsAsJson500) {
     const std::vector<Case> cases = {
         {"/api/workspaces/" + hash + "/sessions", "SESSION_CREATE_FAILED", "boom: create"},
         {"/api/sessions", "SESSION_CREATE_FAILED", "boom: create"},
-        {"/api/workspaces/" + hash + "/sessions/20260911-000000-dead/resume",
-         "SESSION_RESUME_FAILED", "boom: resume"},
+        // 无 workspace 归属前置检查的 resume 直达 SessionClient,ThrowingSessionClient
+        // 抛异常应被转成带原因的 JSON 500。
         {"/api/sessions/20260911-000000-dead/resume",
          "SESSION_RESUME_FAILED", "boom: resume"},
     };
@@ -3902,6 +3902,18 @@ TEST(WebServerHttp, SessionRoutesReportEscapedExceptionsAsJson500) {
             << c.path << ": " << r.text;
         EXPECT_EQ(body.value("cwd", ""), fx.cwd) << c.path;
     }
+
+    // 带 workspace 的 resume 对磁盘上不存在的 session 先做归属校验,直接 404
+    // (引入自“无工作区会话恢复”改动),不会到达 SessionClient,因此不抛 500。
+    auto missing_resume = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions/20260911-000000-dead/resume")},
+        json_header, cpr::Body{R"({})"});
+    EXPECT_EQ(missing_resume.status_code, 404) << missing_resume.text;
+    EXPECT_NE(missing_resume.header["Content-Type"].find("application/json"), std::string::npos)
+        << missing_resume.header["Content-Type"];
+    json missing_body;
+    ASSERT_NO_THROW(missing_body = json::parse(missing_resume.text)) << missing_resume.text;
+    EXPECT_EQ(missing_body.value("error", ""), "session not found") << missing_resume.text;
 }
 
 // 场景:没有路由级 try/catch 的 handler(DELETE /api/sessions/:id 直接调
