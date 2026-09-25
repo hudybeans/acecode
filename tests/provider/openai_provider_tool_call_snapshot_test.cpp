@@ -202,11 +202,8 @@ TEST(OpenAiProviderToolCallSnapshotTest, StandardOpenAiIncrementalDeltaStillConc
 }
 
 // 用例 2.1:工具调用 delta 期间应额外发 ToolCallDelta 规划元数据,让 AgentLoop
-// 在最终 ToolCall flush 之前就能告诉 Web 正在准备哪个工具。该事件带名称、id、
-// index、累计参数字节数,以及已累积参数的**有界前缀**(前
-// kToolCallDeltaArgumentsPrefixBytes 字节,供工具前言参数模式在参数流完之前抽
-// `preamble`,openspec add-tool-preamble);AgentLoop 不把前缀透给 Web ——
-// tool_planning 事件仍只带字节数。
+// 在最终 ToolCall flush 之前就能告诉 Web 正在准备哪个工具。该事件只带名称、id、
+// index 与累计参数字节数,不携带 raw partial arguments。
 TEST(OpenAiProviderToolCallSnapshotTest, ToolCallDeltaEmitsSafePlanningMetadata) {
     LocalHttpServer server([](httplib::Server& s) {
         s.Post("/chat/completions", [](const httplib::Request&, httplib::Response& res) {
@@ -242,57 +239,9 @@ TEST(OpenAiProviderToolCallSnapshotTest, ToolCallDeltaEmitsSafePlanningMetadata)
     EXPECT_EQ(col.tool_call_deltas[0].tool_call.function_name, "bash");
     EXPECT_EQ(col.tool_call_deltas[0].tool_index, 0);
     EXPECT_GT(col.tool_call_deltas[0].tool_call_argument_bytes, 0u);
-    // 增量里的参数是到目前为止累积的前缀(第一帧只到 `{"com`),不是最后一帧的尾段。
-    EXPECT_EQ(col.tool_call_deltas[0].tool_call.function_arguments, "{\"com");
+    EXPECT_TRUE(col.tool_call_deltas[0].tool_call.function_arguments.empty());
     EXPECT_EQ(col.tool_call_deltas.back().tool_call_argument_bytes,
               col.tool_calls[0].function_arguments.size());
-    EXPECT_EQ(col.tool_call_deltas.back().tool_call.function_arguments,
-              col.tool_calls[0].function_arguments);
-    EXPECT_EQ(col.error_events, 0);
-}
-
-// 用例 2.2:参数很长时 ToolCallDelta 携带的前缀必须封顶在
-// kToolCallDeltaArgumentsPrefixBytes,累计字节数照常报全量 —— 前缀只为抽
-// `preamble`(它按约定排在参数最前面),不是把整份参数在每帧里重发一遍。
-TEST(OpenAiProviderToolCallSnapshotTest, ToolCallDeltaArgumentsPrefixIsBounded) {
-    const std::string long_value(3000, 'x');
-    LocalHttpServer server([&](httplib::Server& s) {
-        s.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
-            std::string body;
-            body += "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{"
-                    "\"id\":\"call_long\",\"type\":\"function\",\"index\":0,"
-                    "\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\": \\\"" +
-                    long_value + "\\\"}\"}}]},\"index\":0}]}\n\n";
-            body += "data: {\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"tool_calls\"}]}\n\n";
-            body += "data: [DONE]\n\n";
-            res.set_content(body, "text/event-stream");
-            res.status = 200;
-        });
-    });
-
-    OpenAiCompatProvider provider(
-        "http://127.0.0.1:" + std::to_string(server.port), "", "test-model");
-
-    ChatMessage user_msg;
-    user_msg.role = "user";
-    user_msg.content = "run";
-    std::vector<ChatMessage> messages = {user_msg};
-    std::vector<ToolDef> tools;
-
-    StreamCollector col;
-    std::atomic<bool> abort_flag{false};
-    provider.chat_stream(messages, tools, col.callback(), &abort_flag);
-
-    ASSERT_EQ(col.tool_calls.size(), 1u);
-    ASSERT_GE(col.tool_call_deltas.size(), 1u);
-    const auto& delta = col.tool_call_deltas.back();
-    EXPECT_EQ(delta.tool_call_argument_bytes, col.tool_calls[0].function_arguments.size());
-    EXPECT_GT(delta.tool_call_argument_bytes, acecode::kToolCallDeltaArgumentsPrefixBytes);
-    EXPECT_EQ(delta.tool_call.function_arguments.size(),
-              acecode::kToolCallDeltaArgumentsPrefixBytes);
-    EXPECT_EQ(delta.tool_call.function_arguments,
-              col.tool_calls[0].function_arguments.substr(
-                  0, acecode::kToolCallDeltaArgumentsPrefixBytes));
     EXPECT_EQ(col.error_events, 0);
 }
 

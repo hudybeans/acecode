@@ -1,8 +1,9 @@
 // 覆盖 build_system_prompt 的 prompt_tool_preamble 开关(openspec add-tool-preamble):
 //   1. 关闭(默认)→ 与改动前逐字节一致
-//   2. 开启 → 追加「# Tool call preamble」段,要求模型填每个调用的 `preamble` 参数;
-//      「不要叙述工具调用 / 批量调用」的既有口径原样保留 —— 前言在参数里,
-//      不是调用前的一句话(第一版做成先说一句话,文本先变气泡再搬进 loading,已废)
+//   2. 开启 → 追加「# Progress preamble」段,要求模型在多步工具任务里用
+//      <text_preamble type="read|write"> 标签标出阶段前言(用户原话的那句规则),
+//      「不要叙述工具调用 / 批量调用」的既有口径原样保留;工具定义不再注入参数
+//      (参数版被用户否掉:强迫模型每次调用都填一句体验很差)
 //   3. 同一输入两次调用逐字节一致(prompt cache 前缀不变量)
 
 #include <gtest/gtest.h>
@@ -74,29 +75,34 @@ TEST_F(SystemPromptToolPreambleTest, DisabledIsByteIdenticalToLegacyPrompt) {
     const std::string off = build(false);
     EXPECT_EQ(legacy, off);
     EXPECT_NE(off.find("Do not narrate every tool call"), std::string::npos);
-    EXPECT_EQ(off.find("# Tool call preamble"), std::string::npos);
+    EXPECT_EQ(off.find("# Progress preamble"), std::string::npos);
+    EXPECT_EQ(off.find("text_preamble"), std::string::npos);
 }
 
-// 场景:开关打开。期望:多出「# Tool call preamble」段(参数名 `preamble` 且必填、并行批次每个调用都填、8-12 词、
-// 放在参数第一位、执行前剥掉),同时「不要叙述工具调用」「批量调用」的口径原样
-// 保留 —— 前言替代的是叙述文本,不是批处理。
-TEST_F(SystemPromptToolPreambleTest, EnabledAddsParameterGuidanceAndKeepsLegacyRules) {
+// 场景:开关打开。期望:多出「# Progress preamble」段,含用户定下的那句规则
+// (第一次调用前 + 阶段变化时、type=read|write、最终回答不打标签)与语言 / 单行
+// 约束;同时「不要叙述工具调用」「批量调用」的口径原样保留 —— 标签替代的是
+// 进度提示,不是批处理。
+TEST_F(SystemPromptToolPreambleTest, EnabledAddsTextPreambleGuidanceAndKeepsLegacyRules) {
     const std::string on = build(true);
-    EXPECT_NE(on.find("# Tool call preamble"), std::string::npos);
-    EXPECT_NE(on.find("Every tool has a required `preamble` argument"), std::string::npos);
-    EXPECT_NE(on.find("including each call of a parallel batch"), std::string::npos);
-    EXPECT_NE(on.find("8-12 words"), std::string::npos);
-    EXPECT_NE(on.find("Put `preamble` first in the arguments"), std::string::npos);
-    EXPECT_NE(on.find("stripped before the tool executes"), std::string::npos);
+    EXPECT_NE(on.find("# Progress preamble"), std::string::npos);
+    EXPECT_NE(on.find("emit exactly one short sentence in <text_preamble type=\"read\">...</text_preamble>"),
+              std::string::npos);
+    EXPECT_NE(on.find("use type=\"write\" for state-changing actions"), std::string::npos);
+    EXPECT_NE(on.find("before the first call and at major phase/plan changes"), std::string::npos);
+    EXPECT_NE(on.find("never tag final answers"), std::string::npos);
+    EXPECT_NE(on.find("language of the user's latest message"), std::string::npos);
     EXPECT_NE(on.find("Do not narrate every tool call"), std::string::npos);
     EXPECT_NE(on.find("prefer silent batches of tool calls"), std::string::npos);
     EXPECT_NE(on.find("batch them in the same assistant message"), std::string::npos);
-    EXPECT_EQ(on.find("send a brief preamble"), std::string::npos);
-    EXPECT_NE(on, build(false));
+    // 参数版的措辞不能再出现:工具定义里没有 preamble 参数了。
+    EXPECT_EQ(on.find("`preamble` argument"), std::string::npos);
+    EXPECT_EQ(on.find("# Tool call preamble"), std::string::npos);
 }
 
-// 场景:同一输入连续两次构造。期望:逐字节一致 —— 静态 system prompt 是
-// prompt cache 的前缀,开关本身不能引入任何随机 / 时间成分。
+// 场景:开关打开,同一输入连续构造两次。期望:逐字节一致(段落里没有时间戳 /
+// 随机内容,不打穿 prompt cache 前缀)。
 TEST_F(SystemPromptToolPreambleTest, EnabledPromptIsByteStableAcrossCalls) {
     EXPECT_EQ(build(true), build(true));
+    EXPECT_NE(build(true), build(false));
 }

@@ -120,9 +120,10 @@ struct SystemPromptWorkspaceFolders {
 // LlmProvider::supports_vision)。它只在切换模型时变化,所以留在可缓存的静态
 // 前缀里不会打穿 prompt cache。默认 true 是 fail-open,与 provider 基类同口径。
 // prompt_tool_preamble: 工具前言的「提示驱动」模式(openspec add-tool-preamble,
-// config.agent_loop.tool_preamble enabled && mode == "prompt")。为 true 时把
-// 「不要叙述工具调用」的口径换成 Codex 式 preamble:含工具调用的消息先写一句
-// 8~12 词的前言。它只随配置变化,留在静态前缀里;false 时输出逐字节不变。
+// config.agent_loop.tool_preamble enabled && mode == "prompt")。为 true 时追加
+// 「# Progress preamble」段,要求模型用 <text_preamble> 标签标出阶段前言;
+// 「不要叙述工具调用」的口径不变。它只随配置变化,留在静态前缀里;false 时
+// 输出逐字节不变。
 std::string build_system_prompt(const ToolExecutor& tools, const std::string& cwd,
                                 const SkillRegistry* skills = nullptr,
                                 const MemoryRegistry* memory = nullptr,

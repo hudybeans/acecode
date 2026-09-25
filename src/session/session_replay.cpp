@@ -12,6 +12,7 @@
 #include "turn_timing.hpp"
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tool/tool_executor.hpp"
+#include "../tool_preamble/tool_preamble.hpp"
 #include "../tui/compact_notice_row.hpp"
 
 #include <nlohmann/json.hpp>
@@ -102,32 +103,13 @@ std::vector<TuiState::Message> replay_session_messages(
         if (msg.role == "assistant") {
             // 文本前奏(若有)先 push,顺序与运行时 on_delta+on_message 累积一致。
             flush_pending_calls();
-            // 工具前言(add-tool-preamble):metadata.tool_preamble 还原成
-            // "preamble" 标题伪行,排在该批次的 tool_call 行之前。prompt 来源的
-            // 前言就是那句正文,标题行已经承载它,不再重复推一行正文。
-            std::string preamble_title;
-            std::string preamble_source;
-            nlohmann::json preamble_calls;  // 参数模式:每个调用自己的前言
-            if (msg.metadata.is_object() &&
-                msg.metadata.contains("tool_preamble") &&
-                msg.metadata["tool_preamble"].is_object()) {
-                const auto& tp = msg.metadata["tool_preamble"];
-                preamble_title = tp.value("title", std::string{});
-                preamble_source = tp.value("source", std::string{});
-                if (tp.contains("calls") && tp["calls"].is_object()) {
-                    preamble_calls = tp["calls"];
-                }
-            }
-            const bool has_tool_calls =
-                msg.tool_calls.is_array() && !msg.tool_calls.empty();
-            const bool preamble_row = !preamble_title.empty() && has_tool_calls;
-            const bool text_folded_into_preamble =
-                preamble_row && preamble_source == "prompt";
-            if (!msg.content.empty() && !text_folded_into_preamble) {
-                out.push_back({"assistant", msg.content, /*is_tool=*/false});
-            }
-            if (preamble_row) {
-                out.push_back({"preamble", preamble_title, /*is_tool=*/false});
+            // 工具前言(add-tool-preamble):正文里的 <text_preamble> 标签只在
+            // 实时期间进 loading,回放时剥掉;整段都是标签就不推正文行。
+            // metadata.tool_preamble 落盘只为记录,不还原任何显示行。
+            const std::string visible =
+                tool_preamble::strip_text_preamble_tags(msg.content);
+            if (!visible.empty()) {
+                out.push_back({"assistant", visible, /*is_tool=*/false});
             }
             // 每个 tool_call 单独成一行,先攒进 pending 等结果配对。
             // display_override 用 build_tool_call_preview 现算,失败
@@ -143,22 +125,6 @@ std::vector<TuiState::Message> replay_session_messages(
                     tc_row.is_tool = true;
                     tc_row.display_override =
                         ToolExecutor::build_tool_call_preview(name, args);
-                    // 参数模式的前言按 tool_call id(没有 id 时按 "#下标")取回,
-                    // 挂到该行上,与运行时 on_tool_preamble → on_message 的结果一致。
-                    if (preamble_calls.is_object()) {
-                        std::string call_id;
-                        if (msg.tool_calls[i].is_object()) {
-                            call_id = msg.tool_calls[i].value("id", std::string{});
-                        }
-                        auto it = preamble_calls.end();
-                        if (!call_id.empty()) it = preamble_calls.find(call_id);
-                        if (it == preamble_calls.end()) {
-                            it = preamble_calls.find("#" + std::to_string(i));
-                        }
-                        if (it != preamble_calls.end() && it->is_string()) {
-                            tc_row.preamble = it->get<std::string>();
-                        }
-                    }
                     pending_calls.push_back(std::move(tc_row));
                 }
             }

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <string_view>
 
 namespace acecode::tool_preamble {
 
@@ -60,15 +59,34 @@ bool ends_with(std::string_view s, std::string_view suffix) {
            s.substr(s.size() - suffix.size()) == suffix;
 }
 
+char lower_ascii(char c) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+}
+
 bool starts_with_ci(std::string_view s, std::string_view prefix) {
     if (s.size() < prefix.size()) return false;
     for (std::size_t i = 0; i < prefix.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(s[i])) !=
-            std::tolower(static_cast<unsigned char>(prefix[i]))) {
-            return false;
-        }
+        if (lower_ascii(s[i]) != lower_ascii(prefix[i])) return false;
     }
     return true;
+}
+
+std::size_t find_ci(std::string_view hay, std::string_view needle, std::size_t from = 0) {
+    if (needle.empty()) return from <= hay.size() ? from : std::string_view::npos;
+    for (std::size_t i = from; i + needle.size() <= hay.size(); ++i) {
+        if (starts_with_ci(hay.substr(i), needle)) return i;
+    }
+    return std::string_view::npos;
+}
+
+// s 的最长后缀同时是 needle 的真前缀(大小写不敏感)时,返回那段后缀的长度;
+// 没有这样的后缀返回 0。用来判断增量尾部是不是被切断的标签。
+std::size_t partial_suffix_match(std::string_view s, std::string_view needle) {
+    const std::size_t max_len = std::min(s.size(), needle.size() - 1);
+    for (std::size_t len = max_len; len > 0; --len) {
+        if (starts_with_ci(needle, s.substr(s.size() - len))) return len;
+    }
+    return 0;
 }
 
 std::string collapse_whitespace(std::string_view s) {
@@ -170,19 +188,6 @@ std::string first_non_empty_line(std::string_view text) {
     return {};
 }
 
-std::size_t non_empty_line_count(std::string_view text) {
-    std::size_t count = 0;
-    std::size_t pos = 0;
-    while (pos <= text.size()) {
-        const std::size_t nl = text.find('\n', pos);
-        const std::string_view line = text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
-        if (!trim(line).empty()) ++count;
-        if (nl == std::string_view::npos) break;
-        pos = nl + 1;
-    }
-    return count;
-}
-
 // 推理首句常见的口头填充,去掉后剩下的才是「在干什么」。
 std::string strip_reasoning_fillers(std::string s) {
     static constexpr std::array<std::string_view, 18> kFillers{
@@ -245,10 +250,46 @@ std::string first_sentence(std::string_view s) {
     return std::string(s.substr(0, cut));
 }
 
+// "<text_preamble" —— 后面必须跟空白、'>' 或 '/' 才算我们的标签。
+constexpr std::string_view kOpenPrefix = "<text_preamble";
+constexpr std::string_view kCloseTag = "</text_preamble>";
+
+// 从开标签的属性串里取 type 的值:type="read" / type='write' / type=read,
+// 大小写不敏感;不是 read / write 的一律当没写。
+std::string parse_kind_attribute(std::string_view attrs) {
+    const std::size_t key = find_ci(attrs, "type");
+    if (key == std::string_view::npos) return {};
+    std::size_t i = key + 4;
+    while (i < attrs.size() && is_space_byte(static_cast<unsigned char>(attrs[i]))) ++i;
+    if (i >= attrs.size() || attrs[i] != '=') return {};
+    ++i;
+    while (i < attrs.size() && is_space_byte(static_cast<unsigned char>(attrs[i]))) ++i;
+    if (i >= attrs.size()) return {};
+    std::string value;
+    if (attrs[i] == '"' || attrs[i] == '\'') {
+        const char quote = attrs[i];
+        const std::size_t end = attrs.find(quote, i + 1);
+        value = std::string(attrs.substr(i + 1, end == std::string_view::npos
+                                                        ? std::string_view::npos
+                                                        : end - i - 1));
+    } else {
+        std::size_t end = i;
+        while (end < attrs.size() &&
+               !is_space_byte(static_cast<unsigned char>(attrs[end])) && attrs[end] != '/') {
+            ++end;
+        }
+        value = std::string(attrs.substr(i, end - i));
+    }
+    value = trim(value);
+    for (auto& c : value) c = lower_ascii(c);
+    if (value == kKindRead || value == kKindWrite) return value;
+    return {};
+}
+
 }  // namespace
 
 bool is_valid_mode(const std::string& mode) {
-    return mode == kModePrompt || mode == kModeReasoning || mode == kModeSidecar;
+    return mode == kModePrompt || mode == kModeReasoning;
 }
 
 std::string extract_first_bold_span(const std::string& text) {
@@ -309,212 +350,178 @@ std::string title_from_reasoning(const std::string& reasoning) {
     return title;
 }
 
-std::string title_from_assistant_text(const std::string& text) {
-    if (text.find("```") != std::string::npos) return {};
-    if (non_empty_line_count(text) != 1) return {};
-    const std::string line = first_non_empty_line(text);
-    if (count_code_points(line) > kPromptTextMaxCodePoints) return {};
-    const std::string title = normalize_title_line(line, kPromptTitleMaxCodePoints);
-    if (count_code_points(title) < 2) return {};
-    return title;
+// ---- TextPreambleScanner ----
+
+void TextPreambleScanner::reset() {
+    pending_.clear();
+    in_tag_ = false;
+    kind_.clear();
+    swallow_leading_ws_ = true;
 }
 
-std::string sanitize_sidecar_title(const std::string& raw) {
-    std::string line = first_non_empty_line(raw);
-    if (line.empty()) return {};
-    if (starts_with(line, "[Error]") || starts_with(line, "[Aborted]") ||
-        starts_with(line, "[error]")) {
-        return {};
+TextPreambleScanner::Output TextPreambleScanner::feed(std::string_view delta) {
+    Output out;
+    pending_.append(delta.data(), delta.size());
+    drain(out, /*at_end=*/false);
+    return out;
+}
+
+TextPreambleScanner::Output TextPreambleScanner::flush() {
+    Output out;
+    drain(out, /*at_end=*/true);
+    // drain(at_end) 已把一切结清;这里只是兜底。
+    if (!pending_.empty()) {
+        if (in_tag_) close_tag(out, pending_);
+        else emit_visible(out, pending_);
+        pending_.clear();
     }
-    static constexpr std::array<std::string_view, 6> kLabels{
-        "title:", "label:", "status:",
-        "\xE6\xA0\x87\xE9\xA2\x98\xEF\xBC\x9A",   // 标题：
-        "\xE6\xA0\x87\xE9\xA2\x98:",              // 标题:
-        "\xE6\xA0\x87\xE7\xAD\xBE\xEF\xBC\x9A",   // 标签：
-    };
-    for (const auto& label : kLabels) {
-        if (starts_with_ci(line, label) && line.size() > label.size()) {
-            line = trim(line.substr(label.size()));
-            break;
-        }
+    in_tag_ = false;
+    return out;
+}
+
+void TextPreambleScanner::emit_visible(Output& out, std::string_view text) {
+    if (text.empty()) return;
+    if (swallow_leading_ws_) {
+        std::size_t i = 0;
+        while (i < text.size() && is_space_byte(static_cast<unsigned char>(text[i]))) ++i;
+        if (i == text.size()) return;
+        swallow_leading_ws_ = false;
+        text = text.substr(i);
     }
-    const std::string title = normalize_title_line(line, kSidecarTitleMaxCodePoints);
-    if (count_code_points(title) < 2) return {};
-    return title;
+    out.visible.append(text.data(), text.size());
 }
 
-namespace {
-
-constexpr const char* kToolParameterDescription =
-    "Required on every call, including each call of a parallel batch: one short "
-    "status line the UI shows while this call runs, 8-12 words or up to 16 Chinese "
-    "characters, present-participle phrasing like \"Reading registry sections\" or "
-    "\"正在读取注册表段落\", always in the language of the user's latest message (Chinese "
-    "user -> Chinese line). Put this key first in the arguments. It is stripped before "
-    "the tool runs and never affects the call.";
-
-}  // namespace
-
-bool definition_declares_preamble(const ToolDef& definition) {
-    if (!definition.parameters.is_object()) return false;
-    const auto props = definition.parameters.find("properties");
-    return props != definition.parameters.end() && props->is_object() &&
-           props->contains(kToolParameterName);
+void TextPreambleScanner::close_tag(Output& out, std::string_view body) {
+    const std::string title =
+        normalize_title_line(std::string(body), kTextPreambleMaxCodePoints);
+    if (!title.empty()) out.preambles.push_back({title, kind_});
+    kind_.clear();
+    // 闭合标签后面紧跟的 "\n\n" 不进正文:那只是模型给标签留的空行。
+    swallow_leading_ws_ = true;
 }
 
-std::size_t inject_preamble_parameter(std::vector<ToolDef>& definitions) {
-    std::size_t injected = 0;
-    for (auto& def : definitions) {
-        if (definition_declares_preamble(def)) continue;
-        if (!def.parameters.is_object()) {
-            def.parameters = nlohmann::json{
-                {"type", "object"},
-                {"properties", nlohmann::json::object()},
-            };
-        }
-        auto& params = def.parameters;
-        if (!params.contains("properties") || !params["properties"].is_object()) {
-            params["properties"] = nlohmann::json::object();
-        }
-        auto& props = params["properties"];
-        if (props.contains(kToolParameterName)) continue;
-        props[kToolParameterName] = nlohmann::json{
-            {"type", "string"},
-            {"description", kToolParameterDescription},
-        };
-        // 进 required:只当可选参数时,grok 这类模型在并行读批次里几乎从不填(实测会话
-        // 20260923-164654-8908 六步只填了一步,GPT 系则每步都填);function-calling 模型
-        // 对 required 的参数基本必填。执行前会剥掉,工具本身不受影响;没填也不报错。
-        auto& required = params["required"];
-        if (!required.is_array()) required = nlohmann::json::array();
-        bool listed = false;
-        for (const auto& item : required) {
-            if (item.is_string() && item.get<std::string>() == kToolParameterName) {
-                listed = true;
-                break;
+void TextPreambleScanner::drain(Output& out, bool at_end) {
+    for (;;) {
+        if (!in_tag_) {
+            std::string_view view(pending_);
+            // 正文里(标签外)出现的孤立闭合标签 —— 上一段正文按换行提前闭合时
+            // 模型补写的 `</text_preamble>` —— 直接丢掉,不当正文。
+            {
+                std::size_t i = 0;
+                while (i < view.size() && is_space_byte(static_cast<unsigned char>(view[i]))) ++i;
+                const std::string_view tail = view.substr(i);
+                if (starts_with_ci(tail, kCloseTag)) {
+                    emit_visible(out, view.substr(0, i));
+                    pending_.erase(0, i + kCloseTag.size());
+                    swallow_leading_ws_ = true;
+                    continue;
+                }
+                if (!at_end && !tail.empty() && tail[0] == '<' &&
+                    partial_suffix_match(tail, kCloseTag) == tail.size()) {
+                    // 尾部可能是被切断的闭合标签,等下一段再判。
+                    emit_visible(out, view.substr(0, i));
+                    pending_.erase(0, i);
+                    return;
+                }
             }
-        }
-        if (!listed) required.push_back(kToolParameterName);
-        ++injected;
-    }
-    return injected;
-}
-
-std::string extract_preamble_from_partial_arguments(const std::string& partial_json) {
-    const std::string key = std::string("\"") + kToolParameterName + "\"";
-    std::size_t pos = partial_json.find(key);
-    while (pos != std::string::npos) {
-        // 只认对象顶层的键:前一个非空白字符必须是 { 或 ,(值里恰好含这串的不算)。
-        bool top_level = false;
-        for (std::size_t p = pos; p > 0;) {
-            --p;
-            const unsigned char c = static_cast<unsigned char>(partial_json[p]);
-            if (is_space_byte(c)) continue;
-            top_level = (c == '{' || c == ',');
-            break;
-        }
-        if (!top_level) {
-            pos = partial_json.find(key, pos + key.size());
+            const std::size_t pos = find_ci(view, kOpenPrefix);
+            if (pos == std::string_view::npos) {
+                const std::size_t keep = at_end ? 0 : partial_suffix_match(view, kOpenPrefix);
+                emit_visible(out, view.substr(0, view.size() - keep));
+                pending_.erase(0, view.size() - keep);
+                return;
+            }
+            const std::size_t after = pos + kOpenPrefix.size();
+            if (after >= view.size()) {
+                // "<text_preamble" 刚好在增量尾部:还不知道后面是不是标签的一部分。
+                if (at_end) {
+                    emit_visible(out, view);
+                    pending_.clear();
+                    return;
+                }
+                emit_visible(out, view.substr(0, pos));
+                pending_.erase(0, pos);
+                return;
+            }
+            const char next = view[after];
+            if (!(is_space_byte(static_cast<unsigned char>(next)) || next == '>' || next == '/')) {
+                // "<text_preambleX…":不是我们的标签,连同 '<' 一起放行再往后扫。
+                emit_visible(out, view.substr(0, after));
+                pending_.erase(0, after);
+                continue;
+            }
+            const std::size_t gt = view.find('>', after);
+            if (gt == std::string_view::npos) {
+                if (at_end) {
+                    emit_visible(out, view);
+                    pending_.clear();
+                    return;
+                }
+                emit_visible(out, view.substr(0, pos));
+                pending_.erase(0, pos);
+                return;
+            }
+            const std::string_view attrs = view.substr(after, gt - after);
+            const bool self_closing = !attrs.empty() && attrs.back() == '/';
+            kind_ = parse_kind_attribute(attrs);
+            emit_visible(out, view.substr(0, pos));
+            pending_.erase(0, gt + 1);
+            if (self_closing) {
+                kind_.clear();
+                swallow_leading_ws_ = true;
+                continue;
+            }
+            in_tag_ = true;
             continue;
         }
-        std::size_t i = pos + key.size();
-        while (i < partial_json.size() && is_space_byte(static_cast<unsigned char>(partial_json[i]))) ++i;
-        if (i >= partial_json.size() || partial_json[i] != ':') return {};
-        ++i;
-        while (i < partial_json.size() && is_space_byte(static_cast<unsigned char>(partial_json[i]))) ++i;
-        if (i >= partial_json.size() || partial_json[i] != '"') return {};
-        const std::size_t start = i;
-        bool escaped = false;
-        for (++i; i < partial_json.size(); ++i) {
-            const char c = partial_json[i];
-            if (escaped) { escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
-            if (c != '"') continue;
-            try {
-                const auto value = nlohmann::json::parse(partial_json.substr(start, i - start + 1));
-                if (value.is_string()) {
-                    return normalize_title_line(value.get<std::string>(), kPromptTitleMaxCodePoints);
-                }
-            } catch (...) {
-            }
-            return {};
+
+        // 标签正文:闭合标签一到就结清;宽松规则见头文件。
+        const std::string_view body(pending_);
+        const std::size_t close = find_ci(body, kCloseTag);
+        if (close != std::string_view::npos) {
+            close_tag(out, body.substr(0, close));
+            pending_.erase(0, close + kCloseTag.size());
+            in_tag_ = false;
+            continue;
         }
-        return {};  // 字符串值还没流完
+        std::size_t first_visible = 0;
+        while (first_visible < body.size() &&
+               is_space_byte(static_cast<unsigned char>(body[first_visible]))) {
+            ++first_visible;
+        }
+        const std::size_t nl = body.find('\n', first_visible);
+        if (nl != std::string_view::npos) {
+            close_tag(out, body.substr(0, nl));
+            pending_.erase(0, nl + 1);
+            in_tag_ = false;
+            continue;
+        }
+        if (body.size() > kTextPreambleMaxBodyBytes) {
+            const std::size_t cut = byte_length_of_prefix(body, count_code_points(
+                body.substr(0, kTextPreambleMaxBodyBytes)));
+            close_tag(out, body.substr(0, cut));
+            pending_.erase(0, cut);
+            in_tag_ = false;
+            continue;
+        }
+        if (at_end) {
+            close_tag(out, body);
+            pending_.clear();
+            in_tag_ = false;
+            return;
+        }
+        return;  // 正文还没流完
     }
-    return {};
 }
 
-std::string strip_preamble_parameter(std::string& arguments) {
-    nlohmann::json parsed;
-    try {
-        parsed = nlohmann::json::parse(arguments);
-    } catch (...) {
-        return {};
-    }
-    if (!parsed.is_object() || !parsed.contains(kToolParameterName)) return {};
-    std::string title;
-    if (parsed[kToolParameterName].is_string()) {
-        title = normalize_title_line(parsed[kToolParameterName].get<std::string>(),
-                                     kPromptTitleMaxCodePoints);
-    }
-    parsed.erase(kToolParameterName);
-    arguments = parsed.dump();
-    return title;
-}
-
-std::vector<ChatMessage> build_sidecar_messages(const SidecarSummaryInput& input) {
-    constexpr std::size_t kTextBudget = 400;
-    constexpr std::size_t kArgsBudget = 200;
-    constexpr std::size_t kMaxCalls = 8;
-
-    ChatMessage system;
-    system.role = "system";
-    system.content =
-        "You write the one-line status label an IDE shows while a coding agent works. "
-        "Given the agent's current step, output ONE short label describing what the agent "
-        "is doing right now.\n"
-        "Rules:\n"
-        "- 3 to 8 words, or up to 16 Chinese characters.\n"
-        "- Present-participle phrasing, like \"Reading registry sections\" or "
-        "\"Checking the expert loader\".\n"
-        "- Same language as the user's request.\n"
-        "- No quotes, no trailing punctuation, no explanation, no markdown.\n"
-        "- Output the label only.";
-
-    std::string body;
-    body += "User request:\n";
-    body += input.user_request.empty()
-        ? std::string("(not available)")
-        : truncate_code_points(collapse_whitespace(input.user_request), kTextBudget);
-    body += "\n\nAgent's message for this step:\n";
-    body += input.assistant_text.empty()
-        ? std::string("(none)")
-        : truncate_code_points(collapse_whitespace(input.assistant_text), kTextBudget);
-    body += "\n\nTool calls about to run:\n";
-    if (input.calls.empty()) {
-        body += "(unknown)\n";
-    } else {
-        std::size_t emitted = 0;
-        for (const auto& call : input.calls) {
-            if (emitted >= kMaxCalls) {
-                body += "- ... and " + std::to_string(input.calls.size() - emitted) + " more\n";
-                break;
-            }
-            body += "- " + (call.name.empty() ? std::string("tool") : call.name);
-            const std::string preview = collapse_whitespace(call.args_preview);
-            if (!preview.empty()) {
-                body += ": " + truncate_code_points(preview, kArgsBudget);
-            }
-            body += "\n";
-            ++emitted;
-        }
-    }
-    body += "\nLabel:";
-
-    ChatMessage user;
-    user.role = "user";
-    user.content = body;
-    return {system, user};
+std::string strip_text_preamble_tags(const std::string& text) {
+    // 没有标签的正文逐字节原样返回(含前导空白):扫描器的「吞前导空白」只针对
+    // 带标签的流,普通正文不能被误伤。
+    if (find_ci(text, "text_preamble") == std::string_view::npos) return text;
+    TextPreambleScanner scanner;
+    auto first = scanner.feed(text);
+    auto rest = scanner.flush();
+    return first.visible + rest.visible;
 }
 
 } // namespace acecode::tool_preamble

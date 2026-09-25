@@ -4,9 +4,6 @@ import { clsx } from '../lib/format.js';
 import {
   DEFAULT_TOOL_PREAMBLE_STATE,
   TOOL_PREAMBLE_MODES,
-  TOOL_PREAMBLE_MODE_SIDECAR,
-  TOOL_PREAMBLE_SIDECAR_WAIT_MAX_MS,
-  TOOL_PREAMBLE_SIDECAR_WAIT_MIN_MS,
   buildToolPreambleUpdate,
   normalizeToolPreambleState,
   toolPreambleStatusText,
@@ -75,13 +72,11 @@ function HelpTip({ label, text }) {
 
 function ToolPreambleConfigModal({ state, busy, onClose, onSave }) {
   const [mode, setMode] = useState(state.mode);
-  const [sidecarModel, setSidecarModel] = useState(state.sidecarModel);
-  const [sidecarWaitMs, setSidecarWaitMs] = useState(String(state.sidecarWaitMs));
   const titleId = useId();
 
   const submit = () => {
     if (busy) return;
-    onSave({ mode, sidecarModel, sidecarWaitMs });
+    onSave({ mode });
   };
   const select = (nextMode) => setMode(nextMode);
 
@@ -89,7 +84,7 @@ function ToolPreambleConfigModal({ state, busy, onClose, onSave }) {
     <Modal onClose={onClose} width={520} labelledBy={titleId}>
       <div className="px-5 pb-3 pt-4">
         <h3 id={titleId} className="text-[15px] font-semibold text-fg">工具前言</h3>
-        <p className="mt-1 text-[12px] text-fg-mute">选择标题的来源。三种方式只能启用一种，保存后对新的工具调用立即生效。</p>
+        <p className="mt-1 text-[12px] text-fg-mute">选择前言的来源。两种方式只能启用一种，保存后对新的回合立即生效。</p>
       </div>
       <div className="px-5 pb-2" role="radiogroup" aria-label="工具前言来源">
         {TOOL_PREAMBLE_MODES.map((entry) => {
@@ -124,40 +119,6 @@ function ToolPreambleConfigModal({ state, busy, onClose, onSave }) {
                 <div className="min-w-0">
                   <div className="text-[13px] font-medium text-fg">{entry.label}</div>
                   <div className="mt-0.5 text-[11px] text-fg-mute">{entry.summary}</div>
-                  {selected && entry.id === TOOL_PREAMBLE_MODE_SIDECAR && (
-                    <div
-                      className="mt-2 flex flex-col gap-2"
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => event.stopPropagation()}
-                    >
-                      <label className="flex items-center gap-2 text-[12px]">
-                        <span className="w-16 text-right text-fg-mute">旁路模型</span>
-                        <select
-                          value={sidecarModel}
-                          onChange={(event) => setSidecarModel(event.target.value)}
-                          className="h-7 rounded-md border border-border bg-surface-alt px-2 text-[12px] text-fg outline-none transition focus:border-accent"
-                        >
-                          <option value="">沿用会话模型</option>
-                          {state.savedModels.map((name) => (
-                            <option key={name} value={name}>{name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex items-center gap-2 text-[12px]">
-                        <span className="w-16 text-right text-fg-mute">最长等待</span>
-                        <input
-                          type="number"
-                          min={TOOL_PREAMBLE_SIDECAR_WAIT_MIN_MS}
-                          max={TOOL_PREAMBLE_SIDECAR_WAIT_MAX_MS}
-                          step={100}
-                          value={sidecarWaitMs}
-                          onChange={(event) => setSidecarWaitMs(event.target.value)}
-                          className="h-7 w-20 rounded-md border border-border bg-surface-alt px-2 text-center text-[12px] text-fg outline-none transition focus:border-accent"
-                        />
-                        <span className="text-fg-mute">毫秒，超时的标题只在当前页面显示</span>
-                      </label>
-                    </div>
-                  )}
                 </div>
               </div>
               <HelpTip label={entry.label} text={entry.help} />
@@ -230,7 +191,7 @@ export function ToolPreambleSettings() {
   return (
     <div data-tool-preamble-settings="true">
       <div className="text-[14px] font-semibold mb-1">工具前言</div>
-      <p className="text-[12px] text-fg-mute mb-3">在每批工具调用上方显示一句「正在做什么」的标题，代替笼统的「正在处理」。默认关闭。</p>
+      <p className="text-[12px] text-fg-mute mb-3">多步工具任务进行时，在活动行显示模型自己写的一句「正在做什么」，代替笼统的「正在处理」。只在等待期显示，不留在记录里。默认关闭。</p>
       <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div className="min-w-0">
           <div className="text-[13px] font-normal text-fg">启用工具前言</div>

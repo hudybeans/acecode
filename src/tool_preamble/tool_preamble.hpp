@@ -1,39 +1,47 @@
 #pragma once
 
-// 工具前言(openspec add-tool-preamble):给每个「工具调用批次」配一条短标题,
-// 让用户在等待时看到「正在读取注册表段落」这种有指向性的文字,而不是笼统的
-// 「正在处理」。三种来源,由 config.agent_loop.tool_preamble.mode 选择:
-//   prompt    提示驱动:系统提示要求模型在含工具调用的同一条消息里先写一句
-//             8~12 词的前言,那句话就是标题(Codex prompt.md 的 preamble)。
+// 工具前言(openspec add-tool-preamble):模型在多步工具任务里给用户的一句
+// 「正在做什么」,等待时显示在 loading 行上,代替笼统的「正在处理」。两种来源,
+// 由 config.agent_loop.tool_preamble.mode 选择:
+//   prompt    提示驱动:系统提示要求模型在第一次工具调用前、以及阶段 / 计划
+//             变化时,用 <text_preamble type="read|write">一句话</text_preamble>
+//             标出一句前言。daemon 在流式期间识别这个标签:标签正文进 loading,
+//             不进正文气泡;标签本身留在落盘的 assistant 正文里(模型会模仿自己
+//             的历史输出,剥掉历史反而让它几轮后忘记格式),渲染层再剥。
 //   reasoning 推理服务内置摘要:从 provider 流回的推理摘要里抠第一对 **加粗**
 //             (OpenAI Responses / Codex app-server / Gemini 的摘要都以此开头),
 //             没有加粗则取推理首句兜底(Codex TUI extract_first_bold 同款)。
-//   sidecar   旁路模型摘要:把本步的用户请求 + assistant 正文 + 即将执行的
-//             工具调用喂给一个小模型,让它出 3~8 词的标签。
+// 两种来源都只维护一条「当前阶段前言」:新前言替换旧的,未加标签的可见正文
+// 出现即清空;它随每个工具批次以 metadata.tool_preamble = {source, title, kind}
+// 落盘,并经 tool_start.preamble / agent_progress 送到界面。落定之后不再显示。
 // 本文件只放纯字符串逻辑(无 IO / 无 provider 依赖),进 acecode_testable 单测。
-// 标题以 metadata.tool_preamble = {title, source} 挂在 assistant(tool_calls)
-// 消息上落盘,Web / TUI 据此把工具批次折成带标题的分组。
-
-#include "../provider/llm_provider.hpp"
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace acecode::tool_preamble {
 
 inline constexpr const char* kModePrompt = "prompt";
 inline constexpr const char* kModeReasoning = "reasoning";
-inline constexpr const char* kModeSidecar = "sidecar";
-// assistant 消息 metadata 子键:{"title": "...", "source": "prompt|reasoning|sidecar"}
+// assistant 消息 metadata 子键:{"title": "...", "source": "prompt|reasoning", "kind": "read|write|"}
 inline constexpr const char* kMetadataKey = "tool_preamble";
 
-// 标题长度上限(Unicode code point)。加粗摘要 / 旁路输出 60,提示前言 120:
-// 提示前言是模型面向用户写的一句话,放宽一些;超过 160 的正文直接不算前言。
+// 提示驱动模式的标签名与 type 取值。kind 目前只解析并透传(tool_start.preamble_kind /
+// metadata.kind / agent_progress.preamble.kind),界面上的「读放大镜 / 写笔触」效果
+// 留给以后接。
+inline constexpr const char* kTagName = "text_preamble";
+inline constexpr const char* kKindRead = "read";
+inline constexpr const char* kKindWrite = "write";
+
+// 标题长度上限(Unicode code point)。加粗摘要 60;标签正文放宽到 200 ——
+// 「已核实的结果 + 下一步」天然比一句短语长,再长界面自己截。
 inline constexpr std::size_t kReasoningTitleMaxCodePoints = 60;
-inline constexpr std::size_t kSidecarTitleMaxCodePoints = 60;
-inline constexpr std::size_t kPromptTitleMaxCodePoints = 120;
-inline constexpr std::size_t kPromptTextMaxCodePoints = 160;
+inline constexpr std::size_t kTextPreambleMaxCodePoints = 200;
+// 标签体流了这么多字节还没闭合、也没换行,就按到此为止处理(防模型忘了闭合
+// 把整段回答都吞进 loading)。
+inline constexpr std::size_t kTextPreambleMaxBodyBytes = 1200;
 
 bool is_valid_mode(const std::string& mode);
 
@@ -50,54 +58,52 @@ std::string normalize_title_line(const std::string& text, std::size_t max_code_p
 // 的口头填充,截到 kReasoningTitleMaxCodePoints。不足 2 个 code point 视为无标题。
 std::string title_from_reasoning(const std::string& reasoning);
 
-// prompt 模式:assistant 正文是否是一条合格前言 —— 单个非空行、不含代码围栏、
-// 不超过 kPromptTextMaxCodePoints;合格则返回规整后的那一行,否则空串
-// (长段落保持普通正文,不当标题)。
-std::string title_from_assistant_text(const std::string& text);
-
-// sidecar 模式:小模型的原始输出 → 标题。取第一个非空行,去掉 "Title:" /
-// "标题：" 之类的前缀标签,provider 错误标记([Error] / [Aborted])一律判无效。
-std::string sanitize_sidecar_title(const std::string& raw);
-
-struct SidecarSummaryInput {
-    struct Call {
-        std::string name;
-        std::string args_preview;   // 参数 JSON 的前缀,构造时会再截断
-    };
-    std::string user_request;       // 最近一条用户消息(可空)
-    std::string assistant_text;     // 本步 assistant 正文(可空)
-    std::vector<Call> calls;        // 即将执行的工具调用(可能只有流式期间已知的第一个)
-};
-
-// 旁路摘要的请求消息:一条 system(角色 + 输出规则)+ 一条 user(本步材料)。
-// 材料按 code point 截断:用户请求 / assistant 正文各 400,每个参数预览 200,
-// 最多 8 个调用 —— 这是个心跳标签,不值得多花 token。
-std::vector<ChatMessage> build_sidecar_messages(const SidecarSummaryInput& input);
-
-// 供调用方构造材料时用的同款截断(前缀 + "…")。
+// 按 code point 截断(前缀 + "…")。
 std::string truncate_code_points(const std::string& text, std::size_t max_code_points);
 
-// ---- prompt 模式 = 工具调用参数 ----
-// 不是「先说一句话再调工具」(那会先流出一个气泡、批次开始才搬进 loading),而是
-// 给每个工具定义注入一个 `preamble` 字符串参数,模型在每次调用里填一句;参数
-// 一流出来就当 loading 文案,执行前剥掉,工具本身永远看不到它。
-inline constexpr const char* kToolParameterName = "preamble";
+// ---- prompt 模式:流式识别 <text_preamble> 标签 ----
 
-// 工具定义自己是否声明了 `preamble` 参数(properties 里已有同名键)。这种工具的
-// `preamble` 是它的真实入参(MCP 工具可能撞名):注入跳过它,执行前也不能把它
-// 当前言剥掉。
-bool definition_declares_preamble(const ToolDef& definition);
+struct TextPreamble {
+    std::string title;   // 规整后的标签正文(空 = 标签没有可用内容)
+    std::string kind;    // "read" / "write" / ""(没写 type 或写了别的)
+};
 
-// 给每个工具定义注入 `preamble` 参数(properties 里加一项,不进 required)。
-// 工具自己已有同名参数则跳过。返回注入的个数。
-std::size_t inject_preamble_parameter(std::vector<ToolDef>& definitions);
+// 流式扫描器:把模型正文的增量切成「可见正文」与「前言」。
+//   - `<text_preamble type="read">…</text_preamble>` 整段不进可见正文;闭合标签
+//     一到就产出一条 TextPreamble(所以 loading 能在工具调用流出来之前换文案)。
+//   - 开标签可能被切在任意字节处:尾部是 "<text_preamble" 的前缀时先扣住,
+//     等下一段增量再判;不是标签的 "<" 原样放行。
+//   - 宽松:没写 type 也认;`</text_preamble>` 缺失时正文遇到换行就当闭合;
+//     正文超过 kTextPreambleMaxBodyBytes 仍未闭合也当闭合;`<text_preamble/>`
+//     空标签直接跳过;标签名大小写不敏感。
+//   - 流开头与每个闭合标签之后紧跟的空白(通常是 "\n\n")一并吞掉,免得界面
+//     为一段空白建一条空气泡;第一个非空白可见字符之后恢复原样透传。
+//   - flush():流结束时把扣住的字节结清 —— 没闭合的标签正文仍算前言,
+//     只是半截开标签("<text_pre")按普通文本放行。
+class TextPreambleScanner {
+public:
+    struct Output {
+        std::string visible;                 // 可以直接当 token 下发的正文
+        std::vector<TextPreamble> preambles; // 本次增量里闭合的标签(通常 0 或 1 条)
+    };
 
-// 从流式的参数 JSON 前缀里抽 `"preamble":"…"` 的值:键与整个字符串值都已到齐
-// 才返回(处理转义),否则空串。只认对象顶层的键(前一个非空白字符是 { 或 ,)。
-std::string extract_preamble_from_partial_arguments(const std::string& partial_json);
+    Output feed(std::string_view delta);
+    Output flush();
+    void reset();
 
-// 从完整参数 JSON 里取出并剥掉 `preamble`:返回规整后的标题(空 = 没有),
-// arguments 被改写为去掉该键的 JSON;非法 JSON / 非对象原样不动。
-std::string strip_preamble_parameter(std::string& arguments);
+private:
+    void drain(Output& out, bool at_end);
+    void emit_visible(Output& out, std::string_view text);
+    void close_tag(Output& out, std::string_view body);
+
+    std::string pending_;      // 扣住的字节:半截开标签,或未闭合的标签正文
+    bool in_tag_ = false;      // pending_ 是不是标签正文
+    std::string kind_;         // 当前开标签的 type
+    bool swallow_leading_ws_ = true;
+};
+
+// 整段文本剥掉标签(渲染层用:TUI 回放 / on_message 的完整正文、导出等;Web 端
+// 在 toolPreamble.js 里有同款)。就是「喂给一个新扫描器再 flush」。
+std::string strip_text_preamble_tags(const std::string& text);
 
 } // namespace acecode::tool_preamble

@@ -1,249 +1,250 @@
-// 覆盖 src/tool_preamble/tool_preamble.{hpp,cpp} 的纯字符串逻辑(openspec
-// add-tool-preamble):
-//   1. extract_first_bold_span:Codex TUI extract_first_bold 同款的加粗抠取
-//   2. title_from_reasoning:加粗优先 → 首句兜底 → 去口头填充 → 截断
-//   3. title_from_assistant_text:提示驱动模式下「哪句正文算前言」
-//   4. sanitize_sidecar_title:小模型原始输出的清洗与拒收
-//   5. build_sidecar_messages:旁路请求材料的截断与结构
-//   6. normalize_title_line / truncate_code_points 的 UTF-8 安全性
+// 覆盖 src/tool_preamble/tool_preamble.cpp 的纯逻辑(openspec add-tool-preamble):
+//   1. 推理加粗抠取 / 标题规整 / 推理首句兜底(reasoning 模式)
+//   2. <text_preamble> 流式扫描器(prompt 模式):整段、任意字节切分、缺闭合、
+//      空标签、大小写、type 解析、前导空白吞掉、超长正文封顶、reset
+//   3. strip_text_preamble_tags(渲染层剥标签)与扫描器同款规则
+// 回归背景:参数版(每次调用必填 preamble 参数)被用户否掉,改成模型在阶段变化
+// 时用标签写一句;标签正文只进 loading,不进正文气泡,落盘正文保留原文。
 
 #include <gtest/gtest.h>
 
 #include "tool_preamble/tool_preamble.hpp"
 
 #include <string>
+#include <vector>
 
 using namespace acecode::tool_preamble;
 
-// 场景:OpenAI Responses / Codex app-server 风格的推理摘要,首行是 **标题**,
-// 后面跟散文。期望:抠出标题本体(不含星号、已 trim)。
-TEST(ToolPreambleBold, ExtractsFirstClosedBoldSpan) {
+namespace {
+
+struct Collected {
+    std::string visible;
+    std::vector<TextPreamble> preambles;
+};
+
+void absorb(Collected& into, TextPreambleScanner::Output out) {
+    into.visible += out.visible;
+    for (auto& p : out.preambles) into.preambles.push_back(std::move(p));
+}
+
+// 按给定块大小喂完整段文本再 flush,返回汇总结果。
+Collected scan_in_chunks(const std::string& text, std::size_t chunk) {
+    TextPreambleScanner scanner;
+    Collected got;
+    for (std::size_t i = 0; i < text.size(); i += chunk) {
+        absorb(got, scanner.feed(text.substr(i, chunk)));
+    }
+    absorb(got, scanner.flush());
+    return got;
+}
+
+}  // namespace
+
+// 场景:推理摘要 / 首句相关的纯字符串逻辑(reasoning 模式沿用)。
+// 期望:第一对闭合加粗;空加粗跳过找下一对;没有闭合返回空;规整会去掉包裹
+// 记号 / 列表记号 / 尾标点并按 code point 截断;推理首句去掉 "Okay, " 之类填充。
+TEST(ToolPreambleText, ReasoningHelpers) {
     EXPECT_EQ(extract_first_bold_span("**Reading registry sections**\n\nI'm looking at the loader."),
               "Reading registry sections");
-    EXPECT_EQ(extract_first_bold_span("prefix text **  Checking loader  ** tail"),
-              "Checking loader");
-}
-
-// 场景:加粗没有闭合(流式期间只到了 "**Reading regi")或内文为空("****")。
-// 期望:未闭合返回空(等下一段 delta 再试),空内文跳过后继续找下一对。
-TEST(ToolPreambleBold, UnclosedOrEmptyBoldIsSkipped) {
-    EXPECT_EQ(extract_first_bold_span("**Reading regi"), "");
-    EXPECT_EQ(extract_first_bold_span("**** **Real title** rest"), "Real title");
-    EXPECT_EQ(extract_first_bold_span("no bold here"), "");
-}
-
-// 场景:reasoning 模式,摘要带加粗标题。期望:标题就是加粗内文,不受后面
-// 散文影响;末尾句号被去掉。
-TEST(ToolPreambleReasoning, PrefersBoldTitle) {
+    EXPECT_EQ(extract_first_bold_span("** ** **Second**"), "Second");
+    EXPECT_EQ(extract_first_bold_span("**never closed"), "");
+    EXPECT_EQ(normalize_title_line("  - \"Reading   the loader\":  ", 60), "Reading the loader");
+    EXPECT_EQ(normalize_title_line("abcdefghij", 4), "abcd\xE2\x80\xA6");
     EXPECT_EQ(title_from_reasoning("**Reading registry sections.**\n\nOkay, the user wants..."),
               "Reading registry sections");
-}
-
-// 场景:DeepSeek / Anthropic 风格的原始思维链,没有加粗,首句是 "Okay, the user
-// wants me to check the expert loader. Then I..."。期望:去掉 "Okay, " 这类填充
-// 后取首句 "the user wants me to check the expert loader"。
-TEST(ToolPreambleReasoning, FallsBackToFirstSentenceWithoutFillers) {
-    EXPECT_EQ(title_from_reasoning("Okay, the user wants me to check the expert loader. Then I need to look at the registry."),
-              "the user wants me to check the expert loader");
-    // 中文填充与中文句末标点同样生效。
-    EXPECT_EQ(title_from_reasoning("\xE5\xA5\xBD\xE7\x9A\x84\xEF\xBC\x8C\xE5\x85\x88\xE7\x9C\x8B\xE6\xB3\xA8\xE5\x86\x8C\xE8\xA1\xA8\xE3\x80\x82\xE7\x84\xB6\xE5\x90\x8E..."),
-              "\xE5\x85\x88\xE7\x9C\x8B\xE6\xB3\xA8\xE5\x86\x8C\xE8\xA1\xA8");   // 好的，先看注册表。然后... → 先看注册表
-}
-
-// 场景:首句超过 kReasoningTitleMaxCodePoints(60)。期望:按 code point 截断并
-// 追加省略号,不会切断多字节字符;空推理 → 空标题。
-TEST(ToolPreambleReasoning, TruncatesLongSentenceAndRejectsEmpty) {
-    const std::string long_sentence(120, 'x');
-    const std::string title = title_from_reasoning(long_sentence);
-    EXPECT_EQ(title.substr(0, 60), std::string(60, 'x'));
-    EXPECT_EQ(title.substr(60), "\xE2\x80\xA6");
+    EXPECT_EQ(title_from_reasoning("Okay, I need to inspect the loader first. Then compare."),
+              "inspect the loader first");
     EXPECT_EQ(title_from_reasoning(""), "");
-    EXPECT_EQ(title_from_reasoning("   \n  "), "");
-}
-
-// 场景:提示驱动模式,模型按要求在工具调用前写了一句前言(可能带引号 /
-// 末尾句号)。期望:规整后的那句话就是标题。
-TEST(ToolPreamblePrompt, ShortSingleLineQualifies) {
-    EXPECT_EQ(title_from_assistant_text("Reading the registry loader and expert config."),
-              "Reading the registry loader and expert config");
-    EXPECT_EQ(title_from_assistant_text("\"Checking how sub-agents inherit the turn limit\"\n"),
-              "Checking how sub-agents inherit the turn limit");
-}
-
-// 场景:正文是多段落说明、含代码块、或超过 160 个 code point 的长句。
-// 期望:不算前言(返回空),这些正文保持普通气泡显示。
-TEST(ToolPreamblePrompt, LongOrMultiLineTextIsNotAPreamble) {
-    EXPECT_EQ(title_from_assistant_text("First line.\n\nSecond paragraph explains more."), "");
-    EXPECT_EQ(title_from_assistant_text("Running:\n```\nls\n```"), "");
-    EXPECT_EQ(title_from_assistant_text(std::string(161, 'a')), "");
-    EXPECT_EQ(title_from_assistant_text(""), "");
-}
-
-// 场景:旁路小模型的输出五花八门:带 "Title:" 标签、带引号、多行解释、
-// 或 provider 报错文本。期望:取第一个非空行并清洗;错误标记判无效。
-TEST(ToolPreambleSidecar, SanitizesModelOutput) {
-    EXPECT_EQ(sanitize_sidecar_title("Title: \"Reading registry sections\"\nBecause the agent..."),
-              "Reading registry sections");
-    EXPECT_EQ(sanitize_sidecar_title("\n- **Checking the loader**\n"), "Checking the loader");
-    EXPECT_EQ(sanitize_sidecar_title("[Error] Request failed with status 500"), "");
-    EXPECT_EQ(sanitize_sidecar_title("[Aborted]"), "");
-    EXPECT_EQ(sanitize_sidecar_title(""), "");
-}
-
-// 场景:构造旁路请求。期望:一条 system + 一条 user;user 里有用户请求、
-// assistant 正文与工具调用列表;超长材料被截断(400 / 200 code point),
-// 超过 8 个调用只列前 8 个并注明剩余数量。
-TEST(ToolPreambleSidecar, BuildsBoundedRequestMessages) {
-    SidecarSummaryInput input;
-    input.user_request = std::string(600, 'u');
-    input.assistant_text = "Let me look.";
-    for (int i = 0; i < 10; ++i) {
-        input.calls.push_back({"file_read", "{\"file_path\":\"" + std::string(300, 'p') + "\"}"});
-    }
-    const auto messages = build_sidecar_messages(input);
-    ASSERT_EQ(messages.size(), 2u);
-    EXPECT_EQ(messages[0].role, "system");
-    EXPECT_NE(messages[0].content.find("Output the label only"), std::string::npos);
-    EXPECT_EQ(messages[1].role, "user");
-    const std::string& body = messages[1].content;
-    EXPECT_NE(body.find("User request:"), std::string::npos);
-    EXPECT_NE(body.find(std::string(400, 'u') + "\xE2\x80\xA6"), std::string::npos);
-    EXPECT_EQ(body.find(std::string(401, 'u')), std::string::npos);
-    EXPECT_NE(body.find("Let me look."), std::string::npos);
-    EXPECT_NE(body.find("- file_read: "), std::string::npos);
-    EXPECT_NE(body.find("... and 2 more"), std::string::npos);
-    EXPECT_EQ(body.find(std::string(201, 'p')), std::string::npos);
-}
-
-// 场景:材料为空(旁路在第一个工具名露头时就启动,可能只有工具名)。
-// 期望:占位文案而不是空段,不抛异常。
-TEST(ToolPreambleSidecar, EmptyMaterialsUsePlaceholders) {
-    SidecarSummaryInput input;
-    const auto messages = build_sidecar_messages(input);
-    ASSERT_EQ(messages.size(), 2u);
-    EXPECT_NE(messages[1].content.find("(not available)"), std::string::npos);
-    EXPECT_NE(messages[1].content.find("(none)"), std::string::npos);
-    EXPECT_NE(messages[1].content.find("(unknown)"), std::string::npos);
-}
-
-// 场景:规整标题行 —— 列表记号 / 井号 / 包裹引号 / 末尾冒号 / 内部换行。
-// 期望:全部去掉,连续空白折叠成一个空格。
-TEST(ToolPreambleNormalize, StripsMarkdownDecorations) {
-    EXPECT_EQ(normalize_title_line("## \xE2\x80\x9CReading  the\nloader\xE2\x80\x9D:", 60),
-              "Reading the loader");   // “Reading  the\nloader”: → Reading the loader
-    EXPECT_EQ(normalize_title_line("1. **Checking tests**...", 60), "Checking tests");
-    EXPECT_EQ(normalize_title_line("   ", 60), "");
-}
-
-// 场景:按 code point 截断中文(每字 3 字节)。期望:恰好保留 N 个字,不留
-// 半个 UTF-8 序列,截断处追加 "…";不超限时原样返回。
-TEST(ToolPreambleNormalize, TruncationIsUtf8Safe) {
-    const std::string han = "\xE6\xB3\xA8";   // 注
-    std::string text;
-    for (int i = 0; i < 10; ++i) text += han;
-    const std::string cut = truncate_code_points(text, 4);
-    EXPECT_EQ(cut, han + han + han + han + "\xE2\x80\xA6");
-    EXPECT_EQ(truncate_code_points(text, 10), text);
-    EXPECT_EQ(truncate_code_points("abc", 10), "abc");
-}
-
-// 场景:参数模式给工具定义注入 `preamble`。三个定义:正常 schema、parameters 为
-// null 的、已经自带 preamble 参数的。期望:前两个各注入一个 string 属性(带说明)并
-// 追加进 required(已有 required 数组末尾追加,没有则新建;grok 对可选参数几乎不填,
-// 见会话 20260923-164654-8908),第三个原样跳过;返回注入数 2。
-TEST(ToolPreambleParameter, InjectsIntoEveryDefinitionExceptExisting) {
-    acecode::ToolDef normal;
-    normal.name = "file_read";
-    normal.parameters = {
-        {"type", "object"},
-        {"properties", {{"file_path", {{"type", "string"}}}}},
-        {"required", nlohmann::json::array({"file_path"})},
-    };
-    acecode::ToolDef bare;
-    bare.name = "ping";
-    acecode::ToolDef own;
-    own.name = "custom";
-    own.parameters = {{"type", "object"}, {"properties", {{"preamble", {{"type", "integer"}}}}}};
-
-    std::vector<acecode::ToolDef> defs{normal, bare, own};
-    EXPECT_EQ(inject_preamble_parameter(defs), 2u);
-    EXPECT_EQ(defs[0].parameters["properties"]["preamble"]["type"], "string");
-    EXPECT_NE(defs[0].parameters["properties"]["preamble"]["description"].get<std::string>().find("Reading registry sections"),
-              std::string::npos);
-    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path", "preamble"}));
-    EXPECT_EQ(defs[1].parameters["type"], "object");
-    EXPECT_EQ(defs[1].parameters["properties"]["preamble"]["type"], "string");
-    EXPECT_EQ(defs[1].parameters["required"], nlohmann::json::array({"preamble"}));
-    EXPECT_EQ(defs[2].parameters["properties"]["preamble"]["type"], "integer");
-    EXPECT_FALSE(defs[2].parameters.contains("required"));
-    // 再注入一次是幂等的:required 里不会出现第二个 preamble。
-    EXPECT_EQ(inject_preamble_parameter(defs), 0u);
-    EXPECT_EQ(defs[0].parameters["required"], nlohmann::json::array({"file_path", "preamble"}));
-}
-
-// 场景:判断工具定义是否自带 `preamble` 参数。期望:properties 里有同名键才算;
-// parameters 为 null / 没有 properties / properties 不是对象都不算。
-TEST(ToolPreambleParameter, DefinitionDeclaresPreambleOnlyWhenSchemaHasIt) {
-    acecode::ToolDef own;
-    own.parameters = {{"type", "object"}, {"properties", {{"preamble", {{"type", "string"}}}}}};
-    EXPECT_TRUE(definition_declares_preamble(own));
-    acecode::ToolDef plain;
-    plain.parameters = {{"type", "object"}, {"properties", {{"file_path", {{"type", "string"}}}}}};
-    EXPECT_FALSE(definition_declares_preamble(plain));
-    acecode::ToolDef bare;
-    EXPECT_FALSE(definition_declares_preamble(bare));
-    acecode::ToolDef odd;
-    odd.parameters = {{"type", "object"}, {"properties", "not-an-object"}};
-    EXPECT_FALSE(definition_declares_preamble(odd));
-}
-
-// 场景:参数 JSON 还在流式传输,前缀里 `preamble` 的值已经完整 / 尚未闭合 /
-// 只是别的字符串值里恰好含这串。期望:完整时返回规整后的值(含转义解码),
-// 未闭合返回空(等下一段),值里的假键不算,只认对象顶层的键。
-TEST(ToolPreambleParameter, ExtractsFromPartialArgumentsOnlyWhenComplete) {
-    EXPECT_EQ(extract_preamble_from_partial_arguments(
-                  R"({"preamble":"Reading the loader","file_path":"regi)"),
-              "Reading the loader");
-    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"preamble":"Reading the lo)"), "");
-    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"preamble":)"), "");
-    // 下面两条不用原始字符串:MSVC 传统预处理器会把宏参数里含 \" 的 R"(...)" 重新切分成
-    // 普通字符串(报 C2017 / C3688),先存进变量再传给宏就绕开了。
-    const std::string fake_key_inside_value =
-        "{\"query\":\"\\\"preamble\\\":\\\"fake\\\"\",\"preamble\":\"Real one\"}";
-    EXPECT_EQ(extract_preamble_from_partial_arguments(fake_key_inside_value), "Real one");
-    const std::string escaped_value = "{\"preamble\":\"Say \\\"hi\\\" \\u4e2d\"}";
-    const std::string expected_decoded = std::string("Say \"hi\" ") + "\xE4\xB8\xAD";
-    EXPECT_EQ(extract_preamble_from_partial_arguments(escaped_value), expected_decoded);
-    EXPECT_EQ(extract_preamble_from_partial_arguments(R"({"file_path":"a"})"), "");
-}
-
-// 场景:完整参数里剥掉 `preamble`。期望:返回规整后的前言,参数变成不含该键的
-// JSON(工具看不到它);没有该键 / 非法 JSON 时参数原样不动;值不是字符串时键
-// 照样剥掉但不出标题。
-TEST(ToolPreambleParameter, StripsParameterBeforeExecution) {
-    std::string args = R"({"preamble":"Reading the loader.","file_path":"a.txt"})";
-    EXPECT_EQ(strip_preamble_parameter(args), "Reading the loader");
-    EXPECT_EQ(nlohmann::json::parse(args), nlohmann::json({{"file_path", "a.txt"}}));
-
-    std::string untouched = R"({"file_path":"a.txt"})";
-    EXPECT_EQ(strip_preamble_parameter(untouched), "");
-    EXPECT_EQ(untouched, R"({"file_path":"a.txt"})");
-
-    std::string broken = R"({"preamble":"x")";
-    EXPECT_EQ(strip_preamble_parameter(broken), "");
-    EXPECT_EQ(broken, R"({"preamble":"x")");
-
-    std::string non_string = R"({"preamble":42,"file_path":"a"})";
-    EXPECT_EQ(strip_preamble_parameter(non_string), "");
-    EXPECT_EQ(nlohmann::json::parse(non_string), nlohmann::json({{"file_path", "a"}}));
-}
-
-// 场景:mode 校验。期望:三个规范名有效,其它(含大小写变体)无效。
-TEST(ToolPreambleMode, ValidatesCanonicalNames) {
     EXPECT_TRUE(is_valid_mode("prompt"));
     EXPECT_TRUE(is_valid_mode("reasoning"));
-    EXPECT_TRUE(is_valid_mode("sidecar"));
-    EXPECT_FALSE(is_valid_mode("Prompt"));
-    EXPECT_FALSE(is_valid_mode(""));
+    EXPECT_FALSE(is_valid_mode("sidecar"));
     EXPECT_FALSE(is_valid_mode("auto"));
+}
+
+// 场景:一段增量里就是完整标签 + 空行 + 正文。期望:标签正文成为前言(kind=read),
+// 可见正文只有后面那句,标签后紧跟的 "\n\n" 被吞掉。
+TEST(ToolPreambleScanner, WholeTagInOneDeltaBecomesPreambleNotText) {
+    TextPreambleScanner scanner;
+    const auto out = scanner.feed(
+        "<text_preamble type=\"read\">Reading the loader</text_preamble>\n\nNow calling tools.");
+    ASSERT_EQ(out.preambles.size(), 1u);
+    EXPECT_EQ(out.preambles[0].title, "Reading the loader");
+    EXPECT_EQ(out.preambles[0].kind, "read");
+    EXPECT_EQ(out.visible, "Now calling tools.");
+}
+
+// 场景:同一段文本按 1 / 2 / 3 / 7 字节切块喂给扫描器(模拟任意 token 边界,
+// 包括切在 "<text_pre" 与 "</text_pre" 中间)。期望:每种切法得到的前言与可见正文
+// 都和一次性喂入完全一致 —— 这是「参数版比它先出现」以外最容易出错的地方。
+TEST(ToolPreambleScanner, SplitAtAnyByteBoundaryIsStable) {
+    const std::string text =
+        "Hello <text_preamble type='write'>Editing config.cpp</text_preamble>\nDone";
+    const Collected whole = scan_in_chunks(text, text.size());
+    ASSERT_EQ(whole.preambles.size(), 1u);
+    EXPECT_EQ(whole.preambles[0].title, "Editing config.cpp");
+    EXPECT_EQ(whole.preambles[0].kind, "write");
+    EXPECT_EQ(whole.visible, "Hello Done");
+    for (const std::size_t chunk : {1u, 2u, 3u, 7u}) {
+        const Collected got = scan_in_chunks(text, chunk);
+        ASSERT_EQ(got.preambles.size(), 1u) << "chunk=" << chunk;
+        EXPECT_EQ(got.preambles[0].title, whole.preambles[0].title) << "chunk=" << chunk;
+        EXPECT_EQ(got.preambles[0].kind, whole.preambles[0].kind) << "chunk=" << chunk;
+        EXPECT_EQ(got.visible, whole.visible) << "chunk=" << chunk;
+    }
+    // 中文正文同样不会被切坏(多字节序列在增量边界上也照常拼接)。
+    const std::string cjk =
+        "<text_preamble type=\"read\">正在读取注册表段落</text_preamble>\n\n继续。";
+    for (const std::size_t chunk : {1u, 2u, 5u}) {
+        const Collected got = scan_in_chunks(cjk, chunk);
+        ASSERT_EQ(got.preambles.size(), 1u);
+        EXPECT_EQ(got.preambles[0].title, "正在读取注册表段落");
+        EXPECT_EQ(got.visible, "继续。");
+    }
+}
+
+// 场景:模型忘了闭合标签,正文换行后直接写别的。期望:换行处当作闭合,前言是
+// 第一行,后面的文字照常可见;标签后紧跟的换行(先写标签再换行写正文)不算闭合。
+TEST(ToolPreambleScanner, MissingCloseTagEndsAtNewline) {
+    const Collected got = scan_in_chunks("<text_preamble>Scanning tests\nThen text", 4);
+    ASSERT_EQ(got.preambles.size(), 1u);
+    EXPECT_EQ(got.preambles[0].title, "Scanning tests");
+    EXPECT_EQ(got.preambles[0].kind, "");
+    EXPECT_EQ(got.visible, "Then text");
+
+    const Collected multiline = scan_in_chunks(
+        "<text_preamble type=\"read\">\nReading A\n</text_preamble>\n\nBody", 3);
+    ASSERT_EQ(multiline.preambles.size(), 1u);
+    EXPECT_EQ(multiline.preambles[0].title, "Reading A");
+    EXPECT_EQ(multiline.visible, "Body");
+}
+
+// 场景:标签正文按换行提前闭合后,模型又补写了 `</text_preamble>`(常见:
+// "<text_preamble>Reading A\n</text_preamble>\n\nText" 分段到达)。
+// 期望:孤立的闭合标签被丢掉,不出现在可见正文里。
+TEST(ToolPreambleScanner, StrayCloseTagIsDropped) {
+    for (const std::size_t chunk : {1u, 6u, 64u}) {
+        const Collected got = scan_in_chunks(
+            "<text_preamble>Reading A\n</text_preamble>\n\nText", chunk);
+        ASSERT_EQ(got.preambles.size(), 1u) << "chunk=" << chunk;
+        EXPECT_EQ(got.preambles[0].title, "Reading A") << "chunk=" << chunk;
+        EXPECT_EQ(got.visible, "Text") << "chunk=" << chunk;
+    }
+}
+
+// 场景:流在标签正文中途结束(模型被中断 / 忘了闭合且没换行)。
+// 期望:flush 把已有正文当前言;半截开标签 "<text_pre" 则按普通文本放行。
+TEST(ToolPreambleScanner, FlushSettlesHeldBytes) {
+    TextPreambleScanner scanner;
+    Collected got;
+    absorb(got, scanner.feed("<text_preamble type=\"read\">Reading"));
+    EXPECT_TRUE(got.preambles.empty());
+    EXPECT_TRUE(got.visible.empty());
+    absorb(got, scanner.flush());
+    ASSERT_EQ(got.preambles.size(), 1u);
+    EXPECT_EQ(got.preambles[0].title, "Reading");
+
+    TextPreambleScanner partial;
+    Collected held;
+    absorb(held, partial.feed("Look: <text_pre"));
+    EXPECT_EQ(held.visible, "Look: ");
+    absorb(held, partial.flush());
+    EXPECT_EQ(held.visible, "Look: <text_pre");
+    EXPECT_TRUE(held.preambles.empty());
+}
+
+// 场景:长得像但不是我们的标签:"<text_preambleX>" / "<textarea>",以及正文里
+// 的普通 "<"。期望:全部原样可见,不产生前言。
+TEST(ToolPreambleScanner, LookalikesPassThrough) {
+    const Collected got = scan_in_chunks("a < b, <textarea>x</textarea>, <text_preambleX>y", 5);
+    EXPECT_TRUE(got.preambles.empty());
+    EXPECT_EQ(got.visible, "a < b, <textarea>x</textarea>, <text_preambleX>y");
+}
+
+// 场景:空标签 `<text_preamble/>`、正文为空的标签、只有标点的标签。
+// 期望:不产生前言,后面的正文照常可见(空标签后的空白也吞掉)。
+TEST(ToolPreambleScanner, EmptyTagsAreSkipped) {
+    const Collected self_closing = scan_in_chunks("<text_preamble/>\nHi", 3);
+    EXPECT_TRUE(self_closing.preambles.empty());
+    EXPECT_EQ(self_closing.visible, "Hi");
+    const Collected empty_body = scan_in_chunks(
+        "<text_preamble type=\"read\"></text_preamble>Hi", 2);
+    EXPECT_TRUE(empty_body.preambles.empty());
+    EXPECT_EQ(empty_body.visible, "Hi");
+    const Collected blank_body = scan_in_chunks("<text_preamble>  \t </text_preamble>Hi", 64);
+    EXPECT_TRUE(blank_body.preambles.empty());
+    EXPECT_EQ(blank_body.visible, "Hi");
+}
+
+// 场景:type 的各种写法。期望:引号 / 单引号 / 裸值都认,大小写不敏感;不是
+// read / write 的当没写;标签名大小写也不敏感。
+TEST(ToolPreambleScanner, KindParsingIsLenient) {
+    const auto kind_of = [](const std::string& text) {
+        const Collected got = scan_in_chunks(text, 64);
+        return got.preambles.empty() ? std::string("<none>") : got.preambles[0].kind;
+    };
+    EXPECT_EQ(kind_of("<text_preamble type=\"Write\">x</text_preamble>"), "write");
+    EXPECT_EQ(kind_of("<text_preamble type=read>x</text_preamble>"), "read");
+    EXPECT_EQ(kind_of("<text_preamble type='read' >x</text_preamble>"), "read");
+    EXPECT_EQ(kind_of("<text_preamble type=\"verify\">x</text_preamble>"), "");
+    EXPECT_EQ(kind_of("<text_preamble>x</text_preamble>"), "");
+    EXPECT_EQ(kind_of("<TEXT_PREAMBLE Type=\"READ\">x</TEXT_PREAMBLE>"), "read");
+}
+
+// 场景:标签正文带多余空白 / 尾句号,以及超过 200 个 code point 的正文。
+// 期望:折叠空白、去尾标点;超长按 code point 截断并补 "…"。
+TEST(ToolPreambleScanner, BodyIsNormalizedAndCapped) {
+    const Collected got = scan_in_chunks(
+        "<text_preamble type=\"read\">  Reading   the loader. </text_preamble>", 64);
+    ASSERT_EQ(got.preambles.size(), 1u);
+    EXPECT_EQ(got.preambles[0].title, "Reading the loader");
+
+    const std::string long_body(300, 'a');
+    const Collected capped = scan_in_chunks(
+        "<text_preamble type=\"read\">" + long_body + "</text_preamble>", 64);
+    ASSERT_EQ(capped.preambles.size(), 1u);
+    EXPECT_EQ(capped.preambles[0].title, std::string(kTextPreambleMaxCodePoints, 'a') + "\xE2\x80\xA6");
+}
+
+// 场景:标签正文流了 1300 字节既没闭合也没换行(模型跑偏)。期望:到
+// kTextPreambleMaxBodyBytes 就当闭合(前言按 code point 截断),之后的字节回到
+// 可见正文,不会把整段回答都吞进 loading。
+TEST(ToolPreambleScanner, OversizedBodyWithoutNewlineIsCut) {
+    const std::string body(1300, 'b');
+    const Collected got = scan_in_chunks("<text_preamble>" + body, 100);
+    ASSERT_EQ(got.preambles.size(), 1u);
+    EXPECT_EQ(got.preambles[0].title, std::string(kTextPreambleMaxCodePoints, 'b') + "\xE2\x80\xA6");
+    EXPECT_EQ(got.visible.size(), 1300u - kTextPreambleMaxBodyBytes);
+}
+
+// 场景:流开头的空白与正文中间的空白。期望:只有第一个可见字符之前的空白被
+// 吞掉(否则界面会为一段 "\n" 建一条空气泡),之后的换行原样透传;reset 后扣住
+// 的半截标签被丢弃。
+TEST(ToolPreambleScanner, LeadingWhitespaceSwallowedOnceAndResetDropsHeldBytes) {
+    const Collected got = scan_in_chunks("\n\nHello\n\nWorld", 3);
+    EXPECT_TRUE(got.preambles.empty());
+    EXPECT_EQ(got.visible, "Hello\n\nWorld");
+
+    TextPreambleScanner scanner;
+    (void)scanner.feed("<text_preamble>partial");
+    scanner.reset();
+    Collected after;
+    absorb(after, scanner.feed("Hi"));
+    absorb(after, scanner.flush());
+    EXPECT_TRUE(after.preambles.empty());
+    EXPECT_EQ(after.visible, "Hi");
+}
+
+// 场景:渲染层整段剥标签(TUI 回放 / on_message 完整正文)。期望:与扫描器同款
+// 规则;没有标签的文本逐字节原样返回(含前导空白,不能误伤普通正文);多个标签
+// 各自剥掉;整段都是标签时返回空串。
+TEST(ToolPreambleStrip, StripsTagsAndLeavesPlainTextUntouched) {
+    EXPECT_EQ(strip_text_preamble_tags("  plain\ntext "), "  plain\ntext ");
+    EXPECT_EQ(strip_text_preamble_tags(""), "");
+    EXPECT_EQ(strip_text_preamble_tags(
+                  "<text_preamble type=\"read\">Reading A</text_preamble>\n\nFirst.\n\n"
+                  "<text_preamble type=\"write\">Editing B</text_preamble>\n\nSecond."),
+              "First.\n\nSecond.");
+    EXPECT_EQ(strip_text_preamble_tags(
+                  "<text_preamble type=\"read\">Reading A</text_preamble>\n\n"), "");
+    EXPECT_EQ(strip_text_preamble_tags("<text_preamble>No close\nVisible"), "Visible");
 }
