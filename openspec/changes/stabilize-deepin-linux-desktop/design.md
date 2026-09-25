@@ -112,6 +112,12 @@ The Linux folder picker currently forks zenity/kdialog; neither exists on this i
   Its 111 seed files and model catalog exactly match the source; the archive
   passes the no-bundling gate before compression and after extraction. Both
   binaries retain the GLIBC 2.28 ceiling and the daemon has no Qt/DTK linkage.
+- Implementation commit `ae98590a4245a752204771e976baa7dac71080f2` was
+  pushed to `origin/master`, and `git ls-remote` confirmed the same revision.
+  GitHub started the push-triggered `test` workflow. Added the Deepin package
+  verifier's regression tests to that workflow as well. The dedicated package
+  matrix still runs through the repository's manual/tag packaging triggers;
+  no release was published during this work.
 
 - Capture and explain the crash; exercise the failing path and idle runtime after the fix.
 - Exercise folder picker success and cancel with real GTK, including this machine without external picker programs.

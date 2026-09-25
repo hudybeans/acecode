@@ -12,4 +12,4 @@
 
 - [x] 3.1 Finish Deepin packaging with system DTK linkage and a no-bundling gate; verify generic/Deepin builds and the workflow.
 - [x] 3.2 Review and validate all changes, update the related OpenSpec tasks and record exact runtime/test evidence.
-- [ ] 3.3 Commit the authorized changes, push to GitHub and verify the remote commit.
+- [x] 3.3 Commit the authorized changes, push to GitHub and verify the remote commit.
