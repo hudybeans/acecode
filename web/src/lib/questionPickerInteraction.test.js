@@ -227,10 +227,12 @@ run('same request re-rendered with a new object reference keeps answers and posi
   const tabular = (tree) => nodes(tree).find(
     (n) => /tabular-nums/.test(n.props?.className || '') && typeof n.props.children === 'string');
   assert.equal(tabular(picker.render()).props.children, '2 / 2');
+  input(picker.render()).props.onChange({ target: { value: 'keep this draft' } });
   // 模拟 App 重渲染:request_id 不变,但传入内容相同、引用全新的 request 对象。
   picker.render({ request_id: 'r1', session_id: 's1', questions: [q1, q2] });
   // 修复前:重置 effect 误把引用变化当作新请求 -> 跳回第一题('1 / 2')并清空答案。
   assert.equal(tabular(picker.render()).props.children, '2 / 2');
+  assert.equal(input(picker.render()).props.value, 'keep this draft');
   // 回到第一题,断言已选答案内容仍保留(不只是位置没跳)。
   button(picker.render(), '上一题').props.onClick();
   assert.match(rows(picker.render())[0].props.className, /text-accent/);

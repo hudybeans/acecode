@@ -2021,6 +2021,17 @@ export function App() {
     () => pendingQuestionSessionIds(questionReqs, activeId, permissionOwnership),
     [questionReqs, activeId, permissionOwnership],
   );
+  // Keep every hook above the authentication early returns.
+  const visibleQuestionReq = useMemo(() => {
+    if (visiblePermissionUnresolved) return null;
+    const request = visibleQuestionRequest(questionReqs, activeId, permissionOwnership);
+    return request
+      ? {
+          ...request,
+          origin_label: questionOriginLabel(request, permissionOwnership),
+        }
+      : null;
+  }, [visiblePermissionUnresolved, questionReqs, activeId, permissionOwnership]);
   if (authState === 'checking') {
     if (desktopModeRef.current === 'shell') {
       const desktopStartupStatus = desktopStartupProgress?.current || null;
@@ -2072,16 +2083,7 @@ export function App() {
 
   const sidebarCollapsed = view !== 'single'
     || (projectSidebarCollapsed && !guidedTourPreparing && !guidedTourRun);
-  const visibleQuestionReq = useMemo(() => {
-    if (visiblePermissionUnresolved) return null;
-    const request = visibleQuestionRequest(questionReqs, activeId, permissionOwnership);
-    return request
-      ? {
-          ...request,
-          origin_label: questionOriginLabel(request, permissionOwnership),
-        }
-      : null;
-  }, [visiblePermissionUnresolved, questionReqs, activeId, permissionOwnership]);
+
   const nativeSurfacesVisible = !showSettings
     && !showFeedback
     && !searchOpen
