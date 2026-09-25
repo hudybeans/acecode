@@ -8,13 +8,13 @@
 | --- | --- | --- |
 | Windows | x64、arm64 | `acecode-windows-<arch>.zip` |
 | Linux | x64、arm64、armv7 | `acecode-linux-<arch>.tar.gz` |
-| Linux old | x64、arm64、armv7 | `acecode-linux-old-<arch>.tar.gz` |
+| UOS / Deepin | x64、arm64、armv7 | `acecode-linux-deepin-<arch>.tar.gz` |
 | Linux 自动更新 | x64、arm64 | `acecode-<version>-linux-<arch>-update.zip` |
 | macOS | x64、arm64 | `acecode-macos-<arch>.tar.gz` |
 | macOS 安装器 | x64、arm64 | `ACECode-<version>-macos-<arch>.dmg` 和 `.pkg` |
 | macOS 自动更新 | x64、arm64 | `ACECode-<version>-macos-<arch>-update.zip` |
 
-Linux old 构建是发布任务的必需依赖，不能因已有新版 Linux 包而跳过。macOS 正式发布同时要求 Developer ID Application、Developer ID Installer 证书及公证凭据；安装器证书或密码缺失必须失败，不允许发布没有 PKG 的正式版。手动触发的开发构建仍可在缺少签名凭据时生成非正式产物，不创建 Release。
+Deepin 构建是发布任务的必需依赖，不能因已有普通 Linux 包而跳过。它替代原 Linux old 流水线，保持 GLIBC 2.28 基线；x64/arm64 开启 `ACECODE_DEEPIN`，使用 WebKitGTK 4.0 和 DTK 5，ARMv7 保持 CLI-only。依赖及升级方式见 [UOS / Deepin 专用构建](deepin-desktop.md)。macOS 正式发布同时要求 Developer ID Application、Developer ID Installer 证书及公证凭据；安装器证书或密码缺失必须失败，不允许发布没有 PKG 的正式版。手动触发的开发构建仍可在缺少签名凭据时生成非正式产物，不创建 Release。
 
 调试符号使用 `dev_only.` 文件名前缀；避免方括号等会被 GitHub 改写的字符，使 `SHA256SUMS.txt` 中的文件名与下载名一致。
 

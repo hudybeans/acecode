@@ -12,7 +12,7 @@ def required_asset_names(version):
         raise ValueError("Invalid release version")
     names = [f"acecode-windows-{arch}.zip" for arch in ("x64", "arm64")]
     names += [f"acecode-{platform}-{arch}.tar.gz"
-              for platform in ("linux", "linux-old") for arch in ("x64", "arm64", "armv7")]
+              for platform in ("linux", "linux-deepin") for arch in ("x64", "arm64", "armv7")]
     for arch in ("x64", "arm64"):
         names += [f"acecode-macos-{arch}.tar.gz",
                   f"acecode-{version}-linux-{arch}-update.zip",
@@ -58,4 +58,4 @@ if __name__ == "__main__":
         assets = verify_release_assets(args.directory, args.version)
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
-    print(f"Verified {len(assets)} required release assets, including Linux old and both macOS PKGs.")
+    print(f"Verified {len(assets)} required release assets, including Deepin and both macOS PKGs.")

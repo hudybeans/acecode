@@ -42,6 +42,10 @@
 #include "web_host_close_policy.hpp"
 #include "workspace_registry.hpp"
 
+#ifdef ACECODE_DEEPIN
+#include "deepin_window_effects.hpp"
+#endif
+
 #include "../config/config.hpp"
 #include "../daemon/platform.hpp"
 #include "../daemon/runtime_files.hpp"
@@ -282,10 +286,8 @@ std::vector<std::string> desktop_process_arguments(int argc, char** argv) {
 }
 
 std::string desktop_exe_dir() {
-    std::error_code ec;
-    auto p = fs::current_path(ec);
-    if (ec) return "";
-    return acecode::path_to_utf8(p);
+    const fs::path executable = acecode::desktop::current_desktop_executable_path();
+    return executable.empty() ? "" : acecode::path_to_utf8(executable.parent_path());
 }
 #endif
 
@@ -707,6 +709,12 @@ int main(int argc, char** argv) {
         startup_open_request_error = startup_open_parse.error
     ]() -> int {
     using namespace acecode::desktop;
+
+#ifdef ACECODE_DEEPIN
+    // Xlib threading must precede GTK's first display/resource access. Qt's
+    // later initialization otherwise leaves old Xlib resource locks null.
+    initialize_deepin_windowing();
+#endif
 
     // desktop 自己的日志路径: ~/.acecode/logs/desktop-<date>.log。和 daemon
     // 日志(daemon-<date>.log)同目录便于一次 tail。mirror_stderr=false 因为

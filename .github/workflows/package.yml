@@ -910,7 +910,7 @@ jobs:
             build/acecode-daemon.dSYM
           if-no-files-found: warn
 
-  build-linux-old-package:
+  build-linux-deepin-package:
     name: ${{ matrix.id }}
     needs: build-web-ui
     runs-on: ${{ matrix.os }}
@@ -924,7 +924,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: linux-old-x64
+          - id: linux-deepin-x64
             os: ubuntu-22.04
             triplet: x64-linux
             executable: acecode
@@ -932,8 +932,9 @@ jobs:
             build_desktop: true
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=ON
+              -DACECODE_DEEPIN=ON
               -DWEBVIEW_WEBKITGTK_API=4.0
-          - id: linux-old-arm64
+          - id: linux-deepin-arm64
             os: ubuntu-22.04-arm
             triplet: arm64-linux
             executable: acecode
@@ -941,8 +942,9 @@ jobs:
             build_desktop: true
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=ON
+              -DACECODE_DEEPIN=ON
               -DWEBVIEW_WEBKITGTK_API=4.0
-          - id: linux-old-armv7
+          - id: linux-deepin-armv7
             os: ubuntu-22.04
             triplet: arm-linux
             executable: acecode
@@ -950,6 +952,7 @@ jobs:
             build_desktop: false
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=OFF
+              -DACECODE_DEEPIN=ON
               -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/toolchains/linux.cmake"
               -DVCPKG_TARGET_ARCHITECTURE=arm
               -DCMAKE_C_COMPILER=clang-11
@@ -965,7 +968,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install old Linux dependencies
+      - name: Install Deepin build dependencies
         shell: bash
         run: |
           sed -i \
@@ -992,9 +995,15 @@ jobs:
             zip
           )
           if [ "${{ matrix.build_desktop }}" = "true" ]; then
-            packages+=(libgtk-3-dev libwebkit2gtk-4.0-dev)
+            packages+=(
+              libgtk-3-dev libwebkit2gtk-4.0-dev libx11-dev
+              qtbase5-dev qtbase5-private-dev qttools5-dev-tools qtmultimedia5-dev
+              libqt5x11extras5-dev libqt5svg5-dev libgsettings-qt-dev
+              libstartup-notification0-dev libxcb-util0-dev libmtdev-dev
+              libegl1-mesa-dev libudev-dev libxi-dev libcups2-dev librsvg2-dev
+            )
           fi
-          if [ "${{ matrix.id }}" = "linux-old-armv7" ]; then
+          if [ "${{ matrix.id }}" = "linux-deepin-armv7" ]; then
             packages+=(
               binutils-arm-linux-gnueabihf
               clang-11
@@ -1011,6 +1020,16 @@ jobs:
         with:
           cmake-version: '3.29.x'
 
+      - name: Build pinned DTK 5 SDK
+        if: matrix.build_desktop
+        shell: bash
+        run: |
+          sdk_prefix="$RUNNER_TEMP/acecode-dtk-sdk"
+          bash scripts/build_deepin_dtk_sdk.sh "$sdk_prefix" "$RUNNER_TEMP/acecode-dtk-build"
+          printf 'CMAKE_PREFIX_PATH=%s\n' "$sdk_prefix" >> "$GITHUB_ENV"
+          printf 'PKG_CONFIG_PATH=%s/lib/pkgconfig\n' "$sdk_prefix" >> "$GITHUB_ENV"
+          printf 'LD_LIBRARY_PATH=%s/lib\n' "$sdk_prefix" >> "$GITHUB_ENV"
+
       - name: Run vcpkg
         uses: lukka/run-vcpkg@v11
 
@@ -1018,9 +1037,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-v2-buster-${{ matrix.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
+          key: vcpkg-v3-deepin-buster-${{ matrix.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
           restore-keys: |
-            vcpkg-v2-buster-${{ matrix.os }}-${{ matrix.triplet }}-
+            vcpkg-v3-deepin-buster-${{ matrix.os }}-${{ matrix.triplet }}-
 
       - name: Download web UI
         uses: actions/download-artifact@v4
@@ -1036,6 +1055,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
             -DBUILD_TESTING=OFF \
+            -DCMAKE_SKIP_BUILD_RPATH=ON \
             ${{ matrix.cmake_extra_args }}
 
       - name: Build
@@ -1047,7 +1067,7 @@ jobs:
         shell: bash
         run: cmake --build build --config MinSizeRel --target acecode-desktop
 
-      - name: Verify old Linux ABI
+      - name: Verify Deepin ABI
         shell: bash
         run: |
           abi_binaries=(build/acecode)
@@ -1067,21 +1087,27 @@ jobs:
           fi
           echo "Max GLIBC symbol: GLIBC_$max_glibc"
           if [ "$(printf '%s\n%s\n' "$max_glibc" "2.28" | sort -V | tail -n1)" != "2.28" ]; then
-            echo "Old Linux package requires GLIBC_$max_glibc, expected <= GLIBC_2.28" >&2
+            echo "Deepin package requires GLIBC_$max_glibc, expected <= GLIBC_2.28" >&2
             exit 1
           fi
 
           if [ "${{ matrix.build_desktop }}" = "true" ]; then
             ldd build/acecode-desktop | tee build/acecode-desktop.ldd
             grep -E 'libwebkit2gtk-4\.0\.so\.37' build/acecode-desktop.ldd
+            grep -E 'libdtkwidget\.so\.5' build/acecode-desktop.ldd
+            grep -E 'libdtkgui\.so\.5' build/acecode-desktop.ldd
+            if grep -F 'not found' build/acecode-desktop.ldd; then
+              echo "Deepin desktop has unresolved runtime dependencies" >&2
+              exit 1
+            fi
             if grep -E 'libwebkit2gtk-4\.1|libwebkitgtk-6' build/acecode-desktop.ldd; then
-              echo "Old Linux desktop linked against a newer WebKitGTK ABI" >&2
+              echo "Deepin desktop linked against a newer WebKitGTK ABI" >&2
               exit 1
             fi
           fi
 
-      - name: Verify old Linux ARMv7 executable
-        if: matrix.id == 'linux-old-armv7'
+      - name: Verify Deepin ARMv7 executable
+        if: matrix.id == 'linux-deepin-armv7'
         shell: bash
         run: |
           export LC_ALL=C
@@ -1106,7 +1132,7 @@ jobs:
         shell: bash
         run: |
           binutils_prefix=""
-          if [ "${{ matrix.id }}" = "linux-old-armv7" ]; then
+          if [ "${{ matrix.id }}" = "linux-deepin-armv7" ]; then
             binutils_prefix="arm-linux-gnueabihf-"
           fi
           "${binutils_prefix}objcopy" --only-keep-debug \
@@ -1151,6 +1177,7 @@ jobs:
           fi
           cp "build/${{ matrix.executable }}" "$package_dir/"
           cp README.md README_CN.md "$package_dir/"
+          cp docs/deepin-desktop.md "$package_dir/DEEPIN.md"
           cmake --install build \
             --config MinSizeRel \
             --prefix "$PWD/$package_dir" \
@@ -1179,10 +1206,12 @@ jobs:
             echo "Legacy browser artifact must not be packaged: $legacy" >&2
             exit 1
           fi
+          python3 scripts/verify_deepin_package.py "$package_dir"
           tar -C dist -czf "acecode-${{ matrix.id }}.tar.gz" "acecode-${{ matrix.id }}"
 
           verify_root="$(mktemp -d)"
           tar -xzf "acecode-${{ matrix.id }}.tar.gz" -C "$verify_root"
+          python3 scripts/verify_deepin_package.py "$verify_root/acecode-${{ matrix.id }}"
           validate_models_dev_registry \
             "$verify_root/acecode-${{ matrix.id }}/share/acecode/models_dev"
           python3 scripts/verify_seed_bundle.py \
@@ -1216,7 +1245,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-and-package
-      - build-linux-old-package
+      - build-linux-deepin-package
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

@@ -122,3 +122,4 @@ acecode --resume
 - [Skills 指南](docs/skills.md) — 创建和使用可复用工作流。
 - [Desktop 工作区](docs/desktop-shell/multi-workspace.md) — 桌面应用中的工作区与任务行为。
 - [Linux 自升级](docs/linux-self-update.md) — updater ZIP、旧版一次性引导与发布校验。
+- [UOS / Deepin 专用构建](docs/deepin-desktop.md) — DTK 圆角和阴影、WebKitGTK 4.0、编译开关和专用发行包。

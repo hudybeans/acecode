@@ -1845,6 +1845,13 @@ body {
 .ace-sidebar-scroll {
   --ace-list-top-fade: var(--ace-list-edge-fade);
 }
+/* WebKitGTK 2.38 does not implement scrollbar-gutter. Its custom scrollbar
+   still takes layout space, so reserve the same track even for short lists. */
+@supports not (scrollbar-gutter: stable) {
+  .ace-sidebar-scroll {
+    overflow-y: scroll;
+  }
+}
 /* 底部设置区与会话列表之间常驻的细分隔线(顶部那条只在列表滚动后显出)。 */
 .ace-sidebar-footer {
   border-top: 1px solid var(--ace-border);

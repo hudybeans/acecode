@@ -10,6 +10,13 @@ endif()
 project(acecode VERSION 0.9.26 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
+option(ACECODE_DEEPIN "Build the dedicated UOS/Deepin Linux variant." OFF)
+if(ACECODE_DEEPIN AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "ACECODE_DEEPIN is supported only on Linux targets")
+endif()
+# The daemon needs the package identity, but must not acquire Qt/DTK linkage.
+set_property(SOURCE src/upgrade/manifest.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "$<$<BOOL:${ACECODE_DEEPIN}>:ACECODE_DEEPIN=1>")
 
 # CTest integration: defines BUILD_TESTING (default ON). Release packaging can
 # disable it with -DBUILD_TESTING=OFF to skip the test binary and the gtest
@@ -213,6 +220,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
 
 set(ACECODE_DESKTOP_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/application_icon.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/linux_webview_scale_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_supervisor.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/desktop_about.cpp
@@ -236,6 +244,8 @@ set(ACECODE_DESKTOP_SUPPORT_SOURCES
 # 里剔除。desktop/native helper 源文件改由 focused support target 拥有,
 # 这样 acecode-desktop 不需要链接 acecode_testable。
 set(ACECODE_DESKTOP_BINARY_ONLY_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/desktop/deepin_window_effects.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/linux_desktop.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_host.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_host_mac.mm
     ${CMAKE_SOURCE_DIR}/src/desktop/main.cpp

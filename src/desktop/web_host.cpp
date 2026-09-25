@@ -2,12 +2,18 @@
 
 #include "application_icon.hpp"
 #include "external_url.hpp"
+#include "linux_webview_scale_policy.hpp"
 #include "taskbar_badge_win.hpp"
+#include "tray_icon_win.hpp"
 #include "web_host_close_policy.hpp"
 #include "webview2_runtime_probe.hpp"
 #include "window_background.hpp"
 #include "window_chrome.hpp"
 #include "window_size.hpp"
+
+#ifdef ACECODE_DEEPIN
+#include "deepin_window_effects.hpp"
+#endif
 
 #include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
@@ -28,6 +34,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -40,7 +47,13 @@
 #  include <wrl.h>  // Microsoft::WRL::Callback,挂 WebView2 事件 handler
 #endif
 #if !defined(_WIN32) && !defined(__APPLE__)
+#  include "linux_desktop.hpp"
 #  include <dlfcn.h>
+#  include <gtk/gtk.h>
+#  include <webkit2/webkit2.h>
+#  ifdef GDK_WINDOWING_X11
+#    include <gdk/gdkx.h>
+#  endif
 #endif
 #ifdef __APPLE__
 #  include <CoreGraphics/CoreGraphics.h>
@@ -1642,6 +1655,161 @@ struct ComApartment {
 namespace {
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+#ifdef ACECODE_DEEPIN
+class LinuxWebviewScaleController {
+public:
+    explicit LinuxWebviewScaleController(webview::webview& host) {
+        const char* current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+        const char* session_desktop = std::getenv("XDG_SESSION_DESKTOP");
+        if (!is_deepin_desktop(current_desktop ? current_desktop : "") &&
+            !is_deepin_desktop(session_desktop ? session_desktop : "")) {
+            return;
+        }
+        const auto widget = host.widget();
+        if (!widget.ok() || !widget.value()) return;
+        webview_ = WEBKIT_WEB_VIEW(widget.value());
+        screen_ = gtk_widget_get_screen(GTK_WIDGET(webview_));
+        gtk_settings_ = gtk_widget_get_settings(GTK_WIDGET(webview_));
+        if (!gtk_settings_ || !screen_) return;
+#ifdef GDK_WINDOWING_X11
+        GdkDisplay* display = gdk_screen_get_display(screen_);
+        if (!GDK_IS_X11_DISPLAY(display)) return;
+        xsettings_atom_ = gdk_x11_get_xatom_by_name_for_display(
+            display, "_XSETTINGS_SETTINGS");
+        manager_atom_ = gdk_x11_get_xatom_by_name_for_display(display, "MANAGER");
+        gdk_window_add_filter(nullptr, native_settings_changed, this);
+        filter_installed_ = true;
+#else
+        return;
+#endif
+
+        dpi_signal_ = g_signal_connect(
+            gtk_settings_, "notify::gtk-xft-dpi",
+            G_CALLBACK(+[](GObject*, GParamSpec*, gpointer context) {
+                static_cast<LinuxWebviewScaleController*>(context)->refresh();
+            }), this);
+        widget_scale_signal_ = g_signal_connect(
+            webview_, "notify::scale-factor",
+            G_CALLBACK(+[](GObject*, GParamSpec*, gpointer context) {
+                static_cast<LinuxWebviewScaleController*>(context)->refresh();
+            }), this);
+        refresh();
+    }
+
+    ~LinuxWebviewScaleController() {
+#ifdef GDK_WINDOWING_X11
+        if (filter_installed_) {
+            gdk_window_remove_filter(nullptr, native_settings_changed, this);
+        }
+#endif
+        if (refresh_source_) g_source_remove(refresh_source_);
+        if (dpi_signal_) g_signal_handler_disconnect(gtk_settings_, dpi_signal_);
+        if (widget_scale_signal_ &&
+            g_signal_handler_is_connected(webview_, widget_scale_signal_)) {
+            // A native delete-event can destroy the GTK widget before the
+            // host releases its retained WebView reference.
+            g_signal_handler_disconnect(webview_, widget_scale_signal_);
+        }
+        if (active_) {
+            gtk_settings_reset_property(gtk_settings_, "gtk-xft-dpi");
+        }
+        set_linux_tray_font_scale(1.0);
+    }
+
+    LinuxWebviewScaleController(const LinuxWebviewScaleController&) = delete;
+    LinuxWebviewScaleController& operator=(const LinuxWebviewScaleController&) = delete;
+
+private:
+#ifdef GDK_WINDOWING_X11
+    static GdkFilterReturn native_settings_changed(
+        GdkXEvent* native_event, GdkEvent*, gpointer context) {
+        auto* self = static_cast<LinuxWebviewScaleController*>(context);
+        const auto* event = static_cast<const XEvent*>(native_event);
+        if ((event->type == PropertyNotify &&
+             event->xproperty.atom == self->xsettings_atom_) ||
+            (event->type == ClientMessage &&
+             event->xclient.message_type == self->manager_atom_)) {
+            self->schedule_refresh();
+        }
+        return GDK_FILTER_CONTINUE;
+    }
+#endif
+
+    void schedule_refresh() {
+        if (refresh_source_) return;
+        // Let GDK consume the native event and update its XSettings cache first.
+        refresh_source_ = g_idle_add(+[](gpointer context) -> gboolean {
+            auto* self = static_cast<LinuxWebviewScaleController*>(context);
+            self->refresh_source_ = 0;
+            self->refresh();
+            return G_SOURCE_REMOVE;
+        }, this);
+    }
+
+    void refresh() {
+        if (updating_ || !gtk_settings_ || !screen_ || !webview_) return;
+        // GtkSettings is overridden while active. Read the native value below
+        // that override; Deepin's scale-factor preference can be stale as well.
+        GValue dpi_value = G_VALUE_INIT;
+        g_value_init(&dpi_value, G_TYPE_INT);
+        const int native_font_dpi = gdk_screen_get_setting(
+            screen_, "gtk-xft-dpi", &dpi_value) ? g_value_get_int(&dpi_value) : -1;
+        g_value_unset(&dpi_value);
+        const int window_scale = gtk_widget_get_scale_factor(GTK_WIDGET(webview_));
+        const auto plan = plan_linux_webview_scale(native_font_dpi, window_scale);
+        if (native_font_dpi != last_font_dpi_ || window_scale != last_window_scale_) {
+            LOG_INFO("[desktop] UOS WebView native font DPI=" +
+                     std::to_string(native_font_dpi / 1024.0) +
+                     " GTK window scale=" + std::to_string(window_scale) +
+                     " page zoom=" + std::to_string(plan.page_zoom));
+            last_font_dpi_ = native_font_dpi;
+            last_window_scale_ = window_scale;
+        }
+
+        updating_ = true;
+        if (!plan.apply) {
+            if (active_) {
+                webkit_web_view_set_zoom_level(webview_, 1.0);
+                active_ = false;
+                set_linux_tray_font_scale(1.0);
+                gtk_settings_reset_property(gtk_settings_, "gtk-xft-dpi");
+            }
+            updating_ = false;
+            return;
+        }
+
+        int gtk_font_dpi = -1;
+        g_object_get(gtk_settings_, "gtk-xft-dpi", &gtk_font_dpi, nullptr);
+        if (gtk_font_dpi != plan.font_dpi) {
+            g_object_set(gtk_settings_, "gtk-xft-dpi", plan.font_dpi, nullptr);
+        }
+        if (!active_ || std::abs(webkit_web_view_get_zoom_level(webview_) -
+                                  plan.page_zoom) > 0.001) {
+            webkit_web_view_set_zoom_level(webview_, plan.page_zoom);
+        }
+        active_ = true;
+        set_linux_tray_font_scale(native_font_dpi / (96.0 * 1024.0));
+        updating_ = false;
+    }
+
+    WebKitWebView* webview_ = nullptr;
+    GtkSettings* gtk_settings_ = nullptr;
+    GdkScreen* screen_ = nullptr;
+    guint refresh_source_ = 0;
+    gulong dpi_signal_ = 0;
+    gulong widget_scale_signal_ = 0;
+    int last_font_dpi_ = -1;
+    int last_window_scale_ = -1;
+#ifdef GDK_WINDOWING_X11
+    Atom xsettings_atom_ = 0;
+    Atom manager_atom_ = 0;
+    bool filter_installed_ = false;
+#endif
+    bool active_ = false;
+    bool updating_ = false;
+};
+#endif
+
 struct GtkWindowApi {
     using GtkWidgetShow = void (*)(void*);
     using GtkWidgetHide = void (*)(void*);
@@ -2101,11 +2269,28 @@ struct WebHost::Impl {
 #else
         w = std::make_unique<webview::webview>(debug, nullptr);
         auto native_window = w->window();
+        set_linux_folder_picker(pick_linux_folder);
+        linux_center_on_first_show = true;
+        if (native_window.ok() && native_window.value() &&
+            startup_mode == StartupWindowMode::OffscreenUntilReady) {
+            auto* widget = GTK_WIDGET(native_window.value());
+            // Keep WebKit mapped so startup animation frames can complete.
+            // Hide it visually before DTK synchronizes the GTK event queue.
+            gtk_widget_set_opacity(widget, 0.0);
+            gtk_window_set_accept_focus(GTK_WINDOW(widget), FALSE);
+            gtk_window_set_focus_on_map(GTK_WINDOW(widget), FALSE);
+        }
         if (native_window.ok() && native_window.value() &&
             !set_linux_window_icon(native_window.value(), application_icon_path())) {
             LOG_WARN("[desktop] could not load the Linux application window icon");
         }
         configure_linux_window_chrome(*w);
+#ifdef ACECODE_DEEPIN
+        if (native_window.ok()) {
+            deepin_effects = std::make_unique<DeepinWindowEffects>(native_window.value());
+        }
+        linux_scale = std::make_unique<LinuxWebviewScaleController>(*w);
+#endif
         install_linux_close_handler(*w);
         install_linux_window_state_handler(*w);
 #endif
@@ -2141,6 +2326,11 @@ struct WebHost::Impl {
             mac_exit_fullscreen_observer = nil;
         }
 #endif
+        // The controller owns GTK signals that reference the WebView widget.
+#ifdef ACECODE_DEEPIN
+        deepin_effects.reset();
+        linux_scale.reset();
+#endif
         w.reset();
 #ifdef _WIN32
         if (hwnd && ::IsWindow(hwnd)) {
@@ -2164,6 +2354,13 @@ struct WebHost::Impl {
     }
 #endif
     std::unique_ptr<webview::webview> w;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    bool linux_center_on_first_show = false;
+#endif
+#ifdef ACECODE_DEEPIN
+    std::unique_ptr<LinuxWebviewScaleController> linux_scale;
+    std::unique_ptr<DeepinWindowEffects> deepin_effects;
+#endif
 #ifdef __APPLE__
     id mac_focus_observer = nil;
     id mac_enter_fullscreen_observer = nil;
@@ -2250,6 +2447,13 @@ void WebHost::set_visible(bool visible) {
     auto& api = gtk_window_api();
     if (!api.load()) return;
     if (visible) {
+        if (impl_->linux_center_on_first_show) {
+            center_linux_window(window.value(), linux_active_work_area());
+            impl_->linux_center_on_first_show = false;
+        }
+        gtk_widget_set_opacity(GTK_WIDGET(window.value()), 1.0);
+        gtk_window_set_accept_focus(GTK_WINDOW(window.value()), TRUE);
+        gtk_window_set_focus_on_map(GTK_WINDOW(window.value()), TRUE);
         api.widget_show(window.value());
         api.window_present(window.value());
     } else {
@@ -2648,6 +2852,12 @@ void WebHost::request_quit() {
     ::PostMessageW(hwnd, kRequestQuitMsg, 0, 0);
 #else
 #if !defined(__APPLE__)
+#ifdef ACECODE_DEEPIN
+    // gtk_window_close can destroy the widget before WebHost's destructor.
+    // Release foreign handles and GTK signal owners while it is still alive.
+    impl_->deepin_effects.reset();
+    impl_->linux_scale.reset();
+#endif
     auto window = impl_->w->window();
     g_linux_force_close = true;
     if (window.ok() && window.value()) {

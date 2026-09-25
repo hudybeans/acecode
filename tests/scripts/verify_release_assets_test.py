@@ -24,7 +24,7 @@ class ReleaseAssetsTest(unittest.TestCase):
         selected = assets.verify_release_assets(self.root, "1.2.3")
         self.assertEqual(len(selected), 18)
         for arch in ("x64", "arm64", "armv7"):
-            self.assertIn(f"acecode-linux-old-{arch}.tar.gz", self.names)
+            self.assertIn(f"acecode-linux-deepin-{arch}.tar.gz", self.names)
         for arch in ("x64", "arm64"):
             self.assertIn(f"ACECode-1.2.3-macos-{arch}.pkg", self.names)
 
@@ -39,6 +39,15 @@ class ReleaseAssetsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Empty release asset"):
                     assets.verify_release_assets(self.root, "1.2.3")
                 path.write_bytes(b"package")
+
+    def test_old_linux_archives_cannot_replace_deepin_packages(self):
+        for arch in ("x64", "arm64", "armv7"):
+            path = next(self.root.rglob(f"acecode-linux-deepin-{arch}.tar.gz"))
+            path.rename(path.with_name(f"acecode-linux-old-{arch}.tar.gz"))
+        with self.assertRaises(ValueError) as error:
+            assets.verify_release_assets(self.root, "1.2.3")
+        self.assertIn("acecode-linux-deepin-x64.tar.gz; found 0", str(error.exception))
+        self.assertIn("Unexpected release asset: acecode-linux-old-x64.tar.gz", str(error.exception))
 
     def test_duplicates_unsigned_and_wrong_version_assets_are_rejected(self):
         duplicate = self.root / self.names[0]

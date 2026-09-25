@@ -17,6 +17,12 @@ endif()
 
 include(FetchContent)
 
+if(ACECODE_DEEPIN)
+    # UOS/Deepin 20 ships WebKitGTK 4.0 and Qt 5.11. Keep the dedicated
+    # distribution's ABI explicit, even on build hosts with newer WebKit.
+    set(WEBVIEW_WEBKITGTK_API "4.0" CACHE STRING "WebKitGTK API" FORCE)
+endif()
+
 # WebMessage additional objects expose dropped DOM File paths to the native
 # host starting with newer WebView2 SDKs. Keep this explicit and reproducible:
 # webview/webview 0.12.0 otherwise defaults to the much older 1.0.1150.38 SDK.
@@ -77,6 +83,10 @@ set(ACECODE_DESKTOP_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/splash_screen.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/web_host.cpp
 )
+if(UNIX AND NOT APPLE)
+    list(APPEND ACECODE_DESKTOP_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/desktop/linux_desktop.cpp)
+endif()
 
 # Windows 上,acecode-desktop 用 WIN32 子系统(无 console 黑窗)。
 # 同时挂上顶层 CMakeLists.txt 生成的 acecode.rc(已在 ACECODE_WINDOWS_RESOURCES 里),
@@ -105,6 +115,16 @@ target_link_libraries(acecode-desktop PRIVATE
     cpr::cpr
     nlohmann_json::nlohmann_json
 )
+
+if(ACECODE_DEEPIN)
+    # DTK package configs can set directory-wide definitions/includes. Keep
+    # their discovery in a child directory so they cannot affect the daemon,
+    # tests or the other desktop support targets.
+    add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/deepin
+        ${CMAKE_BINARY_DIR}/deepin)
+    target_compile_definitions(acecode-desktop PRIVATE ACECODE_DEEPIN=1)
+    target_link_libraries(acecode-desktop PRIVATE acecode_deepin_window_effects)
+endif()
 
 if(NOT APPLE)
     # Flat development/package layouts expect the daemon binary beside the

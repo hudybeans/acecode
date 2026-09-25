@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <cstdint>
@@ -1805,6 +1806,11 @@ struct GtkTrayApi {
     using GtkWidgetShowAll = void (*)(void*);
     using GtkMenuPopupAtPointer = void (*)(void*, const void*);
     using GtkWidgetDestroy = void (*)(void*);
+    using GtkBinGetChild = void* (*)(void*);
+    using GtkCssProviderNew = void* (*)();
+    using GtkCssProviderLoadFromData = int (*)(void*, const char*, std::ptrdiff_t, void*);
+    using GtkWidgetGetStyleContext = void* (*)(void*);
+    using GtkStyleContextAddProvider = void (*)(void*, void*, unsigned);
     using GSignalConnectData = unsigned long (*)(void*, const char*, void*, void*, void*, int);
     using GObjectUnref = void (*)(void*);
 
@@ -1822,6 +1828,11 @@ struct GtkTrayApi {
     GtkWidgetShowAll widget_show_all = nullptr;
     GtkMenuPopupAtPointer menu_popup_at_pointer = nullptr;
     GtkWidgetDestroy widget_destroy = nullptr;
+    GtkBinGetChild bin_get_child = nullptr;
+    GtkCssProviderNew css_provider_new = nullptr;
+    GtkCssProviderLoadFromData css_provider_load_from_data = nullptr;
+    GtkWidgetGetStyleContext widget_get_style_context = nullptr;
+    GtkStyleContextAddProvider style_context_add_provider = nullptr;
     GSignalConnectData signal_connect_data = nullptr;
     GObjectUnref object_unref = nullptr;
 
@@ -1859,6 +1870,16 @@ struct GtkTrayApi {
             sym(gtk, "gtk_menu_popup_at_pointer"));
         widget_destroy = reinterpret_cast<GtkWidgetDestroy>(
             sym(gtk, "gtk_widget_destroy"));
+        bin_get_child = reinterpret_cast<GtkBinGetChild>(
+            sym(gtk, "gtk_bin_get_child"));
+        css_provider_new = reinterpret_cast<GtkCssProviderNew>(
+            sym(gtk, "gtk_css_provider_new"));
+        css_provider_load_from_data = reinterpret_cast<GtkCssProviderLoadFromData>(
+            sym(gtk, "gtk_css_provider_load_from_data"));
+        widget_get_style_context = reinterpret_cast<GtkWidgetGetStyleContext>(
+            sym(gtk, "gtk_widget_get_style_context"));
+        style_context_add_provider = reinterpret_cast<GtkStyleContextAddProvider>(
+            sym(gtk, "gtk_style_context_add_provider"));
         signal_connect_data = reinterpret_cast<GSignalConnectData>(
             sym(gobject, "g_signal_connect_data"));
         object_unref = reinterpret_cast<GObjectUnref>(sym(gobject, "g_object_unref"));
@@ -1876,6 +1897,29 @@ void* g_status_icon = nullptr;
 void* g_context_menu = nullptr;
 TrayMenuLayout g_context_layout;
 bool g_linux_tray_installed = false;
+double g_linux_tray_font_scale = 1.0;
+
+void scale_linux_menu_label(void* item) {
+    if (!item || std::abs(g_linux_tray_font_scale - 1.0) < 0.001 ||
+        !g_gtk.bin_get_child || !g_gtk.css_provider_new ||
+        !g_gtk.css_provider_load_from_data || !g_gtk.widget_get_style_context ||
+        !g_gtk.style_context_add_provider) {
+        return;
+    }
+    void* label = g_gtk.bin_get_child(item);
+    if (!label) return;
+    void* provider = g_gtk.css_provider_new();
+    if (!provider) return;
+    const std::string css = "* { font-size: " +
+        std::to_string(g_linux_tray_font_scale * 100.0) + "%; }";
+    if (g_gtk.css_provider_load_from_data(provider, css.c_str(), -1, nullptr)) {
+        constexpr unsigned kGtkStyleProviderPriorityApplication = 600;
+        g_gtk.style_context_add_provider(
+            g_gtk.widget_get_style_context(label), provider,
+            kGtkStyleProviderPriorityApplication);
+    }
+    g_gtk.object_unref(provider);
+}
 
 std::string find_linux_tray_icon() {
     return acecode::path_to_utf8(application_icon_path());
@@ -1896,6 +1940,7 @@ void append_linux_menu_item(void* menu, const TrayMenuEntry& entry) {
         item = g_gtk.separator_menu_item_new();
     } else {
         item = g_gtk.menu_item_new_with_label(entry.label.c_str());
+        scale_linux_menu_label(item);
         if (entry.id != 0 && entry.kind != TrayMenuEntryKind::PinnedHeader &&
             entry.kind != TrayMenuEntryKind::RecentHeader &&
             entry.kind != TrayMenuEntryKind::MoreSubmenuRoot) {
@@ -1914,6 +1959,7 @@ void append_linux_layout_to_menu(void* menu, const TrayMenuLayout& layout) {
     for (const auto& entry : layout.entries) {
         if (entry.kind == TrayMenuEntryKind::MoreSubmenuRoot) {
             void* root = g_gtk.menu_item_new_with_label(entry.label.c_str());
+            scale_linux_menu_label(root);
             more_menu = g_gtk.menu_new();
             if (root && more_menu) {
                 g_gtk.menu_item_set_submenu(root, more_menu);
@@ -1947,6 +1993,11 @@ extern "C" void linux_tray_popup_menu(void*, unsigned, unsigned, void*) {
 }
 
 } // namespace
+
+void set_linux_tray_font_scale(double scale) {
+    g_linux_tray_font_scale =
+        std::isfinite(scale) && scale >= 1.0 && scale <= 4.0 ? scale : 1.0;
+}
 
 bool init_tray_icon(TrayClickHandler on_show,
                     TrayClickHandler on_quit,

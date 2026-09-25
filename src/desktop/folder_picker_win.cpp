@@ -341,11 +341,12 @@ std::optional<std::string> pick_save_file(
 
 } // namespace acecode::desktop
 
-#elif !defined(__APPLE__) // POSIX stub (Linux etc.)
+#elif !defined(__APPLE__)
 
 #include "../utils/logger.hpp"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <optional>
@@ -357,6 +358,8 @@ std::optional<std::string> pick_save_file(
 namespace acecode::desktop {
 
 namespace {
+
+std::atomic<LinuxFolderPicker> native_folder_picker{nullptr};
 
 enum class RunStatus {
     Picked,       // 用户选中,路径有效
@@ -434,9 +437,15 @@ RunStatus run_folder_picker_command(const std::vector<const char*>& argv,
 
 } // namespace
 
-FolderPickOutcome pick_folder_outcome(void* /*parent*/) {
-    // Linux best effort without adding a hard GTK dependency to acecode_testable.
-    // Desktop packages can depend on zenity/kdialog for a native folder dialog.
+void set_linux_folder_picker(LinuxFolderPicker picker) {
+    native_folder_picker.store(picker);
+}
+
+FolderPickOutcome pick_folder_outcome(void* parent) {
+    if (auto picker = native_folder_picker.load(); picker && parent) {
+        return picker(parent);
+    }
+    // Headless callers can still use an installed external picker.
     // 注意:只有 ToolMissing 才落到下一个候选 —— 用户在 zenity 里点了取消,
     // 不应再被弹一个 kdialog 对话框。
     FolderPickOutcome outcome;
