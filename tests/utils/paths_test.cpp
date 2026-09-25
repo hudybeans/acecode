@@ -332,6 +332,60 @@ TEST_F(DataDirRedirectTest, CorruptPointerIsIgnored) {
     EXPECT_FALSE(acecode::read_data_dir_redirect(default_dir()).has_value());
     EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
                           temp_home / ".acecode"));
+
+    // 回归:损坏的指针以前静默回退到默认目录,日志里一个字都没有,用户只看到
+    // 「迁移后数据不见了」。现在必须留下待补告警,由入口在日志初始化后补记。
+    auto warning = acecode::take_data_dir_resolution_warning();
+    ASSERT_TRUE(warning.has_value());
+    EXPECT_NE(warning->find("invalid"), std::string::npos) << *warning;
+    EXPECT_NE(warning->find(acecode::kDataDirRedirectFileName), std::string::npos)
+        << "告警应带上指针文件路径,便于定位: " << *warning;
+}
+
+// 场景:指针指向不存在的目录,resolve_data_dir 发生在 Logger 初始化之前(真实
+// 启动顺序:日志目录本身由它决定),当场的 LOG_WARN 会被丢掉。
+// 期望:返回默认目录;待补告警可取出一次且包含目标路径;取出即清空,第二次
+// take 为 nullopt(入口只补记一次,不会重复)。
+TEST_F(DataDirRedirectTest, UnusableTargetWarningIsDeferredUntilTaken) {
+    const std::string target = acecode::path_to_utf8(temp_home / "missing-target");
+    acecode::DataDirRedirect r;
+    r.data_dir = target;
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+    acecode::reset_data_dir_cache_for_test();
+
+    EXPECT_TRUE(same_path(acecode::resolve_data_dir(acecode::RunMode::User),
+                          temp_home / ".acecode"));
+    // 缓存命中的重复解析不应再追加告警。
+    (void)acecode::resolve_data_dir(acecode::RunMode::User);
+
+    auto warning = acecode::take_data_dir_resolution_warning();
+    ASSERT_TRUE(warning.has_value());
+    EXPECT_NE(warning->find(target), std::string::npos) << *warning;
+    EXPECT_NE(warning->find("unusable"), std::string::npos) << *warning;
+
+    EXPECT_FALSE(acecode::take_data_dir_resolution_warning().has_value())
+        << "取出即清空,第二次 take 必须为空";
+}
+
+// 场景:上一个用例(或同一用例前半段)留下了待补告警,随后测试调用
+// reset_data_dir_cache_for_test。
+// 期望:待补告警一并清空。待补告警是进程级状态,不清会让下一个用例的 take
+// 取到上一个用例的文本(跨测试污染)。
+TEST_F(DataDirRedirectTest, ResetCacheClearsDeferredWarning) {
+    acecode::DataDirRedirect r;
+    r.data_dir = acecode::path_to_utf8(temp_home / "missing-target");
+    ASSERT_TRUE(acecode::write_data_dir_redirect(default_dir(), r));
+    acecode::reset_data_dir_cache_for_test();
+    (void)acecode::resolve_data_dir(acecode::RunMode::User);
+
+    acecode::reset_data_dir_cache_for_test();
+    EXPECT_FALSE(acecode::take_data_dir_resolution_warning().has_value());
+
+    // 无指针的正常解析不产生告警。
+    ASSERT_TRUE(acecode::remove_data_dir_redirect(default_dir()));
+    acecode::reset_data_dir_cache_for_test();
+    (void)acecode::resolve_data_dir(acecode::RunMode::User);
+    EXPECT_FALSE(acecode::take_data_dir_resolution_warning().has_value());
 }
 
 // 场景:写入完整指针后读回。

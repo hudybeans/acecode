@@ -63,6 +63,7 @@ import {
   composerContentClipboardText,
 } from '../lib/composerContent.js';
 import { filesFromTransfer } from '../lib/composerFileTransfer.js';
+import { isPasteBlockPart, shouldFoldPastedText } from '../lib/pastedText.js';
 import { composerSelectedTag, composerTagSelection } from '../lib/composerSelection.js';
 import { synchronizeComposerLeadingCommand } from '../lib/composerCommandSync.js';
 import {
@@ -446,6 +447,30 @@ function insertComposerContent(editor, content, commands, attachments) {
   return true;
 }
 
+// Structured clipboard content (copied from another composer) can carry text
+// long enough to freeze Slate, or paste blocks. Text parts that reach the fold
+// threshold and inline `pasted_text` parts are handed to `fold` one by one;
+// file-block attachment parts are dropped (their ids belong to another session).
+// Returns {rest, folded}: `rest` is what may still enter the editor.
+function takeLargeClipboardParts(content, fold) {
+  let folded = false;
+  const parts = [];
+  for (const part of content.parts) {
+    if (part.type === 'attachment' && isPasteBlockPart(part)) {
+      folded = true;
+      continue;
+    }
+    if ((part.type === 'pasted_text' || (part.type === 'text' && shouldFoldPastedText(part.text)))
+      && fold(part.text)) {
+      folded = true;
+      continue;
+    }
+    // A block nobody took (no handler) can only enter the editor as plain text.
+    parts.push(part.type === 'pasted_text' ? { type: 'text', text: part.text } : part);
+  }
+  return { rest: normalizeComposerContent({ ...content, parts }), folded };
+}
+
 function replaceComposerTextPreservingReferences(editor, nextText, commands, replacementRange) {
   const previous = composerTextFromDocument(editor.children);
   if (previous === nextText) return composerContentFromDocument(editor.children);
@@ -506,6 +531,7 @@ function RichComposerShell({
   submitOnEnter = true,
   onPasteFiles,
   onPasteFilesystemItems,
+  onLargeTextPaste,
   onPreviewAttachment,
   onRemoveAttachment,
   allowNativeFilesystemDrop = false,
@@ -663,7 +689,22 @@ function RichComposerShell({
     }
   }, [editor]);
 
+  // 粘贴的文本块(第 2 条反馈 f300):达到折叠阈值(20 行或 2000 字符)的文本不进
+  // Slate —— 几百 KB 起每次按键都要整棵树重算,几 MB 直接卡死。交给父组件变成输入框
+  // 上方的卡片;父组件返回 false(例如没有接线)时照常插入。所有文本入口(普通粘贴、
+  // 文件传输通道 insertText、结构化剪贴板、text/plain 拖放)都必须先过这里。
+  const onLargeTextPasteRef = useRef(onLargeTextPaste);
+  onLargeTextPasteRef.current = onLargeTextPaste;
+  const foldLargePaste = useCallback((text) => {
+    const handler = onLargeTextPasteRef.current;
+    if (typeof handler !== 'function') return false;
+    const normalizedText = normalizeComposerPlainText(text);
+    if (!shouldFoldPastedText(normalizedText)) return false;
+    return handler(normalizedText) !== false;
+  }, []);
+
   const applyPlainTextPaste = useCallback((text, capturedSelection = null) => {
+    if (foldLargePaste(text)) return true;
     const normalizedText = normalizeComposerPlainText(text);
     if (!normalizedText) return false;
 
@@ -704,7 +745,7 @@ function RichComposerShell({
       } catch {}
       return false;
     }
-  }, [capturePasteSelection, editor, publishSelection]);
+  }, [capturePasteSelection, editor, foldLargePaste, publishSelection]);
 
   const handleContextPasteAction = useCallback((event) => {
     const detail = event?.detail;
@@ -814,6 +855,7 @@ function RichComposerShell({
       },
       insertText(text) {
         if (!text) return false;
+        if (foldLargePaste(text)) return true;
         return insert(() => { insertPlainText(editor, text); return true; });
       },
       reserveAttachments() {
@@ -854,7 +896,7 @@ function RichComposerShell({
     }
     pendingFileTransfersRef.current.add(transfer);
     return transfer;
-  }, [capturePasteSelection, editor, publishDocument, publishSelection]);
+  }, [capturePasteSelection, editor, foldLargePaste, publishDocument, publishSelection]);
 
   useEffect(() => {
     const currentDocument = editor.children;
@@ -1303,6 +1345,19 @@ function RichComposerShell({
 
     let copiedContent = null;
     try { copiedContent = normalizeComposerContent(JSON.parse(clipboardData?.getData?.(COMPOSER_CLIPBOARD_TYPE) || 'null')); } catch {}
+    if (copiedContent) {
+      // Large text parts and paste blocks never enter Slate (foldLargePaste).
+      const { rest, folded } = takeLargeClipboardParts(copiedContent, foldLargePaste);
+      if (folded) {
+        consume();
+        if (rest?.parts.length && !insertComposerContent(editor, rest, commandsRef.current, attachmentsRef.current)) {
+          // References from another composer: keep their readable text instead.
+          insertPlainText(editor, composerContentClipboardText(rest));
+        }
+        publishDocument();
+        return true;
+      }
+    }
     if (copiedContent && insertComposerContent(editor, copiedContent, commandsRef.current, attachmentsRef.current)) {
       consume();
       publishDocument();
@@ -1349,6 +1404,7 @@ function RichComposerShell({
     capturePasteSelection,
     disabled,
     editor,
+    foldLargePaste,
     publishDocument,
     onPasteFiles,
     onPasteFilesystemItems,
@@ -1433,7 +1489,16 @@ function RichComposerShell({
     // InputBar owns external files. Do not let Slate independently relocate
     // the selection to the pointer before the parent captures its transaction.
     if (files.length || types.includes('Files') || types.includes('text/uri-list')) return true;
-  }, [allowNativeFilesystemDrop]);
+    // Dropped plain text that reaches the fold threshold becomes a paste block.
+    if (!disabled && !types.includes('application/x-slate-fragment')) {
+      let text = '';
+      try { text = event.dataTransfer?.getData?.('text/plain') || ''; } catch { /* ignored */ }
+      if (text && foldLargePaste(text)) {
+        event.preventDefault();
+        return true;
+      }
+    }
+  }, [allowNativeFilesystemDrop, disabled, foldLargePaste]);
 
   return (
     <Slate

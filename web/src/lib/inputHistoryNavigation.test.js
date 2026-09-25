@@ -206,3 +206,68 @@ run('带修饰键的方向键不进入历史导航', () => {
     }), false);
   }
 });
+
+// 触发场景:输入框里只有粘贴块(编辑器文本为空),用户已编辑过(粘贴本身即编辑)后按上箭头。
+// 期望:不进入历史。回归:几 MB 的粘贴块被历史条目静默替换,用户以为内容丢了。
+run('只有粘贴块且已编辑时上箭头不进入历史', () => {
+  assert.equal(isInputHistoryNavigationMode({ value: '', editedSinceHistory: true, hasNonTextContent: true }), false);
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowUp',
+    value: '',
+    editedSinceHistory: true,
+    hasNonTextContent: true,
+    historyLength: 3,
+    historyPointer: -1,
+  }), false);
+  // 没有非文本内容时保持旧行为:空输入框照常进入历史。
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowUp', value: '', editedSinceHistory: true, historyLength: 3, historyPointer: -1,
+  }), true);
+});
+
+// 触发场景:刚发送完(或刚打开页面)editedSinceHistory=false,用户往空编辑器粘贴 300 行
+// 日志变成粘贴块(编辑器仍为空),随即按上箭头。
+// 期望:不进入历史 —— 粘贴块不经编辑器 onChange,editedSinceHistory 不会被置 true,
+// 所以不在翻历史(historyPointer=-1)时只要有非文本内容就必须拦住。
+// 回归 bug 表现:上箭头把历史条目整体替换进输入框,粘贴卡片消失,再按下箭头回到空
+// 输入框,粘贴内容丢失(已上传的文件块成为孤儿附件)。
+run('未编辑但输入框只有粘贴块时上箭头不进入历史', () => {
+  assert.equal(isInputHistoryNavigationMode({
+    value: '', editedSinceHistory: false, hasNonTextContent: true, historyPointer: -1,
+  }), false);
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowUp',
+    value: '',
+    editedSinceHistory: false,
+    hasNonTextContent: true,
+    historyLength: 3,
+    historyPointer: -1,
+  }), false);
+  // 缺省 historyPointer 视为不在翻历史。
+  assert.equal(isInputHistoryNavigationMode({ value: '', editedSinceHistory: false, hasNonTextContent: true }), false);
+  // 没有非文本内容时保持旧行为:发送后空输入框照常进入历史。
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowUp', value: '', editedSinceHistory: false, historyLength: 3, historyPointer: -1,
+  }), true);
+});
+
+// 触发场景:正在翻历史(未编辑),当前条目带粘贴块。
+// 期望:仍能继续上下翻。
+run('翻历史时当前条目带粘贴块仍能继续翻', () => {
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowUp',
+    value: '',
+    editedSinceHistory: false,
+    hasNonTextContent: true,
+    historyLength: 3,
+    historyPointer: 1,
+  }), true);
+  assert.equal(shouldNavigateInputHistory({
+    key: 'ArrowDown',
+    value: 'history text',
+    editedSinceHistory: false,
+    hasNonTextContent: true,
+    historyLength: 3,
+    historyPointer: 1,
+  }), true);
+});

@@ -479,6 +479,25 @@ bool SessionUserMessageIndex::index_appended_message(
     return update_source(session_id, jsonl_path, after, error);
 }
 
+bool SessionUserMessageIndex::note_non_searchable_append(
+    const std::string& session_id,
+    const std::string& jsonl_path,
+    const SessionUserMessageFileSignature& before_append,
+    std::string* error) {
+    if (session_id.empty() || jsonl_path.empty()) return true;
+    if (!initialize(error)) return false;
+    if (!source_matches_signature(session_id, before_append, error)) return true;
+    const auto after = session_user_message_file_signature(jsonl_path);
+    return update_source(session_id, jsonl_path, after, error);
+}
+
+bool SessionUserMessageIndex::source_is_fresh(
+    const std::string& session_id,
+    const SessionUserMessageFileSignature& signature,
+    std::string* error) {
+    return source_matches_signature(session_id, signature, error);
+}
+
 bool SessionUserMessageIndex::rebuild_session(
     const std::string& session_id,
     const std::string& jsonl_path,

@@ -3,8 +3,19 @@
 #include "llm_provider.hpp"
 
 #include <string>
+#include <vector>
 
 namespace acecode {
+
+namespace codex_detail {
+
+// Flattens the conversation into the single text input a Codex app-server
+// turn takes. User messages carry their `file` content parts as the same
+// [Attached file reference] text the other providers send; a message with no
+// text but with file parts is kept. Exposed for unit tests.
+std::string build_codex_input_text(const std::vector<ChatMessage>& messages);
+
+} // namespace codex_detail
 
 class CodexProvider : public LlmProvider {
 public:

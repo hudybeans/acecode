@@ -399,6 +399,21 @@ static int run_upgrade_command_impl(const AppConfig& config,
 #ifdef __APPLE__
     const auto installed_app_bundle =
         macos_app_bundle_from_executable(current_exe);
+    // 安装位置不满足自更新条件(App Translocation 临时位置、嵌在别的 .app 里等)
+    // 时在拉清单、下载之前就拒绝:以前这道检查在 preflight 里,要等 38 MB 下载
+    // 并校验完才报错,用户每次点更新都白下一遍(wuzq 反馈)。与 preflight 用同一个
+    // 判定函数,口径一致。
+    if (installed_app_bundle) {
+        std::string location_error;
+        if (!macos_app_install_path_is_safe(*installed_app_bundle, &location_error)) {
+            diagnostics.record("macos_install_location_rejected",
+                {{"installed_bundle", path_to_utf8(*installed_app_bundle)}});
+            err << "acecode upgrade: " << location_error << "\n"
+                << "Move ACECode.app into /Applications (or ~/Applications), open it "
+                   "from there, then check for updates again.\n";
+            return 1;
+        }
+    }
 #endif
 
     network::proxy_resolver().init(config.network);

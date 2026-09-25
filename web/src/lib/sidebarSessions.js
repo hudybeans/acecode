@@ -360,13 +360,36 @@ export function reconcileSidebarSessions(previousSessions = [], incomingSessions
     if (key) incomingByKey.set(key, session);
   }
 
+  // 每个工作区当前显示的最新活动时间。新出现的会话只有比它更新(新建、或刚有
+  // 动静)才顶到最前;更旧的是「补位」—— 折叠态只取最新 5 条,归档 / 删除一条后
+  // 下一条旧会话被拉进来。补位按时间插回原位,不能顶到最前:否则 3 天前的会话
+  // 会在归档别的会话时突然窜到顶部(LIUXIN557 反馈)。
+  const newestPreviousByWorkspace = new Map();
+  for (const session of previous) {
+    const workspace = sessionWorkspace(session);
+    const time = sessionTime(session);
+    if (!newestPreviousByWorkspace.has(workspace) || time > newestPreviousByWorkspace.get(workspace)) {
+      newestPreviousByWorkspace.set(workspace, time);
+    }
+  }
+  // 只有双方都有时间戳、且严格更旧才算补位;没有时间戳的保持原来的置顶行为。
+  const isBackfill = (session) => {
+    const newest = newestPreviousByWorkspace.get(sessionWorkspace(session)) || 0;
+    const time = sessionTime(session);
+    return newest > 0 && time > 0 && time < newest;
+  };
+
   const promoted = new Set();
   const top = [];
+  const backfill = [];
   for (const session of sortSidebarSessionsNewestFirst(incoming)) {
     const key = sessionKey(session);
     if (!key || promoted.has(key)) continue;
     const previousSession = previousByKey.get(key);
-    if (!previousSession || sessionContentChanged(previousSession, session)) {
+    if (!previousSession && isBackfill(session)) {
+      promoted.add(key);
+      backfill.push(session);
+    } else if (!previousSession || sessionContentChanged(previousSession, session)) {
       promoted.add(key);
       top.push(session);
     }
@@ -381,6 +404,13 @@ export function reconcileSidebarSessions(previousSessions = [], incomingSessions
     if (!next) continue;
     emitted.add(key);
     stable.push(next);
+  }
+
+  for (const session of backfill) {
+    const time = sessionTime(session);
+    const index = stable.findIndex((existing) => sessionTime(existing) < time);
+    if (index < 0) stable.push(session);
+    else stable.splice(index, 0, session);
   }
 
   return [...top, ...stable];

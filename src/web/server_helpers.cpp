@@ -597,6 +597,28 @@ std::optional<acecode::desktop::WorkspaceMeta> WebServer::Impl::resolve_workspac
     return std::nullopt;
 }
 
+std::optional<WorkspaceDraftLocation> WebServer::Impl::workspace_draft_location(
+    const std::string& hash) const {
+    WorkspaceDraftLocation location;
+    if (hash == "__no_workspace__") {
+        // The draft file keeps its historical place in the cache root; its
+        // attachments must not create a subdirectory there (each one would be
+        // listed as a no-workspace session cwd), so they use the root's
+        // project dir instead.
+        const std::string root = no_workspace_cache_root();
+        location.draft_dir = path_from_utf8(root);
+        location.attachment_project_dir =
+            path_from_utf8(SessionStorage::get_project_dir(root));
+        return location;
+    }
+    const auto workspace = resolve_workspace(hash);
+    if (!workspace) return std::nullopt;
+    location.workspace_hash = workspace->hash;
+    location.draft_dir = path_from_utf8(projects_dir()) / workspace->hash;
+    location.attachment_project_dir = location.draft_dir;
+    return location;
+}
+
 bool WebServer::Impl::archived_query_requested(const crow::request& req) const {
     auto raw = req.url_params.get("archived");
     if (!raw) return false;

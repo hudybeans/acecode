@@ -278,6 +278,10 @@ void CopilotProvider::chat_stream(
         {"Openai-Intent", "conversation-panel"}
     };
 
+    // 走 OpenAiCompatProvider::parse_sse_stream,所以 DSML 与文本形式工具调用
+    // 恢复(扣住标记、Done 上报 text_tool_calls 诊断)在 Copilot 流式路径上同样
+    // 生效。Copilot 的非流式 chat() 是单独实现,刻意不接:AgentLoop 主循环只走
+    // 流式,非流式只用于压缩 / 标题生成这类不带工具的请求,本来就不会构造过滤器。
     parse_sse_stream(COPILOT_CHAT_URL, body, extra_headers, callback, abort_flag);
 }
 

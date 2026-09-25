@@ -12,7 +12,9 @@ import {
   expertCapabilitiesPath,
   mergeAllWorkspaceSessions,
   mergeGlobalSessionsAndWorkspaces,
+  PASTED_TEXT_UPLOAD_TIMEOUT_MS,
   sessionDraftPath,
+  workspaceDraftAttachmentBlobPath,
   sessionTrajectoryPath,
   sessionTodosPath,
 } from './api.js';
@@ -132,6 +134,59 @@ await run('Desktop source reference creation sends metadata without file bytes',
     assert.equal('data_base64' in JSON.parse(calls[0].opts.body), false);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+// 触发场景:粘贴的文本块走三条新接口(工作区草稿附件上传、导入到会话、读取附件正文)。
+// 期望:路径正确、scope 为空时映射到 __no_workspace__;上传 / 读取默认 5 分钟超时,会话上传透传
+// 调用方给的 timeoutMs(默认仍 30 秒);读取把响应当纯文本,即使 Content-Type 是 JSON 也不解析。
+await run('pasted text attachment endpoints use workspace draft paths and paste timeouts', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const calls = [];
+  const delays = [];
+  globalThis.setTimeout = (_callback, delay) => { delays.push(delay); return delays.length; };
+  globalThis.clearTimeout = () => {};
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    const json = !url.endsWith('/blob');
+    return {
+      ok: true,
+      status: 201,
+      headers: { get: () => (json ? 'application/json' : 'application/json; charset=utf-8') },
+      json: async () => ({ attachment: { id: 'x' } }),
+      text: async () => '{"looks":"like json"}',
+    };
+  };
+  try {
+    const api = createApi({ origin: 'http://acecode.test', token: 'tok' });
+    const body = { name: 'p.txt', mime_type: 'text/plain', data_base64: 'eA==', origin: 'pasted_text', paste: { chars: 1, lines: 1 } };
+    await api.uploadWorkspaceDraftAttachment('', body);
+    await api.uploadWorkspaceDraftAttachment('hash/1', body);
+    await api.importWorkspaceDraftAttachment('sess 1', { workspace: '__no_workspace__', id: 'd1' });
+    await api.uploadSessionAttachment('sess', body, { timeoutMs: PASTED_TEXT_UPLOAD_TIMEOUT_MS });
+    await api.uploadSessionAttachment('sess', body);
+    const text = await api.readAttachmentText('/api/workspaces/__no_workspace__/draft/attachments/d1/blob');
+
+    assert.equal(calls[0].url, 'http://acecode.test/api/workspaces/__no_workspace__/draft/attachments');
+    assert.equal(calls[1].url, 'http://acecode.test/api/workspaces/hash%2F1/draft/attachments');
+    assert.deepEqual(JSON.parse(calls[0].opts.body), body);
+    assert.equal(calls[2].url, 'http://acecode.test/api/sessions/sess%201/attachments');
+    assert.deepEqual(JSON.parse(calls[2].opts.body), { from_workspace_draft: { workspace: '__no_workspace__', id: 'd1' } });
+    assert.equal(calls[5].url, 'http://acecode.test/api/workspaces/__no_workspace__/draft/attachments/d1/blob');
+    assert.equal(calls[5].opts.method, 'GET');
+    assert.equal(calls[5].opts.headers['X-ACECode-Token'], 'tok', 'remote Web needs the token header, not a bare URL');
+    assert.equal(text, '{"looks":"like json"}');
+    assert.deepEqual(delays, [
+      PASTED_TEXT_UPLOAD_TIMEOUT_MS, PASTED_TEXT_UPLOAD_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS,
+      PASTED_TEXT_UPLOAD_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, PASTED_TEXT_UPLOAD_TIMEOUT_MS,
+    ]);
+    assert.equal(workspaceDraftAttachmentBlobPath('', 'a/b'), '/api/workspaces/__no_workspace__/draft/attachments/a%2Fb/blob');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 

@@ -117,6 +117,10 @@ void WINAPI service_main(DWORD /*argc*/, LPWSTR* /*argv*/) {
     set_run_mode(RunMode::Service);
     Logger::instance().init_with_rotation(get_logs_dir(), "daemon", /*mirror_stderr=*/false);
     Logger::instance().set_level(LogLevel::Dbg);
+    // 上面 get_logs_dir() 解析数据目录时 logger 还没开,指针失效的告警只能暂存。必须在这里
+    // 补记而不是等 run_worker:load_config / validate_config 失败会直接 return,走不到
+    // run_worker,日志里就只剩 config error 看不出根因。run_worker 里那次 take 会拿到空。
+    acecode::log_deferred_data_dir_resolution_warning();
 
     LOG_INFO("[service] === service_main entry ===");
     LOG_INFO("[service] data_dir = " + get_acecode_dir());

@@ -378,95 +378,17 @@ void DsmlToolCallStreamFilter::reset() {
     marker_probe_.clear();
     candidate_.clear();
     capturing_ = false;
-    in_fence_ = false;
-    fence_char_ = '\0';
-    fence_length_ = 0;
-    reset_markdown_line();
+    fence_.reset();
 }
 
 void DsmlToolCallStreamFilter::append_visible_byte(char c,
                                                    std::string& output) {
     output.push_back(c);
-    update_fence_state(c);
-}
-
-void DsmlToolCallStreamFilter::update_fence_state(char c) {
-    if (c == '\n') {
-        finish_markdown_line();
-        return;
-    }
-
-    if (line_fence_run_active_) {
-        if (c == line_fence_char_) {
-            ++line_fence_run_;
-            if (!in_fence_ && line_fence_run_ >= 3) {
-                line_opening_fence_ = true;
-            }
-            return;
-        }
-
-        line_fence_run_active_ = false;
-        if (!std::isspace(static_cast<unsigned char>(c))) {
-            line_nonspace_after_fence_ = true;
-        }
-        return;
-    }
-
-    if (!line_prefix_active_) {
-        if (!std::isspace(static_cast<unsigned char>(c))) {
-            line_nonspace_after_fence_ = true;
-        }
-        return;
-    }
-
-    if (c == ' ' && line_leading_spaces_ < 3) {
-        ++line_leading_spaces_;
-        return;
-    }
-
-    if (c == '`' || c == '~') {
-        line_prefix_active_ = false;
-        line_fence_run_active_ = true;
-        line_fence_char_ = c;
-        line_fence_run_ = 1;
-        return;
-    }
-
-    line_prefix_active_ = false;
-    if (!std::isspace(static_cast<unsigned char>(c))) {
-        line_nonspace_after_fence_ = true;
-    }
-}
-
-void DsmlToolCallStreamFilter::finish_markdown_line() {
-    if (!in_fence_) {
-        if (line_opening_fence_) {
-            in_fence_ = true;
-            fence_char_ = line_fence_char_;
-            fence_length_ = line_fence_run_;
-        }
-    } else if (line_fence_char_ == fence_char_ &&
-               line_fence_run_ >= fence_length_ &&
-               !line_nonspace_after_fence_) {
-        in_fence_ = false;
-        fence_char_ = '\0';
-        fence_length_ = 0;
-    }
-    reset_markdown_line();
-}
-
-void DsmlToolCallStreamFilter::reset_markdown_line() {
-    line_leading_spaces_ = 0;
-    line_prefix_active_ = true;
-    line_fence_run_active_ = false;
-    line_fence_char_ = '\0';
-    line_fence_run_ = 0;
-    line_opening_fence_ = false;
-    line_nonspace_after_fence_ = false;
+    fence_.feed(c);
 }
 
 bool DsmlToolCallStreamFilter::marker_can_start_here() const {
-    return !in_fence_ && !line_opening_fence_;
+    return !fence_.in_fence() && !fence_.line_opening_fence();
 }
 
 DsmlToolCallRecoveryResult recover_dsml_tool_calls(

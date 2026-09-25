@@ -68,6 +68,24 @@ TEST(ProviderRetryPolicy, HardQuotaMakesRateLimitTerminal) {
         R"({"error":{"message":"gateway did not return insufficient_quota"}})"));
 }
 
+// 场景:代理网关对「API key 额度耗尽」返回与普通限流同名的 code(yubo2 现场原文)。
+// 期望:message 明确说额度 / 余额用完时按硬配额处理,不再重试;按分钟的配额限流
+// (Gemini RESOURCE_EXHAUSTED 的 per minute 文案)与普通限流仍可重试。
+// 回归表现:修复前 grok 官方连接额度用完后被当成瞬时错误无限重试,退避到 20 分钟
+// 一次,用户迟迟看不到「额度用完、请换模型」。
+TEST(ProviderRetryPolicy, QuotaExhaustedMessageMakesRateLimitTerminal) {
+    EXPECT_FALSE(acecode::provider_http_error_is_retryable(
+        429, R"({"error":{"code":"rate_limit_reached","message":"API key quota exhausted","type":"rate_limit_error"}})"));
+    EXPECT_FALSE(acecode::provider_http_error_is_retryable(
+        429, R"({"error":{"message":"You exceeded your current quota, please check your plan and billing details."}})"));
+    EXPECT_FALSE(acecode::provider_http_error_is_retryable(
+        429, "{\"error\":{\"message\":\"\xE8\xB4\xA6\xE6\x88\xB7\xE4\xBD\x99\xE9\xA2\x9D\xE4\xB8\x8D\xE8\xB6\xB3\"}}"));  // 账户余额不足
+    EXPECT_TRUE(acecode::provider_http_error_is_retryable(
+        429, R"({"error":{"code":429,"message":"Quota exceeded for quota metric 'Generate Content API requests per minute'","status":"RESOURCE_EXHAUSTED"}})"));
+    EXPECT_TRUE(acecode::provider_http_error_is_retryable(
+        429, R"({"error":{"code":"rate_limit_reached","message":"Rate limit reached, please retry later"}})"));
+}
+
 TEST(ProviderRetryPolicy, RetryWaitWakesPromptlyOnAbort) {
     acecode::ProviderRetryWaiter waiter;
     std::atomic<bool> abort{false};

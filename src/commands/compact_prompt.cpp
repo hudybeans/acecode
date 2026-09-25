@@ -13,7 +13,17 @@ const std::string kCompactPrompt =
     "- Important context, constraints, or user preferences\n"
     "- What remains to be done (clear next steps)\n"
     "- Any critical data, examples, or references needed to continue\n\n"
-    "Be concise, structured, and focused on helping the next LLM seamlessly continue the work.";
+    "Be concise, structured, and focused on helping the next LLM seamlessly continue the work."
+    // 以下一段是 ACECode 有意偏离 Codex 原文的追加:压缩请求不带工具表,部分模型
+    // (实测 dots3)会接着历史里的 tool_calls「做下一步」,把工具调用写成正文当摘要。
+    // 只禁止调工具 / 输出调用标签,不禁止引用命令与路径 —— 上面要求保留关键数据。
+    "\n\nOutput requirements: tools are not available for this request. Reply with the summary as plain text only; "
+    "do not call any tool and do not emit tool-call or function-call tags. "
+    "You may still quote commands, paths and code that the next step needs.";
+
+const std::string kInvalidSummaryReminder =
+    "Your previous reply was not a valid summary (it contained a tool call or was empty). "
+    "Tools are disabled for this request. Write the handoff summary now as plain text.";
 
 const std::string kSummaryPrefix =
     "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
@@ -22,6 +32,10 @@ const std::string kSummaryPrefix =
 
 const std::string& get_compact_prompt() {
     return kCompactPrompt;
+}
+
+const std::string& get_compact_invalid_summary_reminder() {
+    return kInvalidSummaryReminder;
 }
 
 const std::string& get_compact_summary_prefix() {

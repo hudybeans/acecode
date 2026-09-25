@@ -517,7 +517,7 @@ function promptChange(previous, current, seq, time) {
 function normalizedRequestStatus(step) {
   const responseStatus = String(step.response?.payload?.status || '');
   const finishReason = String(step.finish?.payload?.reason || '');
-  const failed = ['error', 'failed', 'aborted', 'cancelled', 'retry', 'empty_response_retry'];
+  const failed = ['error', 'failed', 'aborted', 'cancelled', 'retry', 'empty_response_retry', 'text_tool_call_retry'];
   if (failed.includes(responseStatus) || failed.includes(finishReason)) return 'error';
   if (!step.response && !step.finish) return 'running';
   return 'complete';

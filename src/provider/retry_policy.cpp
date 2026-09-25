@@ -54,6 +54,23 @@ bool is_hard_quota_code(const std::string& value) {
            code == "hard_limit_reached";
 }
 
+// 429 报文的 message 明确说「额度 / 余额用完」时也算硬配额。起因(yubo2 反馈):
+// 代理网关对额度耗尽返回 {"code":"rate_limit_reached","message":"API key quota
+// exhausted"},code 与普通限流同名,被当成瞬时错误无限重试,退避到 20 分钟一次,
+// 用户迟迟看不到「额度用完、请换模型」。只认明确的耗尽措辞:按分钟 / 按请求数的
+// 配额(Gemini 的 "Quota exceeded ... per minute")是限流,仍可重试;message 里只是
+// 提到 insufficient_quota 这类 code 名的也不算(见 HardQuotaMakesRateLimitTerminal)。
+bool is_hard_quota_message(const std::string& value) {
+    const std::string lower = ascii_lower(value);
+    if (contains_any(lower, {"per minute", "per_minute", "per second", "per day",
+                             "requests per", "tokens per"})) {
+        return false;
+    }
+    return contains_any(lower, {"quota exhausted", "quota has been exhausted",
+                                "exceeded your current quota", "credit balance is too low",
+                                u8"余额不足", u8"额度已用完", u8"额度不足", u8"额度已用尽"});
+}
+
 bool json_has_hard_quota_code(const nlohmann::json& value) {
     if (value.is_object()) {
         for (auto it = value.begin(); it != value.end(); ++it) {
@@ -62,6 +79,10 @@ bool json_has_hard_quota_code(const nlohmann::json& value) {
                  key == "error_code" || key == "reason") &&
                 it.value().is_string() &&
                 is_hard_quota_code(it.value().get<std::string>())) {
+                return true;
+            }
+            if (key == "message" && it.value().is_string() &&
+                is_hard_quota_message(it.value().get<std::string>())) {
                 return true;
             }
             if ((it.value().is_object() || it.value().is_array()) &&
