@@ -338,6 +338,7 @@ update their transcript presentation.
 | PUT | `/api/models/:name` | update saved model profile |
 | DELETE | `/api/models/:name` | remove saved model profile |
 | POST | `/api/models/probe` | probe provider model ids |
+| POST | `/api/models/reasoning/refresh` | queue background reasoning metadata refresh for saved models |
 | POST | `/api/models/test` | test an unsaved model with a short conversation |
 | GET | `/api/models/catalog` | read local model catalog summary and reviewed recommendations |
 | GET | `/api/models/catalog/:provider_id` | search one provider's local model catalog |
@@ -2767,6 +2768,22 @@ returns `409 MODEL_IN_USE`. On success:
 ```json
 {"ok":true}
 ```
+
+### `POST /api/models/reasoning/refresh`
+
+认证后将全部已保存且可使用 OpenAI 兼容 `/models` 探测的连接加入后台同步队列，立即返回 `202 {"accepted":true}`，不等待远端请求。同一端点、凭据、请求头和目录身份的模型合并探测；完整聊天 URL、Anthropic 和受管 Provider 不套用此协议。
+
+Web/Desktop 服务启动后自动执行一次；模型新增或编辑保存成功后自动排队同步该模型。同步不阻塞启动、保存或界面操作；失败、缺失模型及缺失/非法声明静默保留已有配置，不自动重试。
+
+有效声明只更新推理档位、默认值及对应能力标记，保留用户显式 `enabled`、仍有效的 `effort` 与预算设置，以及其他模型字段。请求过程中被编辑、重命名或删除的条目不接受旧响应。无实际变化时不写入配置。
+
+持久化成功后发布模型版本并在安全边界刷新会话，同时向已认证 WebSocket 连接广播：
+
+```json
+{"type":"model_profiles_updated","payload":{"names":["ACEModel-moonlight"]}}
+```
+
+事件不包含密钥或远端错误。客户端收到事件或连接恢复后重读本地列表和会话模型状态；模型设置的刷新按钮调用此接口，无需进入探测弹窗重新选择模型。
 
 ### `POST /api/models/test`
 

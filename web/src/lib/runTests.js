@@ -1,4 +1,5 @@
 import './questionPicker.test.js';
+import './modelReasoningSync.test.js';
 import './homeComposerDraftStore.test.js';
 import './homeComposerDraftLifecycle.test.js';
 import './composerGoal.test.js';

@@ -11,6 +11,7 @@
 #include "static_assets.hpp"
 #include "../config/config.hpp"
 #include "../config/saved_models_editor.hpp"
+#include "saved_model_reasoning_sync.hpp"
 #include "../config/request_headers.hpp"
 #include "../desktop/workspace_registry.hpp"
 #include "../hooks/hook_manager.hpp"
@@ -303,6 +304,9 @@ struct WebServer::Impl {
     // 改写 config.json;不重读的话,下一次任何 save_config 都会把新写入的
     // api_key 抹掉。  (defined in server_helpers.cpp)
     void refresh_saved_models_from_disk();
+    std::unique_ptr<SavedModelReasoningSync> model_reasoning_sync;
+    void initialize_model_reasoning_sync();
+    void request_model_reasoning_sync(const std::string& name = {});
     void refresh_image_generation_tool_locked();
     void refresh_computer_use_tool_locked();
     std::mutex image_generation_test_mu;

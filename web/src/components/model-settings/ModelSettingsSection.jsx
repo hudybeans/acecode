@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api.js';
+import { connection } from '../../lib/connection.js';
+import { refreshSavedModelReasoning, subscribeModelProfileUpdates } from '../../lib/modelReasoningSync.js';
 import { lookupErrorMessage } from '../../lib/errors.js';
 import {
   applyCatalogProviderToDraft,
@@ -63,16 +65,19 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
   const [grokFlow, setGrokFlow] = useState(null);
 
   const providers = catalog?.providers || [];
+  const savedLoadRevision = useRef(0);
 
-  const loadSavedModels = useCallback(async ({ quiet = false } = {}) => {
+  const loadSavedModels = useCallback(async ({ quiet = false, silent = false } = {}) => {
+    const revision = ++savedLoadRevision.current;
     if (!quiet) setModelsLoading(true);
-    setModelsError('');
+    if (!silent) setModelsError('');
     try {
       const [rawModels, rawDefault] = await Promise.all([
         api.listModels(),
         api.getDefaultModel().catch(() => ({ name: '' })),
       ]);
       const safeModels = normalizeSavedModelList(rawModels);
+      if (revision !== savedLoadRevision.current) return safeModels;
       setModels(safeModels);
       setDefaultName(rawDefault?.name || rawDefault?.default_model_name || '');
       setBlockedDeletes((current) => {
@@ -83,13 +88,19 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
       return safeModels;
     } catch (error) {
       const message = lookupErrorMessage(error?.code, error?.message);
-      setModelsError(message);
-      if (!quiet) toast({ kind: 'err', text: message });
+      if (!silent && revision === savedLoadRevision.current) {
+        setModelsError(message);
+        if (!quiet) toast({ kind: 'err', text: message });
+      }
       return null;
     } finally {
-      if (!quiet) setModelsLoading(false);
+      if (revision === savedLoadRevision.current) setModelsLoading(false);
     }
   }, []);
+
+  useEffect(() => subscribeModelProfileUpdates(connection, () => {
+    void loadSavedModels({ quiet: true, silent: true });
+  }), [loadSavedModels]);
 
   const loadCatalog = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setCatalogLoading(true);
@@ -568,7 +579,9 @@ export function ModelSettingsSection({ onModelProfileUpdated, addOnly = false, o
           busy={mutationBusy}
           onReorder={reorderModels}
           blockedDeletes={blockedDeletes}
-          onRefresh={() => { void loadSavedModels(); }}
+          onRefresh={() => {
+            void refreshSavedModelReasoning(api, () => loadSavedModels({ quiet: true, silent: true }));
+          }}
           onAdd={openAddDialog}
           onSetDefault={setDefaultModel}
           onEdit={openEditDialog}

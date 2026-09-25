@@ -581,6 +581,7 @@ export function createApi(base = null) {
     disableHook:      (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/disable`, undefined, base),
     enableHook:       (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/enable`, undefined, base),
     listModels:       ()             => request('GET',    '/api/models', undefined, base),
+    refreshModelReasoning: ()        => request('POST',   '/api/models/reasoning/refresh', {}, base),
     reorderModels:    (names)        => request('POST',   '/api/config/model-order', { names }, base),
     testModel: (draft, options = {}) => request('POST', '/api/models/test', draft, base,
       { timeoutMs: 35000, signal: options.signal }),

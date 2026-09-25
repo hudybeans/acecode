@@ -453,6 +453,7 @@ struct WebServerFixture {
     struct NoSessionRegistryTag {};
     struct TaskSuggestionsTag {};
     struct PtyTag {};
+    struct ReasoningSyncTag {};
 
     acecode::ToolExecutor tools;
     acecode::PermissionManager template_perm;
@@ -503,7 +504,8 @@ struct WebServerFixture {
         std::shared_ptr<acecode::LlmProvider> registry_provider = {},
         bool expose_session_registry = true,
         bool enable_task_suggestions = false,
-        bool enable_pty = false) {
+        bool enable_pty = false,
+        std::function<void(acecode::AppConfig&)> initialize_reasoning_models = {}) {
         port = pick_test_port();
         web_cfg.bind = "127.0.0.1";
         web_cfg.port = port;
@@ -514,6 +516,7 @@ struct WebServerFixture {
         default_model.provider = "copilot";
         default_model.model = "gpt-4o";
         cfg.saved_models.push_back(default_model);
+        if (initialize_reasoning_models) initialize_reasoning_models(cfg);
 
         // PUT /api/mcp 走 save_config 落盘 — 必须指向临时目录,否则
         // 会覆盖真实的 ~/.acecode/config.json(历史 bug,曾把测试用的
@@ -578,6 +581,7 @@ struct WebServerFixture {
         wdeps.web_cfg = &cfg.web;
         wdeps.daemon_cfg = &cfg.daemon;
         wdeps.app_config = &cfg;
+        wdeps.sync_model_reasoning = static_cast<bool>(initialize_reasoning_models);
         wdeps.app_config_mutex = &app_config_mu;
         wdeps.config_path = (tmp_dir / "config.json").string();
         wdeps.cwd = cwd;
@@ -689,6 +693,11 @@ struct WebServerFixture {
               {},
               std::shared_ptr<acecode::LlmProvider>{},
               false) {}
+
+    explicit WebServerFixture(
+        ReasoningSyncTag, std::function<void(acecode::AppConfig&)> initialize)
+        : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
+                           false, {}, {}, true, false, false, std::move(initialize)) {}
 
     explicit WebServerFixture(TaskSuggestionsTag)
         : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
@@ -11178,6 +11187,112 @@ TEST(WebServerHttp, ToolRewritesRoundTripPersistsJsonAndAppliesToProcess) {
     EXPECT_EQ(json::parse(after.text)["rewrites"]["file_read"], "peek");
 }
 
+
+TEST(WebServerHttp, SavedModelReasoningSyncStartupSaveAndRefreshAreAsynchronous) {
+    std::atomic<int> requests{0};
+    std::atomic<bool> blocked{true};
+    std::atomic<bool> fail{false};
+    std::atomic<bool> extra_effort{false};
+    LocalUpdateServer upstream([&](httplib::Server& http) {
+        http.Get("/models", [&](const httplib::Request&, httplib::Response& res) {
+            ++requests;
+            const auto deadline = std::chrono::steady_clock::now() + 4s;
+            while (blocked.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(5ms);
+            if (fail.load()) { res.status = 503; return; }
+            json efforts = {"low", "high"};
+            if (extra_effort.load()) efforts.push_back("max");
+            res.set_content(json{{"data", {
+                {{"id", "moonlight"}, {"reasoning", {
+                    {"supported_efforts", efforts}, {"default_effort", "low"}}}},
+                {{"id", "starrylight"}, {"reasoning", {
+                    {"supported_efforts", efforts}, {"default_effort", "high"}}}}
+            }}}.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx(WebServerFixture::ReasoningSyncTag{}, [&](acecode::AppConfig& cfg) {
+        for (const auto& id : {"moonlight", "starrylight"}) {
+            acecode::ModelProfile p;
+            p.name = id;
+            p.provider = "openai";
+            p.model = id;
+            p.base_url = upstream.base_url();
+            p.api_key = "local-test";
+            p.capabilities_source = "manual";
+            p.capabilities = {"vision"};
+            cfg.saved_models.push_back(p);
+        }
+    });
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto list = [&] {
+        return json::parse(cpr::Get(cpr::Url{fx.url("/api/models")}, cpr::Timeout{1000}).text);
+    };
+    const auto model = [&](const std::string& name) {
+        for (const auto& p : list()) if (p["name"] == name) return p;
+        return json::object();
+    };
+    const auto wait_efforts = [&](const std::string& name, std::size_t count) {
+        const auto deadline = std::chrono::steady_clock::now() + 4s;
+        do {
+            const auto p = model(name);
+            if (p.contains("reasoning") &&
+                p["reasoning"]["supported_efforts"].size() == count) return true;
+            std::this_thread::sleep_for(10ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    // HTTP startup completes while /models is still blocked.
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/health")}, cpr::Timeout{1000}).status_code, 200);
+    EXPECT_FALSE(model("moonlight").contains("reasoning"));
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("moonlight", 2));
+    ASSERT_TRUE(wait_efforts("starrylight", 2));
+    EXPECT_EQ(requests.load(), 1);
+    auto persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    const auto saved = std::find_if(persisted.saved_models.begin(), persisted.saved_models.end(),
+        [](const auto& p) { return p.name == "moonlight"; });
+    ASSERT_NE(saved, persisted.saved_models.end());
+    ASSERT_TRUE(saved->reasoning);
+    EXPECT_EQ(saved->reasoning->supported_efforts.size(), 2u);
+
+    // Saving returns before its new background request can finish.
+    blocked.store(true);
+    extra_effort.store(true);
+    auto edited = model("moonlight");
+    edited["context_window"] = 64000;
+    auto response = cpr::Put(cpr::Url{fx.url("/api/models/moonlight")}, headers,
+                            cpr::Body{edited.dump()}, cpr::Timeout{1000});
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("moonlight", 3));
+    EXPECT_EQ(model("moonlight")["context_window"], 64000);
+    EXPECT_EQ(model("starrylight")["reasoning"]["supported_efforts"].size(), 2u);
+
+    // Manual refresh queues all profiles immediately and fills the remaining one.
+    blocked.store(true);
+    response = cpr::Post(cpr::Url{fx.url("/api/models/reasoning/refresh")}, headers,
+                         cpr::Body{"{}"}, cpr::Timeout{1000});
+    ASSERT_EQ(response.status_code, 202) << response.text;
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("starrylight", 3));
+
+    const auto baseline = model("moonlight");
+    fail.store(true);
+    const int before_failed_request = requests.load();
+    response = cpr::Post(cpr::Url{fx.url("/api/models/reasoning/refresh")}, headers,
+                         cpr::Body{"{}"}, cpr::Timeout{1000});
+    EXPECT_EQ(response.status_code, 202);
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (requests.load() == before_failed_request && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(10ms);
+    fx.server->stop(); // joins the failed request before checking the preserved file
+    persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    const auto after = std::find_if(persisted.saved_models.begin(), persisted.saved_models.end(),
+        [](const auto& p) { return p.name == "moonlight"; });
+    ASSERT_NE(after, persisted.saved_models.end());
+    EXPECT_EQ(after->reasoning->supported_efforts.size(), 3u);
+    EXPECT_EQ(after->context_window, 64000);
+}
 
 TEST(WebServerHttp, ModelProbeReasoningSurvivesCacheAndRemovedDeclaration) {
     std::atomic<bool> declared{true};

@@ -14,6 +14,7 @@ import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThem
 import { ThemeDownloadFailureDialog } from './components/ThemeDownloadFailureDialog.jsx';
 import { setToken } from './lib/auth.js';
 import { connection } from './lib/connection.js';
+import { subscribeModelProfileUpdates } from './lib/modelReasoningSync.js';
 import {
   installAgentBrowserPageListener,
   reconcileAgentBrowserPageStore,
@@ -1096,6 +1097,13 @@ export function App() {
       }
     };
   }, [resumeAndOpenSession]);
+
+  useEffect(() => {
+    if (authState !== 'ok') return undefined;
+    return subscribeModelProfileUpdates(connection, () => {
+      setModelProfileRevision((value) => value + 1);
+    });
+  }, [authState]);
 
   // Successful remote-control selections are authoritative on the daemon.
   // The frontend follows as a best-effort hint and never feeds failures back
