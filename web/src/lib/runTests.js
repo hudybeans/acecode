@@ -4,6 +4,7 @@ import './homeComposerDraftLifecycle.test.js';
 import './composerGoal.test.js';
 import './developerMode.test.js';
 import './toolPreamble.test.js';
+import './workMode.test.js';
 import './transcriptProjectionToolPreamble.test.js';
 import './sessionTranscriptToolPreamble.test.js';
 import './workspaceFolderOrder.test.js';

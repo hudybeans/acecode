@@ -6,7 +6,7 @@
 namespace acecode::web {
 using nlohmann::json;
 
-// 「工具前言」设置(Settings > 开发者模式 > 工具前言,openspec add-tool-preamble)。
+// 「具体进度提示」开关(设置 > 常规 > 工作模式,openspec add-tool-preamble)。
 // 数据在 config.json 的 agent_loop.tool_preamble;PUT 是 patch 语义,落盘后
 // 直接下发到每个活跃会话(AgentLoop 每次用时取快照,不必等回合边界)。
 void WebServer::Impl::register_tool_preamble() {

@@ -1,7 +1,7 @@
 // 覆盖 config.agent_loop.tool_preamble(openspec add-tool-preamble)的解析与
 // 稀疏序列化:
-//   1. 默认关闭、mode=prompt
-//   2. 合法值往返;非法 mode 归一化为 prompt;已废弃的 sidecar 配置静默降级
+//   1. 默认关闭(设置 > 常规 > 工作模式默认是「用于编程」)
+//   2. enabled 往返;类型不对保持默认;前三版遗留的 mode / sidecar_* 键静默忽略
 //   3. 全默认时 agent_loop 段里不写 tool_preamble 键(sparse-on-write)
 // 与 config_desktop_multi_instance_test 同款:写临时 config.json 再
 // load_config_from_path,不碰用户 ~/.acecode。
@@ -38,25 +38,23 @@ protected:
     }
 };
 
-// 场景:结构体默认值与缺省配置。期望:关闭、prompt。
-TEST_F(ConfigToolPreamble, DefaultsAreDisabledPromptMode) {
+// 场景:结构体默认值与缺省配置。期望:关闭。
+TEST_F(ConfigToolPreamble, DefaultsAreDisabled) {
     const acecode::ToolPreambleConfig defaults;
     EXPECT_FALSE(defaults.enabled);
-    EXPECT_EQ(defaults.mode, "prompt");
 
     const auto cfg = load(nlohmann::json::object());
     EXPECT_EQ(cfg.agent_loop.tool_preamble, defaults);
 }
 
-// 场景:合法配置 {enabled:true, mode:"reasoning"} 加载后 save 再 load。
-// 期望:两个字段保留,且不影响同段落里的 max_iterations。
+// 场景:{enabled:true} 加载后 save 再 load。
+// 期望:enabled 保留,且不影响同段落里的 max_iterations。
 TEST_F(ConfigToolPreamble, LoadsAndRoundTripsValidValues) {
     auto cfg = load({{"agent_loop", {
         {"max_iterations", 7},
-        {"tool_preamble", {{"enabled", true}, {"mode", "reasoning"}}},
+        {"tool_preamble", {{"enabled", true}}},
     }}});
     EXPECT_TRUE(cfg.agent_loop.tool_preamble.enabled);
-    EXPECT_EQ(cfg.agent_loop.tool_preamble.mode, "reasoning");
     EXPECT_EQ(cfg.agent_loop.max_iterations, 7);
 
     acecode::save_config(cfg, path.string());
@@ -65,24 +63,21 @@ TEST_F(ConfigToolPreamble, LoadsAndRoundTripsValidValues) {
     EXPECT_EQ(restored.agent_loop.max_iterations, 7);
 }
 
-// 场景:mode 写了不认识的 "auto",enabled 写成字符串 "true"。期望:mode 归一化
-// 为 prompt;类型不对的 enabled 保持默认 false,不报错。
+// 场景:enabled 写成字符串 "true"。期望:类型不对保持默认 false,不报错。
 TEST_F(ConfigToolPreamble, InvalidValuesAreNormalized) {
-    const auto cfg = load({{"agent_loop", {{"tool_preamble", {
-        {"enabled", "true"}, {"mode", "auto"}}}}}});
+    const auto cfg = load({{"agent_loop", {{"tool_preamble", {{"enabled", "true"}}}}}});
     EXPECT_FALSE(cfg.agent_loop.tool_preamble.enabled);
-    EXPECT_EQ(cfg.agent_loop.tool_preamble.mode, "prompt");
 }
 
 // 场景:旧版本写下的 {mode:"sidecar", sidecar_model:"fast", sidecar_wait_ms:500}
-// (旁路模型摘要已被砍掉)。期望:mode 归一化为 prompt,多余的键静默忽略,
-// enabled 照常生效;再 save 时不会把旧键写回去。
-TEST_F(ConfigToolPreamble, LegacySidecarConfigDegradesToPrompt) {
+// 或 {mode:"prompt"}(提示驱动 / 推理摘要 / 旁路模型三版已全部撤掉)。期望:
+// 多余的键静默忽略,enabled 照常生效;再 save 时不会把旧键写回去。用户真实配置
+// 就是这种形态,升级后必须原样保持「开启」。
+TEST_F(ConfigToolPreamble, LegacyModeKeysAreIgnored) {
     auto cfg = load({{"agent_loop", {{"tool_preamble", {
         {"enabled", true}, {"mode", "sidecar"},
         {"sidecar_model", "fast"}, {"sidecar_wait_ms", 500}}}}}});
     EXPECT_TRUE(cfg.agent_loop.tool_preamble.enabled);
-    EXPECT_EQ(cfg.agent_loop.tool_preamble.mode, "prompt");
 
     acecode::save_config(cfg, path.string());
     std::ifstream input(path);

@@ -198,7 +198,6 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 const SystemPromptEnvironment* environment,
                                 const SystemPromptSandboxState* sandbox,
                                 const SystemPromptModelState* model,
-                                bool prompt_tool_preamble,
                                 const SystemPromptWorkspaceFolders* workspace_folders) {
     (void)cwd;
     (void)skills;
@@ -375,63 +374,32 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "- Be concise and direct.\n"
         << "- Do not use emojis unless the user explicitly requests them.\n\n";
 
-    if (!prompt_tool_preamble) {
-        // 「Sharing progress updates」是 2026-06-14(5cc31231)加进来的旧节,教模型在
-        // 工具调用之间写 10 词以内的裸文本进度句。工具前言的标签模式开启时整节不出:
-        // 它给的 Good 示例本身就是裸文本("Checking the test results."),实测 grok-4.7
-        // (用户会话 20260925-031619-1f93)20 步全部照着示例写裸文本、零标签 —— 带具体
-        // 示例的一节压过了后面只讲规则的标签要求。关闭时逐字节不变。
-        oss << "# Sharing progress updates\n\n"
-            << "Do not narrate every tool call. During multi-step work, prefer silent "
-            << "batches of tool calls over alternating short text and one tool call. "
-            << "Only emit a progress update when it helps the user understand a "
-            << "long-running transition, a meaningful phase change, or why you are "
-            << "about to perform a non-obvious action. Keep progress updates "
-            << "**extremely short** - 10 words or fewer:\n\n";
-        if (file_read_allowed) {
-            oss << "  Good: emit several independent `" << file_read_name
-                << "` and available search calls together with no preceding text.\n";
-        }
-        oss
-            << "  Good: \"Checking the test results.\"\n"
-            << "  Good: \"Found the issue, fixing now.\"\n";
-        if (file_read_allowed) {
-            oss << "  Bad:  \"Let me read this file.\" followed by one `"
-                << file_read_name
-                << "`, then another progress sentence before the next read.\n";
-        }
-        oss
-            << "  Bad:  \"I've analyzed the error in src/foo.cpp and determined that the "
-            << "root cause is a null pointer dereference on line 42. Let me fix that.\"\n\n"
-            << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
-            << "any substantive content into mid-turn messages. If you discover something "
-            << "important, hold it — put it in your final message after all tool work "
-            << "is complete.\n\n";
-    } else {
-        // 工具前言 · 提示驱动(add-tool-preamble):模型用 <text_preamble> 标签标出
-        // 「正在做什么」,daemon 流式识别后只进 loading,不进正文。上面那节的裸文本
-        // 进度句指引整体让位给标签;「别把结论塞进中途消息」这条与标签无关,保留。
-        oss << "# Progress preamble\n\n"
-            << "For multi-step tool tasks, emit exactly one short sentence in "
-            << "<text_preamble type=\"read\">...</text_preamble> (use type=\"write\" for "
-            << "state-changing actions) before the first call and at major phase/plan "
-            << "changes: next step initially, verified result + next step thereafter; "
-            << "never tag final answers. The tag is consumed by the UI as a status line "
-            << "and is not shown as prose, so write it in the language of the user's "
-            << "latest message, keep it to one line with no markdown, and put nothing "
-            << "else in it. This tag is the only form of progress update: do not write "
-            << "plain-text sentences between tool calls, and batch independent calls in "
-            << "one message.\n\n"
-            << "  Good (before the first call, next step): "
-            << "<text_preamble type=\"read\">Reading the loader and registry to find where lookups fail.</text_preamble>\n"
-            << "  Good (at a phase change, verified result + next step): "
-            << "<text_preamble type=\"write\">Lookup fails on empty keys in loader.py; adding the guard now.</text_preamble>\n"
-            << "  Bad:  \"Reading the loader now.\" as plain text before a tool call.\n\n"
-            << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
-            << "any substantive content into mid-turn messages. If you discover something "
-            << "important, hold it — put it in your final message after all tool work "
-            << "is complete.\n\n";
+    oss << "# Sharing progress updates\n\n"
+        << "Do not narrate every tool call. During multi-step work, prefer silent "
+        << "batches of tool calls over alternating short text and one tool call. "
+        << "Only emit a progress update when it helps the user understand a "
+        << "long-running transition, a meaningful phase change, or why you are "
+        << "about to perform a non-obvious action. Keep progress updates "
+        << "**extremely short** - 10 words or fewer:\n\n";
+    if (file_read_allowed) {
+        oss << "  Good: emit several independent `" << file_read_name
+            << "` and available search calls together with no preceding text.\n";
     }
+    oss
+        << "  Good: \"Checking the test results.\"\n"
+        << "  Good: \"Found the issue, fixing now.\"\n";
+    if (file_read_allowed) {
+        oss << "  Bad:  \"Let me read this file.\" followed by one `"
+            << file_read_name
+            << "`, then another progress sentence before the next read.\n";
+    }
+    oss
+        << "  Bad:  \"I've analyzed the error in src/foo.cpp and determined that the "
+        << "root cause is a null pointer dereference on line 42. Let me fix that.\"\n\n"
+        << "Do NOT put conclusions, explanations, reasoning, lists of changes, or "
+        << "any substantive content into mid-turn messages. If you discover something "
+        << "important, hold it — put it in your final message after all tool work "
+        << "is complete.\n\n";
 
     oss << "# Presenting your work and final message\n\n"
         << "Your final message in a turn is the only message the user will read in full. ";
