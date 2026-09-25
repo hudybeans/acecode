@@ -15,7 +15,7 @@
 
 ### Requirement: 阶段前言的来源
 开启后 AgentLoop SHALL 维护一条**阶段前言**状态 `{title, source, kind}`,按 `mode` 建立:
-- `prompt`:系统提示 MUST 追加「# Progress preamble」段(要求多步工具任务在第一次调用前与阶段 / 计划变化时用 `<text_preamble type="read|write">…</text_preamble>` 写恰好一句,最终回答不打标签;「Do not narrate every tool call」的既有口径保留)。daemon MUST 流式扫描 assistant 正文:标签闭合的那一刻标签正文(规整为单行、截到 200 个 code point)成为阶段前言,`kind` 取 `type` 属性(只认 read / write,其它为空);标签正文 MUST NOT 出现在 `token` 帧 / `message` 帧 / TUI 行 / Web 渲染里。
+- `prompt`:系统提示 MUST 追加「# Progress preamble」段(要求多步工具任务在第一次调用前与阶段 / 计划变化时用 `<text_preamble type="read|write">…</text_preamble>` 写恰好一句,最终回答不打标签;Good 示例按同一规则示范,Bad 示例是裸文本进度句;旧的「Sharing progress updates」裸文本进度句一节在开启时 MUST NOT 出现,「批量调用」与「别把结论塞进中途消息」的既有口径保留)。daemon MUST 流式扫描 assistant 正文:标签闭合的那一刻标签正文(规整为单行、截到 200 个 code point)成为阶段前言,`kind` 取 `type` 属性(只认 read / write,其它为空);标签正文 MUST NOT 出现在 `token` 帧 / `message` 帧 / TUI 行 / Web 渲染里。
 - `reasoning`:推理内容里第一对闭合 `**…**` 的内文;没有时取首行首句(去掉 Okay, / 好的， 等口头填充),截到 60 个 code point;不足 2 个 code point 视为无标题。
 
 标签识别 MUST 容错:标签切在任意字节处、没写 `type`、缺闭合标签(到行尾为止)、`<text_preamble/>`(跳过)、大小写不敏感、超过 1200 字节未闭合(到此为止)、孤立闭合标签(丢弃);非标签的相似文本(`<textarea>`、`<text_preambleX>`、`a < b`)MUST 原样放行。**无论功能是否开启**,标签 MUST 从可见正文里剥掉;只有开启 prompt 模式时才发布成前言。
