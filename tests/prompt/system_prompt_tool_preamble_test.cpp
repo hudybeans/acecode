@@ -100,6 +100,27 @@ TEST_F(SystemPromptToolPreambleTest, EnabledAddsTextPreambleGuidanceAndKeepsLega
     EXPECT_EQ(on.find("# Tool call preamble"), std::string::npos);
 }
 
+// 场景:开关打开时「Sharing progress updates」一节的示例。期望:Good 示例是带标签的
+// 进度句,裸文本进度句的示例不再出现,并明说裸文本进度句是错误;关闭时示例仍是
+// 裸文本(与旧提示逐字节一致)。回归:grok-4.7 在用户会话 20260925-031619-1f93 里
+// 20 步全部照着旧的裸文本示例写进度句、零标签 —— 带示例的一节压过了只讲规则的一节。
+TEST_F(SystemPromptToolPreambleTest, EnabledProgressExamplesAreTagged) {
+    const std::string on = build(true);
+    EXPECT_NE(on.find("Good: <text_preamble type=\"read\">Checking the test results.</text_preamble>"),
+              std::string::npos);
+    EXPECT_NE(on.find("Good: <text_preamble type=\"write\">Found the issue, fixing now.</text_preamble>"),
+              std::string::npos);
+    EXPECT_EQ(on.find("Good: \"Checking the test results.\""), std::string::npos);
+    EXPECT_NE(on.find("a progress sentence written as plain text outside the tag is a mistake"),
+              std::string::npos);
+    EXPECT_NE(on.find("never write one as plain text before a tool call"), std::string::npos);
+
+    const std::string off = build(false);
+    EXPECT_NE(off.find("Good: \"Checking the test results.\""), std::string::npos);
+    EXPECT_EQ(off.find("written as plain text outside the tag"), std::string::npos);
+    EXPECT_EQ(off.find("<text_preamble"), std::string::npos);
+}
+
 // 场景:开关打开,同一输入连续构造两次。期望:逐字节一致(段落里没有时间戳 /
 // 随机内容,不打穿 prompt cache 前缀)。
 TEST_F(SystemPromptToolPreambleTest, EnabledPromptIsByteStableAcrossCalls) {

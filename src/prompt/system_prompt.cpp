@@ -354,23 +354,38 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "- Be concise and direct.\n"
         << "- Do not use emojis unless the user explicitly requests them.\n\n";
 
+    // 工具前言 · 提示驱动(add-tool-preamble)开启时,进度句的示例必须是带标签的
+    // 形态。曾经的做法是本节照旧给裸文本示例("Checking the test results.")、只在
+    // 下一节追加标签要求,实测 grok-4.7(用户会话 20260925-031619-1f93)20 步全部
+    // 照着示例写裸文本进度句、零标签 —— 带具体示例的一节压过了只讲规则的一节。
     oss << "# Sharing progress updates\n\n"
         << "Do not narrate every tool call. During multi-step work, prefer silent "
         << "batches of tool calls over alternating short text and one tool call. "
         << "Only emit a progress update when it helps the user understand a "
         << "long-running transition, a meaningful phase change, or why you are "
         << "about to perform a non-obvious action. Keep progress updates "
-        << "**extremely short** - 10 words or fewer:\n\n";
+        << "**extremely short** - 10 words or fewer";
+    if (prompt_tool_preamble) {
+        oss << " - and always wrap them in the <text_preamble> tag described in the "
+            << "next section; a progress sentence written as plain text outside the "
+            << "tag is a mistake";
+    }
+    oss << ":\n\n";
     if (file_read_allowed) {
         oss << "  Good: emit several independent `" << file_read_name
             << "` and available search calls together with no preceding text.\n";
     }
-    oss
-        << "  Good: \"Checking the test results.\"\n"
-        << "  Good: \"Found the issue, fixing now.\"\n";
+    if (prompt_tool_preamble) {
+        oss << "  Good: <text_preamble type=\"read\">Checking the test results.</text_preamble>\n"
+            << "  Good: <text_preamble type=\"write\">Found the issue, fixing now.</text_preamble>\n";
+    } else {
+        oss << "  Good: \"Checking the test results.\"\n"
+            << "  Good: \"Found the issue, fixing now.\"\n";
+    }
     if (file_read_allowed) {
-        oss << "  Bad:  \"Let me read this file.\" followed by one `"
-            << file_read_name
+        oss << "  Bad:  \"Let me read this file.\""
+            << (prompt_tool_preamble ? " as plain text" : "")
+            << " followed by one `" << file_read_name
             << "`, then another progress sentence before the next read.\n";
     }
     oss
@@ -382,9 +397,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "is complete.\n\n";
 
     if (prompt_tool_preamble) {
-        // 工具前言 · 提示驱动(add-tool-preamble):模型用 <text_preamble> 标签
-        // 标出「正在做什么」,daemon 流式识别后只进 loading,不进正文 —— 上面
-        // 「不要叙述工具调用」的口径原样保留,标签不是叙述。
+        // 模型用 <text_preamble> 标签标出「正在做什么」,daemon 流式识别后只进
+        // loading,不进正文 —— 上面「不要叙述工具调用」的口径原样保留,标签不是叙述。
         oss << "# Progress preamble\n\n"
             << "For multi-step tool tasks, emit exactly one short sentence in "
             << "<text_preamble type=\"read\">...</text_preamble> (use type=\"write\" for "
@@ -393,8 +407,9 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
             << "never tag final answers. The tag is consumed by the UI as a status line "
             << "and is not shown as prose, so write it in the language of the user's "
             << "latest message, keep it to one line with no markdown, and put nothing "
-            << "else in it. It does not replace the rules above: still batch independent "
-            << "calls in one message and do not narrate tool calls outside the tag.\n\n";
+            << "else in it. Every progress update goes inside this tag - never write "
+            << "one as plain text before a tool call. It does not replace the rules "
+            << "above: still batch independent calls in one message.\n\n";
     }
 
     oss << "# Presenting your work and final message\n\n"
