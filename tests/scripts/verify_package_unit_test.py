@@ -167,7 +167,7 @@ class VerifyPackageUnitTest(unittest.TestCase):
                         verify_package.structural_checks(report, root, root, "windows", ["tui"])
                         self.assertEqual(report.failed, 0 if state == "present" else 1)
 
-    def test_computer_use_install_is_windows_only_in_dry_run(self) -> None:
+    def test_computer_use_install_is_windows_and_macos_only_in_dry_run(self) -> None:
         for platform in ("windows", "darwin", "linux"):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -176,7 +176,20 @@ class VerifyPackageUnitTest(unittest.TestCase):
                     verify_package.print_dry_run(root, root / "build", root / "staging",
                                                 platform, ["tui"], 2, "cmake", None, True)
                 self.assertEqual("--component computer_use_runtime" in output.getvalue(),
-                                 platform == "windows")
+                                 platform in ("windows", "darwin"))
+
+    def test_macos_computer_use_helper_must_be_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / "acecode-computer-use"
+            helper.write_bytes(b"runtime")
+            with mock.patch.object(verify_package, "check_models_dev"), \
+                    mock.patch.object(verify_package, "check_seed_bundle"):
+                for mode, failures in ((0o644, 1), (0o755, 0)):
+                    helper.chmod(mode)
+                    report = verify_package.Report()
+                    verify_package.structural_checks(report, root, root, "darwin", ["tui"])
+                    self.assertEqual(report.failed, failures)
 
     def test_staging_path_guard_rejects_protected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as root_text:

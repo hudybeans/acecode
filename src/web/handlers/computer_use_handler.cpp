@@ -1,13 +1,10 @@
 #include "computer_use_handler.hpp"
+#include "../../computer_use/runtime.hpp"
 
 namespace acecode::web {
 
 bool computer_use_supported() {
-#ifdef _WIN32
-    return true;
-#else
-    return false;
-#endif
+    return computer_use::supported();
 }
 
 nlohmann::json computer_use_settings(const AppConfig& config) {
@@ -59,7 +56,7 @@ bool apply_computer_use_settings(AppConfig& config,
         }
     }
     if (patch.contains("enabled") && next.enabled && !computer_use_supported()) {
-        error = "computer use is currently supported only on Windows";
+        error = "Computer Use requires Windows or macOS 14 or later";
         return false;
     }
     config.computer_use = next;

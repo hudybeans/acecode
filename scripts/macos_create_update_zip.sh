@@ -71,6 +71,11 @@ if [[ ! -d "$app_path" || "$(basename "$app_path")" != "ACECode.app" ]]; then
     echo "Missing ACECode.app update payload: $app_path" >&2
     exit 1
 fi
+computer_use_helper="$app_path/Contents/MacOS/acecode-computer-use"
+if [[ ! -x "$computer_use_helper" || ! -s "$computer_use_helper" ]]; then
+    echo "ACECode.app is missing the Computer Use helper: $computer_use_helper" >&2
+    exit 1
+fi
 models_dev_dir="$app_path/Contents/Resources/share/acecode/models_dev"
 seed_dir="$app_path/Contents/Resources/share/acecode/seed"
 models_dev_files=(api.json MANIFEST.json LICENSE)
@@ -110,6 +115,7 @@ trap cleanup EXIT
 # Reuse the already signed/notarized bundled daemon as the flat CLI payload.
 /usr/bin/ditto "$app_path/Contents/MacOS/acecode-daemon" \
     "$temporary_root/acecode"
+/usr/bin/ditto "$computer_use_helper" "$temporary_root/acecode-computer-use"
 mkdir -p "$temporary_root/share/acecode"
 /usr/bin/ditto "$models_dev_dir" \
     "$temporary_root/share/acecode/models_dev"
@@ -120,7 +126,7 @@ if [[ -d "$app_path/Contents/Resources/channels" ]]; then
 fi
 (
     cd "$temporary_root"
-    /usr/bin/zip -qr "$temporary_zip" acecode share
+    /usr/bin/zip -qr "$temporary_zip" acecode acecode-computer-use share
     if [[ -d channels ]]; then /usr/bin/zip -qr "$temporary_zip" channels; fi
 )
 mkdir -p "$verify_root"
@@ -135,8 +141,13 @@ verified_cli_models="$verify_root/share/acecode/models_dev"
 verified_app_seed="$verified_app/Contents/Resources/share/acecode/seed"
 verified_cli_seed="$verify_root/share/acecode/seed"
 if [[ ! -d "$verified_app" || ! -x "$app_main" || ! -x "$app_daemon" ||
-      ! -x "$verified_cli" ]]; then
+      ! -x "$verified_cli" || ! -x "$verify_root/acecode-computer-use" ||
+      ! -x "$verified_app/Contents/MacOS/acecode-computer-use" ]]; then
     echo "Extracted update archive is missing executable ACECode app or CLI binaries." >&2
+    exit 1
+fi
+if ! /usr/bin/cmp -s "$verify_root/acecode-computer-use" "$verified_app/Contents/MacOS/acecode-computer-use"; then
+    echo "Extracted Computer Use helpers differ between CLI and app payloads." >&2
     exit 1
 fi
 for models_dev_file in "${models_dev_files[@]}"; do
@@ -158,6 +169,7 @@ python3 "$repo_root/scripts/verify_seed_bundle.py" \
 if [[ "$require_trusted" == true ]]; then
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$verified_app"
     /usr/bin/codesign --verify --strict --verbose=2 "$verified_cli"
+    /usr/bin/codesign --verify --strict --verbose=2 "$verify_root/acecode-computer-use"
     xcrun stapler validate "$verified_app"
     /usr/sbin/spctl --assess --type execute --verbose=4 "$verified_app"
 fi

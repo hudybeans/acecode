@@ -206,6 +206,8 @@ EOF
 exit 0
 EOF
     chmod +x "$fixture/build/ACECode.app/Contents/MacOS/acecode-daemon"
+    cp "$fixture/build/ACECode.app/Contents/MacOS/acecode-daemon" \
+        "$fixture/build/ACECode.app/Contents/MacOS/acecode-computer-use"
     cp "$fixture/assets/models_dev/"* \
         "$fixture/build/ACECode.app/Contents/Resources/share/acecode/models_dev/"
     # The destination already exists (created by mkdir -p above), so plain
@@ -218,6 +220,7 @@ EOF
         --repo "$fixture" --build-dir "$fixture/build" \
         --staging-dir "$fixture/build/staging" --launch-timeout 2
     expect_output "\[PASS\] app bundle acecode-daemon" "bundle daemon"
+    expect_output "\[PASS\] app bundle acecode-computer-use" "bundle computer use helper"
     expect_output "\[PASS\] models_dev registry (app bundle)" "bundle models_dev"
 
     # Negative: mutated models.dev file set fails.

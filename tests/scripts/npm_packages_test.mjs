@@ -34,7 +34,9 @@ function fixture(t) {
     write(dir, platform.startsWith('windows') ? 'acecode.exe' : 'acecode');
     if (platform.startsWith('windows')) write(dir, 'acecode-computer-use.exe', 'computer-use-runtime');
     if (platform.startsWith('macos')) {
+      write(dir, 'acecode-computer-use', 'computer-use-runtime');
       write(dir, 'ACECode.app/Contents/MacOS/ACECode');
+      write(dir, 'ACECode.app/Contents/MacOS/acecode-computer-use', 'computer-use-runtime');
       resources(path.join(dir, 'ACECode.app/Contents/Resources'));
     } else {
       write(dir, platform.startsWith('windows') ? 'acecode-desktop.exe' : 'acecode-desktop');
@@ -60,6 +62,13 @@ test('all six npm platforms preserve bridge assets and exclude runtime state', (
       assert.equal(fs.readFileSync(helper, 'utf8'), 'computer-use-runtime');
     } else {
       assert.equal(fs.existsSync(helper), false);
+    }
+    if (platform.startsWith('macos')) {
+      const macHelper = path.join(output, 'platform', npmPlatform, 'acecode-computer-use');
+      assert.equal(fs.readFileSync(macHelper, 'utf8'), 'computer-use-runtime');
+      assert.notEqual(fs.statSync(macHelper).mode & 0o111, 0);
+      assert.equal(fs.readFileSync(path.join(output, 'platform', npmPlatform,
+        'ACECode.app/Contents/MacOS/acecode-computer-use'), 'utf8'), 'computer-use-runtime');
     }
     const channel = path.join(output, 'platform', npmPlatform, 'channels/whatsapp');
     assert.deepEqual(fs.readdirSync(channel).sort(), [...assets].sort());
@@ -93,10 +102,26 @@ test('empty Windows Computer Use runtime rejects npm packaging', (t) => {
   assert.match(result.stderr, /windows-x64.*Computer Use runtime/);
 });
 
+test('missing macOS Computer Use runtime rejects npm packaging', (t) => {
+  const { input, run } = fixture(t);
+  fs.unlinkSync(path.join(input, 'acecode-macos-arm64/acecode-computer-use'));
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /macos-arm64.*acecode-computer-use/);
+});
+
 test('macOS app bundle must also contain its bridge', (t) => {
   const { input, run } = fixture(t);
   fs.unlinkSync(path.join(input, 'acecode-macos-arm64/ACECode.app/Contents/Resources/channels/whatsapp/bridge.mjs'));
   const result = run();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /macos-arm64 app bundle.*missing WhatsApp bridge asset: bridge.mjs/);
+});
+
+test('macOS app bundle must also contain its Computer Use helper', (t) => {
+  const { input, run } = fixture(t);
+  fs.unlinkSync(path.join(input, 'acecode-macos-x64/ACECode.app/Contents/MacOS/acecode-computer-use'));
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /macos-x64.*Computer Use runtime/);
 });

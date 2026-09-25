@@ -156,6 +156,11 @@ if [[ ! -x "$app_executable" ]]; then
     echo "Missing executable ACECode payload: $app_executable" >&2
     exit 1
 fi
+computer_use_helper="$app_path/Contents/MacOS/acecode-computer-use"
+if [[ ! -x "$computer_use_helper" || ! -s "$computer_use_helper" ]]; then
+    echo "Missing Computer Use helper payload: $computer_use_helper" >&2
+    exit 1
+fi
 
 architectures="$(/usr/bin/lipo -archs "$app_executable" 2>/dev/null || true)"
 if [[ -z "$architectures" ]]; then
@@ -172,6 +177,10 @@ for architecture in $architectures; do
             exit 1
             ;;
     esac
+    if ! /usr/bin/lipo "$computer_use_helper" -verify_arch "$architecture" >/dev/null 2>&1; then
+        echo "Computer Use helper does not support app architecture: $architecture" >&2
+        exit 1
+    fi
     if [[ -n "$host_architectures" ]]; then
         host_architectures+=","
     fi

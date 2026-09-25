@@ -9419,6 +9419,9 @@ TEST(WebServerHttp, ComputerUseSettingsPersistAndRevokeToolsLive) {
     const auto snapshot = json::parse(initial.text);
     EXPECT_FALSE(snapshot["enabled"].get<bool>());
     EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+    ASSERT_TRUE(snapshot["availability"].is_object());
+    EXPECT_EQ(snapshot["availability"]["supported"], snapshot["supported"]);
+    EXPECT_TRUE(snapshot["availability"]["ready"].is_boolean());
     EXPECT_EQ(initial.header.at("Cache-Control"), "no-store");
     const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
     EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);
@@ -9446,36 +9449,36 @@ TEST(WebServerHttp, ComputerUseSettingsPersistAndRevokeToolsLive) {
     EXPECT_EQ(configured.computer_use.pointer_color, "#abcdef");
 
     const auto enabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":true})"});
-#ifdef _WIN32
-    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
-    EXPECT_TRUE(snapshot["supported"].get<bool>());
-    EXPECT_TRUE(fx.cfg.computer_use.enabled);
-    EXPECT_TRUE(acecode::computer_use::enabled());
-    EXPECT_TRUE(fx.tools.has_tool("computer_list_windows"));
-    EXPECT_TRUE(fx.tools.has_tool("computer_click"));
-    auto disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
-    EXPECT_TRUE(disk.computer_use.enabled);
-    disk.ui.locale = "en-US";
-    acecode::save_config(disk, (fx.tmp_dir / "config.json").string());
-    const auto disabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"});
-    ASSERT_EQ(disabled.status_code, 200) << disabled.text;
-    EXPECT_FALSE(fx.cfg.computer_use.enabled);
-    EXPECT_FALSE(acecode::computer_use::enabled());
-    EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
-    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
-    disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
-    EXPECT_FALSE(disk.computer_use.enabled);
-    EXPECT_EQ(disk.ui.locale, "en-US");
-    EXPECT_EQ(disk.computer_use.pointer_style, "plain");
-    EXPECT_EQ(disk.computer_use.pointer_color, "#abcdef");
-#else
-    EXPECT_EQ(enabled.status_code, 400);
-    EXPECT_EQ(json::parse(enabled.text)["error"], "COMPUTER_USE_PLATFORM_UNSUPPORTED");
-    EXPECT_FALSE(snapshot["supported"].get<bool>());
-    EXPECT_FALSE(fx.cfg.computer_use.enabled);
-    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
-    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 200);
-#endif
+    if (acecode::computer_use::supported()) {
+        ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+        EXPECT_TRUE(snapshot["supported"].get<bool>());
+        EXPECT_TRUE(fx.cfg.computer_use.enabled);
+        EXPECT_TRUE(acecode::computer_use::enabled());
+        EXPECT_TRUE(fx.tools.has_tool("computer_list_windows"));
+        EXPECT_TRUE(fx.tools.has_tool("computer_click"));
+        auto disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+        EXPECT_TRUE(disk.computer_use.enabled);
+        disk.ui.locale = "en-US";
+        acecode::save_config(disk, (fx.tmp_dir / "config.json").string());
+        const auto disabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"});
+        ASSERT_EQ(disabled.status_code, 200) << disabled.text;
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(acecode::computer_use::enabled());
+        EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+        disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+        EXPECT_FALSE(disk.computer_use.enabled);
+        EXPECT_EQ(disk.ui.locale, "en-US");
+        EXPECT_EQ(disk.computer_use.pointer_style, "plain");
+        EXPECT_EQ(disk.computer_use.pointer_color, "#abcdef");
+    } else {
+        EXPECT_EQ(enabled.status_code, 400);
+        EXPECT_EQ(json::parse(enabled.text)["error"], "COMPUTER_USE_PLATFORM_UNSUPPORTED");
+        EXPECT_FALSE(snapshot["supported"].get<bool>());
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+        EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 200);
+    }
 }
 
 TEST(WebServerHttp, ComputerUseRejectsInvalidAndFailedWritesWithoutEnablingTools) {
@@ -9494,6 +9497,25 @@ TEST(WebServerHttp, ComputerUseRejectsInvalidAndFailedWritesWithoutEnablingTools
     EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"pointer_style":"plain","pointer_color":"#abcdef"})"}).status_code, 500);
     EXPECT_EQ(fx.cfg.computer_use.pointer_style, "ace");
     EXPECT_EQ(fx.cfg.computer_use.pointer_color, "#2563eb");
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+}
+
+TEST(WebServerHttp, ComputerUsePermissionRequestsRequireAuthenticationAndOneKnownPermission) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use/permissions")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
+    // This valid permission name must be rejected before reaching the native
+    // permission prompt. Automated tests never request real TCC authorization.
+    EXPECT_EQ(cpr::Post(url, cpr::Header{{"Origin", origin}},
+        cpr::Body{R"({"permission":"accessibility"})"}).status_code, 401);
+    for (const auto* body : {"{", "[]", "{}", R"({"permission":true})",
+        R"({"permission":"camera"})", R"({"permission":"accessibility","enabled":true})"}) {
+        const auto response = cpr::Post(url, headers, cpr::Body{body});
+        EXPECT_EQ(response.status_code, 400) << body;
+        EXPECT_EQ(json::parse(response.text)["error"], "COMPUTER_USE_INVALID_PERMISSION");
+    }
     EXPECT_FALSE(fx.cfg.computer_use.enabled);
     EXPECT_FALSE(fx.tools.has_tool("computer_click"));
 }

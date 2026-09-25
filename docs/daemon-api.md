@@ -378,6 +378,7 @@ update their transcript presentation.
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
 | GET | `/api/config/computer-use` | read computer control availability and pointer appearance |
 | PUT | `/api/config/computer-use` | partially update the switch or pointer appearance |
+| POST | `/api/config/computer-use/permissions` | explicitly request one macOS system permission |
 | GET | `/api/config/summary-generation` | read summary-model override and available models |
 | PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
@@ -3530,12 +3531,12 @@ setting does not change the conversation model or disable automatic titles.
 ### Computer use settings
 
 `GET /api/config/computer-use` returns `enabled` (default `false`),
-`supported` (currently Windows only), `platform` (`windows`, `macos`,
+`supported` (Windows or macOS 14+), `platform` (`windows`, `macos`,
 or `linux`), `pointer_style` (`ace` by default, or `plain`), and `pointer_color`
 (default `#2563eb`). `PUT` accepts any subset of boolean `enabled`,
 `pointer_style`, and `pointer_color`; omitted fields keep their current values.
 Colors must be six-digit `#RRGGBB` and are normalized to lowercase. Both
-endpoints require authentication and return the persisted settings.
+endpoints require authentication and return the persisted settings plus live `availability`.
 Malformed JSON returns `400 BAD_JSON`, invalid fields return `400 BAD_REQUEST`,
 and enabling on another platform returns `400 COMPUTER_USE_PLATFORM_UNSUPPORTED`.
 Persistence errors return `500 PERSIST_FAILED` without changing the live switch.
@@ -3543,6 +3544,22 @@ Pointer appearance can be saved while the tool is disabled and never enables it
 implicitly. The WebUI synchronizes the current theme accent color outside the
 settings panel too. Changes apply on the helper's next request without ending
 its session lease or invalidating an existing observation.
+
+On macOS, `availability` contains `supported`, `minimum_macos` (`14.0`),
+`helper_available`, `helper_path`, `accessibility`, `screen_recording`, and `ready`.
+Each permission is `granted`, `required`, or `unknown`; both must be granted for
+`ready: true`. Missing helpers, unsupported systems, failed probes and timeouts
+include an `error` code. Non-macOS permission states are `not_required`.
+`enabled` remains the saved user intent and does not imply system authorization.
+GET, PUT and readiness refreshes never request system permission.
+
+Authenticated `POST /api/config/computer-use/permissions` accepts exactly one
+field: `{"permission":"accessibility"}` or `{"permission":"screen_recording"}`.
+It prompts from the actual helper process and opens the relevant macOS settings
+pane when needed, then returns settings with refreshed `availability`. It never
+changes `enabled`. Only invoke it following a user permission-button action.
+Invalid bodies return `400 COMPUTER_USE_INVALID_PERMISSION`; HTTP 200 does not
+imply permission was granted. Probe/OS errors are reported in `availability.error`.
 
 Enabling registers the `computer_*` tools for subsequent model requests;
 disabling unregisters them and terminates the active desktop helper. An
