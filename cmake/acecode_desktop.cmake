@@ -215,15 +215,18 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_VERSION "${ACECODE_BUILD_VERSION}"
         MACOSX_BUNDLE_COPYRIGHT "ACECode contributors"
     )
-    add_dependencies(acecode-desktop acecode)
+    add_dependencies(acecode-desktop acecode acecode-computer-use)
     set_property(TARGET acecode-desktop APPEND PROPERTY
-        LINK_DEPENDS $<TARGET_FILE:acecode>)
+        LINK_DEPENDS $<TARGET_FILE:acecode> $<TARGET_FILE:acecode-computer-use>)
     add_custom_command(TARGET acecode-desktop POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -f
             $<TARGET_FILE_DIR:acecode-desktop>/acecode-desktop
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:acecode>
             $<TARGET_FILE_DIR:acecode-desktop>/acecode-daemon
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:acecode-computer-use>
+            $<TARGET_FILE_DIR:acecode-desktop>/acecode-computer-use
         COMMAND ${CMAKE_COMMAND} -E rm -rf
             "$<TARGET_BUNDLE_DIR:acecode-desktop>/../acecode-desktop.app"
         COMMENT "Copying acecode daemon into ACECode.app bundle"

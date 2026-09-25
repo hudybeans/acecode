@@ -34,30 +34,17 @@ function isToolItem(item) {
   return item?.kind === 'tool';
 }
 
-// 工具前言(add-tool-preamble):一个工具调用的前言。实时路径挂在
-// tool.preamble(reducer 从 tool_start.preamble 或 tool_preamble 事件打标),
-// 历史路径挂在 msg 的 metadata.tool_preamble:批次标题 `title`,或参数模式的
-// 逐调用 `calls[tool_call_id]`(tool_call 包装项 / legacy 结果按自己的 id 取)。
+// 工具前言(add-tool-preamble):一个工具调用沿用的阶段前言。reducer 从
+// tool_start.preamble 挂到 tool.preamble;历史里的工具项没有它(落定后不显示,
+// 这是用户决定)。kind(read / write)只透传,给以后的效果留位。
 function preambleOfItem(item) {
-  if (isToolItem(item)) {
-    const p = item.tool?.preamble;
-    if (!p || typeof p !== 'object') return null;
-    const title = String(p.title || '').trim();
-    return title
-      ? { title, source: String(p.source || ''), batchId: String(p.batchId || '') }
-      : null;
-  }
-  if (item?.kind === 'msg') {
-    const p = item.metadata?.tool_preamble;
-    if (!p || typeof p !== 'object') return null;
-    const calls = p.calls && typeof p.calls === 'object' && !Array.isArray(p.calls) ? p.calls : null;
-    const ownTitle = calls ? String(calls[toolCallIdForItem(item)] || '').trim() : '';
-    const title = ownTitle || String(p.title || '').trim();
-    return title
-      ? { title, source: String(p.source || ''), batchId: String(p.batch_id || p.batchId || '') }
-      : null;
-  }
-  return null;
+  if (!isToolItem(item)) return null;
+  const p = item.tool?.preamble;
+  if (!p || typeof p !== 'object') return null;
+  const title = String(p.title || '').trim();
+  return title
+    ? { title, source: String(p.source || ''), kind: String(p.kind || '') }
+    : null;
 }
 
 // 实时分组的前言 = 正在运行的最新一个工具的前言;工具都跑完(模型在想下一步)
@@ -809,8 +796,6 @@ function makeLegacyInvocationItem(call, result, betweenItems) {
   const toolIndex = call?.toolIndex ?? call?.tool_index
     ?? result?.toolIndex ?? result?.tool_index ?? null;
   const ts = itemTimestamp(call) || itemTimestamp(result);
-  // 工具前言:legacy 包装归并后标题要跟着走,否则历史里的批次分组会丢标题。
-  const legacyPreamble = preambleOfItem(call) || preambleOfItem(result);
   return {
     kind: 'tool',
     id: result?.id ?? call?.id ?? `legacy-tool-${toolCallId || ts || 'unknown'}`,
@@ -841,7 +826,6 @@ function makeLegacyInvocationItem(call, result, betweenItems) {
       attachments: [],
       metadata,
       askUserQuestionResult: null,
-      ...(legacyPreamble ? { preamble: legacyPreamble } : {}),
     },
   };
 }

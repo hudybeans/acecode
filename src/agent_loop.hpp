@@ -145,14 +145,9 @@ struct AgentCallbacks {
     // The payload shape matches the todo_updated session event.
     std::function<void(const nlohmann::json& payload)> on_todo_updated;
 
-    // 工具前言(add-tool-preamble):模型步的标题定下来之后、工具执行之前回调
-    // (title, source ∈ prompt|reasoning|sidecar)。TUI 据此在该批次的 tool_call
-    // 行之前插入标题伪行;prompt 来源时把刚流完的那条 assistant 正文原地改成
-    // 标题行,避免同一句话显示两遍。
-    std::function<void(const std::string& title, const std::string& source)> on_tool_preamble;
-
-    // reasoning 模式:推理摘要的加粗标题在流式期间就绪时回调,TUI 用它替换
-    // 等待动画里的随机短语("Thinking" → "Reading registry sections")。
+    // 工具前言(add-tool-preamble):当前阶段的前言就绪时回调(prompt 模式是
+    // <text_preamble> 标签闭合的那一刻,reasoning 模式是推理加粗标题出现时),
+    // TUI 用它替换等待动画里的随机短语("Thinking" → "Reading registry sections")。
     std::function<void(const std::string& title)> on_thinking_title;
 
     // Legacy display observer for replacement-style transcript updates. Normal
@@ -408,14 +403,9 @@ public:
     }
 
     // 工具前言(add-tool-preamble)。配置可在设置页动态改,所以单独一把锁、
-    // 每次用时取快照;sidecar 摘要器由入口注入(SessionRegistry / main.cpp),
-    // AgentLoop 只知道「给材料、拿标题」,不关心 provider 怎么来的。摘要器在
-    // 独立线程里被调用,必须自带超时并可以并发调用。
+    // 每次用时取快照。
     void set_tool_preamble_config(const ToolPreambleConfig& cfg);
     ToolPreambleConfig tool_preamble_config() const;
-    using ToolPreambleSidecarSummarizer =
-        std::function<std::string(const tool_preamble::SidecarSummaryInput& input)>;
-    void set_tool_preamble_sidecar_summarizer(ToolPreambleSidecarSummarizer summarizer);
 
     void set_task_suggestion_compact_threshold(int threshold) {
         task_suggestion_compact_threshold_.store(
@@ -698,24 +688,14 @@ private:
     void publish_side_question_context(
         const std::vector<ChatMessage>& messages_with_system);
 
-    // 工具前言 sidecar 任务(add-tool-preamble):detached 线程把结果写进来,
-    // AgentLoop 只轮询 / 有界等待,永不被它回调 —— 线程晚于 AgentLoop 结束也
-    // 不会踩到已析构的 this。tool_call_ids 由 loop 线程在等待前填。
-    struct ToolPreambleSidecarTask {
-        std::mutex mu;
-        std::condition_variable cv;
-        bool done = false;
-        std::string title;
-        std::vector<std::string> tool_call_ids;
-    };
+    // 工具前言(add-tool-preamble):当前阶段的前言。prompt 模式来自模型正文里
+    // 闭合的 <text_preamble> 标签,reasoning 模式来自推理加粗标题;新前言替换
+    // 旧的,prompt 模式下未加标签的可见正文一出现即清空;每个工具批次沿用当时
+    // 的这条。
     struct ToolPreambleTitle {
-        // 批次标题(reasoning / sidecar 模式):整批工具共用。
         std::string title;
-        std::string source;
-        std::vector<std::string> tool_call_ids;
-        // 逐调用前言(prompt 模式):键 = tool_call_id(空 id 用 "#<index>"),
-        // 值 = 该调用自己 `preamble` 参数里的一句话。
-        std::map<std::string, std::string> per_call;
+        std::string source;   // prompt | reasoning
+        std::string kind;     // read | write | ""(prompt 模式的 type 属性,透传给界面)
     };
 
     // Phase 3: Stream provider response and accumulate.
@@ -725,20 +705,18 @@ private:
         ProviderErrorInfo provider_error_info;
         std::shared_ptr<LlmProvider> provider_snapshot;
         int provider_attempt = 1;
-        // 工具前言:reasoning 模式下流式期间抠到的加粗标题;sidecar 模式下
-        // 已启动的旁路摘要任务(可能仍在跑)。
-        std::string reasoning_preamble_title;
-        std::shared_ptr<ToolPreambleSidecarTask> sidecar_task;
     };
     bool tool_preamble_prompt_mode() const;
     ToolPreambleTitle resolve_tool_preamble_for_step(ProviderCallResult& result);
-    void start_tool_preamble_sidecar(ProviderCallResult& result,
-                                     const std::string& tool_name,
-                                     const std::string& args_preview,
-                                     const std::string& assistant_text);
-    void flush_late_tool_preamble(bool turn_ending);
-    std::string last_user_text_for_preamble() const;
-    void emit_tool_preamble_event(const ToolPreambleTitle& preamble, bool late);
+    // 前言就绪 / 变化时的统一出口:记成当前阶段前言,回调 TUI,并发一条
+    // agent_progress 让 Web 的活动行立刻换文案。
+    void publish_phase_preamble(const ToolPreambleTitle& preamble,
+                                const ProgressEmitter& emit_progress);
+    // 当前阶段前言的读写(受 tool_preamble_mu_ 保护:工具流式进度可能在工具
+    // 线程上读它)。
+    void set_phase_preamble(const ToolPreambleTitle& preamble);
+    void clear_phase_preamble();
+    ToolPreambleTitle phase_preamble() const;
     ProviderCallResult call_provider_and_collect(
         const std::shared_ptr<LlmProvider>& provider,
         const ApiRequestBundle& bundle,
@@ -884,16 +862,19 @@ private:
     // agent_loop termination policy. Fresh defaults come from AgentLoopConfig
     // until set_agent_loop_config is called from main.cpp.
     AgentLoopConfig loop_cfg_;
-    // 工具前言(add-tool-preamble)状态。配置 / 摘要器受 tool_preamble_mu_ 保护
-    // (设置页可在回合中途改);其余两项只在 worker 线程上读写。
+    // 工具前言(add-tool-preamble)状态。配置与当前阶段前言受 tool_preamble_mu_
+    // 保护(设置页可在回合中途改;工具流式进度可能在工具线程上读前言);
+    // 其余项只在 worker 线程上读写(provider 流回调也跑在 worker 上)。
     mutable std::mutex tool_preamble_mu_;
     ToolPreambleConfig tool_preamble_cfg_;
-    ToolPreambleSidecarSummarizer tool_preamble_summarizer_;
-    // 本模型步解析出的标题:run_agent_with_input 在 Phase 5 之前填,
-    // execute_tool_calls 开头消费(挂 metadata + 发事件)后清空。
+    // 当前阶段前言:回合结束清空;标签闭合 / 加粗标题出现时替换;prompt 模式下
+    // 未加标签的可见正文一出现就清空。
+    ToolPreambleTitle phase_preamble_;
+    // prompt 模式的流式标签扫描器,每次 provider 调用(含重试)重置。
+    tool_preamble::TextPreambleScanner text_preamble_scanner_;
+    // 本模型步给工具批次的前言:run_agent_with_input 在 Phase 5 之前填,
+    // execute_tool_calls 开头消费(挂 metadata、随 tool_start 下发)后清空。
     ToolPreambleTitle current_step_preamble_;
-    // 落盘前没等到结果的旁路任务:工具执行完再看一眼,到了就补发 late 事件。
-    std::shared_ptr<ToolPreambleSidecarTask> late_sidecar_task_;
     // 本次模型请求实际发出的模型侧工具名(bundle.tool_defs[i].name,已经过
     // 「工具重写」映射)。主循环每次组装请求后刷新;只在 worker 线程的工具批次
     // 之间写入,并行工具线程只读。Unknown tool 错误文本据此列出可用名。

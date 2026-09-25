@@ -403,19 +403,19 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "is complete.\n\n";
 
     if (prompt_tool_preamble) {
-        // 工具前言 · 提示驱动(add-tool-preamble):前言是每个工具调用里的
-        // `preamble` 参数,不是调用前的一句话 —— 上面「不要叙述」的口径原样保留。
-        oss << "# Tool call preamble\n\n"
-            << "Every tool has a required `preamble` argument. Fill it on every single call, "
-            << "including each call of a parallel batch, with one short status line telling "
-            << "the user what this call is for: 8-12 words (or up to 16 Chinese characters), "
-            << "present-participle phrasing like \"Reading registry sections\" or \"正在读取注册"
-            << "表段落\", always in the language of the user's latest message (a Chinese user "
-            << "gets a Chinese line), no trailing punctuation. Put `preamble` "
-            << "first in the arguments. The UI shows it while the tool runs; it is stripped "
-            << "before the tool executes and never affects the call itself. It replaces "
-            << "narration text: keep batching independent calls in one message and do not add "
-            << "a sentence before them.\n\n";
+        // 工具前言 · 提示驱动(add-tool-preamble):模型用 <text_preamble> 标签
+        // 标出「正在做什么」,daemon 流式识别后只进 loading,不进正文 —— 上面
+        // 「不要叙述工具调用」的口径原样保留,标签不是叙述。
+        oss << "# Progress preamble\n\n"
+            << "For multi-step tool tasks, emit exactly one short sentence in "
+            << "<text_preamble type=\"read\">...</text_preamble> (use type=\"write\" for "
+            << "state-changing actions) before the first call and at major phase/plan "
+            << "changes: next step initially, verified result + next step thereafter; "
+            << "never tag final answers. The tag is consumed by the UI as a status line "
+            << "and is not shown as prose, so write it in the language of the user's "
+            << "latest message, keep it to one line with no markdown, and put nothing "
+            << "else in it. It does not replace the rules above: still batch independent "
+            << "calls in one message and do not narrate tool calls outside the tag.\n\n";
     }
 
     oss << "# Presenting your work and final message\n\n"

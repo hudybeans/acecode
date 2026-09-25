@@ -216,7 +216,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
     preamble = null,
   } = entry || {};
   // 工具前言(add-tool-preamble):运行中的工具行以前言为标题(verb / object 退到
-  // detail);落定后的行保持原样,前言只进悬浮提示,不给已完成的记录添噪音。
+  // detail);落定后的行保持原样,前言不再出现(用户决定:完成后不显示)。
   const preambleTitle = String(preamble?.title || '').trim();
   const shouldExpandAskResult = isDone
     && success !== false
@@ -456,7 +456,7 @@ export const ToolBlock = memo(function ToolBlock({ entry, onReviewToggle, sessio
           expandable
           expanded={expanded}
           onToggle={toggleExpanded}
-          title={joinTooltipParts(preambleTitle, buttonTooltip || (expanded ? '收起' : '展开'))}
+          title={buttonTooltip || (expanded ? '收起' : '展开')}
           ariaLabel={expanded ? '收起' : '展开'}
         />
         {expanded && (shellDetails || createdFile || diffHtml || fullToolOutput) && (

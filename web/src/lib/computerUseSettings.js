@@ -45,9 +45,18 @@ export function computerUseSettingsStore(client) {
     failures.load = null;
     publish();
   };
-  const execute = async ({ patch, source }) => {
+  const execute = async ({ patch, source, permission }) => {
     try {
       requireConnection();
+      if (permission) {
+        const snapshot = normalizedSnapshot(await client.requestComputerUsePermission(permission));
+        requireConnection();
+        publish({ snapshot });
+        if (snapshot.availability?.error) throw Object.assign(new Error('Permission request failed'), { code: snapshot.availability.error });
+        failures[source] = null;
+        publish();
+        return true;
+      }
       if (!matches(state.snapshot, patch)) {
         const snapshot = normalizedSnapshot(await client.setComputerUse(patch));
         requireConnection();
@@ -65,13 +74,13 @@ export function computerUseSettingsStore(client) {
         const snapshot = normalizedSnapshot(await client.getComputerUse());
         requireConnection();
         publish({ snapshot });
-        if (matches(snapshot, patch)) {
+        if (!permission && matches(snapshot, patch)) {
           acknowledge(patch, source);
           return true;
         }
       } catch { /* Retain the explicit failure and the last acknowledged state. */ }
       const pending = { ...failures[source]?.patch, ...patch };
-      failures[source] = settingsError(error, 'save', pending, source);
+      failures[source] = { ...settingsError(error, permission ? 'permission' : 'save', pending, source), permission };
       publish();
       return false;
     }
@@ -90,8 +99,8 @@ export function computerUseSettingsStore(client) {
       if (queue.length) drain();
     });
   };
-  const enqueue = (patch, source = 'user') => new Promise((resolve) => {
-    queue.push({ patch: { ...patch }, source, resolve });
+  const enqueue = (patch, source = 'user', permission) => new Promise((resolve) => {
+    queue.push({ patch: { ...patch }, source, permission, resolve });
     drain();
   });
   const store = {
@@ -128,6 +137,11 @@ export function computerUseSettingsStore(client) {
       if (!state.snapshot || state.loading || !['ace', 'plain'].includes(pointer_style)) return Promise.resolve(false);
       return enqueue({ pointer_style });
     },
+    requestPermission: (permission) => {
+      if (!state.snapshot || state.loading || state.snapshot.platform !== 'macos' || !state.snapshot.supported ||
+          !['accessibility', 'screen_recording'].includes(permission)) return Promise.resolve(false);
+      return enqueue({}, 'user', permission);
+    },
     syncPointerColor: async (color, { defer = false } = {}) => {
       if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return false;
       latestColor = color.toLowerCase();
@@ -141,6 +155,7 @@ export function computerUseSettingsStore(client) {
     retry: async () => {
       const error = state.error;
       if (!error) return true;
+      if (error.action === 'permission') return store.requestPermission(error.permission);
       if (error.action === 'load') {
         if (!await store.load()) return false;
         return latestColor ? store.syncPointerColor(latestColor) : true;

@@ -39,7 +39,7 @@ if kind == 'cmake':
         build = pathlib.Path(value('--build'))
         arch = (build / 'CMakeCache.txt').read_text().split('=', 1)[1].splitlines()[0]
         arch = os.environ.get('WRONG_BINARY_ARCH', arch)
-        for relative in ('acecode', 'ACECode.app/Contents/MacOS/ACECode', 'ACECode.app/Contents/MacOS/acecode-daemon'):
+        for relative in ('acecode', 'acecode-computer-use', 'ACECode.app/Contents/MacOS/ACECode', 'ACECode.app/Contents/MacOS/acecode-daemon', 'ACECode.app/Contents/MacOS/acecode-computer-use'):
             binary = build / relative
             binary.parent.mkdir(parents=True, exist_ok=True)
             binary.write_text('#!/bin/sh\n# provider-logos arch=' + arch + ' ' + (root / 'backend.txt').read_text())
@@ -48,8 +48,11 @@ if kind == 'cmake':
         shutil.copytree(root / 'assets/models_dev', resources / 'models_dev', dirs_exist_ok=True)
         shutil.copytree(root / 'assets/seed', resources / 'seed', dirs_exist_ok=True)
     elif '--install' in args:
-        resource = 'models_dev' if value('--component') == 'models_dev_registry' else 'seed'
-        shutil.copytree(root / 'assets' / resource, pathlib.Path(value('--prefix')) / 'share/acecode' / resource, dirs_exist_ok=True)
+        if value('--component') == 'computer_use_runtime':
+            shutil.copy2(pathlib.Path(value('--install')) / 'acecode-computer-use', pathlib.Path(value('--prefix')) / 'acecode-computer-use')
+        else:
+            resource = 'models_dev' if value('--component') == 'models_dev_registry' else 'seed'
+            shutil.copytree(root / 'assets' / resource, pathlib.Path(value('--prefix')) / 'share/acecode' / resource, dirs_exist_ok=True)
 elif kind == 'lipo':
     assert args[1] == '-verify_arch'
     sys.exit(0 if 'arch=' + args[2] + ' ' in pathlib.Path(args[0]).read_text() else 1)
@@ -131,7 +134,7 @@ class PortablePackageTest(unittest.TestCase):
         configure = next(c for c in calls if c[0] == 'cmake' and '-S' in c)
         self.assertIn('-DVCPKG_TARGET_TRIPLET=arm64-osx', configure)
         self.assertIn('macos-arm64-release', configure[configure.index('-B') + 1])
-        self.assertEqual(sum(c[0] == 'lipo' for c in calls), 6)
+        self.assertEqual(sum(c[0] == 'lipo' for c in calls), 10)
         import zipfile
         with zipfile.ZipFile(output) as archive:
             self.assertIn(b'backend-v2', archive.read('acecode-macos-arm64/acecode'))

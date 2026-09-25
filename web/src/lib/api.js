@@ -664,6 +664,7 @@ export function createApi(base = null) {
     getImageGeneration: ()           => request('GET', '/api/config/image-generation', undefined, base),
     getComputerUse: ()               => request('GET', '/api/config/computer-use', undefined, base),
     setComputerUse: (config)         => request('PUT', '/api/config/computer-use', config, base, { keepalive: true }),
+    requestComputerUsePermission: (permission) => request('POST', '/api/config/computer-use/permissions', { permission }, base),
     getSummaryGeneration: ()         => request('GET', '/api/config/summary-generation', undefined, base),
     setSummaryGeneration: (config)   => request('PUT', '/api/config/summary-generation', config, base, { keepalive: true }),
     setImageGeneration: (config)     => request('PUT', '/api/config/image-generation', config, base, { keepalive: true }),

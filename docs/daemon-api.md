@@ -380,13 +380,14 @@ update their transcript presentation.
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
 | GET | `/api/config/computer-use` | read computer control availability and pointer appearance |
 | PUT | `/api/config/computer-use` | partially update the switch or pointer appearance |
+| POST | `/api/config/computer-use/permissions` | explicitly request one macOS system permission |
 | GET | `/api/config/summary-generation` | read summary-model override and available models |
 | PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
 | PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
-| GET | `/api/config/tool-preamble` | read the tool preamble switch, mode and sidecar settings |
+| GET | `/api/config/tool-preamble` | read the tool preamble switch and mode |
 | PUT | `/api/config/tool-preamble` | patch tool preamble settings into `config.json`, push to active sessions |
 | GET | `/api/config/sandbox` | read sandbox switches, filesystem lists, defaults and platform probe |
 | PUT | `/api/config/sandbox` | save sandbox switches / lists to `config.json`, push to active sessions |
@@ -3632,12 +3633,12 @@ setting does not change the conversation model or disable automatic titles.
 ### Computer use settings
 
 `GET /api/config/computer-use` returns `enabled` (default `false`),
-`supported` (currently Windows only), `platform` (`windows`, `macos`,
+`supported` (Windows or macOS 14+), `platform` (`windows`, `macos`,
 or `linux`), `pointer_style` (`ace` by default, or `plain`), and `pointer_color`
 (default `#2563eb`). `PUT` accepts any subset of boolean `enabled`,
 `pointer_style`, and `pointer_color`; omitted fields keep their current values.
 Colors must be six-digit `#RRGGBB` and are normalized to lowercase. Both
-endpoints require authentication and return the persisted settings.
+endpoints require authentication and return the persisted settings plus live `availability`.
 Malformed JSON returns `400 BAD_JSON`, invalid fields return `400 BAD_REQUEST`,
 and enabling on another platform returns `400 COMPUTER_USE_PLATFORM_UNSUPPORTED`.
 Persistence errors return `500 PERSIST_FAILED` without changing the live switch.
@@ -3645,6 +3646,22 @@ Pointer appearance can be saved while the tool is disabled and never enables it
 implicitly. The WebUI synchronizes the current theme accent color outside the
 settings panel too. Changes apply on the helper's next request without ending
 its session lease or invalidating an existing observation.
+
+On macOS, `availability` contains `supported`, `minimum_macos` (`14.0`),
+`helper_available`, `helper_path`, `accessibility`, `screen_recording`, and `ready`.
+Each permission is `granted`, `required`, or `unknown`; both must be granted for
+`ready: true`. Missing helpers, unsupported systems, failed probes and timeouts
+include an `error` code. Non-macOS permission states are `not_required`.
+`enabled` remains the saved user intent and does not imply system authorization.
+GET, PUT and readiness refreshes never request system permission.
+
+Authenticated `POST /api/config/computer-use/permissions` accepts exactly one
+field: `{"permission":"accessibility"}` or `{"permission":"screen_recording"}`.
+It prompts from the actual helper process and opens the relevant macOS settings
+pane when needed, then returns settings with refreshed `availability`. It never
+changes `enabled`. Only invoke it following a user permission-button action.
+Invalid bodies return `400 COMPUTER_USE_INVALID_PERMISSION`; HTTP 200 does not
+imply permission was granted. Probe/OS errors are reported in `availability.error`.
 
 Enabling registers the `computer_*` tools for subsequent model requests;
 disabling unregisters them and terminates the active desktop helper. An
@@ -3746,56 +3763,54 @@ the rewritten names as aliases of the native tool while a rewrite is active.
 
 ### Tool preamble (`openspec add-tool-preamble`)
 
-Settings > Developer mode > 工具前言. Off by default. When enabled, every batch
-of tool calls gets a short title (the Codex "Reading registry sections" row)
-that the Web UI shows above the running tools and keeps as the header of the
-collapsed batch afterwards. The title comes from one of three sources, chosen
-by `mode`:
+Settings > Developer mode > 工具前言. Off by default. When enabled, the model
+gives the user a one-line "what is happening" for the current phase of a
+multi-step tool task; the Web UI shows it as the live activity row and as the
+label of running tool rows, and nothing of it remains once the work has
+settled. The line comes from one of two sources, chosen by `mode`:
 
-- `prompt`: every tool definition sent to the model gets an extra required
-  `preamble` string argument and the system prompt asks the model to fill it on
-  every call with an 8-12 word line. The daemon strips the argument before the
-  permission gate, previews, hooks and execution (the tool never sees it), so
-  the persisted `tool_calls[].function.arguments` are clean too; the text
-  travels as `tool_start.preamble` and as
-  `metadata.tool_preamble.calls[tool_call_id]`. While the arguments are still
-  streaming, the `agent_progress` frame with `phase:"tool_planning"` already
-  carries the preamble as its `label` once the value has closed (providers put
-  the first 1024 bytes of the accumulated arguments into the delta). This mode
-  has no batch title and emits no `tool_preamble` event.
+- `prompt`: the system prompt gains a `# Progress preamble` section asking the
+  model to emit exactly one short sentence in
+  `<text_preamble type="read">...</text_preamble>` (`type="write"` for
+  state-changing actions) before the first tool call and at major phase/plan
+  changes, and never on final answers. The daemon scans the streamed assistant
+  text: the tag body becomes the current phase preamble the moment the tag
+  closes, tag text never reaches `token` frames or `message` frames, and the
+  persisted assistant `content` keeps the tag verbatim (the model keeps seeing
+  its own format in history; clients strip it when rendering history).
+  Lenient parsing: a missing `type` is accepted, a missing closing tag ends at
+  the line break, `<text_preamble/>` is ignored, the tag name is
+  case-insensitive. The preamble persists across model steps until the next
+  tag or until untagged visible text appears; the end of the turn clears it.
 - `reasoning`: the first `**bold**` span of the provider's reasoning summary
   (OpenAI Responses / Codex app-server / Gemini summaries start with one),
   falling back to the first sentence of the reasoning. No prompt change, no
   extra tokens.
-- `sidecar`: a separate small request (`sidecar_model`, empty = the session's
-  model) summarises the user request, the assistant text and the pending tool
-  calls into a 3-8 word label. The daemon waits at most `sidecar_wait_ms`
-  before persisting the assistant message; a later result is delivered as a
-  `tool_preamble` event with `late:true` and is not written to the JSONL.
 
-Persistence: `metadata.tool_preamble = {source, title?, calls?}` on the
-`assistant` message that carries the `tool_calls` (`title` for the batch title
-modes, `calls` = `{tool_call_id: text}` for the parameter mode), so
-`GET /messages` and resume reproduce the per-call preambles. Live sessions get
-the preamble of each call as `tool_start.preamble` (plus `preamble_source`),
-the `tool_running` / `tool_planning` `agent_progress` frames use it as their
-`label` (tool name and command preview move to `detail`), and the batch title
-modes additionally emit a `tool_preamble` event
-`{batch_id, tool_call_ids, title, source, late}` (`batch_id` is the first tool
-call id of the batch) right before the batch's `tool_start` frames; in
-`reasoning` mode the `agent_progress` frame with `phase:"reasoning"` carries
-the title while the model is still streaming. The Web UI shows the preamble as
-the running tool row's label and as the live activity row; it never splits the
-transcript into per-batch groups.
+Live delivery: when a preamble is established the daemon emits an
+`agent_progress` frame with `phase:"preamble"` and `label` = the sentence, and
+every `agent_progress` frame carries `preamble: {title, source, kind}` while a
+phase preamble is active (`kind` is `read`, `write` or `""`; reserved for a
+future read/write visual effect). Each `tool_start` of a batch that runs under
+a preamble carries `preamble`, `preamble_source` (`prompt` | `reasoning`) and
+`preamble_kind`; the `model_waiting` / `reasoning` / `tool_planning` /
+`tool_running` frames use the preamble as their `label` (the generic phrase,
+tool name or command preview moves to `detail`), so the status line keeps the
+preamble across the whole phase including the wait between tool batches.
+`permission_waiting`, `question_waiting`, `compacting` and `model_retry` keep
+their own labels. There is no `tool_preamble` event.
 
-`GET /api/config/tool-preamble` returns `{enabled, mode, sidecar_model,
-sidecar_wait_ms, modes:["prompt","reasoning","sidecar"], saved_models:[...]}`.
-`PUT /api/config/tool-preamble` is a patch: any subset of `enabled` (bool),
-`mode` (one of `modes`), `sidecar_model` (a saved model name, `""`/`null`
-clears it) and `sidecar_wait_ms` (0-15000). Invalid values return 400
-`BAD_REQUEST` with `message`; success writes `agent_loop.tool_preamble` to
-`config.json`, pushes the new config to every active session and returns the
-GET shape.
+Persistence: `metadata.tool_preamble = {source, title, kind}` on the `assistant`
+message that carries the `tool_calls`, as a record only; neither the Web UI nor
+the TUI renders it after the fact.
+
+`GET /api/config/tool-preamble` returns `{enabled, mode, modes:["prompt","reasoning"]}`.
+`PUT /api/config/tool-preamble` is a patch: any subset of `enabled` (bool) and
+`mode` (one of `modes`). Invalid values return 400 `BAD_REQUEST` with
+`message`; success writes `agent_loop.tool_preamble` to `config.json`, pushes
+the new config to every active session and returns the GET shape. Legacy
+`sidecar_model` / `sidecar_wait_ms` keys are ignored and a persisted
+`mode:"sidecar"` loads as `prompt`.
 
 ### Security center (`openspec add-security-center`)
 
@@ -4599,7 +4614,6 @@ Session event `type` values from `SessionEventKind`:
 - `goal_updated`
 - `goal_cleared`
 - `todo_updated`
-- `tool_preamble`
 - `session_updated`
 - `busy_changed`
 - `done`

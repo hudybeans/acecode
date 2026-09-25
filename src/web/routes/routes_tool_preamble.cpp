@@ -17,39 +17,31 @@ void WebServer::Impl::register_tool_preamble() {
         response.body = body.dump();
         return with_cors(req, std::move(response));
     };
-    const auto saved_model_names = [](const AppConfig& cfg) {
-        std::vector<std::string> names;
-        names.reserve(cfg.saved_models.size());
-        for (const auto& entry : cfg.saved_models) names.push_back(entry.name);
-        return names;
-    };
 
     CROW_ROUTE(app, "/api/config/tool-preamble").methods(crow::HTTPMethod::Options)
     ([this](const crow::request& req) { return cors_preflight(req); });
 
     CROW_ROUTE(app, "/api/config/tool-preamble").methods(crow::HTTPMethod::GET)
-    ([this, respond, saved_model_names](const crow::request& req) {
+    ([this, respond](const crow::request& req) {
         if (auto rejected = require_auth(req)) return std::move(*rejected);
         if (!deps.app_config) return respond(req, 503, {{"error", "UNAVAILABLE"}});
         std::shared_lock<std::shared_mutex> config_lock(app_config_mu);
         return respond(req, 200,
-                       tool_preamble_snapshot(deps.app_config->agent_loop.tool_preamble,
-                                              saved_model_names(*deps.app_config)));
+                       tool_preamble_snapshot(deps.app_config->agent_loop.tool_preamble));
     });
 
     CROW_ROUTE(app, "/api/config/tool-preamble").methods(crow::HTTPMethod::PUT)
-    ([this, respond, saved_model_names](const crow::request& req) {
+    ([this, respond](const crow::request& req) {
         if (auto rejected = require_auth(req)) return std::move(*rejected);
         if (!deps.app_config) return respond(req, 503, {{"error", "UNAVAILABLE"}});
         const auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded()) return respond(req, 400, {{"error", "BAD_JSON"}});
 
         std::lock_guard<std::shared_mutex> config_lock(app_config_mu);
-        const auto names = saved_model_names(*deps.app_config);
         ToolPreambleConfig next;
         std::string error;
         if (!parse_tool_preamble_request(body, deps.app_config->agent_loop.tool_preamble,
-                                         names, next, error)) {
+                                         next, error)) {
             return respond(req, 400, {{"error", "BAD_REQUEST"}, {"message", error}});
         }
         const auto result = mutate_config(
@@ -69,8 +61,7 @@ void WebServer::Impl::register_tool_preamble() {
                 deps.app_config->agent_loop.tool_preamble);
         }
         return respond(req, 200,
-                       tool_preamble_snapshot(deps.app_config->agent_loop.tool_preamble,
-                                              names));
+                       tool_preamble_snapshot(deps.app_config->agent_loop.tool_preamble));
     });
 }
 

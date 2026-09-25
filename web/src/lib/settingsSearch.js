@@ -32,7 +32,7 @@ export function settingsSearchEntries(developerModeUnlocked = false) {
     ['mcp', '服务器配置', 'mcp server config json'],
     ['tools', '内置工具', 'builtin tools'],
     ['tools', 'Agent 浏览器', 'agent browser'],
-    ['tools', '电脑操控（实验性）', 'computer use experimental windows desktop mouse keyboard screenshot pointer cursor style theme color ace plain 指针 样式 主题色'],
+    ['tools', '电脑操控（实验性）', 'computer use experimental windows macos accessibility screen recording desktop mouse keyboard screenshot pointer cursor style theme color ace plain 指针 样式 主题色'],
     ['tools', '图像生成', 'image generation drawing'],
     ['tools', '摘要生成', 'summary title generation local model 摘要模型 会话标题'],
     ['tools', '工具重写', 'tool rewrite rename alias audit'],
@@ -50,7 +50,7 @@ export function settingsSearchEntries(developerModeUnlocked = false) {
   ];
   if (developerModeUnlocked) {
     fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
-    fields.push(['developer', '工具前言', 'tool preamble progress title status line reasoning summary sidecar 前言 标题']);
+    fields.push(['developer', '工具前言', 'tool preamble progress status line text_preamble reasoning summary 前言 阶段']);
   }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),

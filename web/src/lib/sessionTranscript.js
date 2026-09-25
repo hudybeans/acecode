@@ -8,7 +8,7 @@ import { fallbackToolSummary } from './toolSummaryFallback.js';
 import { normalizeToolInvocationItems } from './transcriptProjection.js';
 import { createSingleWriterStore } from './singleWriterStore.js';
 import { composerContentFromMessage } from './composerContent.js';
-import { normalizeToolPreambleEvent, toolPreambleFromMetadata } from './toolPreamble.js';
+import { preambleFromProgress, preambleFromToolStart, stripTextPreambleTags } from './toolPreamble.js';
 
 function composerContentFields(message, fallback = null) {
   const content = composerContentFromMessage(message) || composerContentFromMessage(fallback);
@@ -40,7 +40,6 @@ const STREAM_NEUTRAL_EVENT_TYPES = new Set([
   'goal_updated',
   'goal_cleared',
   'todo_updated',
-  'tool_preamble',
   'session_updated',
   'permission_request',
   'permission_closed',
@@ -254,7 +253,6 @@ function cloneState(state) {
     todos: cloneTodos(state.todos),
     todoSummary: state.todoSummary && typeof state.todoSummary === 'object' ? { ...state.todoSummary } : null,
     activity: state.activity && typeof state.activity === 'object' ? { ...state.activity } : null,
-    pendingToolPreambles: { ...(state.pendingToolPreambles || {}) },
     trajectoryPartial: state.trajectoryPartial && typeof state.trajectoryPartial === 'object'
       ? {
           ...state.trajectoryPartial,
@@ -849,74 +847,26 @@ function historyItemsFromMessage(next, m, messageIndex) {
   return items;
 }
 
-// 工具前言(add-tool-preamble)的历史还原:标题落盘在 assistant(tool_calls) 消息的
-// metadata.tool_preamble 上,而投影是按工具项分组的,所以这里把它按 tool_call_id
-// 传播到同批次的结果项 —— 结构化结果(kind:tool)挂 tool.preamble,legacy 文本
-// 结果(kind:msg)挂 metadata.tool_preamble;assistant 正文与 tool_call 包装项的
-// metadata 补上 batch_id,让实时与历史两条路径的分组键一致。
-function tagHistoryToolPreambles(produced, message, preambleByCallId) {
-  if (message?.role === 'assistant') {
-    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-    const ids = [];
-    for (let i = 0; i < toolCalls.length; i += 1) {
-      const call = normalizePersistedToolCall(toolCalls[i], i);
-      ids.push(call.toolCallId || `#${i}`);
-    }
-    const preamble = ids.length > 0 ? toolPreambleFromMetadata(message.metadata, ids[0]) : null;
-    if (!preamble) return produced;
-    // 批次标题给整批;参数模式的逐调用前言按 id(缺 id 用 "#<index>")各取各的。
-    ids.forEach((id, index) => {
-      const own = String(preamble.calls[id] ?? preamble.calls[`#${index}`] ?? '').trim();
-      const title = own || preamble.title;
-      if (!title) return;
-      preambleByCallId.set(id, { title, source: preamble.source, batchId: preamble.title ? preamble.batchId : '' });
-    });
-    if (!preamble.title) return produced;
-    return produced.map((item) => {
-      if (item?.kind !== 'msg' || !item.metadata?.tool_preamble) return item;
-      return {
-        ...item,
-        metadata: {
-          ...item.metadata,
-          tool_preamble: { ...item.metadata.tool_preamble, batch_id: preamble.batchId },
-        },
-      };
-    });
-  }
-  if (message?.role !== 'tool') return produced;
-  const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
-  const preamble = toolCallId ? preambleByCallId.get(toolCallId) : null;
-  if (!preamble) return produced;
-  return produced.map((item) => {
-    if (item?.kind === 'tool') {
-      return { ...item, tool: { ...item.tool, preamble } };
-    }
-    if (item?.kind === 'msg') {
-      return {
-        ...item,
-        metadata: {
-          ...(item.metadata && typeof item.metadata === 'object' ? item.metadata : {}),
-          tool_preamble: { title: preamble.title, source: preamble.source, batch_id: preamble.batchId },
-        },
-      };
-    }
-    return item;
-  });
+// 工具前言(add-tool-preamble):assistant 正文里的 <text_preamble> 标签只在实时
+// 期间进 loading,落盘正文保留原文(模型会模仿自己的历史输出),所以历史加载与
+// message 事件都要在这里剥掉;token 流由 daemon 剥过。
+function withVisibleAssistantContent(message) {
+  if (message?.role !== 'assistant' || typeof message.content !== 'string') return message;
+  const visible = stripTextPreambleTags(message.content);
+  return visible === message.content ? message : { ...message, content: visible };
 }
 
 function historyItemsFromMessages(next, messages) {
   const items = [];
   const toolNamesByCallId = new Map();
-  const preambleByCallId = new Map();
   for (let i = 0; i < messages.length; i += 1) {
     const rawMessage = messages[i];
     if (rawMessage?.role === 'user') {
       toolNamesByCallId.clear();
-      preambleByCallId.clear();
     }
-    const message = withPersistedToolName(rawMessage, toolNamesByCallId);
-    items.push(...tagHistoryToolPreambles(
-      historyItemsFromMessage(next, message, i), message, preambleByCallId));
+    const message = withVisibleAssistantContent(
+      withPersistedToolName(rawMessage, toolNamesByCallId));
+    items.push(...historyItemsFromMessage(next, message, i));
     if (message?.role === 'tool') {
       const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
       if (toolCallId) toolNamesByCallId.delete(toolCallId);
@@ -1278,9 +1228,6 @@ export function createTranscriptState(overrides = {}) {
     todos: [],
     todoSummary: null,
     activity: null,
-    // 工具前言(add-tool-preamble):tool_preamble 事件先于对应的 tool_start 到达,
-    // 标题先按 tool_call_id 暂存在这里,tool_start 建项时取走挂到 tool.preamble。
-    pendingToolPreambles: {},
     // turnHadAssistantText / lastAssistantText 用于桌面通知:在 busy=true→false
     // 转换且本回合产生过 assistant 文本时,emit turn_completed effect。reducer 之外
     // 的代码不应直接读 / 写它们。见
@@ -1359,6 +1306,9 @@ export function reduceTranscriptEvent(state, msg) {
         phase,
         label: label || phase,
         detail: p.detail || '',
+        // 工具前言(add-tool-preamble):当前阶段前言随进度帧透传,kind(read /
+        // write)给以后的读放大镜 / 写笔触效果留位。
+        preamble: preambleFromProgress(p),
         tool: p.tool || '',
         toolCallId: p.tool_call_id || p.call_id || p.id || '',
         toolIndex: p.tool_index ?? null,
@@ -1411,6 +1361,8 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     }
     case 'message': {
+      // 工具前言:assistant 正文里的 <text_preamble> 标签不进 transcript。
+      const p = withVisibleAssistantContent(msg?.payload || {});
       const role = p.role || 'system';
       if (role === 'assistant' && p.metadata?.transcript_only === true &&
           p.metadata?.interrupted_output === true) {
@@ -1641,24 +1593,10 @@ export function reduceTranscriptEvent(state, msg) {
         metadata: null,
         askUserQuestionResult: null,
       };
-      // 工具前言:参数模式下 tool_start 直接带这次调用的前言;批次标题模式下
-      // 由先到的 tool_preamble 事件暂存在 pending,这里取走(两者并存时后者带 batchId)。
-      if (typeof p.preamble === 'string' && p.preamble.trim()) {
-        tool.preamble = {
-          title: p.preamble.trim(),
-          source: String(p.preamble_source || ''),
-          batchId: '',
-        };
-      }
-      const pendingPreamble = tool.toolCallId
-        ? (next.pendingToolPreambles || {})[tool.toolCallId]
-        : null;
-      if (pendingPreamble) {
-        tool.preamble = pendingPreamble;
-        const pending = { ...next.pendingToolPreambles };
-        delete pending[tool.toolCallId];
-        next.pendingToolPreambles = pending;
-      }
+      // 工具前言(add-tool-preamble):tool_start 直接带这次调用沿用的阶段前言,
+      // 运行中的工具行与实时活动行用它当标题;落定后不再显示。
+      const startPreamble = preambleFromToolStart(p);
+      if (startPreamble) tool.preamble = startPreamble;
       next.items = [...next.items, { kind: 'tool', id, tool, ts: eventTs(msg) }];
       break;
     }
@@ -1733,28 +1671,6 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'goal_cleared': {
       next.goal = null;
-      break;
-    }
-    case 'tool_preamble': {
-      // 工具前言(add-tool-preamble):一个工具调用批次的标题。常规顺序是
-      // tool_preamble → (assistant message) → tool_start…,所以还没出现的工具项
-      // 先记进 pendingToolPreambles;sidecar 迟到(late=true)时工具项已经在,
-      // 原地打标即可。投影按 tool.preamble 把批次折成带标题的分组。
-      const preamble = normalizeToolPreambleEvent(p);
-      if (!preamble) break;
-      markTranscriptRunning(next);
-      const tag = { title: preamble.title, source: preamble.source, batchId: preamble.batchId };
-      const remaining = new Set(preamble.ids);
-      next.items = next.items.map((item) => {
-        if (item.kind !== 'tool') return item;
-        const callId = String(item.tool?.toolCallId || '');
-        if (!callId || !remaining.has(callId)) return item;
-        remaining.delete(callId);
-        return { ...item, tool: { ...item.tool, preamble: tag } };
-      });
-      const pending = { ...(next.pendingToolPreambles || {}) };
-      for (const id of remaining) pending[id] = tag;
-      next.pendingToolPreambles = pending;
       break;
     }
     case 'todo_updated': {

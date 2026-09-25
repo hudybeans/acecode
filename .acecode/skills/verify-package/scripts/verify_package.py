@@ -260,7 +260,7 @@ def print_dry_run(repo: Path, build_dir: Path, staging: Path, platform: str,
     print("Would stage package files and run structural/runtime checks.")
     if "tui" in targets or platform != "darwin":
         components = ["models_dev_registry", "default_seed_bundle"]
-        if platform == "windows":
+        if platform in ("windows", "darwin"):
             components.append("computer_use_runtime")
         for component in components:
             print("  " + " ".join([
@@ -345,7 +345,7 @@ def stage(report: Report, repo: Path, build_dir: Path, staging: Path,
 
     if "tui" in targets or platform != "darwin":
         components = ["models_dev_registry", "default_seed_bundle"]
-        if platform == "windows":
+        if platform in ("windows", "darwin"):
             components.append("computer_use_runtime")
         for component in components:
             if not run_tool(report, f"cmake install {component}",
@@ -358,9 +358,9 @@ def stage(report: Report, repo: Path, build_dir: Path, staging: Path,
 
 def structural_checks(report: Report, repo: Path, staging: Path,
                       platform: str, targets: list[str]) -> None:
-    if platform == "windows":
-        helper = staging / "acecode-computer-use.exe"
-        if helper.is_file() and helper.stat().st_size > 0:
+    if platform == "windows" or (platform == "darwin" and "tui" in targets):
+        helper = staging / ("acecode-computer-use.exe" if platform == "windows" else "acecode-computer-use")
+        if helper.is_file() and helper.stat().st_size > 0 and (platform == "windows" or os.access(helper, os.X_OK)):
             report.add("computer use runtime adjacency", "pass")
         else:
             report.add("computer use runtime adjacency", "fail", f"missing or empty {helper}")
@@ -376,8 +376,9 @@ def structural_checks(report: Report, repo: Path, staging: Path,
         bundle = staging / "ACECode.app"
         contents = bundle / "Contents"
         for required in (contents / "MacOS" / "ACECode",
-                         contents / "MacOS" / "acecode-daemon"):
-            if required.is_file():
+                         contents / "MacOS" / "acecode-daemon",
+                         contents / "MacOS" / "acecode-computer-use"):
+            if required.is_file() and required.stat().st_size > 0 and os.access(required, os.X_OK):
                 report.add(f"app bundle {required.name}", "pass")
             else:
                 report.add(f"app bundle {required.name}", "fail",

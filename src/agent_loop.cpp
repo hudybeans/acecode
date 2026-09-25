@@ -3125,11 +3125,6 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
     // (openspec add-gpt-apply-patch-adaptation)。三个工具始终注册,这里只裁
     // 模型侧定义表;模型在回合内固定,所以裁完的表逐字节稳定,不打穿 prompt cache。
     filter_tool_definitions_for_model(bundle.tool_defs, model_state.prefers_apply_patch);
-    // 工具前言 · 参数模式(add-tool-preamble):每个工具定义多一个 `preamble`
-    // 字符串参数。只随配置变化,注入结果逐字节稳定,不打穿 prompt cache。
-    if (tool_preamble_prompt_mode()) {
-        tool_preamble::inject_preamble_parameter(bundle.tool_defs);
-    }
     LOG_DEBUG("Registered tools: " + std::to_string(bundle.tool_defs.size()));
 
     // gitStatus 快照:每会话激活惰性采集一次,cwd 切换或外部失效(Web UI
@@ -3442,171 +3437,59 @@ ToolPreambleConfig AgentLoop::tool_preamble_config() const {
     return tool_preamble_cfg_;
 }
 
-void AgentLoop::set_tool_preamble_sidecar_summarizer(
-    ToolPreambleSidecarSummarizer summarizer) {
-    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
-    tool_preamble_summarizer_ = std::move(summarizer);
-}
-
 bool AgentLoop::tool_preamble_prompt_mode() const {
     const ToolPreambleConfig cfg = tool_preamble_config();
     return cfg.enabled && cfg.mode == tool_preamble::kModePrompt;
 }
 
-std::string AgentLoop::last_user_text_for_preamble() const {
-    for (auto it = messages_.rbegin(); it != messages_.rend(); ++it) {
-        if (it->role != "user") continue;
-        if (it->metadata.is_object() &&
-            it->metadata.value("hidden_goal_context", false)) {
-            continue;
-        }
-        if (!it->content.empty()) return it->content;
-    }
-    return {};
+void AgentLoop::set_phase_preamble(const ToolPreambleTitle& preamble) {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = preamble;
 }
 
-void AgentLoop::start_tool_preamble_sidecar(ProviderCallResult& result,
-                                            const std::string& tool_name,
-                                            const std::string& args_preview,
-                                            const std::string& assistant_text) {
-    ToolPreambleSidecarSummarizer summarizer;
-    {
-        std::lock_guard<std::mutex> lk(tool_preamble_mu_);
-        summarizer = tool_preamble_summarizer_;
+void AgentLoop::clear_phase_preamble() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::phase_preamble() const {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    return phase_preamble_;
+}
+
+void AgentLoop::publish_phase_preamble(const ToolPreambleTitle& preamble,
+                                       const ProgressEmitter& emit_progress) {
+    if (preamble.title.empty()) return;
+    set_phase_preamble(preamble);
+    if (callbacks_.on_thinking_title) {
+        callbacks_.on_thinking_title(preamble.title);
     }
-    if (!summarizer) return;
-    auto task = std::make_shared<ToolPreambleSidecarTask>();
-    result.sidecar_task = task;
-
-    tool_preamble::SidecarSummaryInput input;
-    input.user_request = last_user_text_for_preamble();
-    input.assistant_text = assistant_text;
-    input.calls.push_back({tool_name, args_preview});
-
-    // detached:摘要器自带超时;AgentLoop 只轮询 / 有界等待任务对象,永不被它
-    // 回调,所以线程晚于 AgentLoop 结束也不会踩到已析构的 this。
-    std::thread([task, summarizer, input = std::move(input)]() {
-        std::string title;
-        try {
-            title = summarizer(input);
-        } catch (const std::exception& e) {
-            LOG_WARN(std::string("[tool_preamble] sidecar summarizer failed: ") +
-                     e.what());
-        } catch (...) {
-            LOG_WARN("[tool_preamble] sidecar summarizer failed");
-        }
-        {
-            std::lock_guard<std::mutex> lk(task->mu);
-            task->title = std::move(title);
-            task->done = true;
-        }
-        task->cv.notify_all();
-    }).detach();
+    // 独立的 phase 键 + force,绕开进度节流:前言一闭合活动行就换文案,
+    // 不用等下一条 tool_planning / tool_running。
+    emit_progress("preamble", preamble.title, std::string{},
+                  std::string{}, std::string{}, -1, true);
 }
 
 AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
     ProviderCallResult& result) {
-    ToolPreambleTitle out;
     const ToolPreambleConfig cfg = tool_preamble_config();
-    ChatResponse& accumulated = result.accumulated;
-    if (!cfg.enabled || accumulated.tool_calls.empty()) return out;
-    for (const auto& tc : accumulated.tool_calls) {
-        if (!tc.id.empty()) out.tool_call_ids.push_back(tc.id);
-    }
-    if (cfg.mode == tool_preamble::kModePrompt) {
-        // 参数模式:每个调用自己的 `preamble`。这里就把它从参数里剥掉 —— 之后的
-        // 落盘、权限门、预览、hooks、doom guard、执行看到的都是干净参数,
-        // 前言只经 metadata.tool_preamble.calls 与 tool_start.preamble 传给界面。
-        out.source = tool_preamble::kModePrompt;
-        // 工具自己声明了 `preamble` 参数的(MCP 工具可能撞名):那是它的真实入参,
-        // 注入时已跳过,这里同样不剥、不当前言。按原生名判定,模型侧别名先解析回来。
-        std::set<std::string> native_preamble_tools;
-        for (const auto& def : tools_.get_tool_definitions()) {
-            if (tool_preamble::definition_declares_preamble(def)) {
-                native_preamble_tools.insert(def.name);
-            }
-        }
-        for (std::size_t i = 0; i < accumulated.tool_calls.size(); ++i) {
-            auto& tc = accumulated.tool_calls[i];
-            if (!native_preamble_tools.empty() &&
-                native_preamble_tools.count(
-                    tools_.resolve_model_tool_name_to_native(tc.function_name))) {
-                continue;
-            }
-            const std::string title =
-                tool_preamble::strip_preamble_parameter(tc.function_arguments);
-            if (title.empty()) continue;
-            out.per_call[tc.id.empty() ? "#" + std::to_string(i) : tc.id] = title;
-        }
-    } else if (cfg.mode == tool_preamble::kModeReasoning) {
-        out.source = tool_preamble::kModeReasoning;
-        out.title = result.reasoning_preamble_title.empty()
-            ? tool_preamble::title_from_reasoning(accumulated.reasoning_content)
-            : result.reasoning_preamble_title;
-    } else if (cfg.mode == tool_preamble::kModeSidecar) {
-        out.source = tool_preamble::kModeSidecar;
-        auto task = result.sidecar_task;
-        if (task) {
-            task->tool_call_ids = out.tool_call_ids;
-            const auto deadline = std::chrono::steady_clock::now() +
-                std::chrono::milliseconds(cfg.sidecar_wait_ms);
-            std::unique_lock<std::mutex> lk(task->mu);
-            while (!task->done && !abort_requested_.load()) {
-                const auto now = std::chrono::steady_clock::now();
-                if (now >= deadline) break;
-                const auto remaining =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-                task->cv.wait_for(lk, std::min(std::chrono::milliseconds(50), remaining));
-            }
-            if (task->done) {
-                out.title = task->title;
-            } else {
-                // 没等到:先按无标题落盘,工具执行完 / 回合末再补发 late 事件
-                // (只更新界面,不进 JSONL —— 已落盘的消息没有改写入口)。
-                late_sidecar_task_ = task;
-            }
+    const ChatResponse& accumulated = result.accumulated;
+    if (!cfg.enabled || accumulated.tool_calls.empty()) return {};
+    ToolPreambleTitle current = phase_preamble();
+    if (cfg.mode == tool_preamble::kModeReasoning && current.title.empty()) {
+        // 推理里没有加粗标题:落盘前用推理首句兜底(Codex TUI 同款)。只影响
+        // 本批次的 metadata / tool_start,工具马上要开跑,不再另发进度帧。
+        const std::string fallback =
+            tool_preamble::title_from_reasoning(accumulated.reasoning_content);
+        if (!fallback.empty()) {
+            current = {};
+            current.title = fallback;
+            current.source = tool_preamble::kModeReasoning;
+            set_phase_preamble(current);
+            if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(fallback);
         }
     }
-    if (out.title.empty()) {
-        out.tool_call_ids.clear();
-        if (out.per_call.empty()) out.source.clear();
-    }
-    return out;
-}
-
-void AgentLoop::flush_late_tool_preamble(bool turn_ending) {
-    auto task = late_sidecar_task_;
-    if (!task) return;
-    std::string title;
-    {
-        std::lock_guard<std::mutex> lk(task->mu);
-        if (!task->done) {
-            if (turn_ending) late_sidecar_task_.reset();
-            return;
-        }
-        title = task->title;
-    }
-    late_sidecar_task_.reset();
-    if (title.empty()) return;
-    ToolPreambleTitle late;
-    late.title = title;
-    late.source = tool_preamble::kModeSidecar;
-    late.tool_call_ids = task->tool_call_ids;
-    emit_tool_preamble_event(late, true);
-}
-
-void AgentLoop::emit_tool_preamble_event(const ToolPreambleTitle& preamble,
-                                         bool late) {
-    nlohmann::json payload{
-        {"batch_id", preamble.tool_call_ids.empty()
-                         ? std::string{}
-                         : preamble.tool_call_ids.front()},
-        {"tool_call_ids", preamble.tool_call_ids},
-        {"title", preamble.title},
-        {"source", preamble.source},
-        {"late", late},
-    };
-    events_.emit(SessionEventKind::ToolPreamble, std::move(payload));
+    return current;
 }
 
 AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
@@ -3624,25 +3507,48 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     int provider_attempt = 1;
     bool first_output_recorded = false;
 
-    // 工具前言(add-tool-preamble):本次调用期间的配置快照。reasoning 模式在
-    // 推理流里抠第一对加粗标题;sidecar 模式在第一个完整工具调用露头时就启动
-    // 旁路摘要,让它与后续参数流式 / 工具执行并行,尽量不拖长回合。
+    // 工具前言(add-tool-preamble):本次调用期间的配置快照。prompt 模式在正文
+    // 流里识别 <text_preamble> 标签(标签正文进 loading,不进正文);reasoning
+    // 模式在推理流里抠第一对加粗标题。
     const ToolPreambleConfig preamble_cfg = tool_preamble_config();
     const bool preamble_reasoning =
         preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeReasoning;
-    const bool preamble_sidecar =
-        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeSidecar;
-    const bool preamble_param =
+    const bool preamble_text =
         preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModePrompt;
-    // 参数模式:按 tool_index 缓存已从参数前缀抽到的前言,后续增量不重复解析。
-    std::map<int, std::string> delta_preambles;
+    bool reasoning_title_found = false;
+    text_preamble_scanner_.reset();
+    // 正文增量的统一出口:可见文本给 TUI / Web。prompt 模式下非空白可见正文一
+    // 出现就清掉当前阶段前言 —— 未加标签的正文意味着模型在说话,不是在报进度。
+    auto publish_visible_text = [&](const std::string& text) {
+        if (text.empty()) return;
+        if (preamble_text && text.find_first_not_of(" \t\r\n") != std::string::npos) {
+            clear_phase_preamble();
+        }
+        if (callbacks_.on_delta) {
+            callbacks_.on_delta(text);
+        }
+        events_.emit(SessionEventKind::Token, nlohmann::json{{"text", text}});
+    };
+    // 标签总是从可见正文里剥掉(关闭功能时模型也可能沿着历史习惯打标签,
+    // 界面不该露出原始标签);只有开启 prompt 模式时才把它当阶段前言发布。
+    auto publish_scanned = [&](tool_preamble::TextPreambleScanner::Output out) {
+        publish_visible_text(out.visible);
+        if (!preamble_text) return;
+        for (const auto& found : out.preambles) {
+            ToolPreambleTitle title;
+            title.title = found.title;
+            title.kind = found.kind;
+            title.source = tool_preamble::kModePrompt;
+            publish_phase_preamble(title, emit_progress);
+        }
+    };
 
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
-                            &delta_preambles,
-                            model_step_index, preamble_reasoning, preamble_sidecar,
-                            preamble_param,
+                            &reasoning_title_found, &publish_visible_text,
+                            &publish_scanned,
+                            model_step_index, preamble_reasoning, preamble_text,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3658,12 +3564,11 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             {
                 std::lock_guard<std::mutex> lk(resp_mu);
+                // 落盘正文保留标签原文(模型会模仿自己的历史输出,剥掉历史
+                // 反而让它几轮后忘记格式);只有下发给界面的 token 流是剥过的。
                 result.accumulated.content += evt.content;
             }
-            if (callbacks_.on_delta) {
-                callbacks_.on_delta(evt.content);
-            }
-            events_.emit(SessionEventKind::Token, nlohmann::json{{"text", evt.content}});
+            publish_scanned(text_preamble_scanner_.feed(evt.content));
             break;
         case StreamEventType::ReasoningDelta:
             if (!evt.content.empty() && !first_output_recorded) {
@@ -3682,7 +3587,7 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             reasoning_bytes += evt.content.size();
             reasoning_fragments++;
-            if (preamble_reasoning && result.reasoning_preamble_title.empty()) {
+            if (preamble_reasoning && !reasoning_title_found) {
                 std::string reasoning_so_far;
                 {
                     std::lock_guard<std::mutex> lk(resp_mu);
@@ -3691,22 +3596,25 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string bold =
                     tool_preamble::extract_first_bold_span(reasoning_so_far);
                 if (!bold.empty()) {
-                    result.reasoning_preamble_title =
-                        tool_preamble::normalize_title_line(
-                            bold, tool_preamble::kReasoningTitleMaxCodePoints);
-                    if (!result.reasoning_preamble_title.empty() &&
-                        callbacks_.on_thinking_title) {
-                        callbacks_.on_thinking_title(result.reasoning_preamble_title);
+                    const std::string title = tool_preamble::normalize_title_line(
+                        bold, tool_preamble::kReasoningTitleMaxCodePoints);
+                    if (!title.empty()) {
+                        reasoning_title_found = true;
+                        ToolPreambleTitle found;
+                        found.title = title;
+                        found.source = tool_preamble::kModeReasoning;
+                        publish_phase_preamble(found, emit_progress);
                     }
                 }
             }
-            emit_progress("reasoning",
-                result.reasoning_preamble_title.empty()
-                    ? std::string("正在推理")
-                    : result.reasoning_preamble_title,
-                "片段 " + std::to_string(reasoning_fragments) + ", " +
-                human_bytes(reasoning_bytes),
-                std::string{}, std::string{}, -1, false);
+            {
+                const ToolPreambleTitle current = phase_preamble();
+                emit_progress("reasoning",
+                    current.title.empty() ? std::string("正在推理") : current.title,
+                    "片段 " + std::to_string(reasoning_fragments) + ", " +
+                    human_bytes(reasoning_bytes),
+                    std::string{}, std::string{}, -1, false);
+            }
             events_.emit(SessionEventKind::Reasoning, nlohmann::json{{"text", evt.content}});
             break;
         case StreamEventType::ToolCallDelta:
@@ -3737,19 +3645,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
-                // 工具前言:标题一到手,准备调用的进度行就显示标题(工具名退到 detail),
-                // loading 提示不在标题与通用文案之间来回跳。reasoning 模式用推理里的
-                // 加粗;参数模式从参数 JSON 前缀里抽 `preamble`(模型被要求把它放在
-                // 第一个键,所以通常在参数流完之前就能拿到)。
-                std::string titled_label = result.reasoning_preamble_title;
-                if (preamble_param) {
-                    auto& cached = delta_preambles[evt.tool_index];
-                    if (cached.empty()) {
-                        cached = tool_preamble::extract_preamble_from_partial_arguments(
-                            evt.tool_call.function_arguments);
-                    }
-                    if (!cached.empty()) titled_label = cached;
-                }
+                // 工具前言:有当前阶段前言时,准备调用的进度行就显示它(工具名退到
+                // detail),loading 提示不在前言与通用文案之间来回跳。
+                const std::string titled_label = phase_preamble().title;
                 const bool titled = !titled_label.empty();
                 emit_progress("tool_planning",
                     titled ? titled_label : label,
@@ -3773,22 +3671,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 native_call.function_name =
                     tools_.resolve_model_tool_name_to_native(
                         native_call.function_name);
-                std::string sidecar_tool_name;
-                std::string sidecar_args_preview;
-                std::string sidecar_assistant_text;
                 {
                     std::lock_guard<std::mutex> lk(resp_mu);
-                    if (preamble_sidecar && !result.sidecar_task) {
-                        sidecar_tool_name = native_call.function_name;
-                        sidecar_args_preview = native_call.function_arguments;
-                        sidecar_assistant_text = result.accumulated.content;
-                    }
                     result.accumulated.tool_calls.push_back(std::move(native_call));
-                }
-                if (!sidecar_tool_name.empty()) {
-                    start_tool_preamble_sidecar(result, sidecar_tool_name,
-                                                sidecar_args_preview,
-                                                sidecar_assistant_text);
                 }
             }
             break;
@@ -3835,6 +3720,8 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             reasoning_fragments = 0;
             ++provider_attempt;
             first_output_recorded = false;
+            reasoning_title_found = false;
+            text_preamble_scanner_.reset();
             if (callbacks_.on_stream_retry_reset) {
                 callbacks_.on_stream_retry_reset();
             }
@@ -3884,6 +3771,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
         provider->chat_stream(bundle.messages_with_system, bundle.tool_defs,
                               stream_callback, &abort_requested_);
         clear_active_provider_for_retry(provider);
+        // 流结束:把扫描器扣住的字节结清(半截开标签按正文放行,没闭合的标签
+        // 正文仍算前言)。
+        publish_scanned(text_preamble_scanner_.flush());
         LOG_INFO("chat_stream returned. content_len=" +
                  std::to_string(result.accumulated.content.size()) +
                  " tool_calls=" + std::to_string(result.accumulated.tool_calls.size()));
@@ -4399,44 +4289,28 @@ bool AgentLoop::execute_tool_calls(
                           : static_cast<int>(accumulated.tool_calls.size())},
         };
     }
-    // 工具前言(add-tool-preamble):标题挂在这条 assistant(tool_calls) 消息的
-    // metadata 上落盘,Web / TUI 回放据此把批次折成带标题的分组;同时发一条
-    // tool_preamble 事件给实时界面 —— 空正文的工具回合没有 Message 帧可搭。
+    // 工具前言(add-tool-preamble):本批次沿用的阶段前言挂在这条
+    // assistant(tool_calls) 消息的 metadata 上落盘(只为记录,不还原任何显示行),
+    // 实时界面经每个调用的 tool_start.preamble 拿到它。
     const ToolPreambleTitle step_preamble = std::move(current_step_preamble_);
     current_step_preamble_ = {};
-    const bool has_batch_title = !step_preamble.title.empty();
     nlohmann::json preamble_metadata;
-    if (has_batch_title || !step_preamble.per_call.empty()) {
-        preamble_metadata = {{"source", step_preamble.source}};
-        if (has_batch_title) preamble_metadata["title"] = step_preamble.title;
-        if (!step_preamble.per_call.empty()) preamble_metadata["calls"] = step_preamble.per_call;
+    if (!step_preamble.title.empty()) {
+        preamble_metadata = {
+            {"source", step_preamble.source},
+            {"title", step_preamble.title},
+            {"kind", step_preamble.kind},
+        };
         if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
         tc_msg.metadata[tool_preamble::kMetadataKey] = preamble_metadata;
     }
-    // 单个调用的前言:参数模式取它自己的那句,其它模式沿用批次标题。
-    auto preamble_for_call = [&step_preamble](const ToolCall& call, std::size_t index) {
-        const auto it = step_preamble.per_call.find(
-            call.id.empty() ? "#" + std::to_string(index) : call.id);
-        if (it != step_preamble.per_call.end()) return it->second;
+    // 单个调用的前言 = 本批次的阶段前言。
+    auto preamble_for_call = [&step_preamble](const ToolCall&, std::size_t) {
         return step_preamble.title;
-    };
-    // 参数模式没有批次标题:每个调用的前言在它的 tool_call 行亮出之前经
-    // on_tool_preamble(source=prompt) 交给 TUI,TUI 把它挂到紧接着的那一行上
-    // (读工具走并行路径没有进度头,这是 TUI 看到它的唯一通道)。
-    auto notify_call_preamble = [&](const ToolCall& call, std::size_t index) {
-        if (has_batch_title || !callbacks_.on_tool_preamble) return;
-        const std::string preamble = preamble_for_call(call, index);
-        if (!preamble.empty()) callbacks_.on_tool_preamble(preamble, step_preamble.source);
     };
     messages_.push_back(tc_msg);
     if (session_manager_) session_manager_->on_message(tc_msg);
     dispatch_assistant_completed_hook(tc_msg, provider_snapshot);
-    if (has_batch_title) {
-        emit_tool_preamble_event(step_preamble, false);
-        if (callbacks_.on_tool_preamble) {
-            callbacks_.on_tool_preamble(step_preamble.title, step_preamble.source);
-        }
-    }
 
     // Web: 工具调用回合的 assistant 文本此前只通过 token 流下发,没有一条权威的
     // Message 帧。文本-only 回合靠末尾那条 assistant Message 事件整体替换流式草稿
@@ -4445,17 +4319,23 @@ bool AgentLoop::execute_tool_calls(
     // 自愈(磁盘已落全量,所以切会话重载才恢复)。这里补发一条 assistant 文本的
     // Message 事件让前端用完整文本整体替换草稿。仅走 web 的 events_,不经
     // dispatch_message 的 on_message 回调,避免改变 TUI 的流式渲染行为。
-    if (!accumulated.content.empty()) {
+    // 工具前言:正文里的 <text_preamble> 标签不进界面(id 仍按落盘原文算,与
+    // GET /messages 重读一致);整段都是标签时不发这条帧。
+    const std::string visible_content =
+        tool_preamble::strip_text_preamble_tags(accumulated.content);
+    const bool has_content_parts =
+        accumulated.content_parts.is_array() && !accumulated.content_parts.empty();
+    if (!visible_content.empty() || has_content_parts) {
         ChatMessage id_basis;
         id_basis.role = "assistant";
         id_basis.content = accumulated.content;
         nlohmann::json assistant_event = {
             {"role", "assistant"},
-            {"content", accumulated.content},
+            {"content", visible_content},
             {"is_tool", false},
             {"id", web::compute_message_id(id_basis)},
         };
-        if (accumulated.content_parts.is_array() && !accumulated.content_parts.empty()) {
+        if (has_content_parts) {
             assistant_event["content_parts"] = accumulated.content_parts;
         }
         if (preamble_metadata.is_object()) {
@@ -4735,6 +4615,7 @@ bool AgentLoop::execute_tool_calls(
             if (!call_preamble.empty()) {
                 start_payload["preamble"] = call_preamble;
                 start_payload["preamble_source"] = step_preamble.source;
+                start_payload["preamble_kind"] = step_preamble.kind;
             }
             events_.emit(
                 SessionEventKind::ToolStart, std::move(start_payload));
@@ -5082,7 +4963,6 @@ bool AgentLoop::execute_tool_calls(
                 // 灰色指示灯),结果一到紧跟其后 —— 即使批内并行执行,transcript
                 // 仍按提交顺序呈现「调用 → 结果」相邻的成对行。abort 时未收割
                 // 的调用不再显示伪行,canonical 的 [Interrupted] 由 Phase 3 落盘。
-                notify_call_preamble(item.call, idx);
                 dispatch_message("tool_call",
                     "[Tool: " + item.call.function_name + "] " +
                         item.call.function_arguments, true);
@@ -5112,7 +4992,6 @@ bool AgentLoop::execute_tool_calls(
         const auto& tc = *entry.tc;
         LOG_INFO("Tool call (write): " + tc.function_name + " id=" + tc.id);
 
-        notify_call_preamble(tc, entry.original_index);
         dispatch_message("tool_call",
                 "[Tool: " + tc.function_name + "] " + tc.function_arguments, true);
 
@@ -6041,6 +5920,16 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                    bool force = false) {
         const auto now = std::chrono::steady_clock::now();
         const std::string key = phase + "\0" + tool + "\0" + tool_call_id + "\0" + std::to_string(tool_index);
+        // 工具前言(add-tool-preamble):阶段前言要一直留在 loading 提示里,直到下一段
+        // 正文 / 下一条前言出现。批次之间等待模型的那一帧若退回「正在等待模型响应」,
+        // Web 实时行会在「前言 → 通用文案 → 前言」之间闪动(实测会话
+        // 20260925-013722-4299 的 seq 51),所以 model_waiting 也把 label 换成前言,
+        // 原文案退到 detail;reasoning / tool_planning / tool_running 在各自的
+        // 发射点已按同一规则处理,权限 / 提问 / 压缩这些必须被看见的状态不换。
+        const ToolPreambleTitle preamble = phase_preamble();
+        const bool titled_waiting = phase == "model_waiting" && !preamble.title.empty();
+        const std::string& effective_label = titled_waiting ? preamble.title : label;
+        const std::string& effective_detail = titled_waiting ? label : detail;
         nlohmann::json payload;
         {
             std::lock_guard<std::mutex> lk(progress_mu);
@@ -6055,8 +5944,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             }
             last_progress_emit_at = now;
             payload = build_agent_progress_payload(
-                phase, label, detail, tool, tool_call_id, tool_index,
+                phase, effective_label, effective_detail, tool, tool_call_id, tool_index,
                 active_progress_started_at_ms);
+        }
+        // 当前阶段前言随每条进度帧透传,界面据此区分「前言」与普通阶段文案;kind
+        // 给以后的读 / 写效果留位。
+        if (!preamble.title.empty()) {
+            payload["preamble"] = {
+                {"title", preamble.title},
+                {"source", preamble.source},
+                {"kind", preamble.kind},
+            };
         }
         EventDispatcher::EmitOptions opts;
         opts.buffered = true;
@@ -6562,9 +6460,21 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             auto completed_context = bundle.messages_with_system;
             completed_context.push_back(assistant_msg);
             publish_side_question_context(completed_context);
-            dispatch_message("assistant", provider_result.accumulated.content, false,
-                             nlohmann::json::object(),
-                             provider_result.accumulated.content_parts);
+            {
+                // 工具前言:模型若违规给最终回答也打了 <text_preamble> 标签,界面
+                // 照样剥掉;落盘正文保留原文。
+                const std::string visible_content =
+                    tool_preamble::strip_text_preamble_tags(
+                        provider_result.accumulated.content);
+                const bool has_parts =
+                    provider_result.accumulated.content_parts.is_array() &&
+                    !provider_result.accumulated.content_parts.empty();
+                if (!visible_content.empty() || has_parts) {
+                    dispatch_message("assistant", visible_content, false,
+                                     nlohmann::json::object(),
+                                     provider_result.accumulated.content_parts);
+                }
+            }
             emit_model_step_finish(
                 current_model_step, provider_result.accumulated.finish_reason,
                 step_usage);
@@ -6588,8 +6498,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         text_tool_call_corrections = 0;
 
         // 工具前言(add-tool-preamble):在 assistant(tool_calls) 消息落盘之前把
-        // 本步标题定下来(sidecar 模式在这里有界等待),execute_tool_calls 开头
-        // 把它挂进 metadata 并发事件;工具执行完再看一眼没等到的旁路结果。
+        // 本步沿用的阶段前言定下来,execute_tool_calls 开头把它挂进 metadata
+        // 并随 tool_start 下发。
         current_step_preamble_ = resolve_tool_preamble_for_step(provider_result);
 
         // Phase 5: Execute tool calls
@@ -6597,7 +6507,6 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             provider_result.accumulated, provider_snapshot,
             emit_agent_progress, doom_guard, doom_guard_mu,
             turn_timing_status);
-        flush_late_tool_preamble(false);
         // 混合形态:同一回复里既有原生调用,又有与之不一致的文本调用(回显在
         // provider 那边已剔除,记为 None 不会走到这里)。只执行了原生调用,
         // 批次跑完后追加隐藏说明,免得模型以为文本里那几个也执行了。不消耗
@@ -6704,8 +6613,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         }
     }
 
-    // 回合结束:旁路摘要要么现在补发、要么丢弃,不留到下一回合。
-    flush_late_tool_preamble(true);
+    // 回合结束:阶段前言不留到下一回合。
+    clear_phase_preamble();
     computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);

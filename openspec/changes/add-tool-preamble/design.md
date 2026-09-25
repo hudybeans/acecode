@@ -10,45 +10,51 @@
 | Claude Code | harness 要求先说一句 / Agent 工具 3~5 词 description / 随机 spinner 动词 | 提示驱动 + 结构化槽位 |
 | Cursor / Copilot | 模板 | "Explored (x) tools" 从工具名 / 参数拼 |
 
-三条可落地的 agent 侧路线正好对应用户点名的三选一:提示驱动、推理服务内置摘要、旁路模型摘要。
+两条落地的 agent 侧路线:提示驱动(模型自己写)与推理服务内置摘要(provider 给)。曾经的第三条「旁路模型摘要」(第一个完整工具调用露头时另发一次小请求)已实现又砍掉:多一次请求、结果常常迟到、落盘前有界等待还拖慢工具执行,用户判断不值。
+
+## 三版形态的取舍
+
+| 版本 | 形态 | 为什么被否 |
+|---|---|---|
+| v1 | 「含工具调用的消息先写一句前言」,正文首句抠出当批次标题 | 文本先流成气泡、参数再流、批次开始才把那句话搬进 loading;每个模型步一组,连续单工具步堆成一摞标题行(用户截图) |
+| v2 | 每个工具定义注入必填 `preamble` 参数,模型在调用参数里填 | 时序问题没了,但等于强迫模型**每次调用**都写一句;grok 对可选参数几乎不填,进 required 才填 —— 用户实测后否掉整套 |
+| v3(现行) | 正文里的 `<text_preamble type="read|write">…</text_preamble>` 标签,只在阶段变化时写 | 模型按阶段而不是按调用写,一次多步任务通常两三句;标签闭合的那一刻就换 loading 文案;不显示在落定的记录里 |
+
+v3 的提示词是用户给的原话:For multi-step tool tasks, emit exactly one short sentence in `<text_preamble type="read">...</text_preamble>` (use `type="write"` for state-changing actions) before the first call and at major phase/plan changes: next step initially, verified result + next step thereafter; never tag final answers。系统提示只**追加**「# Progress preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。
 
 ## 数据流
 
 ```
-model step ──(reasoning delta)──▶ extract_first_bold ──▶ agent_progress{phase:reasoning,label:title}
-           ──(first ToolCall)───▶ sidecar thread(可选)
-           ──(step end)─────────▶ resolve_tool_preamble_for_step ──▶ current_step_preamble_
-execute_tool_calls:
-   tc_msg.metadata.tool_preamble = {title, source}   ← 落盘(JSONL)
-   emit tool_preamble{batch_id, tool_call_ids, title, source, late:false}
-   callbacks.on_tool_preamble(title, source)         ← TUI 伪行
-   tool_start… (agent_progress tool_running label = title)
-   flush_late_tool_preamble(false)                   ← sidecar 迟到 → late:true
-turn end: flush_late_tool_preamble(true)             ← 仍没到就丢弃
+model step ──(text delta)──▶ TextPreambleScanner.feed ──┬─ visible → on_delta / Token 帧
+           │                                            └─ preamble(标签闭合) → publish_phase_preamble
+           ──(reasoning delta)──▶ extract_first_bold / title_from_reasoning ──▶ publish_phase_preamble(reasoning)
+publish_phase_preamble:
+   phase_preamble_ = {title, source, kind}            ← tool_preamble_mu_ 下
+   callbacks.on_thinking_title(title)                  ← TUI 等待短语
+   emit agent_progress{phase:"preamble", label:title, preamble:{…}}   ← force,绕开节流
+prompt 模式下非空白可见正文出现 → clear_phase_preamble()
+execute_tool_calls(每个批次):
+   tc_msg.metadata.tool_preamble = {source, title, kind}   ← 落盘,仅记录
+   tool_start{preamble, preamble_source, preamble_kind}   ← 界面实时通道
+   agent_progress{tool_running, label = 前言, detail = 工具名}
+turn end: clear_phase_preamble()
 ```
 
-- **标题只在一处解析**(`AgentLoop::resolve_tool_preamble_for_step`),`execute_tool_calls` 只消费。
-- **落盘键**:`metadata.tool_preamble` 挂在 assistant(tool_calls) 消息上,provider 序列化不读 metadata,不打穿 prompt cache;`session_serializer` 原本就透传 metadata,REST `GET messages` 与 resume 自然带回。
-- **事件先于 tool_start**:Web reducer 先把标题按 tool_call_id 暂存在 `pendingToolPreambles`,`tool_start` 建项时取走;迟到事件原地打标。空正文的工具回合没有 assistant Message 帧可搭,所以事件是必须的,不是可选的。
+- **阶段前言是一条状态,不是每步解析一次**。它跨模型步沿用(标签只在阶段变化时出现,中间的工具批次都沿用它),被新标签 / 新加粗标题替换,prompt 模式下被未加标签的可见正文清除,回合结束清空。`resolve_tool_preamble_for_step` 只是把当前状态取出来给 `execute_tool_calls`(reasoning 模式下顺带做首句兜底)。
+- **扫描器是流式的**(`tool_preamble::TextPreambleScanner`,纯逻辑):标签可能切在任意字节处,尾部若是 `<text_preamble` 的前缀就扣住不发;非标签的相似文本(`<textarea>`、`<text_preambleX>`、`a < b`)原样放行;`type` 属性可带引号 / 不带 / 缺省,只认 read / write;`<text_preamble/>` 跳过;缺闭合标签时到行尾为止;正文超过 `kTextPreambleMaxBodyBytes`(1200)仍未闭合就按到此为止;孤立的 `</text_preamble>` 丢弃;流开头与每个标签闭合后紧跟的空白吞掉(否则界面为 `\n\n` 建空气泡);`flush()` 在流结束时把扣住的前缀当普通文本放出。标题经 `normalize_title_line` 规整(单行、截到 200 code point)。
+- **标签总是从可见正文里剥掉,发布成前言只在开启 prompt 模式时**。关闭功能后模型也可能沿习惯打标签(历史里有),所以 Token 帧 / Message 帧 / TUI 行 / Web 历史加载四处都剥,`strip_text_preamble_tags`(C++)与 `stripTextPreambleTags`(JS)是同一套规则;可见正文为空的 assistant(tool_calls) 消息不发 Message 帧、不建行。
+- **落盘正文保留标签原文**(用户决定「可以落盘」):模型会模仿自己的历史输出,剥掉了反而让它在多轮对话里忘记格式。`metadata.tool_preamble` 挂在 assistant(tool_calls) 消息上,provider 序列化不读 metadata,不打穿 prompt cache;`session_serializer` 原本就透传 metadata。`web::compute_message_id` 仍按完整正文(含标签)算,与 JSONL 重读一致。
 - **投影不按批次拆组**:一段活动仍是一条 `activity_summary`,前言只影响实时行(正在运行工具的前言)与运行中的工具行;落定后的记录与功能关闭时形态一致。按批次拆成多行就是用户否掉的那版。
-- **每个调用一条前言是三种模式对下游的统一形态**:参数模式各取各的,批次标题模式每个调用都等于批次标题(`preamble_for_call`),`tool_start.preamble` 是唯一的实时通道;批次标题模式另发的 `tool_preamble` 事件只为迟到补标与历史 batch_id。
-
-## sidecar 的等待策略
-
-在第一个**完整**工具调用露头时启动(参数预览进材料,比只有工具名的标签准),与后续参数流式 / 工具执行并行;`resolve_tool_preamble_for_step` 有界等待 `sidecar_wait_ms`(默认 2000,clamp [0,15000]),每 50ms 看一次中止标记。等不到就按无标题落盘,工具执行完与回合末各看一次,到了就发 `late:true` 事件(不写 JSONL —— 已落盘消息没有改写入口)。摘要线程 detached、只写 `ToolPreambleSidecarTask`,AgentLoop 永不被它回调,线程晚于 AgentLoop 结束也不会踩到已析构的 this。
-
-## prompt 模式为什么是「参数」而不是「先说一句话」
-
-第一版做成「含工具调用的消息先写一句前言」,实测(用户截图)三个问题:文本先流出来变成气泡、工具参数再流、批次开始才把那句话搬进 loading;每个模型步一组,连续单工具步堆成一摞标题行;展开后那句话在组里又重复一遍。改成参数后这些时序问题都不存在:`inject_preamble_parameter` 给每个工具定义加 `preamble`,模型在调用参数里填;`ToolCallDelta` 带参数前缀(`kToolCallDeltaArgumentsPrefixBytes`),`extract_preamble_from_partial_arguments` 在值闭合的那一刻就换掉 tool_planning 的 label;`strip_preamble_parameter` 在 `resolve_tool_preamble_for_step` 里剥掉,后面的权限 / 预览 / hooks / doom guard / 执行 / 落盘全是干净参数。系统提示只**追加**「# Tool call preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。每次调用约十几个 token,比旁路摘要便宜一个量级。`preamble` 必须进 required:只描述成可选时 grok-4.7 在并行读批次里几乎不填(用户会话 20260923-164654-8908 六步填一步,隔离基线 27 次调用填 1 次),进 required 并把「并行批次每个调用都填」写进提示后每次都填;GPT 系两种写法都填。
+- **`kind` 是留空的槽位**:`read` / `write` 从标签属性解析,经 `agent_progress.preamble.kind` / `tool_start.preamble_kind` / `metadata.tool_preamble.kind` 一路透传到界面,界面暂不按它做任何区分。用户的想法是写入时有书写效果、读取时有放大镜效果,之后补。
 
 ## 三端 loading 提示同源
 
-- Web `ActivitySummaryBlock`:`item.preamble.title` > 阶段文案 / 并行计数(后者退到 detail)。
-- daemon `agent_progress`:reasoning(流式期间)/ tool_planning / tool_running 在有标题时 label = 标题,工具名 / 命令预览退到 detail,所以侧栏、迷你视图等只读 `activity.label` 的消费方也显示标题。
-- TUI:`on_thinking_title` 替换等待动画短语;批次标题模式 `on_tool_preamble` 插 `● 标题` 伪行;参数模式同一回调逐调用送前言(source=prompt),TUI 暂存后挂到紧接着的 tool_call 行(`● FileRead · 前言`),写工具的进度头也显示它。读工具走并行路径没有进度头,这条回调是 TUI 看到前言的唯一通道。
+- daemon `agent_progress`:前言建立时立刻发 `phase:"preamble"` 帧(独立 phase 键 + force,绕开 750ms 节流);之后 model_waiting / reasoning / tool_planning / tool_running 在有前言时 label = 前言,通用文案 / 工具名 / 命令预览退到 detail,所以侧栏、迷你视图等只读 `activity.label` 的消费方也显示前言;每条帧都带 `preamble{title,source,kind}` 供需要区分来源 / 种类的消费方使用。model_waiting 那条在 `emit_agent_progress` 里集中换 —— 实测(会话 20260925-013722-4299)批次之间的等待帧若退回「正在等待模型响应」,Web 实时行会在「前言 → 通用文案 → 前言」之间闪动,与「前言留到下一段正文 / 下一条前言出现」的要求相悖;权限 / 提问 / 压缩 / 重试这些必须被看见的状态不换。
+- Web `ActivitySummaryBlock`:`item.preamble.title`(= 正在运行的最新工具的前言,`liveToolPreamble`)> 阶段文案 / 并行计数;工具都跑完时不沿用旧前言;`ToolBlock` 运行中的工具行以前言为 label,落定后行保持原样、悬浮提示也不带前言。
+- TUI:`on_thinking_title` 替换等待动画短语;写工具的进度头 `● 前言 · Tool(args)`(`on_tool_progress_start` 第三参)。读工具走并行路径没有进度头,等待短语是它们唯一的显示位。不插伪行、不在 tool_call 行上挂前言。
 
 ## 已知限制
 
 - Anthropic / DeepSeek 类只给散文或原始思维链的推理,reasoning 模式只能取首句,质量一般;不返回推理内容的模型不出标题。
-- 迟到的旁路标题不落盘,resume 后该批次退回模板汇总。
-- headless `-p` 模式配置照常生效(prompt 模式会改提示词),但 stdout 只出最终文本,标题不可见。
+- prompt 模式的效果取决于模型是否遵循提示:不写标签就没有前言,一切退回模板文案;写在最终回答里的标签会被剥掉但不会显示成前言(回合已结束)。
+- headless `-p` 模式配置照常生效(prompt 模式会改提示词),stdout 只出最终文本,标签同样剥掉。

@@ -1106,8 +1106,6 @@ ChatResponse AnthropicProvider::parse_sse_stream(
                         progress_evt.tool_index = index;
                         progress_evt.tool_call.id = block.id;
                         progress_evt.tool_call.function_name = block.name;
-                        progress_evt.tool_call.function_arguments =
-                            block.input_json.substr(0, kToolCallDeltaArgumentsPrefixBytes);
                         progress_evt.tool_call_argument_bytes = block.input_json.size();
                         callback(progress_evt);
                     }

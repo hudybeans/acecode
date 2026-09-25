@@ -118,7 +118,7 @@ target_include_directories(acecode_unit_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
 )
-if(WIN32)
+if(WIN32 OR APPLE)
     target_link_libraries(acecode_unit_tests PRIVATE acecode_computer_use_native)
     add_dependencies(acecode_unit_tests acecode-computer-use)
     # Runtime tests resolve their sidecar beside the test executable as the
@@ -126,7 +126,7 @@ if(WIN32)
     add_custom_command(TARGET acecode_unit_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:acecode-computer-use>
-            $<TARGET_FILE_DIR:acecode_unit_tests>/acecode-computer-use.exe
+            $<TARGET_FILE_DIR:acecode_unit_tests>/$<TARGET_FILE_NAME:acecode-computer-use>
         VERBATIM)
     # Isolated transport tests deliberately substitute a noninteractive worker.
     # Keep its executable directory separate from the real helper and tests.
@@ -140,9 +140,14 @@ if(WIN32)
         computer_use/helpers/broker_smoke.cpp ${CMAKE_SOURCE_DIR}/src/computer_use/runtime.cpp)
     target_include_directories(computer_use_broker_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(computer_use_broker_smoke PRIVATE nlohmann_json::nlohmann_json)
+    if(APPLE)
+        target_sources(computer_use_broker_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src/computer_use/helper_process_posix.cpp)
+    endif()
     set_target_properties(computer_use_broker_smoke PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${_computer_broker_dir}")
     add_dependencies(computer_use_broker_smoke computer_use_broker_fixture)
+endif()
+if(WIN32)
     # Opt-in native fixture: operates only on its own disposable test window.
     add_executable(computer_use_native_smoke EXCLUDE_FROM_ALL
         computer_use/helpers/native_smoke.cpp
@@ -214,6 +219,34 @@ if(WIN32 AND ACECODE_BUILD_DESKTOP)
 endif()
 
 if(APPLE)
+    add_executable(computer_use_native_mac_smoke MACOSX_BUNDLE EXCLUDE_FROM_ALL
+        computer_use/helpers/native_macos_smoke.mm
+        ${CMAKE_SOURCE_DIR}/src/computer_use/runtime.cpp
+        ${CMAKE_SOURCE_DIR}/src/computer_use/availability.cpp
+        ${CMAKE_SOURCE_DIR}/src/computer_use/helper_process_posix.cpp)
+    target_include_directories(computer_use_native_mac_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(computer_use_native_mac_smoke PRIVATE nlohmann_json::nlohmann_json
+        "-framework AppKit" "-framework ApplicationServices")
+    target_compile_options(computer_use_native_mac_smoke PRIVATE
+        "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    set_target_properties(computer_use_native_mac_smoke PROPERTIES
+        OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES
+        MACOSX_BUNDLE_BUNDLE_NAME "ACECode Computer Use Fixture"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "dev.acecode.computer-use-fixture")
+    add_dependencies(computer_use_native_mac_smoke acecode-computer-use)
+    set_property(TARGET computer_use_native_mac_smoke APPEND PROPERTY
+        LINK_DEPENDS "$<TARGET_FILE:acecode-computer-use>")
+    add_custom_command(TARGET computer_use_native_mac_smoke POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:acecode-computer-use>
+            $<TARGET_FILE_DIR:computer_use_native_mac_smoke>/acecode-computer-use
+        VERBATIM)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME computer_use_macos_helper_lifecycle
+            COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/computer_use/macos_helper_test.py
+                $<TARGET_FILE:acecode-computer-use>)
+        set_tests_properties(computer_use_macos_helper_lifecycle PROPERTIES
+            LABELS "unit" TIMEOUT 30 RUN_SERIAL TRUE)
+    endif()
     add_executable(agent_browser_host_mac_smoke
         MACOSX_BUNDLE EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/desktop/helpers/agent_browser_host_mac_smoke.mm
