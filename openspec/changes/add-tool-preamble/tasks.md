@@ -8,7 +8,7 @@
 
 ## 2. AgentLoop 与协议
 
-- [x] 2.1 `build_system_prompt` 的 `prompt_tool_preamble` 开关:追加「# Progress preamble」段(用户原话提示词;既有「不要叙述」口径保留;关闭逐字节不变)
+- [x] 2.1 `build_system_prompt` 的 `prompt_tool_preamble` 开关:追加「# Progress preamble」段(用户原话提示词 + 按其规则写的带标签 Good 示例;开启时替换掉旧的「Sharing progress updates」裸文本进度句一节;关闭逐字节不变)
 - [x] 2.2 流回调:正文增量过 `TextPreambleScanner`(总是剥标签,开启 prompt 模式才发布前言);reasoning 加粗标题 / 首句兜底走同一条 `publish_phase_preamble`
 - [x] 2.3 阶段前言状态 `phase_preamble_`(`tool_preamble_mu_`):替换 / 正文清除 / 回合末清空;`resolve_tool_preamble_for_step` 取状态;`execute_tool_calls` 落盘 `metadata.tool_preamble{source,title,kind}` + `tool_start.preamble/preamble_source/preamble_kind`
 - [x] 2.4 `agent_progress`:前言建立发 `phase:"preamble"`(force);有前言期间每帧带 `preamble{title,source,kind}`;tool_planning / tool_running 的 label = 前言

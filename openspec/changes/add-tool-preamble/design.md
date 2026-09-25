@@ -20,7 +20,7 @@
 | v2 | 每个工具定义注入必填 `preamble` 参数,模型在调用参数里填 | 时序问题没了,但等于强迫模型**每次调用**都写一句;grok 对可选参数几乎不填,进 required 才填 —— 用户实测后否掉整套 |
 | v3(现行) | 正文里的 `<text_preamble type="read|write">…</text_preamble>` 标签,只在阶段变化时写 | 模型按阶段而不是按调用写,一次多步任务通常两三句;标签闭合的那一刻就换 loading 文案;不显示在落定的记录里 |
 
-v3 的提示词是用户给的原话:For multi-step tool tasks, emit exactly one short sentence in `<text_preamble type="read">...</text_preamble>` (use `type="write"` for state-changing actions) before the first call and at major phase/plan changes: next step initially, verified result + next step thereafter; never tag final answers。系统提示只**追加**「# Progress preamble」段,「Do not narrate every tool call / prefer silent batches」原样保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。
+v3 的提示词是用户给的原话:For multi-step tool tasks, emit exactly one short sentence in `<text_preamble type="read">...</text_preamble>` (use `type="write"` for state-changing actions) before the first call and at major phase/plan changes: next step initially, verified result + next step thereafter; never tag final answers。开启时「# Progress preamble」段**替换**掉 2026-06-14(5cc31231)加入的「# Sharing progress updates」整节:那一节教模型在工具调用之间写 10 词以内的裸文本进度句,Good 示例本身就是裸文本,实测 grok-4.7(用户会话 20260925-031619-1f93)20 步全部照着它写裸文本、零标签 —— 带具体示例的一节压过了只讲规则的标签要求。前言段自带按用户规则写的 Good 示例(第一次调用前写下一步 / 阶段变化时写已验证结果 + 下一步)与裸文本 Bad 示例,「批量调用」「别把结论塞进中途消息」两条保留 —— 前言替代的是叙述文本,不是批处理;关闭态逐字节不变(`system_prompt_tool_preamble_test.cpp::DisabledIsByteIdenticalToLegacyPrompt`)。
 
 ## 数据流
 
