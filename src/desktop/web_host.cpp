@@ -809,13 +809,122 @@ HMONITOR active_monitor() {
     return ::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
 }
 
+// ── Win10 顶边 1px 边框线 ─────────────────────────────────────────────
+// 系统在 Win10 上不画无标题栏窗口的顶边线(原因见 window_chrome.hpp)。非最大化
+// 时把主 WebView 下移 inset 像素,宿主窗口在露出的这一行按系统配色自己画线。
+// 不走 DwmExtendFrameIntoClientArea 让系统画:Win10 上那样激活时四边边框都会
+// 变白(microsoft/terminal#4577)。不画在网页里:页面拿不到激活态 / 主题色,
+// 非整数缩放下 CSS 1px 也不等于 1 个物理像素(VS Code 因此在 Windows 上停用了
+// CSS 窗口边框)。这一行归宿主窗口,frameless_hit_test 会给它原生 HTTOP。
+
+// 宿主窗口按激活态画线;由 WM_NCACTIVATE 维护,与系统画左/右/下边框同源。
+bool g_top_border_active = false;
+// 线下方的标题栏底色 = 前端推来的 --ace-bg(apply_window_background 同步)。
+WindowBackgroundColor g_top_border_background = kDefaultWindowBackground;
+
+std::uint32_t windows_build_number() {
+    static const std::uint32_t build = [] {
+        HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll) return std::uint32_t{0};
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        auto get_version = reinterpret_cast<RtlGetVersionFn>(
+            reinterpret_cast<void*>(::GetProcAddress(ntdll, "RtlGetVersion")));
+        RTL_OSVERSIONINFOW info{};
+        info.dwOSVersionInfoSize = sizeof(info);
+        if (!get_version || get_version(&info) != 0) return std::uint32_t{0};
+        return static_cast<std::uint32_t>(info.dwBuildNumber);
+    }();
+    return build;
+}
+
+int top_border_inset(HWND hwnd) {
+    if (!hwnd || !::IsWindow(hwnd)) return 0;
+    SelfDrawnTopBorderLayoutInput input;
+    input.supported = windows_needs_self_drawn_top_border(windows_build_number());
+    if (!input.supported) return 0;
+    input.has_resize_frame =
+        (::GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
+    input.maximized = ::IsZoomed(hwnd) != FALSE;
+    input.minimized = ::IsIconic(hwnd) != FALSE;
+    input.system_dpi = static_cast<int>(::GetDpiForSystem());
+    return self_drawn_top_border_inset(input);
+}
+
+std::optional<std::uint32_t> read_dwm_dword(const wchar_t* name) {
+    DWORD value = 0;
+    DWORD value_size = sizeof(value);
+    const LONG result = ::RegGetValueW(HKEY_CURRENT_USER,
+                                       L"Software\\Microsoft\\Windows\\DWM",
+                                       name,
+                                       RRF_RT_REG_DWORD,
+                                       nullptr,
+                                       &value,
+                                       &value_size);
+    if (result != ERROR_SUCCESS || value_size != sizeof(value)) return std::nullopt;
+    return static_cast<std::uint32_t>(value);
+}
+
+// 每次绘制现读注册表:只在这 1px 进入重绘区时才走到,开销可忽略;用户改了
+// 主题色设置但没有广播到本窗口时,下一次重绘也能自行纠正。
+COLORREF top_border_colorref() {
+    SelfDrawnTopBorderColorInput input;
+    input.active = g_top_border_active;
+    input.windows_build = windows_build_number();
+    const auto prevalence = read_dwm_dword(L"ColorPrevalence");
+    input.accent_on_borders = prevalence && *prevalence == 1;
+    if (input.active && input.accent_on_borders) {
+        input.colorization_color = read_dwm_dword(L"ColorizationColor");
+        input.colorization_balance = read_dwm_dword(L"ColorizationColorBalance");
+    }
+    input.background = RgbColor{g_top_border_background.r,
+                                g_top_border_background.g,
+                                g_top_border_background.b};
+    const RgbColor color = self_drawn_top_border_color(input);
+    return RGB(color.r, color.g, color.b);
+}
+
+void invalidate_top_border(HWND hwnd) {
+    const int inset = top_border_inset(hwnd);
+    if (inset <= 0) return;
+    RECT client{};
+    if (!::GetClientRect(hwnd, &client)) return;
+    const RECT strip{0, 0, client.right, inset};
+    ::InvalidateRect(hwnd, &strip, FALSE);
+}
+
+// 返回 false 表示当前不画线(Win11 / 最大化等),调用方走默认 WM_PAINT。
+bool paint_top_border(HWND hwnd) {
+    const int inset = top_border_inset(hwnd);
+    if (inset <= 0) return false;
+    PAINTSTRUCT paint{};
+    HDC dc = ::BeginPaint(hwnd, &paint);
+    if (dc) {
+        RECT client{};
+        ::GetClientRect(hwnd, &client);
+        const RECT strip{0, 0, client.right, inset};
+        RECT dirty{};
+        if (::IntersectRect(&dirty, &strip, &paint.rcPaint)) {
+            if (HBRUSH brush = ::CreateSolidBrush(top_border_colorref())) {
+                ::FillRect(dc, &dirty, brush);
+                ::DeleteObject(brush);
+            }
+        }
+    }
+    ::EndPaint(hwnd, &paint);
+    return true;
+}
+
 void resize_webview_widget(HWND hwnd) {
-    HWND widget = ::FindWindowExW(hwnd, nullptr, L"webview_widget", nullptr);
+    HWND widget = ::FindWindowExW(hwnd, nullptr, kWebViewWidgetClassName, nullptr);
     if (!widget) return;
 
     RECT client{};
     if (!::GetClientRect(hwnd, &client)) return;
-    ::MoveWindow(widget, 0, 0, client.right - client.left, client.bottom - client.top, TRUE);
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int inset = std::clamp(top_border_inset(hwnd), 0, std::max(0, height));
+    ::MoveWindow(widget, 0, inset, width, height - inset, TRUE);
+    if (inset > 0) invalidate_top_border(hwnd);
 }
 
 void refresh_non_client_frame(HWND hwnd) {
@@ -1030,6 +1139,9 @@ void apply_window_background(webview::webview& host,
         apply_class_background_brush(static_cast<HWND>(widget_result.value()), color);
     }
     apply_webview2_default_background(host, color);
+    // Win10 顶边线是叠在标题栏底色上算出来的,主题切换后要重画。
+    g_top_border_background = color;
+    invalidate_top_border(host_hwnd);
 }
 
 // ── Windows 系统文件拖放 + 外部新窗口接管 ─────────────────────────────
@@ -1260,7 +1372,26 @@ LRESULT CALLBACK host_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             return frameless_nc_calc(hwnd, wparam, lparam);
         case WM_NCHITTEST:
             return frameless_hit_test(hwnd, lparam);
-        case WM_SIZE:
+        case WM_NCACTIVATE:
+            g_top_border_active = wparam != FALSE;
+            invalidate_top_border(hwnd);
+            return call_host_default_proc(hwnd, msg, wparam, lparam);
+        case WM_PAINT:
+            if (paint_top_border(hwnd)) return 0;
+            break;
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+        case WM_SYSCOLORCHANGE:
+        case WM_DWMCOLORIZATIONCOLORCHANGED: {
+            // 用户改「在标题栏和窗口边框上显示主题色」或主题色时,顶边线跟着重画。
+            const LRESULT result = call_host_default_proc(hwnd, msg, wparam, lparam);
+            invalidate_top_border(hwnd);
+            return result;
+        }
+        case WM_SIZE: {
+            // 降级路径(webview 库自建窗口)的原窗口过程收到 WM_SIZE 会把 WebView
+            // 拉满整个客户区,所以先让它跑完,再按顶边线让位重新摆放。
+            const LRESULT result = call_host_default_proc(hwnd, msg, wparam, lparam);
             resize_webview_widget(hwnd);
             notify_window_visibility(wparam != SIZE_MINIMIZED);
             if (g_window_state_handler) {
@@ -1270,7 +1401,8 @@ LRESULT CALLBACK host_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
                     g_window_state_handler(maximized);
                 }
             }
-            return call_host_default_proc(hwnd, msg, wparam, lparam);
+            return result;
+        }
         case WM_SHOWWINDOW: {
             const LRESULT result =
                 call_host_default_proc(hwnd, msg, wparam, lparam);
@@ -1356,6 +1488,8 @@ void install_host_window_proc(HWND hwnd) {
     ::SetPropW(hwnd,
                kHostWindowPreviousProcProperty,
                reinterpret_cast<HANDLE>(previous));
+    // 降级路径的窗口在接管前已被 webview 库显示并激活,错过了那次 WM_NCACTIVATE。
+    g_top_border_active = ::GetForegroundWindow() == hwnd;
     refresh_non_client_frame(hwnd);
 }
 

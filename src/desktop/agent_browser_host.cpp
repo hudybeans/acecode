@@ -2,6 +2,7 @@
 
 #include "agent_browser_navigation_state.hpp"
 #include "agent_browser_runtime.hpp"
+#include "window_chrome.hpp"
 
 #include "daemon/platform.hpp"
 #include "utils/encoding.hpp"
@@ -479,6 +480,20 @@ void hide_agent_browser_widget(HWND widget) {
                    0,
                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE |
                        SWP_NOZORDER | SWP_HIDEWINDOW);
+}
+
+// 页面给的 bounds 是主 WebView 视口坐标,而 Agent Browser 子窗口挂在宿主窗口
+// 上。两者原点通常重合;Win10 非最大化时主 WebView 下移了 1px 给自绘顶边线
+// (web_host.cpp resize_webview_widget),这里要把偏移加回来,否则整块往上错位。
+POINT main_web_content_origin(HWND parent) {
+    POINT origin{0, 0};
+    HWND widget = ::FindWindowExW(parent, nullptr, kWebViewWidgetClassName, nullptr);
+    RECT rect{};
+    if (!widget || !::GetWindowRect(widget, &rect)) return origin;
+    origin.x = rect.left;
+    origin.y = rect.top;
+    ::MapWindowPoints(HWND_DESKTOP, parent, &origin, 1);
+    return origin;
 }
 
 bool apply_agent_browser_widget_region(
@@ -1989,11 +2004,13 @@ struct AgentBrowserHost::Impl
                                     width > 0 && height > 0;
         bool show = false;
         if (page->controller) {
+            const POINT origin =
+                requested_show ? main_web_content_origin(parent) : POINT{0, 0};
             const bool positioned = requested_show && browser_widget &&
                 ::SetWindowPos(browser_widget,
                                HWND_TOP,
-                               page->requested_bounds.x,
-                               page->requested_bounds.y,
+                               page->requested_bounds.x + origin.x,
+                               page->requested_bounds.y + origin.y,
                                width,
                                height,
                                SWP_NOACTIVATE | SWP_SHOWWINDOW) != FALSE;
