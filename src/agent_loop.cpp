@@ -12,8 +12,10 @@
 #include "utils/logger.hpp"
 #include "utils/stream_processing.hpp"
 #include "utils/text_file_buffer.hpp"
+#include "utils/tool_errors.hpp"
 #include "utils/uuid.hpp"
 #include "commands/compact.hpp"
+#include "commands/compact_prompt.hpp"
 #include "session/compact_checkpoint.hpp"
 #include "session/compact_notice.hpp"
 #include "session/system_notice.hpp"
@@ -46,6 +48,7 @@
 #include "pa/pa_context_budget.hpp"
 #include "pa/pa_overflow_rescue.hpp"
 #include "pa/pa_quirks.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <set>
@@ -97,6 +100,9 @@ std::vector<ChatMessage> model_facing_provider_messages(
     const std::vector<ChatMessage>& messages,
     const char* boundary) {
     auto history = recovered_provider_messages(messages, boundary);
+    // 旧的纯文本工具调用 / 被污染的摘要换成固定说明(只由内容决定、逐字节
+    // 稳定),模型不再照着历史里的样本继续写文本调用。
+    sanitize_text_tool_call_history(history, get_compact_summary_prefix());
     rewrite_tool_calls_for_model(history);
     return history;
 }
@@ -281,6 +287,48 @@ std::string human_bytes(std::size_t bytes) {
 
 std::string format_bytes_detail(std::size_t bytes) {
     return "参数 " + human_bytes(bytes);
+}
+
+const char* text_tool_call_outcome_name(TextToolCallDiagnostic::Outcome outcome) {
+    switch (outcome) {
+    case TextToolCallDiagnostic::Outcome::Recovered: return "recovered";
+    case TextToolCallDiagnostic::Outcome::Rejected: return "rejected";
+    case TextToolCallDiagnostic::Outcome::IgnoredWithNative: return "ignored_with_native";
+    case TextToolCallDiagnostic::Outcome::None: break;
+    }
+    return "none";
+}
+
+// 文本工具调用诊断 → JSON(trajectory payload / 被拒消息 metadata 共用)。
+// raw_excerpt 只进这里(诊断用),绝不进发给模型的正文。
+nlohmann::json text_tool_call_diagnostic_to_json(const TextToolCallDiagnostic& diag) {
+    nlohmann::json out{
+        {"outcome", text_tool_call_outcome_name(diag.outcome)},
+        {"format", diag.format},
+        {"reason", diag.reason},
+        {"error", diag.error},
+        {"tools", diag.attempted_tools},
+        {"raw_excerpt", diag.raw_excerpt},
+    };
+    if (!diag.unexecuted_detail.empty()) out["unexecuted"] = diag.unexecuted_detail;
+    if (diag.recovered_count > 0) out["count"] = diag.recovered_count;
+    return out;
+}
+
+// 被拒文本工具调用的落盘正文:provider 已去掉的标记不再出现;可疑级(标记
+// 已经流出)截到 visible_cut;去掉末尾空白,只剩空白时清成空串 —— 切断
+// 「历史里越多文本调用样本、模型越模仿」的循环,headless 也不会把 "\n\n\n"
+// 当成最终回复。
+std::string text_tool_call_rejected_persisted_content(
+    const std::string& content, const TextToolCallDiagnostic& diag) {
+    std::string persisted = content;
+    if (diag.visible_cut != std::string::npos && diag.visible_cut < persisted.size()) {
+        persisted.resize(diag.visible_cut);
+    }
+    const auto last = persisted.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos) return {};
+    persisted.resize(last + 1);
+    return persisted;
 }
 
 std::string ascii_lower(std::string value) {
@@ -1927,7 +1975,7 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode(), &workspace_folders_state);
+        &workspace_folders_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -3028,7 +3076,7 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode(), &workspace_folders_state);
+        &workspace_folders_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -3389,19 +3437,13 @@ ToolPreambleConfig AgentLoop::tool_preamble_config() const {
     return tool_preamble_cfg_;
 }
 
-bool AgentLoop::tool_preamble_prompt_mode() const {
-    const ToolPreambleConfig cfg = tool_preamble_config();
-    return cfg.enabled && cfg.mode == tool_preamble::kModePrompt;
+bool AgentLoop::concrete_activity_enabled() const {
+    return tool_preamble_config().enabled;
 }
 
 void AgentLoop::set_phase_preamble(const ToolPreambleTitle& preamble) {
     std::lock_guard<std::mutex> lk(tool_preamble_mu_);
     phase_preamble_ = preamble;
-}
-
-void AgentLoop::clear_phase_preamble() {
-    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
-    phase_preamble_ = {};
 }
 
 AgentLoop::ToolPreambleTitle AgentLoop::phase_preamble() const {
@@ -3413,35 +3455,105 @@ void AgentLoop::publish_phase_preamble(const ToolPreambleTitle& preamble,
                                        const ProgressEmitter& emit_progress) {
     if (preamble.title.empty()) return;
     set_phase_preamble(preamble);
-    if (callbacks_.on_thinking_title) {
-        callbacks_.on_thinking_title(preamble.title);
-    }
-    // 独立的 phase 键 + force,绕开进度节流:前言一闭合活动行就换文案,
-    // 不用等下一条 tool_planning / tool_running。
+    // 独立的 phase 键 + force,绕开进度节流:标题一出现 loading 就换文案,
+    // 不用等下一条 reasoning / tool_planning。
     emit_progress("preamble", preamble.title, std::string{},
                   std::string{}, std::string{}, -1, true);
 }
 
-AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
-    ProviderCallResult& result) {
-    const ToolPreambleConfig cfg = tool_preamble_config();
-    const ChatResponse& accumulated = result.accumulated;
-    if (!cfg.enabled || accumulated.tool_calls.empty()) return {};
-    ToolPreambleTitle current = phase_preamble();
-    if (cfg.mode == tool_preamble::kModeReasoning && current.title.empty()) {
-        // 推理里没有加粗标题:落盘前用推理首句兜底(Codex TUI 同款)。只影响
-        // 本批次的 metadata / tool_start,工具马上要开跑,不再另发进度帧。
-        const std::string fallback =
-            tool_preamble::title_from_reasoning(accumulated.reasoning_content);
-        if (!fallback.empty()) {
-            current = {};
-            current.title = fallback;
-            current.source = tool_preamble::kModeReasoning;
-            set_phase_preamble(current);
-            if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(fallback);
+void AgentLoop::note_planned_tool(int tool_index, const std::string& native_name) {
+    if (tool_index < 0 || native_name.empty()) return;
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    const auto index = static_cast<std::size_t>(tool_index);
+    if (step_planned_tools_.size() <= index) step_planned_tools_.resize(index + 1);
+    step_planned_tools_[index] = native_name;
+}
+
+void AgentLoop::reset_activity_for_step() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+}
+
+void AgentLoop::reset_activity_for_turn() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+    last_batch_tools_.clear();
+    last_announced_activity_.clear();
+}
+
+void AgentLoop::announce_activity(const std::string& label) {
+    if (label.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+        if (label == last_announced_activity_) return;
+        last_announced_activity_ = label;
+    }
+    if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(label);
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::concrete_activity_for_phase(
+    const std::string& phase) const {
+    if (!concrete_activity_enabled()) return {};
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    if (phase == "responding") {
+        return {tool_preamble::kRespondingActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    const bool tool_phase = phase == "tool_running" || phase == "tool_planning";
+    const bool waiting_phase =
+        phase == "model_waiting" || phase == "reasoning" || phase == "preamble";
+    if (!tool_phase && !waiting_phase) return {};
+    if (phase == "tool_running" && !current_batch_activity_.title.empty()) {
+        return current_batch_activity_;
+    }
+    if (tool_phase) {
+        std::vector<std::string> planned;
+        for (const auto& name : step_planned_tools_) {
+            if (!name.empty()) planned.push_back(name);
+        }
+        if (!phase_preamble_.title.empty()) {
+            ToolPreambleTitle out = phase_preamble_;
+            out.kind = tool_preamble::batch_activity_kind(planned);
+            return out;
+        }
+        if (!planned.empty()) {
+            return {tool_preamble::batch_activity_label(planned),
+                    tool_preamble::kSourceTemplate,
+                    tool_preamble::batch_activity_kind(planned)};
         }
     }
-    return current;
+    if (!phase_preamble_.title.empty()) return phase_preamble_;
+    if (last_batch_tools_.empty()) {
+        return {tool_preamble::kInitialActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    return {tool_preamble::after_batch_activity_label(last_batch_tools_),
+            tool_preamble::kSourceContext, ""};
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
+    ProviderCallResult& result) {
+    const ChatResponse& accumulated = result.accumulated;
+    if (!concrete_activity_enabled() || accumulated.tool_calls.empty()) return {};
+    std::vector<std::string> names;
+    names.reserve(accumulated.tool_calls.size());
+    for (const auto& tc : accumulated.tool_calls) names.push_back(tc.function_name);
+    ToolPreambleTitle out;
+    out.kind = tool_preamble::batch_activity_kind(names);
+    const ToolPreambleTitle title = phase_preamble();
+    if (!title.title.empty()) {
+        out.title = title.title;
+        out.source = tool_preamble::kSourceReasoning;
+    } else {
+        out.title = tool_preamble::batch_activity_label(names);
+        out.source = tool_preamble::kSourceTemplate;
+    }
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    last_batch_tools_ = std::move(names);
+    current_batch_activity_ = out;
+    return out;
 }
 
 AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
@@ -3459,48 +3571,40 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     int provider_attempt = 1;
     bool first_output_recorded = false;
 
-    // 工具前言(add-tool-preamble):本次调用期间的配置快照。prompt 模式在正文
-    // 流里识别 <text_preamble> 标签(标签正文进 loading,不进正文);reasoning
-    // 模式在推理流里抠第一对加粗标题。
-    const ToolPreambleConfig preamble_cfg = tool_preamble_config();
-    const bool preamble_reasoning =
-        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeReasoning;
-    const bool preamble_text =
-        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModePrompt;
+    // 具体进度提示(add-tool-preamble):本次调用期间的开关快照。开启时在推理流
+    // 里抠第一对加粗标题作本步文案;正文开始流出时 loading 换成「正在撰写回复」。
+    // 每次调用(含重试)都从干净的本步状态开始。
+    const bool concrete = concrete_activity_enabled();
     bool reasoning_title_found = false;
+    bool step_text_started = false;
+    reset_activity_for_step();
     text_preamble_scanner_.reset();
-    // 正文增量的统一出口:可见文本给 TUI / Web。prompt 模式下非空白可见正文一
-    // 出现就清掉当前阶段前言 —— 未加标签的正文意味着模型在说话,不是在报进度。
+    // 正文增量的统一出口:可见文本给 TUI / Web。
     auto publish_visible_text = [&](const std::string& text) {
         if (text.empty()) return;
-        if (preamble_text && text.find_first_not_of(" \t\r\n") != std::string::npos) {
-            clear_phase_preamble();
+        if (concrete && !step_text_started &&
+            text.find_first_not_of(" \t\r\n") != std::string::npos) {
+            step_text_started = true;
+            emit_progress("responding", tool_preamble::kRespondingActivityLabel,
+                          std::string{}, std::string{}, std::string{}, -1, true);
         }
         if (callbacks_.on_delta) {
             callbacks_.on_delta(text);
         }
         events_.emit(SessionEventKind::Token, nlohmann::json{{"text", text}});
     };
-    // 标签总是从可见正文里剥掉(关闭功能时模型也可能沿着历史习惯打标签,
-    // 界面不该露出原始标签);只有开启 prompt 模式时才把它当阶段前言发布。
+    // 历史里残留的 <text_preamble> 标签(前一版要求模型打标签)总是从可见正文里
+    // 剥掉,不再当 loading 文案。
     auto publish_scanned = [&](tool_preamble::TextPreambleScanner::Output out) {
         publish_visible_text(out.visible);
-        if (!preamble_text) return;
-        for (const auto& found : out.preambles) {
-            ToolPreambleTitle title;
-            title.title = found.title;
-            title.kind = found.kind;
-            title.source = tool_preamble::kModePrompt;
-            publish_phase_preamble(title, emit_progress);
-        }
     };
 
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
-                            &reasoning_title_found, &publish_visible_text,
+                            &reasoning_title_found, &step_text_started,
                             &publish_scanned,
-                            model_step_index, preamble_reasoning, preamble_text,
+                            model_step_index, concrete,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3539,7 +3643,7 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             reasoning_bytes += evt.content.size();
             reasoning_fragments++;
-            if (preamble_reasoning && !reasoning_title_found) {
+            if (concrete && !reasoning_title_found) {
                 std::string reasoning_so_far;
                 {
                     std::lock_guard<std::mutex> lk(resp_mu);
@@ -3554,22 +3658,29 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                         reasoning_title_found = true;
                         ToolPreambleTitle found;
                         found.title = title;
-                        found.source = tool_preamble::kModeReasoning;
+                        found.source = tool_preamble::kSourceReasoning;
                         publish_phase_preamble(found, emit_progress);
                     }
                 }
             }
-            {
-                const ToolPreambleTitle current = phase_preamble();
-                emit_progress("reasoning",
-                    current.title.empty() ? std::string("正在推理") : current.title,
-                    "片段 " + std::to_string(reasoning_fragments) + ", " +
-                    human_bytes(reasoning_bytes),
-                    std::string{}, std::string{}, -1, false);
-            }
+            // 开启具体进度提示时,发射口会把这条换成本步标题或场景文案。
+            emit_progress("reasoning", "正在推理",
+                "片段 " + std::to_string(reasoning_fragments) + ", " +
+                human_bytes(reasoning_bytes),
+                std::string{}, std::string{}, -1, false);
             events_.emit(SessionEventKind::Reasoning, nlohmann::json{{"text", evt.content}});
             break;
         case StreamEventType::ToolCallDelta:
+            if (evt.text_tool_call_hold) {
+                // provider 正在扣住一段疑似文本工具调用:只是进度提示,不代表
+                // 模型已经开始输出原生调用,所以不记 model_first_output 的
+                // channel(等真正的正文或调用出现时再记),也不走工具名解析 /
+                // 前言抽取(tool_index=-1、工具名为空)。
+                emit_progress("tool_planning", "正在准备工具调用",
+                    human_bytes(evt.tool_call_argument_bytes),
+                    std::string{}, std::string{}, -1, false);
+                break;
+            }
             if (!first_output_recorded) {
                 first_output_recorded = true;
                 if (session_manager_) {
@@ -3587,13 +3698,10 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
-                // 工具前言:有当前阶段前言时,准备调用的进度行就显示它(工具名退到
-                // detail),loading 提示不在前言与通用文案之间来回跳。
-                const std::string titled_label = phase_preamble().title;
-                const bool titled = !titled_label.empty();
-                emit_progress("tool_planning",
-                    titled ? titled_label : label,
-                    titled ? label : format_bytes_detail(evt.tool_call_argument_bytes),
+                // 具体进度提示:记下本步流出来的工具,发射口据此拼「正在读取 2 个文件」。
+                note_planned_tool(evt.tool_index, tool_name);
+                emit_progress("tool_planning", label,
+                    format_bytes_detail(evt.tool_call_argument_bytes),
                     tool_name, evt.tool_call.id, evt.tool_index, false);
             }
             break;
@@ -3629,6 +3737,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             if (evt.content_parts.is_array() && !evt.content_parts.empty()) {
                 result.accumulated.content_parts = evt.content_parts;
             }
+            // 文本形式工具调用的诊断(fix-feedback-0924 第 3 条):主循环据此
+            // 决定是否注入纠正提示重试,而不是把被拒的回复当纯文本静默结束。
+            result.accumulated.text_tool_calls = evt.text_tool_calls;
             break;
         }
         case StreamEventType::Usage: {
@@ -3660,6 +3771,8 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             ++provider_attempt;
             first_output_recorded = false;
             reasoning_title_found = false;
+            step_text_started = false;
+            reset_activity_for_step();
             text_preamble_scanner_.reset();
             if (callbacks_.on_stream_retry_reset) {
                 callbacks_.on_stream_retry_reset();
@@ -4216,6 +4329,18 @@ bool AgentLoop::execute_tool_calls(
     std::string& turn_timing_status) {
     // Record the assistant message with tool_calls in the history
     auto tc_msg = ToolExecutor::format_assistant_tool_calls(accumulated);
+    // 文本工具调用恢复成功:消息本体与原生调用字节级同形(不会发给模型的
+    // metadata 只多一个诊断字段),让后续历史里出现原生调用可供模仿。
+    if (accumulated.text_tool_calls.outcome ==
+        TextToolCallDiagnostic::Outcome::Recovered) {
+        if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
+        tc_msg.metadata["text_tool_call_recovery"] = {
+            {"format", accumulated.text_tool_calls.format},
+            {"count", accumulated.text_tool_calls.recovered_count > 0
+                          ? accumulated.text_tool_calls.recovered_count
+                          : static_cast<int>(accumulated.tool_calls.size())},
+        };
+    }
     // 工具前言(add-tool-preamble):本批次沿用的阶段前言挂在这条
     // assistant(tool_calls) 消息的 metadata 上落盘(只为记录,不还原任何显示行),
     // 实时界面经每个调用的 tool_start.preamble 拿到它。
@@ -4403,7 +4528,10 @@ bool AgentLoop::execute_tool_calls(
             }
         } else {
             LOG_WARN("Unknown tool: " + tool_name);
-            return ToolResult{"Unknown tool: " + tool_name, false};
+            return ToolResult{
+                ToolErrors::unknown_tool(tool_name,
+                                         current_request_model_tool_names_),
+                false};
         }
     };
 
@@ -4545,11 +4673,8 @@ bool AgentLoop::execute_tool_calls(
                 SessionEventKind::ToolStart, std::move(start_payload));
         }
 
-        // 工具前言:有前言时 loading 提示显示前言,工具名 / 命令预览退到 detail。
-        emit_progress("tool_running",
-            call_preamble.empty()
-                ? "正在调用工具 " + tc.function_name
-                : call_preamble,
+        // 开启具体进度提示时,发射口把这条换成本批次文案、清掉命令预览。
+        emit_progress("tool_running", "正在调用工具 " + tc.function_name,
             cmd_preview, tc.function_name, tc.id, tool_index_int, true);
 
         struct ProgressState {
@@ -4694,7 +4819,7 @@ bool AgentLoop::execute_tool_calls(
         };
         ProgressGuard guard;
         if (emit_tui_progress && callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, call_preamble);
+            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, std::string{});
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 
@@ -5357,16 +5482,10 @@ bool AgentLoop::execute_tool_calls(
                                                                   : security::kAuditDecisionAllow,
                         security::kAuditSourceUser,
                         exec_permission ? exec_permission->decision.reason : "confirmation");
-                    {
-                        const std::string confirmed_preamble =
-                            preamble_for_call(effective_tc, entry.original_index);
-                        emit_progress("tool_running",
-                            confirmed_preamble.empty()
-                                ? "正在调用工具 " + effective_tc.function_name
-                                : confirmed_preamble,
-                            effective_tc.function_name, effective_tc.function_name, effective_tc.id,
-                            static_cast<int>(entry.original_index), true);
-                    }
+                    emit_progress("tool_running",
+                        "正在调用工具 " + effective_tc.function_name,
+                        effective_tc.function_name, effective_tc.function_name, effective_tc.id,
+                        static_cast<int>(entry.original_index), true);
                     if (perm == PermissionResult::AllowScoped) {
                         // D4:只放行建议目录 —— 记进会话授权,命令留在 workspace-write 里带着
                         // 该目录执行,而不是整个出沙盒。
@@ -5796,6 +5915,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     bool emergency_request_profile = false;
     pa_rescue_state_ = pa::RescueState{};
     skip_auto_compact_once_ = false;
+    reset_activity_for_turn();
 
     const int max_iter = loop_cfg_.max_iterations;
     const bool has_max_iterations = max_iter > 0;
@@ -5807,6 +5927,14 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     // 一旦某轮产出有效输出(文本或工具调用)即清零。
     constexpr int kMaxEmptyResponseRetries = 2;
     int empty_response_retries = 0;
+    // 文本形式工具调用纠正(fix-feedback-0924 第 3 条):模型把调用写进正文、
+    // provider 认出了意图却无法执行(非法名 / 参数 / 截断 / 块前有正文 / 可疑
+    // 标记)时,注入隐藏纠正提示重试。按连续次数计,某一步产出工具调用即清零;
+    // XML / JSON 形态上限 2 次(与空回复一致,每次都是带全量工具表的整段请求),
+    // DSML 只 1 次(那是网关把 DeepSeek 原生协议漏进了正文,纠正文本作用有限)。
+    constexpr int kMaxTextToolCallCorrections = 2;
+    constexpr int kMaxDsmlToolCallCorrections = 1;
+    int text_tool_call_corrections = 0;
     AgentLoopDoomGuard doom_guard;
     std::mutex doom_guard_mu;
     int observed_compact_generation = compact_generation_.load(std::memory_order_relaxed);
@@ -5836,16 +5964,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                    bool force = false) {
         const auto now = std::chrono::steady_clock::now();
         const std::string key = phase + "\0" + tool + "\0" + tool_call_id + "\0" + std::to_string(tool_index);
-        // 工具前言(add-tool-preamble):阶段前言要一直留在 loading 提示里,直到下一段
-        // 正文 / 下一条前言出现。批次之间等待模型的那一帧若退回「正在等待模型响应」,
-        // Web 实时行会在「前言 → 通用文案 → 前言」之间闪动(实测会话
-        // 20260925-013722-4299 的 seq 51),所以 model_waiting 也把 label 换成前言,
-        // 原文案退到 detail;reasoning / tool_planning / tool_running 在各自的
-        // 发射点已按同一规则处理,权限 / 提问 / 压缩这些必须被看见的状态不换。
-        const ToolPreambleTitle preamble = phase_preamble();
-        const bool titled_waiting = phase == "model_waiting" && !preamble.title.empty();
-        const std::string& effective_label = titled_waiting ? preamble.title : label;
-        const std::string& effective_detail = titled_waiting ? label : detail;
+        // 具体进度提示(add-tool-preamble,「适合日常工作」):开启时 loading 只说正在
+        // 做什么、不带参数 —— 等待 / 推理 / 准备调用 / 执行 / 撰写回复这几类 phase 的
+        // 文案在这里统一换成 推理加粗标题 > 工具模板 > 场景文案,detail(命令预览、
+        // 字节数、片段计数)一律清空;权限 / 提问 / 压缩 / 重试这些必须被看见的状态
+        // 不换。批次之间的 model_waiting 也换(「正在分析文件内容」),否则 Web 实时行
+        // 会在具体文案与「正在等待模型响应」之间闪动。
+        const ToolPreambleTitle preamble = concrete_activity_for_phase(phase);
+        const bool concrete_label = !preamble.title.empty();
+        const std::string effective_label = concrete_label ? preamble.title : label;
+        const std::string effective_detail = concrete_label ? std::string{} : detail;
+        if (concrete_label) announce_activity(preamble.title);
         nlohmann::json payload;
         {
             std::lock_guard<std::mutex> lk(progress_mu);
@@ -5863,9 +5992,9 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                 phase, effective_label, effective_detail, tool, tool_call_id, tool_index,
                 active_progress_started_at_ms);
         }
-        // 当前阶段前言随每条进度帧透传,界面据此区分「前言」与普通阶段文案;kind
-        // 给以后的读 / 写效果留位。
-        if (!preamble.title.empty()) {
+        // 具体文案随进度帧透传,界面据此区分它与普通阶段文案;kind 给以后的
+        // 读 / 写效果留位。
+        if (concrete_label) {
             payload["preamble"] = {
                 {"title", preamble.title},
                 {"source", preamble.source},
@@ -6007,6 +6136,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             payload["error"] = provider_error_to_json(
                 result.provider_error_info);
         }
+        if (result.accumulated.text_tool_calls.outcome !=
+            TextToolCallDiagnostic::Outcome::None) {
+            payload["text_tool_calls"] = text_tool_call_diagnostic_to_json(
+                result.accumulated.text_tool_calls);
+        }
         if (!result.accumulated.content.empty()) {
             ChatMessage id_basis;
             id_basis.role = "assistant";
@@ -6060,6 +6194,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // Phase 2: Build API request messages
         auto bundle = build_api_request_messages(emergency_request_profile);
         publish_side_question_context(bundle.messages_with_system);
+        current_request_model_tool_names_.clear();
+        current_request_model_tool_names_.reserve(bundle.tool_defs.size());
+        for (const auto& def : bundle.tool_defs) {
+            current_request_model_tool_names_.push_back(def.name);
+        }
 
         // Get provider snapshot
         std::shared_ptr<LlmProvider> provider_snapshot;
@@ -6168,6 +6307,96 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
         // Text-only response (no tool calls) → end the loop
         if (!provider_result.accumulated.has_tool_calls()) {
+            // 文本工具调用被拒:必须放在 response_is_blank 判断之前 —— provider
+            // 藏起标记后内容往往只剩空白,会被误判成空回复(错误的纠正文案)。
+            const TextToolCallDiagnostic& text_diag =
+                provider_result.accumulated.text_tool_calls;
+            if (text_diag.outcome == TextToolCallDiagnostic::Outcome::Rejected) {
+                TextToolCallDiagnostic diag = text_diag;
+                if (diag.reason == "truncated" &&
+                    provider_result.accumulated.finish_reason == "length") {
+                    diag.reason = "truncated_by_length";
+                }
+                const int limit = diag.format == "dsml"
+                    ? kMaxDsmlToolCallCorrections
+                    : kMaxTextToolCallCorrections;
+
+                // 被拒的 assistant 消息去掉标记后落盘(原始标记只进 metadata /
+                // 日志 / trajectory);只剩空白时清成空串。
+                ChatMessage rejected_msg;
+                rejected_msg.role = "assistant";
+                rejected_msg.content = text_tool_call_rejected_persisted_content(
+                    provider_result.accumulated.content, diag);
+                rejected_msg.reasoning_content =
+                    provider_result.accumulated.reasoning_content;
+                rejected_msg.metadata = nlohmann::json{
+                    {"text_tool_call_rejected", text_tool_call_diagnostic_to_json(diag)},
+                };
+                messages_.push_back(rejected_msg);
+                if (session_manager_) session_manager_->on_message(rejected_msg);
+                if (!rejected_msg.content.empty()) {
+                    // 定稿消息替换流式草稿:可疑级已经流出的标记在界面上随之消失。
+                    dispatch_message("assistant", rejected_msg.content, false);
+                }
+
+                if (text_tool_call_corrections < limit) {
+                    ++text_tool_call_corrections;
+                    LOG_WARN("Text-form tool call rejected (format=" + diag.format +
+                             " reason=" + diag.reason + "); correction " +
+                             std::to_string(text_tool_call_corrections) + "/" +
+                             std::to_string(limit) + ": " + diag.error +
+                             " excerpt=" + log_truncate(diag.raw_excerpt, 300));
+
+                    // 与空回复重试同款注入:role=user + hidden_goal_context,
+                    // 进 API、持久化,TUI / Web 不显示。工具名取本次请求实际
+                    // 发给模型的模型侧名。
+                    ChatMessage correction;
+                    correction.role = "user";
+                    correction.content = build_text_tool_call_correction_prompt(
+                        diag, current_request_model_tool_names_);
+                    correction.metadata = nlohmann::json{
+                        {"hidden_goal_context", true},
+                        {"text_tool_call_correction", true},
+                    };
+                    ensure_user_message_identity(correction);
+                    messages_.push_back(correction);
+                    if (session_manager_) session_manager_->on_message(correction);
+
+                    emit_transcript_system_message(
+                        std::string(u8"[文本工具调用] 模型把工具调用写成了正文文本,未执行(") +
+                            diag.error + u8"),已要求其改用原生工具调用重发 " +
+                            std::to_string(text_tool_call_corrections) + "/" +
+                            std::to_string(limit) + u8"…",
+                        make_system_notice_metadata("response_text_tool_call_retry",
+                            {{"attempt", text_tool_call_corrections},
+                             {"attempts", limit},
+                             {"error", diag.error}}));
+
+                    if (total_iterations > 0) {
+                        --total_iterations; // 纠正轮不计入 max_iterations
+                    }
+                    emit_model_step_finish(
+                        current_model_step, "text_tool_call_retry", step_usage);
+                    continue;
+                }
+
+                LOG_ERROR("Text-form tool call still rejected after " +
+                          std::to_string(limit) + " correction(s); ending turn "
+                          "with error (format=" + diag.format + " reason=" +
+                          diag.reason + "): " + diag.error);
+                turn_timing_status = "error";
+                dispatch_message(
+                    "error",
+                    std::string(u8"[Error] 模型连续 ") + std::to_string(limit + 1) +
+                        u8" 次把工具调用写成正文文本,无法执行(最后一次:" +
+                        diag.error +
+                        u8")。任务未完成,请重试或换用支持原生工具调用的模型。",
+                    false);
+                stop_active_goal_after_turn_error(ProviderErrorInfo{});
+                emit_model_step_finish(current_model_step, "error", step_usage);
+                break;
+            }
+
             const bool has_content_parts =
                 provider_result.accumulated.content_parts.is_array() &&
                 !provider_result.accumulated.content_parts.empty();
@@ -6309,8 +6538,9 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             break;
         }
 
-        // 本轮产出了有效输出(工具调用),连续空回复计数清零。
+        // 本轮产出了有效输出(工具调用),连续空回复 / 文本调用纠正计数清零。
         empty_response_retries = 0;
+        text_tool_call_corrections = 0;
 
         // 工具前言(add-tool-preamble):在 assistant(tool_calls) 消息落盘之前把
         // 本步沿用的阶段前言定下来,execute_tool_calls 开头把它挂进 metadata
@@ -6322,6 +6552,28 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             provider_result.accumulated, provider_snapshot,
             emit_agent_progress, doom_guard, doom_guard_mu,
             turn_timing_status);
+        // 混合形态:同一回复里既有原生调用,又有与之不一致的文本调用(回显在
+        // provider 那边已剔除,记为 None 不会走到这里)。只执行了原生调用,
+        // 批次跑完后追加隐藏说明,免得模型以为文本里那几个也执行了。不消耗
+        // 纠正预算,不发界面通知。
+        if (provider_result.accumulated.text_tool_calls.outcome ==
+                TextToolCallDiagnostic::Outcome::IgnoredWithNative &&
+            !terminator_fired && !abort_requested_) {
+            const std::string note = build_text_tool_call_ignored_note(
+                provider_result.accumulated.text_tool_calls);
+            if (!note.empty()) {
+                ChatMessage ignored;
+                ignored.role = "user";
+                ignored.content = note;
+                ignored.metadata = nlohmann::json{
+                    {"hidden_goal_context", true},
+                    {"text_tool_call_ignored", true},
+                };
+                ensure_user_message_identity(ignored);
+                messages_.push_back(ignored);
+                if (session_manager_) session_manager_->on_message(ignored);
+            }
+        }
         emit_model_step_finish(
             current_model_step, provider_result.accumulated.finish_reason,
             step_usage);
@@ -6407,7 +6659,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     }
 
     // 回合结束:阶段前言不留到下一回合。
-    clear_phase_preamble();
+    reset_activity_for_turn();
     computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);

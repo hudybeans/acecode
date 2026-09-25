@@ -139,6 +139,31 @@ std::optional<std::string> native_tool_name_for_public_alias(
     return std::nullopt;
 }
 
+bool ascii_iequals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        char x = a[i];
+        char y = b[i];
+        if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return true;
+}
+
+std::optional<std::string> native_tool_name_for_public_alias_ci(
+    std::string_view public_name) {
+    if (public_name.empty()) return std::nullopt;
+    const auto mappings = current_mappings();
+    std::optional<std::string> found;
+    for (const auto& mapping : *mappings) {
+        if (!ascii_iequals(mapping.public_name, public_name)) continue;
+        if (found && *found != mapping.native_name) return std::nullopt;
+        found = mapping.native_name;
+    }
+    return found;
+}
+
 bool validate_model_tool_name_mappings(const ToolProtocolNameMappings& mappings,
                                        std::string* error) {
     std::unordered_set<std::string> native_names;

@@ -82,6 +82,25 @@ export function workspaceHasUnread(sessions = []) {
   return sessions.some((session) => sessionAttentionState(session) === 'unread');
 }
 
+// 会话右键「标记为未读」的本地乐观状态:与 daemon mark_session_attention_unread 同一
+// 口径 —— 已读游标退到最新输出之前;运行中的会话仍显示运行中。
+export function optimisticUnreadStatus(session = {}) {
+  const busy = sessionAttentionState(session) === 'in_progress';
+  const updateCursor = Math.max(Number(session.update_cursor ?? statusCursor(session)) || 0, 1);
+  const readCursor = Math.min(Number(session.read_cursor ?? 0) || 0, updateCursor - 1);
+  return normalizeStatusPayload({
+    ...session,
+    state: busy ? 'in_progress' : 'unread',
+    attention_state: busy ? 'in_progress' : 'unread',
+    read_state: busy ? 'in_progress' : 'unread',
+    busy,
+    read_cursor: readCursor,
+    cursor: updateCursor,
+    update_cursor: updateCursor,
+    timestamp_ms: Date.now(),
+  });
+}
+
 export function optimisticReadStatus(session = {}) {
   const state = sessionAttentionState(session);
   if (state === 'in_progress') return normalizeStatusPayload({ ...session, state });

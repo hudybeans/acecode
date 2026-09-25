@@ -1,0 +1,103 @@
+适用于 .NET Framework MSBuild 版本 17.9.8+b34f75857
+
+  Checking File Globs
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  acecode_testable.vcxproj -> N:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_native_bridge_support.dir\Release\)包含从另一个项目(acecode_native_bridge_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
+  config.cpp
+  config_mutation.cpp
+  config_recovery.cpp
+  mcp_config.cpp
+  model_provider_registry.cpp
+  request_headers.cpp
+  saved_models.cpp
+  builtin_model_catalog.cpp
+  platform_posix.cpp
+  platform_windows.cpp
+  runtime_files.cpp
+  custom_toast.cpp
+  custom_toast_win.cpp
+  agent_browser_navigation_state.cpp
+  agent_browser_page_directory.cpp
+  agent_browser_runtime.cpp
+  context_items.cpp
+  context_picker.cpp
+  folder_picker_win.cpp
+  locale.cpp
+  notifications.cpp
+  open_request.cpp
+  open_in_explorer.cpp
+  startup_progress.cpp
+  strings.cpp
+  workspace_registry.cpp
+  append_file.cpp
+  clipboard.cpp
+  native_windows.cpp
+  pointer_capture.cpp
+  pointer_overlay.cpp
+  cwd_hash.cpp
+  encoding.cpp
+  model_capabilities.cpp
+  paths.cpp
+  state_file.cpp
+  notifications_win.cpp
+  acecode_native_bridge_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
+  acecode_computer_use_native.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_computer_use_native.lib
+  helper_main.cpp
+  acecode-computer-use.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-computer-use.exe
+  main.cpp
+  agent_callbacks_builder.cpp
+  cli_dispatch.cpp
+  clipboard_helpers.cpp
+  diff_view.cpp
+  ime_windows.cpp
+  message_render_cache.cpp
+  path_reference_dropdown.cpp
+  render_mode.cpp
+  slash_dropdown.cpp
+  terminal_utils.cpp
+  tool_progress.cpp
+  tui_context.cpp
+  tui_init.cpp
+    正在创建库 N:/Users/shao/acecode/build/Release/acecode.lib 和对象 N:/Users/shao/acecode/build/Release/acecode.exp
+  acecode.vcxproj -> N:\Users\shao\acecode\build\Release\acecode.exe
+适用于 .NET Framework MSBuild 版本 17.9.8+b34f75857
+
+  Checking File Globs
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_native_bridge_support.dir\Release\)包含从另一个项目(acecode_native_bridge_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  acecode_computer_use_native.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_computer_use_native.lib
+  acecode_native_bridge_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
+  acecode-computer-use.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-computer-use.exe
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_desktop_support.dir\Release\)包含从另一个项目(acecode_desktop_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_desktop_support.vcxproj]
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  application_icon.cpp
+  daemon_pool.cpp
+  daemon_supervisor.cpp
+  desktop_about.cpp
+  desktop_restart.cpp
+  dpi_win.cpp
+  edge_app_launcher.cpp
+  external_url.cpp
+  pick_active.cpp
+  single_instance_posix.cpp
+  single_instance_win.cpp
+  taskbar_badge.cpp
+  taskbar_badge_win.cpp
+  tray_icon_win.cpp
+  url_builder.cpp
+  webview2_runtime_probe.cpp
+  window_background.cpp
+  window_chrome.cpp
+  acecode_testable.vcxproj -> N:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
+  acecode.vcxproj -> N:\Users\shao\acecode\build\Release\acecode.exe
+  acecode_desktop_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_desktop_support.lib
+  agent_browser_host.cpp
+  main.cpp
+  splash_screen.cpp
+  web_host.cpp
+  acecode-desktop.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-desktop.exe
+BUILD_EXIT=0

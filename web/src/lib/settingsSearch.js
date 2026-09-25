@@ -6,7 +6,7 @@ export function settingsSearchEntries(developerModeUnlocked = false) {
   const navItems = getSettingsNavItems(developerModeUnlocked);
   const fields = [
     ['general', '界面语言', 'language locale english chinese'],
-    ['general', '工作模式', 'work mode coding daily'],
+    ['general', '工作模式', 'work mode coding daily 日常工作 用于编程 进度提示 工具前言 loading'],
     ['general', '打开任务完成通知', 'notification completion sound'],
     ['general', '新手指引', 'onboarding getting started tour'],
     ['general', '权限模式', 'permission approval sandbox'],
@@ -50,7 +50,6 @@ export function settingsSearchEntries(developerModeUnlocked = false) {
   ];
   if (developerModeUnlocked) {
     fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
-    fields.push(['developer', '工具前言', 'tool preamble progress status line text_preamble reasoning summary 前言 阶段']);
   }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),

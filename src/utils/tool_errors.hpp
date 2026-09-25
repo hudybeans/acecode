@@ -3,6 +3,7 @@
 #include "../tool/tool_protocol_names.hpp"
 
 #include <string>
+#include <vector>
 
 namespace acecode {
 
@@ -158,6 +159,30 @@ public:
     static std::string no_lines_in_range(int start, int end, int total_lines) {
         return "[Error] No lines in range " + std::to_string(start) +
                "-" + std::to_string(end) + " (file has " + std::to_string(total_lines) + " lines).";
+    }
+
+    // 模型调了一个不存在的工具。available 是**本次请求实际发给模型**的
+    // 模型侧工具名(AgentLoop 从 bundle.tool_defs 取),列出来让模型照抄;
+    // 为空(未接线)时回退旧文案。最多列 kMaxListed 个,超出写 (+N more)
+    // —— 54 个工具的请求实测存在,100 足以全列,再多只会把结果撑成噪音。
+    static std::string unknown_tool(const std::string& name,
+                                    const std::vector<std::string>& available) {
+        std::string msg = "[Error] Unknown tool: " + name;
+        if (available.empty()) return msg;
+        constexpr std::size_t kMaxListed = 100;
+        msg += ". Available tools: ";
+        const std::size_t listed = available.size() < kMaxListed
+                                       ? available.size()
+                                       : kMaxListed;
+        for (std::size_t i = 0; i < listed; ++i) {
+            if (i) msg += ", ";
+            msg += available[i];
+        }
+        if (available.size() > listed) {
+            msg += " (+" + std::to_string(available.size() - listed) + " more)";
+        }
+        msg += ". Call one of these exact names.";
+        return msg;
     }
 };
 

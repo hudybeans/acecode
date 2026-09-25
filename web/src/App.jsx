@@ -14,6 +14,7 @@ import { aiThemeCreationRef, createLiveThemeCreationMonitor } from './lib/aiThem
 import { ThemeDownloadFailureDialog } from './components/ThemeDownloadFailureDialog.jsx';
 import { setToken } from './lib/auth.js';
 import { connection } from './lib/connection.js';
+import { subscribeModelProfileUpdates } from './lib/modelReasoningSync.js';
 import {
   installAgentBrowserPageListener,
   reconcileAgentBrowserPageStore,
@@ -346,6 +347,11 @@ export function App() {
   }, [homeDraftStore]);
   const acceptHomeComposerDraft = useCallback((workspaceHash, submittedText, client = api) => {
     void homeDraftStore.accept(client, workspaceHash, submittedText);
+  }, [homeDraftStore]);
+  // 首页粘贴的文件块上传完成时用户已离开首页:在 store 里的最新草稿上回填,
+  // 不能用 ChatView 手里的旧快照覆盖期间的编辑。
+  const patchHomeComposerDraft = useCallback((workspaceHash, updater, client = api) => {
+    homeDraftStore.patch(client, workspaceHash, updater);
   }, [homeDraftStore]);
   useEffect(() => {
     const flush = () => { void homeDraftStore.flush(); };
@@ -1091,6 +1097,13 @@ export function App() {
       }
     };
   }, [resumeAndOpenSession]);
+
+  useEffect(() => {
+    if (authState !== 'ok') return undefined;
+    return subscribeModelProfileUpdates(connection, () => {
+      setModelProfileRevision((value) => value + 1);
+    });
+  }, [authState]);
 
   // Successful remote-control selections are authoritative on the daemon.
   // The frontend follows as a best-effort hint and never feeds failures back
@@ -2216,6 +2229,7 @@ export function App() {
                 homeComposerAttentionRequest={homeComposerAttentionRequest}
                 onHomeComposerDraftChange={updateHomeComposerDraft}
                 onHomeComposerDraftAccepted={acceptHomeComposerDraft}
+                onHomeComposerDraftPatch={patchHomeComposerDraft}
                 modelProfileRevision={modelProfileRevision}
                 onSessionPromoted={navigateToRef}
                 onRegisterPreviewLeaveGuard={registerPreviewLeaveGuard}

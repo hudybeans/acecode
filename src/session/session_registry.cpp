@@ -2354,6 +2354,19 @@ bool SessionRegistry::any_busy() const {
     return false;
 }
 
+std::vector<std::string> SessionRegistry::busy_session_ids() const {
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (const auto& [id, entry] : entries_) {
+            if (!entry || !entry->loop) continue;
+            if (entry->loop->has_pending_work()) ids.push_back(id);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
 void SessionRegistry::invalidate_git_snapshots_in_cwd(const std::string& cwd) {
     std::lock_guard<std::mutex> lk(mu_);
     for (const auto& [id, entry] : entries_) {

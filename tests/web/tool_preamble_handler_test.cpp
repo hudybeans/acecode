@@ -1,7 +1,8 @@
-// 覆盖 src/web/handlers/tool_preamble_handler.cpp 的纯函数(openspec add-tool-preamble):
-//   1. tool_preamble_snapshot:GET 响应体的字段与候选列表
-//   2. parse_tool_preamble_request:PUT 的 patch 语义、逐字段类型 / 取值校验、
-//      失败时 out 不变;已废弃的 sidecar 相关键被当作未知键忽略
+// 覆盖 src/web/handlers/tool_preamble_handler.cpp 的纯函数(openspec add-tool-preamble,
+// 设置 > 常规 > 工作模式:「适合日常工作」= 开启具体进度提示):
+//   1. tool_preamble_snapshot:GET 响应体只有 enabled
+//   2. parse_tool_preamble_request:PUT 的 patch 语义、enabled 类型校验、失败时 out
+//      不变;前三版遗留的 mode / sidecar_* 键被当作未知键忽略(旧前端还会带)
 
 #include <gtest/gtest.h>
 
@@ -19,57 +20,56 @@ namespace {
 ToolPreambleConfig current_cfg() {
     ToolPreambleConfig cfg;
     cfg.enabled = true;
-    cfg.mode = "reasoning";
     return cfg;
 }
 
 } // namespace
 
-// 场景:GET 快照。期望:两个配置字段原样,modes 固定两项且顺序为
-// prompt / reasoning(设置页按此顺序渲染,默认选第一项),没有旁路模型字段。
-TEST(ToolPreambleHandler, SnapshotExposesConfigAndChoices) {
+// 场景:GET 快照。期望:只有 enabled 一个字段;提示驱动 / 推理摘要的 mode、modes
+// 与旁路模型字段都不再出现。
+TEST(ToolPreambleHandler, SnapshotExposesOnlyEnabled) {
     const auto snap = tool_preamble_snapshot(current_cfg());
     EXPECT_TRUE(snap.at("enabled").get<bool>());
-    EXPECT_EQ(snap.at("mode").get<std::string>(), "reasoning");
-    ASSERT_EQ(snap.at("modes").size(), 2u);
-    EXPECT_EQ(snap["modes"][0].get<std::string>(), "prompt");
-    EXPECT_EQ(snap["modes"][1].get<std::string>(), "reasoning");
+    EXPECT_EQ(snap.size(), 1u);
+    EXPECT_FALSE(snap.contains("mode"));
+    EXPECT_FALSE(snap.contains("modes"));
     EXPECT_FALSE(snap.contains("sidecar_model"));
-    EXPECT_FALSE(snap.contains("saved_models"));
 }
 
-// 场景:PUT 只带 {enabled:false}。期望:patch 语义 —— mode 沿用当前值。
-TEST(ToolPreambleHandler, PatchKeepsUnmentionedFields) {
+// 场景:工作模式切换发 PUT {enabled:false} / {enabled:true}。期望:按 body 生效。
+TEST(ToolPreambleHandler, TogglesEnabled) {
     ToolPreambleConfig out;
     std::string error;
     ASSERT_TRUE(parse_tool_preamble_request({{"enabled", false}}, current_cfg(), out, error))
         << error;
     EXPECT_FALSE(out.enabled);
-    EXPECT_EQ(out.mode, "reasoning");
-}
-
-// 场景:PUT {mode:"prompt"};旧前端可能还带 sidecar_model / sidecar_wait_ms。
-// 期望:mode 生效,多余的旧键不报错也不影响结果。
-TEST(ToolPreambleHandler, AcceptsModeAndIgnoresLegacySidecarKeys) {
-    ToolPreambleConfig out;
-    std::string error;
-    ASSERT_TRUE(parse_tool_preamble_request(
-        {{"mode", "prompt"}, {"sidecar_model", "fast"}, {"sidecar_wait_ms", 500}},
-        current_cfg(), out, error)) << error;
-    EXPECT_EQ(out.mode, "prompt");
+    ToolPreambleConfig off;
+    ASSERT_TRUE(parse_tool_preamble_request({{"enabled", true}}, off, out, error)) << error;
     EXPECT_TRUE(out.enabled);
 }
 
-// 场景:非法请求 —— body 不是对象 / mode 不在二选一里(含已废弃的 sidecar)/
-// mode 非字符串 / enabled 非布尔。期望:全部返回 false 且 out 保持调用前的值
-// (这里预置成 current 以便比对),error 非空。
+// 场景:旧前端还会发 {enabled:true, mode:"prompt"} 或带 sidecar_model / sidecar_wait_ms;
+// 空对象是合法的 patch。期望:多余的旧键不报错也不影响结果;空 patch 沿用当前值。
+TEST(ToolPreambleHandler, IgnoresLegacyModeKeys) {
+    ToolPreambleConfig out;
+    std::string error;
+    ToolPreambleConfig off;
+    ASSERT_TRUE(parse_tool_preamble_request(
+        {{"enabled", true}, {"mode", "sidecar"}, {"sidecar_model", "fast"}, {"sidecar_wait_ms", 500}},
+        off, out, error)) << error;
+    EXPECT_TRUE(out.enabled);
+    ASSERT_TRUE(parse_tool_preamble_request(nlohmann::json::object(), current_cfg(), out, error))
+        << error;
+    EXPECT_TRUE(out.enabled);
+}
+
+// 场景:非法请求 —— body 不是对象 / enabled 非布尔。期望:返回 false 且 out 保持
+// 调用前的值,error 非空。
 TEST(ToolPreambleHandler, RejectsInvalidRequestsWithoutTouchingOutput) {
     const auto cases = std::vector<nlohmann::json>{
         nlohmann::json::array(),
-        {{"mode", "auto"}},
-        {{"mode", "sidecar"}},
-        {{"mode", 3}},
         {{"enabled", "yes"}},
+        {{"enabled", 1}},
     };
     for (const auto& body : cases) {
         ToolPreambleConfig out = current_cfg();

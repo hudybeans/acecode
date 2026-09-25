@@ -5,5 +5,5 @@
 
 ## 2. 合并验证
 
-- [x] 2.1 完成 PR 快照的 pnpm test、pnpm build、OpenSpec strict，并比较最新 master 合并后的失败与已知基线。
+- [x] 2.1 完成 PR 快照的 pnpm test、pnpm build、OpenSpec strict；同步最新 master 后修复过时侧栏断言并验证合并结果的完整前端测试。
 - [x] 2.2 完成修复差异审查，并在 PR 评论记录问题、修复和验证证据；远端 CI、合并与同步结果由 PR 后续记录追踪。

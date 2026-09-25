@@ -145,9 +145,9 @@ struct AgentCallbacks {
     // The payload shape matches the todo_updated session event.
     std::function<void(const nlohmann::json& payload)> on_todo_updated;
 
-    // 工具前言(add-tool-preamble):当前阶段的前言就绪时回调(prompt 模式是
-    // <text_preamble> 标签闭合的那一刻,reasoning 模式是推理加粗标题出现时),
-    // TUI 用它替换等待动画里的随机短语("Thinking" → "Reading registry sections")。
+    // 具体进度提示(add-tool-preamble,「适合日常工作」):loading 文案变化时回调
+    // (「正在分析你的请求」「正在读取 3 个文件」「正在分析命令输出」、推理加粗
+    // 标题…),TUI 用它替换等待动画里的随机短语。关闭时不回调。
     std::function<void(const std::string& title)> on_thinking_title;
 
     // Legacy display observer for replacement-style transcript updates. Normal
@@ -167,7 +167,8 @@ struct AgentCallbacks {
 
     // Called just before a tool begins executing. `command_preview` is a short
     // human-readable summary (e.g. the first 60 chars of a bash command).
-    // `preamble` 是工具前言(add-tool-preamble)给这次调用的一句话,空 = 没有。
+    // `preamble` 保留给以后用,当前恒为空:进度头是工具行,参数照常显示;具体
+    // 进度提示只走 on_thinking_title(loading 行)。
     std::function<void(const std::string& tool_name,
                        const std::string& command_preview,
                        const std::string& preamble)> on_tool_progress_start;
@@ -688,14 +689,11 @@ private:
     void publish_side_question_context(
         const std::vector<ChatMessage>& messages_with_system);
 
-    // 工具前言(add-tool-preamble):当前阶段的前言。prompt 模式来自模型正文里
-    // 闭合的 <text_preamble> 标签,reasoning 模式来自推理加粗标题;新前言替换
-    // 旧的,prompt 模式下未加标签的可见正文一出现即清空;每个工具批次沿用当时
-    // 的这条。
+    // 具体进度提示(add-tool-preamble)的一条 loading 文案。
     struct ToolPreambleTitle {
         std::string title;
-        std::string source;   // prompt | reasoning
-        std::string kind;     // read | write | ""(prompt 模式的 type 属性,透传给界面)
+        std::string source;   // reasoning | template | context
+        std::string kind;     // read | write | ""(按工具类型定,透传给界面)
     };
 
     // Phase 3: Stream provider response and accumulate.
@@ -706,17 +704,25 @@ private:
         std::shared_ptr<LlmProvider> provider_snapshot;
         int provider_attempt = 1;
     };
-    bool tool_preamble_prompt_mode() const;
+    bool concrete_activity_enabled() const;
+    // 本模型步的工具批次文案(推理加粗标题 > 工具模板),同时记下这批工具,
+    // 供下一次等待模型时给出「正在分析文件内容」这类场景文案。关闭时返回空。
     ToolPreambleTitle resolve_tool_preamble_for_step(ProviderCallResult& result);
-    // 前言就绪 / 变化时的统一出口:记成当前阶段前言,回调 TUI,并发一条
-    // agent_progress 让 Web 的活动行立刻换文案。
+    // 推理加粗标题就绪时的出口:记成本步标题,并发一条 agent_progress 让
+    // loading 立刻换文案。
     void publish_phase_preamble(const ToolPreambleTitle& preamble,
                                 const ProgressEmitter& emit_progress);
-    // 当前阶段前言的读写(受 tool_preamble_mu_ 保护:工具流式进度可能在工具
-    // 线程上读它)。
+    // 本步推理加粗标题的读写(受 tool_preamble_mu_ 保护)。
     void set_phase_preamble(const ToolPreambleTitle& preamble);
-    void clear_phase_preamble();
     ToolPreambleTitle phase_preamble() const;
+    // 给某个进度 phase 算具体文案;关闭或该 phase 不替换时返回空(调用方沿用
+    // 原文案)。权限 / 提问 / 压缩 / 重试不替换。
+    ToolPreambleTitle concrete_activity_for_phase(const std::string& phase) const;
+    // loading 文案变了就回调 TUI(on_thinking_title),同一句不重复回调。
+    void announce_activity(const std::string& label);
+    void note_planned_tool(int tool_index, const std::string& native_name);
+    void reset_activity_for_step();
+    void reset_activity_for_turn();
     ProviderCallResult call_provider_and_collect(
         const std::shared_ptr<LlmProvider>& provider,
         const ApiRequestBundle& bundle,
@@ -862,19 +868,29 @@ private:
     // agent_loop termination policy. Fresh defaults come from AgentLoopConfig
     // until set_agent_loop_config is called from main.cpp.
     AgentLoopConfig loop_cfg_;
-    // 工具前言(add-tool-preamble)状态。配置与当前阶段前言受 tool_preamble_mu_
-    // 保护(设置页可在回合中途改;工具流式进度可能在工具线程上读前言);
-    // 其余项只在 worker 线程上读写(provider 流回调也跑在 worker 上)。
+    // 具体进度提示(add-tool-preamble)状态,全部受 tool_preamble_mu_ 保护(设置页
+    // 可在回合中途改配置;进度帧可能在工具线程上发)。
     mutable std::mutex tool_preamble_mu_;
     ToolPreambleConfig tool_preamble_cfg_;
-    // 当前阶段前言:回合结束清空;标签闭合 / 加粗标题出现时替换;prompt 模式下
-    // 未加标签的可见正文一出现就清空。
+    // 本模型步的推理加粗标题:每次 provider 调用开头(含重试)清空。
     ToolPreambleTitle phase_preamble_;
-    // prompt 模式的流式标签扫描器,每次 provider 调用(含重试)重置。
+    // 本模型步已经流出来的工具调用(按 tool_index,原生名),给「准备调用」阶段拼模板。
+    std::vector<std::string> step_planned_tools_;
+    // 正在执行的这批工具的文案,tool_running 用。
+    ToolPreambleTitle current_batch_activity_;
+    // 本回合上一批工具(原生名):下一次等待模型时据此说「正在分析文件内容」等。
+    std::vector<std::string> last_batch_tools_;
+    // 上一次回调给 TUI 的 loading 文案,避免同一句重复回调。
+    std::string last_announced_activity_;
+    // 流式标签扫描器:历史里残留的 <text_preamble> 标签只从界面上剥掉,不再当文案。
     tool_preamble::TextPreambleScanner text_preamble_scanner_;
     // 本模型步给工具批次的前言:run_agent_with_input 在 Phase 5 之前填,
     // execute_tool_calls 开头消费(挂 metadata、随 tool_start 下发)后清空。
     ToolPreambleTitle current_step_preamble_;
+    // 本次模型请求实际发出的模型侧工具名(bundle.tool_defs[i].name,已经过
+    // 「工具重写」映射)。主循环每次组装请求后刷新;只在 worker 线程的工具批次
+    // 之间写入,并行工具线程只读。Unknown tool 错误文本据此列出可用名。
+    std::vector<std::string> current_request_model_tool_names_;
     LoopExecutionPolicy loop_execution_policy_;
     // spawn_subagent 透传的父会话写边界根;见 write_root()。
     std::string inherited_write_root_;

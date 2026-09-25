@@ -19,6 +19,13 @@ function firstDefined(...values) {
   return undefined;
 }
 
+export function sessionWorktreeFromSources(...sources) {
+  for (const source of sources) {
+    if (source?.worktree !== undefined) return source.worktree;
+  }
+  return undefined;
+}
+
 function boolParam(value) {
   const s = text(value).toLowerCase();
   return s === '1' || s === 'true' || s === 'yes';
@@ -218,6 +225,8 @@ export function sessionRefFromJumpTarget(target = {}, resumeResult = {}, fallbac
 
   const cwd = noWorkspace ? '' : firstText(resumeResult.cwd, target.cwd, fallback.cwd);
   if (cwd || noWorkspace) ref.cwd = cwd;
+  const worktree = sessionWorktreeFromSources(resumeResult, target, fallback);
+  if (worktree !== undefined) ref.worktree = worktree;
   const searchMatch = normalizedSearchMatch(resumeResult, target, fallback);
   if (searchMatch) ref.searchMatch = searchMatch;
   for (const key of ['port', 'token']) {

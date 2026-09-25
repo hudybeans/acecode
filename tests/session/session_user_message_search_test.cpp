@@ -169,6 +169,43 @@ TEST(SessionUserMessageIndex, IncrementalAppendUsesFreshSource) {
     EXPECT_EQ(index.search("second", 10, &error).size(), 1u);
 }
 
+// 场景:每回合开头 SessionManager 会往 JSONL 追加文件检查点等不含可搜索文本的
+// 记录。期望:追加前索引是新鲜的,note_non_searchable_append 之后仍是新鲜的
+// (下一条消息走增量快路径);追加前已经过期的不被「洗白」,留给下一次重建。
+// 回归表现:这些追加以前不更新签名,下一条消息落盘时整份 JSONL 被重读重建,
+// 会话越长发消息越慢(YTB 反馈:重启后第一条「继续」18 秒才开跑)。
+TEST(SessionUserMessageIndex, NonSearchableAppendKeepsSourceFresh) {
+    auto dir = temp_dir("checkpoint");
+    const std::string project_dir = dir.string();
+    const std::string sid = "session-cp";
+    const std::string jsonl = acecode::SessionStorage::session_path(project_dir, sid);
+
+    acecode::SessionStorage::write_messages(jsonl, {user_message("first turn")});
+    acecode::SessionUserMessageIndex index(project_dir);
+    std::string error;
+    ASSERT_TRUE(index.rebuild_session(sid, jsonl, &error)) << error;
+
+    acecode::ChatMessage checkpoint;
+    checkpoint.role = "system";
+    checkpoint.is_meta = true;
+    checkpoint.content = "[File checkpoint]";
+
+    auto before = acecode::session_user_message_file_signature(jsonl);
+    ASSERT_TRUE(acecode::SessionStorage::append_message(jsonl, checkpoint));
+    auto after = acecode::session_user_message_file_signature(jsonl);
+    EXPECT_FALSE(index.source_is_fresh(sid, after, &error));
+    ASSERT_TRUE(index.note_non_searchable_append(sid, jsonl, before, &error)) << error;
+    EXPECT_TRUE(index.source_is_fresh(sid, after, &error));
+
+    // 过期状态不被洗白:先有一次没记录的追加,再 note 一次,仍然过期。
+    ASSERT_TRUE(acecode::SessionStorage::append_message(jsonl, checkpoint));
+    auto unnoted = acecode::session_user_message_file_signature(jsonl);
+    ASSERT_TRUE(acecode::SessionStorage::append_message(jsonl, checkpoint));
+    ASSERT_TRUE(index.note_non_searchable_append(sid, jsonl, unnoted, &error)) << error;
+    EXPECT_FALSE(index.source_is_fresh(
+        sid, acecode::session_user_message_file_signature(jsonl), &error));
+}
+
 TEST(SessionUserMessageIndex, SearchLimitCountsSessionsNotRawMatchingMessages) {
     auto dir = temp_dir("limit");
     const std::string project_dir = dir.string();

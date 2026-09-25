@@ -597,6 +597,28 @@ std::optional<acecode::desktop::WorkspaceMeta> WebServer::Impl::resolve_workspac
     return std::nullopt;
 }
 
+std::optional<WorkspaceDraftLocation> WebServer::Impl::workspace_draft_location(
+    const std::string& hash) const {
+    WorkspaceDraftLocation location;
+    if (hash == "__no_workspace__") {
+        // The draft file keeps its historical place in the cache root; its
+        // attachments must not create a subdirectory there (each one would be
+        // listed as a no-workspace session cwd), so they use the root's
+        // project dir instead.
+        const std::string root = no_workspace_cache_root();
+        location.draft_dir = path_from_utf8(root);
+        location.attachment_project_dir =
+            path_from_utf8(SessionStorage::get_project_dir(root));
+        return location;
+    }
+    const auto workspace = resolve_workspace(hash);
+    if (!workspace) return std::nullopt;
+    location.workspace_hash = workspace->hash;
+    location.draft_dir = path_from_utf8(projects_dir()) / workspace->hash;
+    location.attachment_project_dir = location.draft_dir;
+    return location;
+}
+
 bool WebServer::Impl::archived_query_requested(const crow::request& req) const {
     auto raw = req.url_params.get("archived");
     if (!raw) return false;
@@ -809,7 +831,6 @@ json WebServer::Impl::session_info_to_json(const SessionInfo& s, const SessionMe
     // workspace binding. File preview needs the real directory regardless of
     // workspace membership, so it is published separately instead of overloading
     // `cwd` and disturbing workspace attribution.
-    o["working_cwd"]   = storage_cwd;
     o["session_path"]  = existing_session_jsonl_path(storage_cwd, s.id);
     o["no_workspace"]  = no_workspace;
     // A user rename persisted by another process (Desktop keeps one daemon per
@@ -856,6 +877,7 @@ json WebServer::Impl::session_info_to_json(const SessionInfo& s, const SessionMe
         if (!s.worktree_name.empty()) worktree.worktree_name = s.worktree_name;
         if (!s.worktree_branch.empty()) worktree.worktree_branch = s.worktree_branch;
     }
+    o["working_cwd"] = worktree.active() ? worktree.worktree_path : storage_cwd;
     append_worktree_session(o, worktree);
     if (m) {
         append_loop_execution(o, m->loop_id, m->loop_run_id);
@@ -916,6 +938,7 @@ json WebServer::Impl::session_meta_to_json(const SessionMeta& m, const std::stri
     o["status"]         = "idle";
     o["workspace_hash"] = effective_workspace_hash;
     o["cwd"]            = effective_cwd;
+    o["working_cwd"]    = m.worktree.active() ? m.worktree.worktree_path : m.cwd;
     o["session_path"]   = existing_session_jsonl_path(m.cwd, m.id);
     o["no_workspace"]   = m.no_workspace;
     o["title"]          = m.title;
@@ -2268,6 +2291,38 @@ json WebServer::Impl::mark_session_read_status(
         record = mark_session_attention_read(record, cursor, now_unix_ms());
         const auto after_state = session_attention_state_for(record);
         changed = before_state != after_state || before_record.read_cursor != record.read_cursor;
+        if (changed || before_record.updated_at_ms != record.updated_at_ms) {
+            save_attention_workspace_locked(workspace_hash);
+        }
+        payload = attention_payload_for_record(session_id, workspace_hash, cwd, record);
+    }
+    if (changed) broadcast_session_status(payload);
+    return payload;
+}
+
+json WebServer::Impl::mark_session_unread_status(
+    const std::string& session_id,
+    const std::string& workspace_hash,
+    const std::string& cwd) {
+    json payload;
+    bool changed = false;
+    bool current_busy = false;
+    if (deps.session_registry) {
+        if (auto entry = deps.session_registry->acquire(session_id)) {
+            current_busy = entry->loop && entry->loop->is_busy();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(attention_mu);
+        load_attention_workspace_locked(workspace_hash, cwd);
+        auto& record = attention_by_workspace[workspace_hash][session_id];
+        record.busy = current_busy;
+        const auto before_record = record;
+        record = mark_session_attention_unread(record, now_unix_ms());
+        // 运行中的会话状态仍是 in_progress,但游标已退回,回合结束后照样显示未读;
+        // 所以这里按游标判断是否变化,而不只看状态。
+        changed = before_record.read_cursor != record.read_cursor ||
+                  before_record.update_cursor != record.update_cursor;
         if (changed || before_record.updated_at_ms != record.updated_at_ms) {
             save_attention_workspace_locked(workspace_hash);
         }

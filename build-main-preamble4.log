@@ -1,0 +1,50 @@
+适用于 .NET Framework MSBuild 版本 17.9.8+b34f75857
+
+  Checking File Globs
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  acecode_testable.vcxproj -> N:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_native_bridge_support.dir\Release\)包含从另一个项目(acecode_native_bridge_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
+  acecode_computer_use_native.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_computer_use_native.lib
+  acecode_native_bridge_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
+  acecode-computer-use.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-computer-use.exe
+    正在创建库 N:/Users/shao/acecode/build/Release/acecode.lib 和对象 N:/Users/shao/acecode/build/Release/acecode.exp
+  acecode.vcxproj -> N:\Users\shao\acecode\build\Release\acecode.exe
+适用于 .NET Framework MSBuild 版本 17.9.8+b34f75857
+
+  Checking File Globs
+  acecode_computer_use_native.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_computer_use_native.lib
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_native_bridge_support.dir\Release\)包含从另一个项目(acecode_native_bridge_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_native_bridge_support.vcxproj]
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  acecode-computer-use.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-computer-use.exe
+  acecode_native_bridge_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_native_bridge_support.lib
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+d:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(531,5): warning MSB8028: 中间目录(acecode_desktop_support.dir\Release\)包含从另一个项目(acecode_desktop_support.vcxproj)共享的文件。   这会导致错误的清除和重新生成行为。 [N:\Users\shao\acecode\build\acecode_desktop_support.vcxproj]
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  application_icon.cpp
+  daemon_pool.cpp
+  daemon_supervisor.cpp
+  desktop_about.cpp
+  desktop_restart.cpp
+  dpi_win.cpp
+  edge_app_launcher.cpp
+  external_url.cpp
+  pick_active.cpp
+  single_instance_posix.cpp
+  single_instance_win.cpp
+  taskbar_badge.cpp
+  taskbar_badge_win.cpp
+  tray_icon_win.cpp
+  url_builder.cpp
+  webview2_runtime_probe.cpp
+  window_background.cpp
+  window_chrome.cpp
+  acecode_testable.vcxproj -> N:\Users\shao\acecode\build\acecode_testable.dir\Release\acecode_testable.lib
+  acecode.vcxproj -> N:\Users\shao\acecode\build\Release\acecode.exe
+  acecode_desktop_support.vcxproj -> N:\Users\shao\acecode\build\Release\acecode_desktop_support.lib
+  agent_browser_host.cpp
+  main.cpp
+  splash_screen.cpp
+  web_host.cpp
+  acecode-desktop.vcxproj -> N:\Users\shao\acecode\build\Release\acecode-desktop.exe

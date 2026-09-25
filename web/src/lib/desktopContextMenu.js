@@ -9,6 +9,8 @@ export const DESKTOP_CONTEXT_ACTIONS = Object.freeze({
   LOCATE_FILE: 'locate_file',
   PIN_SESSION: 'pin_session',
   UNPIN_SESSION: 'unpin_session',
+  MARK_SESSION_READ: 'mark_session_read',
+  MARK_SESSION_UNREAD: 'mark_session_unread',
   OPEN_SESSION: 'open_session',
   RENAME_SESSION: 'rename_session',
   COPY_SESSION_TITLE: 'copy_session_title',
@@ -307,6 +309,7 @@ export function buildDesktopContextMenuItems({
   if (!editable) {
     if (sessionTarget) {
       addAction(items, sessionTarget.pinned ? DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION : DESKTOP_CONTEXT_ACTIONS.PIN_SESSION, sessionTarget);
+      addAction(items, sessionTarget.unread ? DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ : DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD, sessionTarget);
       addAction(items, DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION, sessionTarget);
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE, sessionTarget, { enabled: !!sessionTarget.title });
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID, sessionTarget);
@@ -520,6 +523,7 @@ export function sessionTargetFromElement(target) {
     title: getAttr(el, 'data-desktop-session-title', 'desktopSessionTitle'),
     sessionPath: getAttr(el, 'data-desktop-session-path', 'desktopSessionPath'),
     pinned: boolAttr(el, 'data-desktop-session-pinned', 'desktopSessionPinned'),
+    unread: boolAttr(el, 'data-desktop-session-unread', 'desktopSessionUnread'),
     canArchive: boolAttr(el, 'data-desktop-session-archive', 'desktopSessionArchive'),
   };
 }

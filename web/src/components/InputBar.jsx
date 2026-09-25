@@ -21,6 +21,8 @@ import { GoalStatusBar } from './GoalStatusBar.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { SwarmModeIcon } from './SwarmModeIcon.jsx';
 import { RichComposer } from './RichComposer.jsx';
+import { PastedTextCard } from './PastedTextCard.jsx';
+import { PastedTextDialog } from './PastedTextDialog.jsx';
 import { PathReferenceDropdown } from './PathReferenceDropdown.jsx';
 import { SlashDropdown } from './SlashDropdown.jsx';
 import { toast } from './Toast.jsx';
@@ -33,6 +35,14 @@ import { projectComposerGoal, serializeComposerGoal } from '../lib/composerGoal.
 import { isComposerCompletionSelectionCollapsed } from '../lib/composerDropdownKeyboard.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
+import {
+  editorAttachmentResources,
+  legacyTextNeedsFold,
+  pasteBlockTextSource,
+  pasteBlocksOf,
+  pastedTextTitle,
+  removePastedTextPart,
+} from '../lib/pastedText.js';
 import {
   captureComposerTextareaSelection,
   isComposerEditorFocused,
@@ -104,6 +114,23 @@ function composerAttachmentContext(item, index = 0) {
     path: item?.path || '',
     sourcePath: item?.source_path || item?.metadata?.source_path || '',
   };
+}
+
+// 粘贴块卡片的状态:由块对应的资源(上传状态、内存 File)推导。
+//   uploading 正在上传;failed 上传失败(点卡片重试);deferred 来自旧输入历史、
+//   尚未上传;lost 没有附件 id 也没有内存 File(刷新前没传完),只能删除。
+function pasteBlockCardState(block, resource) {
+  if (block.kind === 'inline') return 'ready';
+  if (resource?.uploading) return 'uploading';
+  if (resource?.upload_error) return 'failed';
+  if (resource?.upload_deferred && resource?.pending_upload) return 'deferred';
+  if (!block.part?.id && !resource?.id && !resource?.file) return 'lost';
+  return 'ready';
+}
+
+function pasteBlockCardTitle(block) {
+  if (block.kind === 'inline') return pastedTextTitle(block.part.text);
+  return String(block.part?.paste?.title || block.part?.name || '');
 }
 
 function composerContextKey(item, index = 0) {
@@ -188,6 +215,8 @@ export const InputBar = forwardRef(function InputBar({
   composerContent: controlledComposerContent, onComposerContentChange,
   attachments = EMPTY_COMPOSER_ATTACHMENTS, contexts = [], annotationPresentations = null,
   onMediaFiles, onRemoveAttachment, onRemoveContext,
+  onLargeTextPaste, onReplacePasteBlock, onRetryPasteUpload, onCommitDeferredPastes,
+  attachmentTextLoader,
   swarmMode = false, onSwarmModeChange,
   expertOptions = [],
   selectedExpertId = '',
@@ -230,6 +259,9 @@ export const InputBar = forwardRef(function InputBar({
   const [pathMention, setPathMention] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState(null);
+  // 打开的粘贴块对话框:打开那一刻固定文本来源,上传中途资源从 File 换成服务端记录
+  // 时不重新装载(否则会覆盖用户正在编辑的内容)。
+  const [openPaste, setOpenPaste] = useState(null);
   const ta = useRef(null);
   const rootRef = useRef(null);
   const attentionRingRef = useRef(null);
@@ -289,7 +321,13 @@ export const InputBar = forwardRef(function InputBar({
   const attachmentItems = Array.isArray(attachments) ? attachments : EMPTY_COMPOSER_ATTACHMENTS;
   const attachmentItemsRef = useRef(attachmentItems);
   attachmentItemsRef.current = attachmentItems;
-  const editorAttachmentItems = useMemo(() => attachmentItems.filter((item) => !isComposerThumbnailAttachment(item)), [attachmentItems]);
+  // 交给 RichComposer 的附件剥掉图片(缩略图条)与粘贴资源(卡片条):否则 RichComposer
+  // 会把上传完成后丢了 paste 标记的粘贴资源当成新附件插进编辑器。
+  const editorAttachmentItems = useMemo(
+    () => editorAttachmentResources(attachmentItems, composerContent),
+    [attachmentItems, composerContent],
+  );
+  const pasteBlocks = useMemo(() => pasteBlocksOf(composerContent), [composerContent]);
   const editorContent = useMemo(() => composerContentWithoutImages(composerContent), [composerContent]);
   const mergeEditorContent = useCallback((content) => withComposerImageAttachments(
     content, contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current),
@@ -307,7 +345,25 @@ export const InputBar = forwardRef(function InputBar({
   const otherContextItems = contextItems.filter((item) => (
     item?.type !== SELECTION_CONTEXT_TYPE && item?.type !== 'browser'
   ));
-  const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0;
+  // 文件块是附件,已计入 activeAttachmentItems;内联块不是附件,单独计入。
+  const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0
+    || pasteBlocks.some((block) => block.kind === 'inline');
+  const pasteCards = useMemo(() => pasteBlocks.map((block) => {
+    const resource = block.kind === 'file'
+      ? activeAttachmentItems.find((item) => item?.local_id === block.part.key
+        || (block.part.id && item?.id === block.part.id)) || null
+      : null;
+    return {
+      block,
+      resource,
+      title: pasteBlockCardTitle(block),
+      sizeBytes: resource?.size_bytes,
+      status: pasteBlockCardState(block, resource),
+    };
+  }), [activeAttachmentItems, pasteBlocks]);
+  const openPasteCard = openPaste
+    ? pasteCards.find((card) => card.block.id === openPaste.id) || null
+    : null;
   const nativeContextPickerAvailable = hasNativeContextPicker();
   const nativeFilesystemMaterializerAvailable = hasNativeFilesystemMaterializer();
   const canChooseLocalContext = !!onMediaFiles || nativeContextPickerAvailable;
@@ -324,7 +380,8 @@ export const InputBar = forwardRef(function InputBar({
       item?.type || '',
       item?.id || '',
     ].join(':')),
-  ].join('\n'), [attachmentItems, contextItems]);
+    ...pasteBlocks.map((block) => `paste:${block.id}`),
+  ].join('\n'), [attachmentItems, contextItems, pasteBlocks]);
 
   const previewComposerAttachment = useCallback((item) => {
     const src = String(item?.url || item?.preview_url || item?.blob_url || '');
@@ -365,6 +422,18 @@ export const InputBar = forwardRef(function InputBar({
       });
     }
   }, [isControlled, controlledComposerContent, onChange, onComposerContentChange, mergeEditorContent]);
+
+  const removePasteBlock = useCallback((id) => {
+    const current = contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current);
+    updateValue(valueRef.current, removePastedTextPart(current, id));
+  }, [updateValue]);
+
+  const openPasteBlock = useCallback((card) => {
+    setOpenPaste({
+      id: card.block.id,
+      source: pasteBlockTextSource({ part: card.block.part, resource: card.resource }, { sessionId: currentSessionId }),
+    });
+  }, [currentSessionId]);
 
   const removeAttachment = useCallback((key) => {
     const current = contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current);
@@ -1174,6 +1243,26 @@ export const InputBar = forwardRef(function InputBar({
     if (edited) setEditedSinceHistory(next.length > 0 || !!content?.parts?.length);
   };
 
+  // 用户粘贴 / 拖放的超长文本经父组件变成粘贴块,编辑器文本不变,上面的
+  // handleComposerChange 不会被调用。粘贴本身就是编辑:折叠成功即置 editedSinceHistory,
+  // 否则翻历史途中粘贴一块后再按上箭头,历史条目会把刚粘贴的块整体替换掉。
+  // 上箭头翻旧历史的折叠(deferUpload)直接调 onLargeTextPaste,不经这里。
+  const onLargeTextPasteRef = useRef(onLargeTextPaste);
+  onLargeTextPasteRef.current = onLargeTextPaste;
+  const handleEditorLargeTextPaste = useCallback((text) => {
+    const handled = onLargeTextPasteRef.current?.(text);
+    if (handled !== false) setEditedSinceHistory(true);
+    return handled;
+  }, []);
+
+  // 翻到旧超长历史时暂存的粘贴文件块(「待上传」):用户在该条目上开始编辑才上传,
+  // 即 editedSinceHistory 从 false 变 true 的那一刻。没有暂存块时父组件什么也不做。
+  const onCommitDeferredPastesRef = useRef(onCommitDeferredPastes);
+  onCommitDeferredPastesRef.current = onCommitDeferredPastes;
+  useEffect(() => {
+    if (editedSinceHistory) onCommitDeferredPastesRef.current?.();
+  }, [editedSinceHistory]);
+
   const handleComposerSelection = useCallback((selection) => {
     setComposerSelection(selection);
     if (caretRestoreUntilRef.current) caretRestoreSelectionRef.current = selection;
@@ -1188,6 +1277,8 @@ export const InputBar = forwardRef(function InputBar({
       editedSinceHistory,
       historyLength: history.length,
       historyPointer: histPtr,
+      // 输入框里有粘贴块 / 附件时编辑器为空不代表输入框为空,不能被历史条目替换。
+      hasNonTextContent: pasteBlocks.length > 0 || activeAttachmentItems.length > 0,
       altKey: e.altKey,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
@@ -1206,7 +1297,15 @@ export const InputBar = forwardRef(function InputBar({
         setHistPtr(next);
         const entry = historyEntries[next];
         const content = normalizeComposerContent(entry?.composer_content || entry) || composerContentFromText(history[next] || '');
-        updateValue(composerContentText(content), content, undefined, { goalMode: false });
+        const entryText = composerContentText(content);
+        if (onLargeTextPaste && legacyTextNeedsFold(entryText, content)) {
+          // 本版之前的超长历史(如 f300 那条 24 MB):编辑器置空,正文走粘贴块分类。
+          // 落文件时只在内存暂存、显示「待上传」,不上传 —— 否则每按一次上箭头就重传一次。
+          updateValue('', composerContentFromText(''), undefined, { goalMode: false });
+          onLargeTextPaste(entryText, { deferUpload: true });
+        } else {
+          updateValue(entryText, content, undefined, { goalMode: false });
+        }
       }
       setEditedSinceHistory(false);
       return;
@@ -1585,6 +1684,28 @@ export const InputBar = forwardRef(function InputBar({
             })}
           </div>
         )}
+        {pasteCards.length > 0 && (
+          <div
+            data-composer-pasted-text-strip="true"
+            className={clsx(
+              'px-3 pt-3 flex flex-wrap items-start gap-2',
+              isHero && 'px-4',
+            )}
+          >
+            {pasteCards.map((card) => (
+              <PastedTextCard
+                key={card.block.id}
+                title={card.title}
+                sizeBytes={card.sizeBytes}
+                status={card.status}
+                removable={!disabled}
+                onOpen={() => openPasteBlock(card)}
+                onRemove={() => removePasteBlock(card.block.id)}
+                onRetry={() => onRetryPasteUpload?.(card.block.part.key || card.block.id)}
+              />
+            ))}
+          </div>
+        )}
         {(selectionPreview || selectionContextItems.length > 0 || browserContextItems.length > 0) && (
           <div className={clsx(
             'px-3 pt-2 flex flex-wrap items-center gap-1.5',
@@ -1639,6 +1760,7 @@ export const InputBar = forwardRef(function InputBar({
             onPreviewAttachment={previewComposerAttachment}
             onRemoveAttachment={removeAttachment}
             onPasteFilesystemItems={handleFilesystemPaste}
+            onLargeTextPaste={onLargeTextPaste ? handleEditorLargeTextPaste : undefined}
             allowNativeFilesystemDrop={NATIVE_FILE_DROP}
             disabled={disabled}
             placeholder={placeholder}
@@ -1685,6 +1807,18 @@ export const InputBar = forwardRef(function InputBar({
         />
       </div>
       <ImageLightbox preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
+      {openPasteCard ? (
+        <PastedTextDialog
+          key={openPasteCard.block.id}
+          title={openPasteCard.title}
+          source={openPaste.source}
+          readOnly={disabled || typeof onReplacePasteBlock !== 'function'}
+          loader={attachmentTextLoader}
+          onSave={(next) => onReplacePasteBlock?.(openPasteCard.block.id, next)}
+          onReplace={(next) => onReplacePasteBlock?.(openPasteCard.block.id, next)}
+          onClose={() => setOpenPaste(null)}
+        />
+      ) : null}
     </div>
   );
 });

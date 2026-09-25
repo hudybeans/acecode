@@ -2085,46 +2085,12 @@ void WebServer::Impl::register_ui_preferences() {
                 return probe_success({std::move(result.models), {}});
             }
 
-            const std::string url = trim_trailing_slash(parsed->base_url) + "/models";
-            cpr::Header headers = {{"Content-Type", "application/json"}};
-            if (!parsed->api_key.empty()) {
-                headers["Authorization"] = "Bearer " + parsed->api_key;
+            auto result = probe_openai_models(*parsed);
+            if (!result.models) {
+                return json_err(result.error_code == "INVALID_REQUEST_HEADER" ? 400 : 502,
+                                result.error_code.c_str(), result.error);
             }
-            std::string header_error;
-            auto resolved_headers = resolve_request_headers(parsed->request_headers, header_error);
-            if (!resolved_headers.has_value()) {
-                return json_err(400, "INVALID_REQUEST_HEADER", header_error);
-            }
-            for (const auto& [k, v] : *resolved_headers) {
-                headers[k] = v;
-            }
-            auto proxy_opts = network::proxy_options_for(url);
-            cpr::Response response = cpr::Get(
-                cpr::Url{url},
-                headers,
-                network::build_ssl_options(proxy_opts),
-                proxy_opts.proxies,
-                proxy_opts.auth,
-                cpr::Timeout{10000}
-            );
-
-            if (response.status_code == 0) {
-                return json_err(502, "PROBE_FAILED", response.error.message);
-            }
-            if (response.status_code < 200 || response.status_code >= 300) {
-                return json_err(502, "PROBE_HTTP_ERROR",
-                                "upstream returned HTTP " + std::to_string(response.status_code));
-            }
-
-            try {
-                auto parsed_models = parse_openai_models(json::parse(response.text));
-                if (is_acemodel_base_url(parsed->base_url)) {
-                    apply_acemodel_context_fallbacks(parsed_models);
-                }
-                return probe_success(std::move(parsed_models));
-            } catch (const std::exception& e) {
-                return json_err(502, "PROBE_BAD_JSON", e.what());
-            }
+            return probe_success(std::move(*result.models));
         });
 
         // PUT /api/config/ui-preferences accepts partial legacy or appearance

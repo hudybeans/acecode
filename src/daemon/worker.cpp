@@ -282,6 +282,8 @@ int run_worker(const WorkerOptions& opts, const AppConfig& cfg) {
     // 跨午夜自动滚动文件;foreground=true 时同时镜像到 stderr。必须放在 preflight
     // 之前,否则启动期校验失败时不会留下任何日志记录。
     Logger::instance().init_with_rotation(get_logs_dir(), "daemon", opts.foreground);
+    // 数据目录重定向的解析告警发生在日志初始化之前(被 Logger 丢掉),这里补记。
+    acecode::log_deferred_data_dir_resolution_warning();
     Logger::instance().set_level(LogLevel::Dbg);
 
     if (!apply_cwd_override(opts.cwd_override, opts.foreground)) {

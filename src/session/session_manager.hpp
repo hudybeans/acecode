@@ -260,6 +260,9 @@ public:
 
 private:
     bool ensure_created();  // Lazy creation of session files on first message
+    // 追加一条不含可搜索用户文本的记录(检查点 / 净差异等),并同步推进用户消息
+    // 搜索索引记下的文件签名,避免下一条消息落盘时整份 JSONL 重读重建。调用方持有 mu_。
+    bool append_non_searchable_locked(const ChatMessage& msg);
     // Metadata-only writes preserve persisted activity time. Pass the current
     // timestamp explicitly after successfully changing conversation history.
     bool update_meta(

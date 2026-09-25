@@ -24,6 +24,7 @@ import { SidebarExtensions } from './SidebarExtensions.jsx';
 import { Modal } from './Modal.jsx';
 import BrandLogo from './BrandLogo.jsx';
 import { api } from '../lib/api.js';
+import { sessionWorktreeFromSources } from '../lib/sessionJump.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
 import {
@@ -69,6 +70,7 @@ import {
   mergeSessionStatus,
   mergeSessionsWithStatus,
   optimisticReadStatus,
+  optimisticUnreadStatus,
   statusCursor,
   workspaceHasUnread,
 } from '../lib/sessionStatus.js';
@@ -247,6 +249,7 @@ function sidebarSessionTarget(workspace = {}, session = {}, resumeResult = {}) {
       || session.working_cwd
       || session.workingCwd
       || (noWorkspace ? '' : (resumeResult.cwd || session.cwd || workspace.cwd || '')),
+    worktree: sessionWorktreeFromSources(resumeResult, session) || null,
     sessionPath: session.sessionPath
       || session.session_path
       || resumeResult.sessionPath
@@ -484,6 +487,14 @@ function attentionMeta(state) {
   if (state === 'in_progress') return { label: '进行中', dot: '' };
   if (state === 'unread') return { label: '未读', dot: 'bg-ok shadow-[0_0_4px_var(--ace-ok)]' };
   return { label: '已读', dot: 'border border-fg-mute/55' };
+}
+
+// 项目行图标:「编辑项目」里选过图标就用它,否则是默认文件夹;两者都随展开 / 折叠换两态。
+function SidebarWorkspaceGlyph({ icon, expanded }) {
+  const customIcon = resolveWorkspaceIcon(icon);
+  return customIcon
+    ? <WorkspaceIcon id={customIcon.id} color={customIcon.color} open={expanded} size={16} className="shrink-0" />
+    : <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} className="shrink-0" />;
 }
 
 function SidebarDisclosure({ expanded, className = '' }) {
@@ -967,6 +978,7 @@ function SessionRow({
       data-desktop-session-no-workspace={noWorkspace ? 'true' : undefined}
       data-desktop-session-path={sessionPath || undefined}
       data-desktop-session-pinned={pinned ? 'true' : 'false'}
+      data-desktop-session-unread={attention === 'unread' ? 'true' : 'false'}
       data-desktop-session-title={title || undefined}
       data-desktop-session-archive="true"
       data-remote-control-bound={remoteControlBound ? 'true' : undefined}
@@ -1099,7 +1111,7 @@ function SessionRow({
           <SidebarSessionTitle title={title} />
         </button>
       )}
-      <span className="flex w-full min-w-0 items-center justify-end gap-0">
+      <span className="flex w-full min-w-0 items-center justify-end gap-2">
         {!editing && pendingPermission ? (
           <span
             data-sidebar-permission-prompt="true"
@@ -1395,8 +1407,6 @@ function WorkspaceGroup({
   const [editing, setEditing] = useState(false);
   const [draft,   setDraft]   = useState(ws.name);
   const hasUnread = workspaceHasUnread(sessions);
-  // 「编辑项目」里选的图标;未设置时保留展开 / 折叠两态的文件夹图标。
-  const customIcon = resolveWorkspaceIcon(ws.icon);
   const projectedSessions = sidebarSessionProjection(
     sessions,
     sessionListVisibleLimit,
@@ -1526,9 +1536,7 @@ function WorkspaceGroup({
         }}
       >
         <span className="w-6 h-6 flex items-center justify-center shrink-0">
-          {customIcon
-            ? <WorkspaceIcon id={customIcon.id} color={customIcon.color} size={16} />
-            : <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />}
+          <SidebarWorkspaceGlyph icon={ws.icon} expanded={expanded} />
         </span>
         {editing ? (
           <input
@@ -1554,7 +1562,7 @@ function WorkspaceGroup({
             data-sidebar-workspace-menu="true"
             type="button"
             onClick={openWorkspaceContextMenu}
-            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
+            className="ace-sidebar-workspace-action w-5 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="工作区菜单"
             aria-label="工作区菜单"
           ><VsIcon name="workspaceMenu" size={18} /></button>
@@ -2994,7 +3002,8 @@ export function Sidebar({
       const msg = e.detail || {};
       if (msg.type === 'session_status_snapshot') {
         setStatusBySession((prev) => applyStatusSnapshot(prev, msg.payload || {}));
-      } else if (msg.type === 'session_status' || msg.type === 'mark_session_read_ack') {
+      } else if (msg.type === 'session_status' || msg.type === 'mark_session_read_ack'
+        || msg.type === 'mark_session_unread_ack') {
         setStatusBySession((prev) => applyStatusUpdate(prev, msg.payload || {}));
       } else if (msg.type === 'session_updated') {
         const payload = msg.payload || {};
@@ -3029,8 +3038,19 @@ export function Sidebar({
     };
   }, []);
 
+  // 用户对当前打开的会话点了「标记为未读」:切到别的会话之前,不要被下面「打开即已读」
+  // 的 effect 立刻改回已读(否则菜单点了等于没点)。切走再回来照常自动已读。
+  // 这个 effect 必须声明在自动已读的 effect 之前,切换会话的同一次提交里先清掉标记。
+  const manualUnreadActiveRef = useRef('');
+  useEffect(() => {
+    if (manualUnreadActiveRef.current && manualUnreadActiveRef.current !== activeId) {
+      manualUnreadActiveRef.current = '';
+    }
+  }, [activeId]);
+
   const markSessionRead = useCallback((session) => {
     if (!session?.id) return;
+    if (manualUnreadActiveRef.current === session.id) manualUnreadActiveRef.current = '';
     const merged = mergeSessionStatus(session, statusBySession);
     const cursor = statusCursor(merged);
     connection.markSessionRead({
@@ -3043,13 +3063,51 @@ export function Sidebar({
     if (optimistic) setStatusBySession((prev) => applyStatusUpdate(prev, optimistic));
   }, [statusBySession]);
 
+  const markSessionUnread = useCallback((session) => {
+    if (!session?.id) return;
+    const merged = mergeSessionStatus(session, statusBySession);
+    if (merged.id === activeId) manualUnreadActiveRef.current = merged.id;
+    connection.markSessionUnread({
+      sessionId: merged.id,
+      workspaceHash: merged.workspace_hash || '',
+    });
+    const optimistic = optimisticUnreadStatus(merged);
+    if (optimistic) desktopTaskbarBadge.updateStatus(optimistic);
+    if (optimistic) setStatusBySession((prev) => applyStatusUpdate(prev, optimistic));
+  }, [activeId, statusBySession]);
+
   useEffect(() => {
     if (!activeId) return;
+    if (manualUnreadActiveRef.current === activeId) return;
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const merged = mergeSessionStatus(session, statusBySession);
     if (merged.attention_state === 'unread') markSessionRead(merged);
   }, [activeId, sessions, statusBySession, markSessionRead]);
+
+  // 会话右键菜单(侧栏行 / 会话菜单按钮 / 顶栏右键)里的「标记为已读 / 未读」。
+  // 置顶、隐藏在折叠项目里的会话也可能不在当前列表里,缺的字段用菜单目标补齐;
+  // 标记已读时游标为 0 表示「读到最新」,由 daemon 取当前最新游标。
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event.detail || {};
+      const { action, target } = detail;
+      if (action !== DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ
+        && action !== DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD) return;
+      if (target?.type !== 'session' || !target.sessionId) return;
+      detail.handled = true;
+      const known = sessions.find((s) => s.id === target.sessionId) || {};
+      const session = {
+        ...known,
+        id: target.sessionId,
+        workspace_hash: target.workspaceHash || known.workspace_hash || '',
+      };
+      if (action === DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ) markSessionRead(session);
+      else markSessionUnread(session);
+    };
+    window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+    return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+  }, [sessions, markSessionRead, markSessionUnread]);
 
   const onToggle = (hash) => {
     if (!hash) return;
@@ -3801,7 +3859,10 @@ export function Sidebar({
             transform: `translate3d(${folderReorder.drag.left}px, ${folderReorder.drag.top}px, 0)`,
           }}
         >
-          <VsIcon name={expanded.has(folderReorder.drag.source) ? 'folderOpen' : 'folder'} size={18} className="shrink-0" />
+          <SidebarWorkspaceGlyph
+            icon={workspaces.find((w) => w.hash === folderReorder.drag.source)?.icon}
+            expanded={expanded.has(folderReorder.drag.source)}
+          />
           <span className="min-w-0 truncate">{folderReorder.drag.name}</span>
         </div>, document.body,
       )}

@@ -39,6 +39,12 @@ write gate remains closed after success until restart; failure reopens it and
 resumes the scheduler. Never delete a failed validation target or the live root.
 Backup deletion verifies the pointer and preserves it when cleaning the default root.
 
+**数据目录迁移的几条铁律(fix-feedback-0924 第 1 条,YTB 反馈:迁移出错后界面卡死 / 迁移必然失败)。**
+(1) OS 错误文本(`ec.message()` / `e.what()`)先单独经 `migration_os_error_text` / `ensure_utf8` 转 UTF-8 再拼接 —— 不要对拼好的整串转,整串里的 UTF-8 中文路径会被按 GBK 重解成乱码;`routes_environment.cpp::json_response` 的 `dump(..., error_handler_t::replace)` 是出口兜底,不能去掉(曾经 GBK 的「系统找不到指定的路径」让 /migration 每次轮询都 500,前端永远停在「迁移中」)。前端轮询由 `migrationPollOutcome` 给出动作、组件函数式 `setJob`,连续 3 次失败就停并标 unknown。构造非法 UTF-8 测试数据时注意 GBK「一」= `D2 BB` 恰好是合法 UTF-8。
+(2) `to_extended_length_path`(`\\?\`)只用于迁移与清理的文件 IO,绝不进 JSON / 指针 / 日志;SQLite 打开 ≥240 字符才换扩展形式(同进程两种形式打开同一 WAL 库会分裂 winShmNode);staging 名是 `.acecode-mig-` + 8 hex。运行期仍不是 longPathAware。
+(3) `agent-browser/webview2`(Desktop 启动即创建、持续写)只能「尽力复制 + 不参与变更复检」,SQLite 仍优先 backup;`edge-app-profile/` 整个排除;已快照主库的 `-wal/-shm/-journal` 都不复制(热 journal 会把快照回滚坏)。排除 `cache/no-workspace/<id>/.acecode/tmp` 的代价:删旧目录后历史里对 scratch 的引用失效。`previous_size_bytes` 含未复制但留在旧目录的数据。
+(4) 「其他实例」判定只在已被证明 PID 复用时放行(`evaluate_daemon_pid_holder`,与 daemon_pool 同口径,身份未知一律拦);每个拒绝分支都记日志(SESSIONS_BUSY 带 `busy_session_ids()`)。redirect 解析告警发生在日志初始化之前,由 worker / TUI / headless / Windows 服务四处在 `init_with_rotation` 之后调 `log_deferred_data_dir_resolution_warning()` 补记。
+
 The Settings shell uses open groups in `globals.css`; user-provided Claude-style
 references supersede the older boxed-card guidance for this surface.
 `settingsSearch.js` indexes bilingual labels and aliases; SettingsPage locates the
@@ -181,16 +187,17 @@ MCP 工具调用同样响应 abort:`McpManager::invoke` 把阻塞的 JSON-RPC �
 - 校验规则一份(`validate_model_tool_name_mappings` + `validate_settings_against_tools`):public 名匹配 `^[A-Za-z0-9_-]{1,64}$`、唯一、不等于任何注册工具名或其它映射的原生名(否则 resolve 先命中真工具)。前端 `validateToolRewriteDraft` 只是即时反馈,后端仍会再校验。
 - 测试里改映射用 RAII `ScopedModelToolNameMappings`,它是进程级共享状态,忘记恢复会污染同进程的其它用例。
 
-### 工具前言:阶段前言(add-tool-preamble)
+### 具体进度提示(原「工具前言」,add-tool-preamble)
 
-Codex 截图里红框那行 "Reading registry sections" 是 OpenAI 推理摘要的首行加粗,由客户端抠出当状态行;Codex 提示词另有 `Preamble messages`;Gemini CLI 同款抠 `**subject**`。ACECode 做成 设置 > 开发者模式 > 「工具前言」的二选一(默认**关闭**,`config.agent_loop.tool_preamble = {enabled, mode: prompt|reasoning}`),design 与调研表在 openspec/changes/add-tool-preamble。**形态是用户拍板的**:前言只在等待期显示(Web 活动行 / 运行中的工具行 / TUI 等待短语与写工具进度头),落定后不显示;标签留在落盘正文里;未加标签的正文出现即清除;`type=read|write` 只解析透传,界面效果留空。前两版都被否掉:v1「先说一句话再调工具」(文本先变气泡、按批次拆成一摞标题行),v2「每次调用必填 `preamble` 参数」(强迫模型每次填一句,体验差;grok 对可选参数几乎不填、进 required 才填)。
+设置 > 常规 > 工作模式:「适合日常工作」= 开,「用于编程」= 关(默认)。配置键沿用 `config.agent_loop.tool_preamble.enabled`(旧的 `mode` / `sidecar_*` 键加载时忽略),工作模式**不单独落 localStorage**,以 daemon 配置为准(`web/src/lib/workMode.js`,设置页 `SectionGeneral` 读 / 写 `/api/config/tool-preamble`)。开发者模式里的旧入口已删。**用户拍板的形态**:loading 只说正在做什么、用现在进行时、**不带参数**(参数照常留在工具行,Web `ToolBlock` 与 TUI 进度头都不再替换成前言);尽量不出现「正在推理」这类笼统文案;文案**不依赖模型配合**。
 
-- **prompt 模式 = `<text_preamble>` 标签**。系统提示追加「# Progress preamble」段(用户原话:For multi-step tool tasks, emit exactly one short sentence in `<text_preamble type="read">…</text_preamble>` (use type="write" for state-changing actions) before the first call and at major phase/plan changes: next step initially, verified result + next step thereafter; never tag final answers),「Do not narrate every tool call」口径原样保留,关闭时逐字节不变(`system_prompt_tool_preamble_test`)。流回调里 `tool_preamble::TextPreambleScanner`([src/tool_preamble/tool_preamble.cpp](src/tool_preamble/tool_preamble.cpp),纯逻辑)把正文增量切成可见文本与前言:标签可能切在任意字节处(尾部是 `<text_preamble` 前缀时扣住)、没写 type 也认、缺闭合到行尾、`<text_preamble/>` 跳过、大小写不敏感、超过 `kTextPreambleMaxBodyBytes` 未闭合按到此为止、流开头与每个闭合标签后紧跟的空白吞掉(否则界面为 "\n\n" 建空气泡)。**标签总是从可见正文里剥掉**(关闭功能时模型也可能沿习惯打标签),只有开启 prompt 模式才发布成前言。
-- **阶段前言是 AgentLoop 的一条状态**(`phase_preamble_`,受 `tool_preamble_mu_` 保护,工具流式进度可能在工具线程上读):`publish_phase_preamble` 记下它、回调 `on_thinking_title`(TUI 等待短语)、发一条 `agent_progress{phase:"preamble", label}`(独立 phase 键 + force 绕开 750ms 节流,活动行立刻换文案);prompt 模式下非空白可见正文一出现就 `clear_phase_preamble()`;回合结束清空。reasoning 模式的加粗标题 / 首句兜底(`resolve_tool_preamble_for_step`)走同一条状态,但不被正文清除。每条 `agent_progress` 帧都带 `preamble:{title,source,kind}`;每个批次的 `tool_start` 带 `preamble` / `preamble_source` / `preamble_kind`,`model_waiting` / `reasoning` / `tool_planning` / `tool_running` 的 label = 前言(通用文案 / 工具名退到 detail;`model_waiting` 那条在 `emit_agent_progress` 里集中换,否则批次之间 Web 实时行会在「前言 → 正在等待模型响应 → 前言」之间闪动,实测会话 20260925-013722-4299);权限 / 提问 / 压缩 / 重试这些必须被看见的状态不换。
-- **落盘与三端剥离**:assistant 正文保留标签原文(模型会模仿自己的历史输出),`metadata.tool_preamble = {source,title,kind}` 只为记录。剥离点:daemon 的 token 流(扫描器)、工具步与文本回合的 assistant Message 帧(`strip_text_preamble_tags`,可见正文为空就不发帧)、TUI `on_message` 与 `session_replay`(整段都是标签不建行)、Web `sessionTranscript.js` 的历史加载与 `message` 事件(`stripTextPreambleTags`,与 C++ 同款规则)。`ToolCallDelta` 不再带参数前缀(参数版遗留已撤)。
-- **Web 不按批次拆组**:一段活动一条 `activity_summary`,前言只影响实时行(`liveToolPreamble` = 正在运行的最新工具的前言)与运行中的工具行(`ToolBlock` 的 label);落定后与关闭态同形,工具行悬浮提示也不带前言。`tool_preamble` 事件与 `pendingToolPreambles` 已删,reducer 只认 `tool_start.preamble*` 与 `agent_progress.preamble`。
-- **REST** `GET/PUT /api/config/tool-preamble`(`routes_tool_preamble.cpp` + `handlers/tool_preamble_handler.cpp` 纯函数,PUT 是 patch,落盘后 `SessionRegistry::refresh_tool_preamble_config` 直接下发);旧配置里的 `sidecar_*` 键忽略,`mode:"sidecar"` 归一化为 prompt。前端 `lib/toolPreamble.js` + `components/ToolPreambleSettings.jsx`。
-- 回归测试:`tests/tool_preamble/tool_preamble_test.cpp`(扫描器任意字节切分 / 缺闭合 / 空标签 / type / 封顶 / strip)、`tests/agent_loop/agent_loop_tool_preamble_test.cpp`(标签→前言不进正文、跨步沿用与清除、最终回答误打标签、写工具进度头、reasoning 两条、关闭)、`config_tool_preamble_test`、`system_prompt_tool_preamble_test`、`tool_preamble_handler_test`、`session_replay_tool_preamble_test`;前端 `toolPreamble` / `transcriptProjectionToolPreamble` / `sessionTranscriptToolPreamble` 三个 test。
+前三版都被否掉,别做回去:v1「先说一句话再调工具」(文本先变气泡、按批次拆成一摞标题行);v2「每次调用必填 `preamble` 参数」(强迫模型每次写一句);v3「正文 `<text_preamble>` 标签」(grok-4.7 不照做,用户会话 20260925-053811-55cc 12 个工具步零标签;业界的 tool preamble 本来就是普通用户可见消息,不是标签)。v3 期间为了压住裸文本进度句删过的系统提示「# Sharing progress updates」一节已**逐字恢复**,系统提示与这个开关无关(`build_system_prompt` 的 `prompt_tool_preamble` 参数已删)。
+
+- **文案全部由 daemon 生成**(`src/tool_preamble/tool_preamble.cpp` 纯逻辑,优先级):① 本模型步推理摘要的第一对 `**加粗**`(GPT / Codex 天然带,只对本步有效;推理首句兜底已删 —— grok 的推理是英文原始思维链,首句永远是 "The user wants me to…");② 工具模板 `batch_activity_label`(按原生工具名分类:读取 / 搜索代码 / 查找文件 / 运行命令 / 修改 / 写入 / 网页 / 浏览器 / 子任务 / 技能 / 待办 / 图片…,同类计数,两类用「并」,三类及以上取前两类加「等」,MCP 与未列出的工具归「调用工具」);③ 场景文案:回合开头 `kInitialActivityLabel`(正在分析你的请求),一批工具跑完按这批第一类工具 `after_batch_activity_label`(正在分析文件内容 / 搜索结果 / 命令输出 / 检查修改结果…),正文开始流出 `kRespondingActivityLabel`(正在撰写回复)。`batch_activity_kind` 按工具类型给 read / write,透传给界面,读放大镜 / 写笔触效果留空。
+- **只在一个口子替换**:`run_agent_with_input` 的 `emit_agent_progress` 调 `concrete_activity_for_phase(phase)`,对 `model_waiting` / `reasoning` / `preamble` / `responding` / `tool_planning` / `tool_running` 换 label、清 detail、挂 `preamble{title,source,kind}`,并经 `announce_activity` 去重后回调 `on_thinking_title`(TUI 等待短语);权限 / 提问 / 压缩 / 重试不换。各发射点仍传旧文案,关闭时原样发出。状态(全在 `tool_preamble_mu_` 下):本步加粗标题 `phase_preamble_`、本步已流出的工具 `step_planned_tools_`(ToolCallDelta 经 `note_planned_tool` 记)、执行中批次 `current_batch_activity_`、本回合上一批 `last_batch_tools_`;每次 provider 调用(含重试)开头 `reset_activity_for_step`,回合首尾 `reset_activity_for_turn`。`resolve_tool_preamble_for_step` 定批次文案(标题 > 模板),写 `metadata.tool_preamble` 并随 `tool_start.preamble*` 下发。
+- **历史标签只剥不用**:v3 落盘的正文里还有 `<text_preamble>`,`TextPreambleScanner` / `strip_text_preamble_tags`(C++)与 `stripTextPreambleTags`(JS)照旧从 token 流、Message 帧、TUI 行、回放、Web 历史里剥掉,但不再当文案。
+- **Web**:一段活动一条 `activity_summary`,实时行标题 = 正在运行工具的 `tool.preamble`(已含数量,此时不再追加「正在运行 N 个工具」与 activity.detail),工具都跑完时退回 `activity.label`(daemon 的场景文案);落定后与关闭态同形。
+- 回归测试:`tests/tool_preamble/tool_preamble_test.cpp`(模板 / 场景文案 / kind / 加粗 / 扫描器)、`tests/agent_loop/agent_loop_tool_preamble_test.cpp`(笼统文案不出现且 detail 为空、加粗标题只管本步、准备调用阶段的模板、写工具进度头保留工具行、历史标签只剥不用、关闭时旧文案)、`config_tool_preamble_test`、`tool_preamble_handler_test`、`session_replay_tool_preamble_test`;前端 `toolPreamble` / `workMode` / `transcriptProjectionToolPreamble` / `sessionTranscriptToolPreamble`。
 
 ### Thread Goals(/goal,复刻 Codex ext/goal)
 
@@ -512,6 +519,23 @@ SidePanel 折叠 UI:`ChatView` 把 `SidePanel` 包到 `<div class="ace-side-pane
 排队卡片栈(`redesign-webui-queue-cards`):busy 期间提交的待发送消息**不进 transcript**,改由 `<QueueCardList>`(在 `<InputBar>` 上方)渲染成卡片堆。状态机(`lib/chatInputQueue.js`)与 `enqueueQueuedInput` / `cancelQueuedInput` / `markQueuedInput*` / `nextQueuedInput` / `completeQueuedInputForMessage` 全部不变;只是渲染分支换地方。每张卡片左侧 3px `.ace-queue-card-indicator` 色条标注状态(QUEUED 灰 / FAILED 红),右侧恒挂"取消"(close 图标),FAILED 多一个"重试"。状态↔标签映射收敛在 `lib/queueCardItem.js::buildQueueCardItem`(纯函数,Node 单测覆盖);DOM 端只是把这份结构映射到 className。`Message.jsx::UserBubble` 已剥离 `queued`/`onCancelQueued`/`onRetryQueued` props——transcript 里出现的 user 气泡一定是后端真实落库的消息。
 
 **中断回合后队列暂停,不自动出队。** 曾经的 bug:排了一堆消息后点停止,busy 一翻 false,ChatView 的 drain effect 就把下一条排队消息发了出去 —— 用户刚说「停」界面却替他继续。现在队列状态多一份按会话的 `paused`(`chatInputQueue.js::pauseQueuedInput / resumeQueuedInput / queuedInputPause`),`shouldDrainQueuedInput` 带 `paused` 时拒绝 drain;暂停有两条入口:(1) 本端点停止 —— `ChatView::abort()` **先** `pauseQueuedInput` 再本地应用 `turn_aborted`,顺序反了 drain effect 会先看到 busy=false 把下一条发出去;(2) TUI / 其它标签页 / IM 通道发起的中断只以 `outcome=aborted` 的 `busy_changed` / `done` 到达,靠 transcript reducer 新增的 `lastTurnOutcome`(`'' | completed | error | aborted`,新回合开始清空,只在真正的 busy→false 转换上按 outcome 记;本地 `turn_aborted` 直接记 aborted,服务端补发的 busy_changed(false) 到达时 wasBusy 已 false 不覆盖)+ `shouldPauseQueuedInputAfterAbort` 在 drain effect 里兜底。界面:`QueueCardList` 顶部横幅「由于你中断了当前响应,队列已暂停」+「继续」(`queueCardItem.js::buildQueuePausedBanner`);输入栏空输入 + 暂停时发送按钮变「继续」(`inputBarState.js` 的 `mode='resume'`,压过「重发末尾用户消息」,图标换播放三角,`InputBar::submit` 走 `onResumeQueue` 而不是 `onSubmit`)。解除暂停只认用户明确动作:点「继续」/ 空输入按发送 / 再次发送或排队一条新消息(新消息先走,旧排队随后照常出队)/ 重试失败卡片;删掉最后一张卡片时暂停标记顺带清除,避免一个看不见的暂停态把之后的排队卡住。`pauseQueuedInput` 对没有待发送消息的会话是 no-op。回归:`chatInputQueue.test.js` 的暂停一组、`inputBarState.test.js` 的「继续」两条、`queueCardItem.test.js` 的横幅两条、`sessionTranscript.test.js` 的 `lastTurnOutcome` 两条。
+
+### Web UI: 粘贴的文本块(fix-feedback-0924 第 2 条)
+
+起因(LIUXIN557 f300):一条 2460 万字符的粘贴原样进了用户气泡、回合滚动条和吸顶条,切进会话必然卡死。用户不接受输入限长,决定:达到 20 行 / 2000 字符的粘贴变成输入框上方的卡片(点开在单独文本框编辑);很大的粘贴落文件、消息里只带引用。
+- **内联块** `{type:"pasted_text", key, text}`:发送时以 `"\n\n"` 拼到编辑器内容之后。**文件块**:UTF-8 ≥ 128 KiB 或加入后内联合计 > 256 KiB(`web/src/lib/pastedText.js` 常量)时上传成会话附件,composer 里是带 `paste:{...}` 的 attachment 部件,模型只收到 `[Attached file reference]`(`origin:"pasted_text"`,按需 `file_read`);> 24 MiB 按字节切段顺序上传。首页粘贴落工作区草稿附件区(no-workspace 的**不能放在缓存根下**,那里每个子目录都被当作会话 cwd),发送前复制成会话附件,刷新不丢;回收有 10 分钟年龄门。
+- **文本有两份**:`composerContentText()` / C++ `result.text` 是编辑器文本(不含粘贴块),`composerContentSubmissionText()` / `submission_text` 才是正文;分隔规则两端各一份,同一组样例守住。不要再引入「超预算剥块 + 内存缓存」(被否决)。
+- 判定粘贴资源用 `isPasteResource`(资源 `paste` / 服务端 `metadata.origin` / 部件 key),上传回填会整体替换资源;所有文本入口(粘贴、文件传输 insertText、结构化剪贴板、text/plain 拖放)都先过 `foldLargePaste`。
+- 命令路由:内联块并进命令参数,文件块算 extras;编辑器为空时一律普通消息;`/goal`、`/btw` 超上限提示「太长」而不是改发普通消息。文件引用在 Codex 输入与压缩后的保留消息里都要在(`build_codex_input_text`、`build_compacted_history`)。
+- 对话记录纯文本只渲染前 20000 字符 / 400 行 +「查看全文」;编辑框是不受控原生 textarea,50 万字符以上只读、最多装载 500 万字符。已知未做:会话删除不清 `attachments/<sid>/`,fork 整份复制文件块。
+
+### 其它反馈修复备忘(fix-feedback-0924)
+
+- **429 硬配额**:message 明确说额度 / 余额用完(`quota exhausted`、`exceeded your current quota`、余额不足…)也按硬配额,不再重试;按分钟的配额与普通限流仍重试(`retry_policy.cpp::is_hard_quota_message`)。
+- **上下文超限识别**补了 LiteLLM/vLLM 的 `ContextWindowExceededError ... longer than the model's context length`;压缩连续超限时前 3 次各删一条,之后每次至少删约 1/4 估算 token。只有图片的 user 消息压缩后保留占位文字,不留空内容(部分服务端 400)。
+- **搜索索引签名**:JSONL 的非搜索追加(检查点、净差异、压缩检查点)一律走 `SessionManager::append_non_searchable_locked`,否则下一条消息落盘时索引判定过期、在会话锁里整份重读重建(长会话发消息越来越慢)。
+- **侧栏补位**:`reconcileSidebarSessions` 里「上一轮没见过」的会话只有比同工作区已显示的都新才置顶,归档后补进来的旧会话按时间插回。
+- macOS 自更新的安装位置检查提前到拉清单之前;cmd 指引点明同一行 `set` 的变量取不到、未定义 `%VAR%` 原样留成文字(用户项目里出现 `%T%` 目录)。
 
 ### Web UI: HTTP / WS 协议增量
 

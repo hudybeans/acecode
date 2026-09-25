@@ -1,10 +1,13 @@
-// 覆盖 src/tool_preamble/tool_preamble.cpp 的纯逻辑(openspec add-tool-preamble):
-//   1. 推理加粗抠取 / 标题规整 / 推理首句兜底(reasoning 模式)
-//   2. <text_preamble> 流式扫描器(prompt 模式):整段、任意字节切分、缺闭合、
-//      空标签、大小写、type 解析、前导空白吞掉、超长正文封顶、reset
-//   3. strip_text_preamble_tags(渲染层剥标签)与扫描器同款规则
-// 回归背景:参数版(每次调用必填 preamble 参数)被用户否掉,改成模型在阶段变化
-// 时用标签写一句;标签正文只进 loading,不进正文气泡,落盘正文保留原文。
+// 覆盖 src/tool_preamble/tool_preamble.cpp 的纯逻辑(openspec add-tool-preamble,
+// 「适合日常工作」的具体进度提示):
+//   1. 推理加粗抠取 / 标题规整(推理摘要带标题的模型用它当本步文案)
+//   2. 工具现在进行时模板:同类合并计数、两类用「并」、三类加「等」、不带任何参数、
+//      批次跑完后的场景文案、读写属性
+//   3. <text_preamble> 流式扫描器与 strip_text_preamble_tags:前一版要求模型打标签,
+//      历史里残留的标签仍要从界面上剥掉(整段、任意字节切分、缺闭合、空标签、
+//      大小写、前导空白吞掉、超长正文封顶、reset)
+// 回归背景:先说一句话 / 必填参数 / 标签三版都靠模型配合,grok 不照做(用户会话
+// 20260925-053811-55cc 12 个工具步零标签),现在 loading 文案全部由 daemon 生成。
 
 #include <gtest/gtest.h>
 
@@ -40,25 +43,74 @@ Collected scan_in_chunks(const std::string& text, std::size_t chunk) {
 
 }  // namespace
 
-// 场景:推理摘要 / 首句相关的纯字符串逻辑(reasoning 模式沿用)。
+// 场景:推理摘要的加粗标题抠取与规整。
 // 期望:第一对闭合加粗;空加粗跳过找下一对;没有闭合返回空;规整会去掉包裹
-// 记号 / 列表记号 / 尾标点并按 code point 截断;推理首句去掉 "Okay, " 之类填充。
+// 记号 / 列表记号 / 尾标点并按 code point 截断。推理首句兜底已撤掉(grok 的推理是
+// 英文原始思维链,首句永远是 "The user wants me to…",只会拉低质量)。
 TEST(ToolPreambleText, ReasoningHelpers) {
     EXPECT_EQ(extract_first_bold_span("**Reading registry sections**\n\nI'm looking at the loader."),
               "Reading registry sections");
     EXPECT_EQ(extract_first_bold_span("** ** **Second**"), "Second");
     EXPECT_EQ(extract_first_bold_span("**never closed"), "");
+    EXPECT_EQ(extract_first_bold_span("The user wants me to analyze the module."), "");
     EXPECT_EQ(normalize_title_line("  - \"Reading   the loader\":  ", 60), "Reading the loader");
     EXPECT_EQ(normalize_title_line("abcdefghij", 4), "abcd\xE2\x80\xA6");
-    EXPECT_EQ(title_from_reasoning("**Reading registry sections.**\n\nOkay, the user wants..."),
-              "Reading registry sections");
-    EXPECT_EQ(title_from_reasoning("Okay, I need to inspect the loader first. Then compare."),
-              "inspect the loader first");
-    EXPECT_EQ(title_from_reasoning(""), "");
-    EXPECT_TRUE(is_valid_mode("prompt"));
-    EXPECT_TRUE(is_valid_mode("reasoning"));
-    EXPECT_FALSE(is_valid_mode("sidecar"));
-    EXPECT_FALSE(is_valid_mode("auto"));
+}
+
+// 场景:单类工具的批次。期望:现在进行时、不带参数;同类多个调用合并计数(读取 /
+// 运行 / 修改 / 写入 / 派发 / 网页 / 图片这些可数的带数量,搜索 / 查找这类不带);
+// MCP 与没列出的工具归入「调用工具」;空批次返回空串。
+TEST(ToolPreambleActivity, SingleCategoryBatches) {
+    EXPECT_EQ(batch_activity_label({"file_read"}), u8"正在读取文件");
+    EXPECT_EQ(batch_activity_label({"file_read", "file_read", "file_read"}), u8"正在读取 3 个文件");
+    EXPECT_EQ(batch_activity_label({"grep", "grep"}), u8"正在搜索代码");
+    EXPECT_EQ(batch_activity_label({"glob"}), u8"正在查找文件");
+    EXPECT_EQ(batch_activity_label({"bash"}), u8"正在运行命令");
+    EXPECT_EQ(batch_activity_label({"bash", "bash"}), u8"正在运行 2 条命令");
+    EXPECT_EQ(batch_activity_label({"file_edit"}), u8"正在修改文件");
+    EXPECT_EQ(batch_activity_label({"apply_patch", "file_edit"}), u8"正在修改 2 个文件");
+    EXPECT_EQ(batch_activity_label({"file_write"}), u8"正在写入文件");
+    EXPECT_EQ(batch_activity_label({"web_search"}), u8"正在搜索网页");
+    EXPECT_EQ(batch_activity_label({"browser_click"}), u8"正在操作浏览器");
+    EXPECT_EQ(batch_activity_label({"spawn_subagent", "spawn_subagent"}), u8"正在派发 2 个子任务");
+    EXPECT_EQ(batch_activity_label({"skill_view"}), u8"正在加载技能");
+    EXPECT_EQ(batch_activity_label({"TodoWrite"}), u8"正在更新待办清单");
+    EXPECT_EQ(batch_activity_label({"mcp_github_search_issues"}), u8"正在调用工具");
+    EXPECT_EQ(batch_activity_label({}), "");
+}
+
+// 场景:混合批次(模型常把读文件和搜索并行发)。期望:按首次出现顺序分组,两类用
+// 「并」连接,三类及以上取前两类加「等」;每类各自计数。
+TEST(ToolPreambleActivity, MixedBatches) {
+    EXPECT_EQ(batch_activity_label({"file_read", "grep", "file_read"}),
+              u8"正在读取 2 个文件并搜索代码");
+    EXPECT_EQ(batch_activity_label({"glob", "file_read"}), u8"正在查找文件并读取文件");
+    EXPECT_EQ(batch_activity_label({"file_read", "grep", "bash"}), u8"正在读取文件、搜索代码等");
+}
+
+// 场景:一批工具跑完、模型在想下一步。期望:按这批的第一类工具给出场景文案,
+// 不再是「正在推理」「正在等待模型响应」;空批次返回空串(调用方用回合开头文案)。
+TEST(ToolPreambleActivity, AfterBatchLabels) {
+    EXPECT_EQ(after_batch_activity_label({"file_read", "grep"}), u8"正在分析文件内容");
+    EXPECT_EQ(after_batch_activity_label({"grep"}), u8"正在分析搜索结果");
+    EXPECT_EQ(after_batch_activity_label({"glob"}), u8"正在分析搜索结果");
+    EXPECT_EQ(after_batch_activity_label({"bash"}), u8"正在分析命令输出");
+    EXPECT_EQ(after_batch_activity_label({"file_edit"}), u8"正在检查修改结果");
+    EXPECT_EQ(after_batch_activity_label({"spawn_subagent"}), u8"正在整理子任务结果");
+    EXPECT_EQ(after_batch_activity_label({"some_mcp_tool"}), u8"正在规划下一步");
+    EXPECT_EQ(after_batch_activity_label({}), "");
+    EXPECT_STREQ(kInitialActivityLabel, u8"正在分析你的请求");
+    EXPECT_STREQ(kRespondingActivityLabel, u8"正在撰写回复");
+}
+
+// 场景:批次的读写属性(给以后「读放大镜 / 写笔触」效果留的 kind)。期望:有写类
+// 工具即 write;全是读类为 read;命令 / 浏览器这类说不清的混进来为空。
+TEST(ToolPreambleActivity, BatchKind) {
+    EXPECT_EQ(batch_activity_kind({"file_read", "grep", "glob"}), "read");
+    EXPECT_EQ(batch_activity_kind({"file_read", "file_edit"}), "write");
+    EXPECT_EQ(batch_activity_kind({"bash", "file_write"}), "write");
+    EXPECT_EQ(batch_activity_kind({"file_read", "bash"}), "");
+    EXPECT_EQ(batch_activity_kind({}), "");
 }
 
 // 场景:一段增量里就是完整标签 + 空行 + 正文。期望:标签正文成为前言(kind=read),

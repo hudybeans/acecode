@@ -12,12 +12,19 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { normalizeToolPreambleState } from '../lib/toolPreamble.js';
+import {
+  WORK_MODES,
+  WORK_MODE_CODING,
+  toolPreambleUpdateForWorkMode,
+  workModeFromToolPreamble,
+} from '../lib/workMode.js';
 import { DeveloperSettings } from './DeveloperSettings.jsx';
 import { createDeveloperModeUnlock, loadDeveloperModeUnlocked, rememberDeveloperModeUnlocked } from '../lib/developerMode.js';
 import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
-import { SettingsSearch } from './SettingsSearch.jsx';
+import { SettingsSearch, SettingsSearchResults } from './SettingsSearch.jsx';
 import { settingsSearchEntries, searchSettings, locateSetting, settingsSearchResultIndex } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
@@ -281,6 +288,11 @@ export function SettingsPage({
     if (event.target === event.currentTarget) close();
   };
   const toggleExpanded = () => setExpanded((value) => !value);
+  const selectSearchResult = (index) => {
+    setSearchIndex(index);
+    setSearchNavigation((value) => value + 1);
+    setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked));
+  };
 
   return (
     <div
@@ -320,52 +332,57 @@ export function SettingsPage({
         )}
       >
         <span id="settings-window-title" className="sr-only">设置</span>
-        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+        <nav className="ace-settings-nav shrink-0 select-none">
+          {/* 搜索框固定在顶部,只有下面的导航 / 搜索结果在 ace-settings-nav-list 里滚动。 */}
           <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
-            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked)); }} onComposing={setComposing} />
-          {!searchQuery.trim() && navGroups.map((group, groupIndex) => {
-            const headingId = `settings-nav-group-${group.key}`;
-            return (
-              <div
-                key={group.key}
-                role="group"
-                aria-labelledby={headingId}
-              >
-                <div
-                  id={headingId}
-                  className={clsx(
-                    'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
-                    groupIndex === 0 ? 'pt-0' : 'pt-2',
-                  )}
-                >
-                  {group.label}
-                </div>
-                {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
-                  const active = activeNav === itemIndex;
-                  return (
-                    <button
-                      key={item.key}
-                      ref={item.key === 'developer' ? developerNavRef : undefined}
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
-                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+            onSelect={selectSearchResult} onComposing={setComposing} />
+          <div className="ace-settings-nav-list overflow-y-auto">
+            {searchQuery.trim()
+              ? <SettingsSearchResults results={searchResults} selected={searchIndex} onSelect={selectSearchResult} />
+              : navGroups.map((group, groupIndex) => {
+                const headingId = `settings-nav-group-${group.key}`;
+                return (
+                  <div
+                    key={group.key}
+                    role="group"
+                    aria-labelledby={headingId}
+                  >
+                    <div
+                      id={headingId}
                       className={clsx(
-                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
-                        active
-                          ? 'text-fg font-normal'
-                          : 'text-fg-2',
+                        'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
+                        groupIndex === 0 ? 'pt-0' : 'pt-2',
                       )}
                     >
-                      <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+                      {group.label}
+                    </div>
+                    {group.items.map((item) => {
+                      const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
+                      const active = activeNav === itemIndex;
+                      return (
+                        <button
+                          key={item.key}
+                          ref={item.key === 'developer' ? developerNavRef : undefined}
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          aria-label={item.label}
+                          onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+                          className={clsx(
+                            'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
+                            active
+                              ? 'text-fg font-normal'
+                              : 'text-fg-2',
+                          )}
+                        >
+                          <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+          </div>
         </nav>
         <div
           className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col"
@@ -445,8 +462,9 @@ export function SettingsPage({
 
 // ─── 常规 ──────────────────────────────────────────────────────────────────
 // 真实接入:默认权限模式(api.getDefaultPermissionMode / setDefaultPermissionMode)、
-// Daemon 状态(/api/health 透传 health prop)。其余字段(工作模式 / 默认打开目标 /
-// 最大轮次)目前是 UI 占位,本地 state。
+// Daemon 状态(/api/health 透传 health prop)、工作模式(= daemon 的具体进度提示
+// 开关,lib/workMode.js)。
+// 其余字段(默认打开目标 / 最大轮次)目前是 UI 占位,本地 state。
 
 function SectionGeneral({
   health,
@@ -481,7 +499,40 @@ function SectionGeneral({
   const [closeBehaviorBusy, setCloseBehaviorBusy] = useState(closeBehaviorAvailable);
   const [closeBehaviorTrayAvailable, setCloseBehaviorTrayAvailable] = useState(true);
   const [maxTurns, setMaxTurns] = useState(50);
-  const [workMode, setWorkMode] = useState('coding');
+  // 工作模式 = daemon 的具体进度提示开关(见 lib/workMode.js):「适合日常工作」时
+  // loading 只说正在做什么、不带参数。打开设置页时读一次;点选时 PUT,以响应为准,
+  // 失败回滚并提示。读取完成前按钮禁用,避免在未知状态上切换。
+  const [workMode, setWorkMode] = useState(WORK_MODE_CODING);
+  const [workModeBusy, setWorkModeBusy] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.getToolPreamble()
+      .then((state) => {
+        if (!cancelled) setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setWorkModeBusy(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const switchWorkMode = async (nextMode) => {
+    if (workModeBusy || nextMode === workMode) return;
+    const body = toolPreambleUpdateForWorkMode(nextMode);
+    if (!body) return;
+    const previous = workMode;
+    setWorkMode(nextMode);
+    setWorkModeBusy(true);
+    try {
+      const state = await api.setToolPreamble(body);
+      setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+    } catch (e) {
+      setWorkMode(previous);
+      toast({ kind: 'err', text: '工作模式切换失败:' + (e?.message || '') });
+    } finally {
+      setWorkModeBusy(false);
+    }
+  };
   const [openTarget, setOpenTarget] = useState('vscode');
   const [remoteWeb, setRemoteWeb] = useState(
     () => normalizeRemoteWebState(null),
@@ -917,18 +968,17 @@ function SectionGeneral({
       <div className="text-[14px] font-semibold mb-1">工作模式</div>
       <p className="text-[12px] text-fg-mute mb-3">选择 Agent 显示多少技术细节</p>
       <div className="grid grid-cols-2 gap-3 max-w-md mb-5">
-        {[
-          { key: 'coding', label: '用于编程', desc: '更专业的回复与控制' },
-          { key: 'daily',  label: '适合日常工作', desc: '同样强大,技术细节更少' },
-        ].map((opt) => {
+        {WORK_MODES.map((opt) => {
           const active = workMode === opt.key;
           return (
             <button
               key={opt.key}
               type="button"
-              onClick={() => setWorkMode(opt.key)}
+              aria-pressed={active}
+              disabled={workModeBusy}
+              onClick={() => switchWorkMode(opt.key)}
               className={clsx(
-                'relative p-3 rounded-lg border text-left transition',
+                'relative p-3 rounded-lg border text-left transition disabled:cursor-wait',
                 active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
               )}
             >

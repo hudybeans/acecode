@@ -57,6 +57,16 @@ std::string model_tool_name_for_native(std::string_view native_name);
 std::optional<std::string> native_tool_name_for_public_alias(
     std::string_view public_name);
 
+// 同上,但按 ASCII 大小写不敏感查找当前映射的 public 名。命中多条
+// (例如映射里同时有 Read 与 read)时返回 nullopt —— 不猜。只给
+// ToolExecutor::resolve_model_tool_name_to_native 的大小写容错一步用,
+// 让它不必直接读映射表的内部结构。
+std::optional<std::string> native_tool_name_for_public_alias_ci(
+    std::string_view public_name);
+
+// ASCII 大小写不敏感相等(非 ASCII 字节逐字节精确比较)。
+bool ascii_iequals(std::string_view a, std::string_view b);
+
 // 校验一组映射:名字非空且合法、每条确实改名、native / public 各自不重复、
 // public 不与任何 native 撞名(否则模型说出来的名字解析会二义)。
 bool validate_model_tool_name_mappings(const ToolProtocolNameMappings& mappings,

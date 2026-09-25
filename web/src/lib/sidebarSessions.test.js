@@ -604,6 +604,19 @@ test('reconcileSidebarSessions promotes content changes and new sessions', () =>
   assert.deepEqual(result.map((s) => s.id), ['new', 'b', 'a', 'c']);
 });
 
+// 场景：折叠态只显示最新 5 条，归档其中一条后刷新，第 6 条旧会话补进来。
+// 期望：补位的旧会话按时间落在末尾，不顶到最前；真正的新会话（比已显示的都新）仍然置顶。
+// 回归表现：归档同工作区的会话时，3 天前的会话突然窜到了列表顶部（LIUXIN557 反馈）。
+test('reconcileSidebarSessions keeps backfilled older sessions in time order', () => {
+  const at = (id, day) => ({ id, workspace_hash: 'w1', updated_at: `2026-09-${day}T10:00:00Z`, message_count: 10, turn_count: 2 });
+  const previous = [at('d20', 20), at('d19', 19), at('d18', 18), at('d17', 17)];
+  const incoming = [at('d20', 20), at('d19', 19), at('d18', 18), at('d17', 17), at('d16', 16)];
+  assert.deepEqual(reconcileSidebarSessions(previous, incoming).map((s) => s.id), ['d20', 'd19', 'd18', 'd17', 'd16']);
+
+  const withFresh = [...incoming, at('d21', 21)];
+  assert.deepEqual(reconcileSidebarSessions(previous, withFresh).map((s) => s.id), ['d21', 'd20', 'd19', 'd18', 'd17', 'd16']);
+});
+
 test('remote-control off clears the bound row without rewriting unrelated sessions', () => {
   const untouched = { id: 'other', workspace_hash: 'w2' };
   const result = clearRemoteControlSessionBindings([

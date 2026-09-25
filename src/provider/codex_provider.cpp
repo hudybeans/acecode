@@ -1,12 +1,15 @@
 #include "codex_provider.hpp"
 
 #include "codex/codex_app_server_client.hpp"
+#include "../session/attachment_prompt_context.hpp"
+#include "../session/attachment_store.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/utf8_path.hpp"
 
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <sstream>
 
 namespace acecode {
@@ -27,15 +30,46 @@ std::string role_label(const ChatMessage& message) {
     return "Message";
 }
 
+// File attachments of a user message, rendered the same way the OpenAI and
+// Anthropic providers render a `file` content part. The Codex input is plain
+// text, so without this the reference (and its read path) never reaches the
+// model; a large paste stored as a file would silently disappear.
+std::vector<std::string> user_file_reference_texts(const ChatMessage& message) {
+    std::vector<std::string> texts;
+    if (message.role != "user" || !message.content_parts.is_array()) return texts;
+    for (const auto& part : message.content_parts) {
+        if (!part.is_object() || part.value("type", std::string{}) != "file") continue;
+        auto record = part.contains("attachment")
+            ? attachment_from_json(part["attachment"])
+            : std::optional<AttachmentRecord>{};
+        texts.push_back(record.has_value()
+            ? file_attachment_reference_text(*record)
+            : std::string{"[Attached file unavailable: invalid metadata]"});
+    }
+    return texts;
+}
+
+} // namespace
+
+namespace codex_detail {
+
 std::string build_codex_input_text(const std::vector<ChatMessage>& messages) {
     std::ostringstream out;
     out << "Continue this ACECode conversation. Preserve the user's latest "
            "request as the active task.\n\n";
     for (const auto& message : messages) {
-        if (message.is_meta || message.content.empty()) continue;
+        if (message.is_meta) continue;
+        const auto file_references = user_file_reference_texts(message);
+        // A user message may carry only file parts (a paste stored as a
+        // file with nothing typed next to it); it must not be skipped.
+        if (message.content.empty() && file_references.empty()) continue;
         out << "### " << role_label(message);
         if (!message.tool_call_id.empty()) out << " tool_call_id=" << message.tool_call_id;
-        out << "\n" << message.content << "\n\n";
+        out << "\n";
+        if (!message.content.empty()) out << message.content << "\n\n";
+        for (const auto& reference : file_references) {
+            out << reference << "\n\n";
+        }
         if (message.role == "assistant" && !message.tool_calls.is_null() &&
             !message.tool_calls.empty()) {
             out << "Assistant tool calls:\n" << message.tool_calls.dump() << "\n\n";
@@ -43,6 +77,10 @@ std::string build_codex_input_text(const std::vector<ChatMessage>& messages) {
     }
     return out.str();
 }
+
+} // namespace codex_detail
+
+namespace {
 
 void emit_error(const StreamCallback& callback,
                 const std::string& model,
@@ -210,7 +248,7 @@ void CodexProvider::chat_stream(
         return;
     }
 
-    const std::string input_text = build_codex_input_text(messages);
+    const std::string input_text = codex_detail::build_codex_input_text(messages);
     auto turn_id = client.start_turn(*thread_id, model_, current_cwd_utf8(), input_text, &error);
     if (!turn_id.has_value()) {
         emit_error(callback, model_, "Codex turn/start failed: " + error);

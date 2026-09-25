@@ -1,13 +1,17 @@
-// 工具前言(openspec add-tool-preamble)在 AgentLoop 里的端到端行为,用 StubLlmProvider
-// 喂流式事件,真实 SessionManager 落盘到临时目录:
-//   - prompt 模式:模型正文里的 <text_preamble> 标签 → 阶段前言。标签正文只进
-//     loading(agent_progress / tool_start.preamble / on_thinking_title),不进 token
-//     流与 Message 帧;落盘正文保留标签原文;前言跨模型步沿用,直到下一条标签
-//     或未加标签的可见正文出现;最终回答误打的标签照样剥掉。
-//   - reasoning 模式:推理加粗标题 / 首句兜底沿用为批次前言。
-//   - 关闭:不发布前言,但标签仍不会露到界面上。
-// 回归背景:第一版「先说一句话」与第二版「每次调用必填 preamble 参数」都被用户否掉
-// (前者文本先变气泡、后者强迫模型每次填一句体验差),第三版才是标签方案。
+// 具体进度提示(openspec add-tool-preamble,设置 > 常规 > 工作模式 > 适合日常工作)
+// 在 AgentLoop 里的端到端行为,用 StubLlmProvider 喂流式事件,真实 SessionManager
+// 落盘到临时目录。开启时 loading 只说正在做什么、不带参数:
+//   - 等待 / 推理:回合开头「正在分析你的请求」,一批工具跑完后按这批工具的类型
+//     给场景文案;推理摘要带 **加粗** 标题时本步用标题;永远不出「正在推理」
+//     「正在等待模型响应」,detail(片段计数、命令预览、字节数)一律为空;
+//   - 准备调用 / 执行:工具现在进行时模板(tool_start.preamble 同源),工具行
+//     (TUI 进度头、tool_start 自己的参数)照常带参数;
+//   - 正文开始流出:「正在撰写回复」;
+//   - TUI 经 on_thinking_title 收到同样的文案。
+// 历史里残留的 <text_preamble> 标签只剥掉、不再当文案;关闭时一切保持旧文案。
+// 回归背景:先说一句话 / 必填 preamble 参数 / <text_preamble> 标签三版都靠模型配合,
+// grok-4.7 不照做(用户会话 20260925-053811-55cc 12 个工具步零标签),用户要求
+// loading 不再依赖模型输出,也不要「正在推理」这种笼统文案。
 
 #include <gtest/gtest.h>
 
@@ -21,6 +25,7 @@
 #include "tool/tool_executor.hpp"
 #include "tool_preamble/tool_preamble.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -188,10 +193,9 @@ public:
     StubLlmProvider& provider() { return *provider_; }
     AgentLoop& loop() { return *loop_; }
 
-    void configure(bool enabled, const std::string& mode) {
+    void configure(bool enabled) {
         ToolPreambleConfig cfg;
         cfg.enabled = enabled;
-        cfg.mode = mode;
         loop_->set_tool_preamble_config(cfg);
     }
 
@@ -356,275 +360,230 @@ nlohmann::json preamble_metadata_of(const ChatMessage& message) {
 constexpr const char* kReadTag =
     "<text_preamble type=\"read\">Reading the loader</text_preamble>\n\n";
 
-} // namespace
-
-// 场景:prompt 模式,模型先流出一个完整的 read 标签(带空行),再调 probe_read,
-// 下一轮纯文本收尾。
-// 期望:
-//   - 系统提示含「# Progress preamble」段;工具定义里没有 preamble 参数;
-//   - Web token 流与 TUI on_delta 都没有标签(空串 —— 标签后的空行也吞掉);
-//   - on_thinking_title 收到前言;agent_progress 有 phase=preamble 的帧,label 就是
-//     前言且 payload.preamble.kind=read;
-//   - tool_start 带 preamble / preamble_source=prompt / preamble_kind=read,
-//     tool_running 的 label 是前言;
-//   - 落盘的 assistant(tool_calls) 正文保留标签原文,metadata.tool_preamble =
-//     {source:prompt, title, kind:read};
-//   - 工具步没有 assistant Message 帧(可见正文为空),TUI on_message 也没收到空正文。
-TEST(AgentLoopToolPreamble, TextTagBecomesPhasePreambleAndStaysOutOfTranscript) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_tag");
-    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
-    ToolPreambleHarness h(cwd.string());
-    h.configure(true, "prompt");
-    h.provider().push_events({delta_event(kReadTag), probe_call_event(), done_event()});
-    h.provider().push_text("done");
-    ASSERT_TRUE(h.submit_and_wait());
-
-    EXPECT_NE(h.system_prompt_of_turn(0).find("# Progress preamble"), std::string::npos);
-    const auto def = h.tool_def_of_turn(0, "probe_read");
-    ASSERT_TRUE(def.has_value());
-    EXPECT_FALSE(def->parameters["properties"].contains("preamble"));
-
-    EXPECT_EQ(h.streamed_tokens(), "done");
-    EXPECT_EQ(h.tui_deltas(), "done");
-    EXPECT_EQ(h.thinking_titles(), std::vector<std::string>{"Reading the loader"});
-
-    const auto preamble_frames = h.events_of(SessionEventKind::AgentProgress);
-    bool saw_preamble_phase = false;
-    for (const auto& e : preamble_frames) {
-        if (e.payload.value("phase", std::string{}) != "preamble") continue;
-        saw_preamble_phase = true;
-        EXPECT_EQ(e.payload.value("label", std::string{}), "Reading the loader");
-        ASSERT_TRUE(e.payload.contains("preamble"));
-        EXPECT_EQ(e.payload["preamble"].value("kind", std::string{}), "read");
-        EXPECT_EQ(e.payload["preamble"].value("source", std::string{}), "prompt");
-    }
-    EXPECT_TRUE(saw_preamble_phase);
-
-    const auto starts = h.tool_starts();
-    ASSERT_EQ(starts.size(), 1u);
-    EXPECT_EQ(starts[0].value("preamble", std::string{}), "Reading the loader");
-    EXPECT_EQ(starts[0].value("preamble_source", std::string{}), "prompt");
-    EXPECT_EQ(starts[0].value("preamble_kind", std::string{}), "read");
-    const auto running = h.progress_labels("tool_running");
-    ASSERT_FALSE(running.empty());
-    EXPECT_EQ(running.front(), "Reading the loader");
-
-    const auto persisted = h.persisted_tool_call_messages();
-    ASSERT_EQ(persisted.size(), 1u);
-    EXPECT_EQ(persisted[0].content, kReadTag);
-    const auto meta = preamble_metadata_of(persisted[0]);
-    ASSERT_TRUE(meta.is_object());
-    EXPECT_EQ(meta.value("source", std::string{}), "prompt");
-    EXPECT_EQ(meta.value("title", std::string{}), "Reading the loader");
-    EXPECT_EQ(meta.value("kind", std::string{}), "read");
-
-    for (const auto& frame : h.assistant_message_frames()) {
-        EXPECT_EQ(frame.find("text_preamble"), std::string::npos) << frame;
-        EXPECT_FALSE(frame.empty());
-    }
-    EXPECT_EQ(h.tui_assistant_messages(), std::vector<std::string>{"done"});
+StreamEvent tool_call_delta_event(const std::string& name, const std::string& id,
+                                  int index, std::size_t bytes) {
+    StreamEvent evt;
+    evt.type = StreamEventType::ToolCallDelta;
+    evt.tool_call = ToolCall{id, name, ""};
+    evt.tool_index = index;
+    evt.tool_call_argument_bytes = bytes;
+    return evt;
 }
 
-// 场景:标签被 provider 切成任意碎片("<text_pre" / "amble type=\"wri" / …),
-// 且模型用的是 write。期望:与整段到达一样 —— 前言 "Editing config",kind=write,
-// token 流里没有半截标签,tool_start 带 preamble_kind=write。
-TEST(AgentLoopToolPreamble, TextTagSplitAcrossDeltasStillWorks) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_tag_split");
+// 所有 agent_progress 帧的 label,用来断言笼统文案一条都没出现。
+std::vector<std::string> all_progress_labels(const ToolPreambleHarness& h) {
+    std::vector<std::string> out;
+    for (const auto& e : h.events_of(SessionEventKind::AgentProgress)) {
+        out.push_back(e.payload.value("label", std::string{}));
+    }
+    return out;
+}
+
+bool contains(const std::vector<std::string>& values, const std::string& value) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+// 探针工具的原生名是 probe_read / probe_write,不在模板表里,所以文案走「调用工具」
+// 兜底;具体动词(读取 / 搜索 / 运行…)由 tool_preamble_test 覆盖。
+const std::string kProbeBatch = acecode::tool_preamble::batch_activity_label({"probe_read"});
+const std::string kProbeAfter = acecode::tool_preamble::after_batch_activity_label({"probe_read"});
+const std::string kInitial = acecode::tool_preamble::kInitialActivityLabel;
+const std::string kResponding = acecode::tool_preamble::kRespondingActivityLabel;
+
+} // namespace
+
+// 场景:开启后,模型第一步只有没加粗的推理(grok 那种英文原始思维链)+ 一个工具调用,
+// 第二步纯文本收尾。
+// 期望:
+//   - 两次 model_waiting 分别是「正在分析你的请求」与这批工具跑完后的场景文案,
+//     推理帧沿用同一句,detail 全空;任何帧都没有「正在推理」「正在等待模型响应」;
+//   - 推理首句不再兜底成标题("The user wants me to…" 不出现在任何地方);
+//   - tool_start.preamble 是工具模板,source=template,tool_running 同句且 detail 为空;
+//   - 正文开始流出时有一条「正在撰写回复」;
+//   - TUI on_thinking_title 依次收到上述文案(同一句不重复);
+//   - 落盘 metadata.tool_preamble = {source:template, title, kind}。
+TEST(AgentLoopToolPreamble, ConcreteLabelsReplaceVagueWaitingText) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_concrete");
     ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
     ToolPreambleHarness h(cwd.string());
-    h.configure(true, "prompt");
+    h.configure(true);
     h.provider().push_events({
-        delta_event("<text_pre"), delta_event("amble type=\"wri"), delta_event("te\">Editing con"),
-        delta_event("fig</text_pre"), delta_event("amble>\n\n"),
+        reasoning_event("The user wants me to look at the loader."),
         probe_call_event(), done_event(),
     });
     h.provider().push_text("done");
     ASSERT_TRUE(h.submit_and_wait());
 
-    EXPECT_EQ(h.streamed_tokens(), "done");
-    EXPECT_EQ(h.thinking_titles(), std::vector<std::string>{"Editing config"});
+    EXPECT_EQ(h.progress_labels("model_waiting"),
+              (std::vector<std::string>{kInitial, kProbeAfter}));
+    for (const auto& detail : h.progress_details("model_waiting")) EXPECT_EQ(detail, "");
+    for (const auto& label : h.progress_labels("reasoning")) EXPECT_EQ(label, kInitial);
+    for (const auto& detail : h.progress_details("reasoning")) EXPECT_EQ(detail, "");
+    const auto labels = all_progress_labels(h);
+    EXPECT_FALSE(contains(labels, u8"正在推理"));
+    EXPECT_FALSE(contains(labels, u8"正在等待模型响应"));
+    for (const auto& label : labels) {
+        EXPECT_EQ(label.find("The user wants"), std::string::npos) << label;
+    }
+
     const auto starts = h.tool_starts();
     ASSERT_EQ(starts.size(), 1u);
-    EXPECT_EQ(starts[0].value("preamble", std::string{}), "Editing config");
-    EXPECT_EQ(starts[0].value("preamble_kind", std::string{}), "write");
-}
+    EXPECT_EQ(starts[0].value("preamble", std::string{}), kProbeBatch);
+    EXPECT_EQ(starts[0].value("preamble_source", std::string{}), "template");
+    EXPECT_EQ(h.progress_labels("tool_running"), (std::vector<std::string>{kProbeBatch}));
+    EXPECT_EQ(h.progress_details("tool_running"), (std::vector<std::string>{""}));
+    EXPECT_EQ(h.progress_labels("responding"), (std::vector<std::string>{kResponding}));
 
-// 场景:四个模型步 —— A:标签「Phase one」+ 工具;B:只有工具(没写标签);
-// C:标签「Phase two」+ 工具;D:普通正文 "Plain narration.\n" + 工具;最后收尾。
-// 期望(用户定的规则「前言沿用到下一个正文或下一条前言出现」):
-//   - B 的 tool_start 沿用 "Phase one";C 换成 "Phase two";D 因为出现了未加标签的
-//     正文,tool_start 没有前言,而那句正文正常进 token 流;
-//   - 落盘 metadata 逐步同上;D 的 assistant(tool_calls) 没有 metadata.tool_preamble。
-TEST(AgentLoopToolPreamble, PhasePreamblePersistsUntilNextTagOrVisibleText) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_phase");
-    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
-    ToolPreambleHarness h(cwd.string());
-    h.configure(true, "prompt");
-    h.provider().push_events({
-        delta_event("<text_preamble type=\"read\">Phase one</text_preamble>\n\n"),
-        probe_call_event("call-a"), done_event(),
-    });
-    h.provider().push_events({probe_call_event("call-b"), done_event()});
-    h.provider().push_events({
-        delta_event("<text_preamble type=\"read\">Phase two</text_preamble>\n\n"),
-        probe_call_event("call-c"), done_event(),
-    });
-    h.provider().push_events({
-        delta_event("Plain narration.\n"), probe_call_event("call-d"), done_event(),
-    });
-    h.provider().push_text("done");
-    ASSERT_TRUE(h.submit_and_wait());
-
-    const auto starts = h.tool_starts();
-    ASSERT_EQ(starts.size(), 4u);
-    EXPECT_EQ(starts[0].value("preamble", std::string{}), "Phase one");
-    EXPECT_EQ(starts[1].value("preamble", std::string{}), "Phase one");
-    EXPECT_EQ(starts[2].value("preamble", std::string{}), "Phase two");
-    EXPECT_EQ(starts[3].value("preamble", std::string{}), "");
-    EXPECT_EQ(h.thinking_titles(), (std::vector<std::string>{"Phase one", "Phase two"}));
-    EXPECT_EQ(h.streamed_tokens(), "Plain narration.\ndone");
-
-    // 批次之间等待模型的那一帧也要显示前言:五次模型调用各发一条 model_waiting,
-    // 第 1 次还没有前言、第 5 次已被 "Plain narration." 清掉,只有它们是通用文案;
-    // 中间三次的 label 是当时的阶段前言,通用文案退到 detail。回归:实测会话
-    // 20260925-013722-4299 里 Web 实时行曾在「前言 → 正在等待模型响应 → 前言」之间闪动。
-    EXPECT_EQ(h.progress_labels("model_waiting"),
-              (std::vector<std::string>{"正在等待模型响应", "Phase one", "Phase one",
-                                        "Phase two", "正在等待模型响应"}));
-    EXPECT_EQ(h.progress_details("model_waiting"),
-              (std::vector<std::string>{"", "正在等待模型响应", "正在等待模型响应",
-                                        "正在等待模型响应", ""}));
+    const auto titles = h.thinking_titles();
+    ASSERT_GE(titles.size(), 4u);
+    EXPECT_EQ(titles[0], kInitial);
+    EXPECT_EQ(titles[1], kProbeBatch);
+    EXPECT_EQ(titles[2], kProbeAfter);
+    EXPECT_EQ(titles.back(), kResponding);
 
     const auto persisted = h.persisted_tool_call_messages();
-    ASSERT_EQ(persisted.size(), 4u);
-    EXPECT_EQ(preamble_metadata_of(persisted[0]).value("title", std::string{}), "Phase one");
-    EXPECT_EQ(preamble_metadata_of(persisted[1]).value("title", std::string{}), "Phase one");
-    EXPECT_EQ(preamble_metadata_of(persisted[2]).value("title", std::string{}), "Phase two");
-    EXPECT_TRUE(preamble_metadata_of(persisted[3]).is_null());
-    EXPECT_EQ(persisted[3].content, "Plain narration.\n");
-}
-
-// 场景:模型违规给最终回答也打了标签:"<text_preamble>x</text_preamble>\n\nAll done."。
-// 期望:落盘正文保留原文;Web Message 帧与 token 流、TUI on_message 都只有 "All done."。
-TEST(AgentLoopToolPreamble, TaggedFinalAnswerIsStrippedForDisplayOnly) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_final");
-    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
-    ToolPreambleHarness h(cwd.string());
-    h.configure(true, "prompt");
-    h.provider().push_text("<text_preamble>x</text_preamble>\n\nAll done.");
-    ASSERT_TRUE(h.submit_and_wait());
-
-    EXPECT_EQ(h.streamed_tokens(), "All done.");
-    EXPECT_EQ(h.assistant_message_frames(), std::vector<std::string>{"All done."});
-    EXPECT_EQ(h.tui_assistant_messages(), std::vector<std::string>{"All done."});
-    const auto persisted = h.persisted_assistant_text_messages();
     ASSERT_EQ(persisted.size(), 1u);
-    EXPECT_EQ(persisted[0].content, "<text_preamble>x</text_preamble>\n\nAll done.");
+    const auto meta = preamble_metadata_of(persisted[0]);
+    EXPECT_EQ(meta.value("source", std::string{}), "template");
+    EXPECT_EQ(meta.value("title", std::string{}), kProbeBatch);
 }
 
-// 场景:prompt 模式,标签之后调的是写工具(probe_write,顺序执行路径)。
-// 期望:TUI 进度头回调 on_tool_progress_start 的第三参拿到前言。
-TEST(AgentLoopToolPreamble, WriteToolPreambleReachesTuiProgressHeader) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_write");
+// 场景:推理摘要第一步带 **加粗** 标题(OpenAI / Codex 那种),第二步没有。
+// 期望:标题一出现就发 phase=preamble 的帧并用作本步 loading 与 tool_start.preamble
+// (source=reasoning);标题只对本步有效 —— 第二步等待时回到场景文案,不沿用旧标题。
+TEST(AgentLoopToolPreamble, ReasoningBoldTitleWinsOnlyForItsStep) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_bold");
     ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
     ToolPreambleHarness h(cwd.string());
-    h.configure(true, "prompt");
+    h.configure(true);
     h.provider().push_events({
-        delta_event("<text_preamble type=\"write\">Writing the loader</text_preamble>\n"),
-        call_event("probe_write", R"({"file_path":"a"})", "call-1"), done_event(),
+        reasoning_event("**Reading registry sections**\n\nI'm looking at the loader."),
+        probe_call_event(), done_event(),
     });
-    h.provider().push_text("done");
+    h.provider().push_events({reasoning_event("no title here"), delta_event("done"), done_event()});
     ASSERT_TRUE(h.submit_and_wait());
 
-    EXPECT_EQ(h.progress_preambles(), std::vector<std::string>{"Writing the loader"});
-    const auto received = h.received_args();
-    ASSERT_EQ(received.size(), 1u);
-    EXPECT_EQ(nlohmann::json::parse(received[0]), nlohmann::json({{"file_path", "a"}}));
-}
-
-// 场景:reasoning 模式,provider 先流回摘要 "**Reading registry sections**\n\n…",
-// 再给一个 probe_read 调用,下一轮纯文本收尾。
-// 期望:agent_progress 的 reasoning label 至少有一条等于标题;on_thinking_title 收到
-// 标题;tool_start 带 preamble / preamble_source=reasoning;落盘 metadata 一致。
-TEST(AgentLoopToolPreamble, ReasoningModeUsesBoldTitleForBatch) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_reasoning");
-    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
-    ToolPreambleHarness h(cwd.string());
-    h.configure(true, "reasoning");
-    h.provider().push_events({
-        reasoning_event("**Reading registry sections**\n\nOkay, the loader lives in src/experts."),
-        probe_call_event(),
-        done_event(),
-    });
-    h.provider().push_text("done");
-    ASSERT_TRUE(h.submit_and_wait());
-
-    const auto labels = h.progress_labels("reasoning");
-    ASSERT_FALSE(labels.empty());
-    EXPECT_EQ(labels.back(), "Reading registry sections");
-    EXPECT_EQ(h.thinking_titles(), std::vector<std::string>{"Reading registry sections"});
+    EXPECT_EQ(h.progress_labels("preamble"),
+              (std::vector<std::string>{"Reading registry sections"}));
     const auto starts = h.tool_starts();
     ASSERT_EQ(starts.size(), 1u);
     EXPECT_EQ(starts[0].value("preamble", std::string{}), "Reading registry sections");
     EXPECT_EQ(starts[0].value("preamble_source", std::string{}), "reasoning");
-    const auto persisted = h.persisted_tool_call_messages();
-    ASSERT_EQ(persisted.size(), 1u);
-    const auto meta = preamble_metadata_of(persisted[0]);
-    ASSERT_TRUE(meta.is_object());
-    EXPECT_EQ(meta.value("title", std::string{}), "Reading registry sections");
-    EXPECT_EQ(meta.value("source", std::string{}), "reasoning");
+    EXPECT_EQ(h.progress_labels("tool_running"),
+              (std::vector<std::string>{"Reading registry sections"}));
+    EXPECT_EQ(h.progress_labels("model_waiting"),
+              (std::vector<std::string>{kInitial, kProbeAfter}));
+    const auto reasoning = h.progress_labels("reasoning");
+    ASSERT_FALSE(reasoning.empty());
+    EXPECT_EQ(reasoning.back(), kProbeAfter);
 }
 
-// 场景:reasoning 模式,但推理是 DeepSeek 式原始思维链,没有加粗:
-// "Okay, I need to inspect the loader first. Then compare..."。
-// 期望:标题 = 去掉 "Okay, " / "I need to " 后的首句 "inspect the loader first";
-// 流式期间没有加粗所以 reasoning label 仍是「正在推理」(标题只在落盘前兜底)。
-TEST(AgentLoopToolPreamble, ReasoningModeFallsBackToFirstSentence) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_reasoning_fallback");
+// 场景:工具调用参数正在流(ToolCallDelta),两个并行调用先后露头。
+// 期望:tool_planning 的 label 随已露头的工具更新成模板(一个 → 两个),detail 为空
+// (不再显示「参数 N 字节」);text 形式工具调用被扣住时(tool_index=-1)用场景文案。
+TEST(AgentLoopToolPreamble, ToolPlanningShowsTemplateWithoutArguments) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_planning");
     ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
     ToolPreambleHarness h(cwd.string());
-    h.configure(true, "reasoning");
+    h.configure(true);
+    StreamEvent held;
+    held.type = StreamEventType::ToolCallDelta;
+    held.text_tool_call_hold = true;
+    held.tool_call_argument_bytes = 12;
     h.provider().push_events({
-        reasoning_event("Okay, I need to inspect the loader first. Then compare the registry."),
-        probe_call_event(),
-        done_event(),
+        held,
+        tool_call_delta_event("probe_read", "call-a", 0, 10),
+        tool_call_delta_event("probe_read", "call-b", 1, 10),
+        probe_call_event("call-a"), probe_call_event("call-b"), done_event(),
     });
     h.provider().push_text("done");
     ASSERT_TRUE(h.submit_and_wait());
 
-    const auto labels = h.progress_labels("reasoning");
-    ASSERT_FALSE(labels.empty());
-    EXPECT_EQ(labels.back(), "正在推理");
-    const auto starts = h.tool_starts();
-    ASSERT_EQ(starts.size(), 1u);
-    EXPECT_EQ(starts[0].value("preamble", std::string{}), "inspect the loader first");
-    const auto persisted = h.persisted_tool_call_messages();
-    ASSERT_EQ(persisted.size(), 1u);
-    EXPECT_EQ(preamble_metadata_of(persisted[0]).value("title", std::string{}),
-              "inspect the loader first");
+    const auto planning = h.progress_labels("tool_planning");
+    ASSERT_EQ(planning.size(), 3u);
+    EXPECT_EQ(planning[0], kInitial);
+    EXPECT_EQ(planning[1], kProbeBatch);
+    EXPECT_EQ(planning[2],
+              acecode::tool_preamble::batch_activity_label({"probe_read", "probe_read"}));
+    for (const auto& detail : h.progress_details("tool_planning")) EXPECT_EQ(detail, "");
 }
 
-// 场景:功能关闭,模型却照着历史习惯打了标签。期望:不发布任何前言(没有
-// thinking title、tool_start 没有 preamble、没有 metadata、系统提示没有该段),
-// 但标签仍不会露到 token 流与 Message 帧上;落盘正文保留原文。
-TEST(AgentLoopToolPreamble, DisabledPublishesNothingButStillHidesTags) {
-    const auto cwd = make_temp_dir("acecode_tool_preamble_disabled");
+// 场景:写工具(顺序执行路径,TUI 有进度头)。期望:TUI 进度头是工具行,前言参数
+// 恒为空(参数照常显示在工具行上);loading(tool_running 与 on_thinking_title)是
+// 模板文案,detail 为空;工具仍收到原始参数。
+TEST(AgentLoopToolPreamble, WriteToolProgressHeaderKeepsToolRow) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_write");
     ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
     ToolPreambleHarness h(cwd.string());
-    h.configure(false, "prompt");
+    h.configure(true);
+    const std::string args = R"({"file_path":"loader.py"})";
+    h.provider().push_events({call_event("probe_write", args, "call-w"), done_event()});
+    h.provider().push_text("done");
+    ASSERT_TRUE(h.submit_and_wait());
+
+    EXPECT_EQ(h.progress_preambles(), (std::vector<std::string>{""}));
+    const std::string batch = acecode::tool_preamble::batch_activity_label({"probe_write"});
+    EXPECT_EQ(h.progress_labels("tool_running"), (std::vector<std::string>{batch}));
+    EXPECT_EQ(h.progress_details("tool_running"), (std::vector<std::string>{""}));
+    EXPECT_TRUE(contains(h.thinking_titles(), batch));
+    EXPECT_EQ(h.received_args(), (std::vector<std::string>{args}));
+}
+
+// 场景:历史里模型学会了打 <text_preamble> 标签(前一版要求的),这一步仍然写了一个。
+// 期望:标签从 token 流 / TUI 增量里剥掉,但不再当 loading 文案 —— 没有 phase=preamble
+// 的帧,tool_start.preamble 是工具模板而不是标签正文;落盘正文保留原文;可见正文为空
+// 的工具步不发 assistant Message 帧。
+TEST(AgentLoopToolPreamble, HistoricalTagsAreStrippedButNotPublished) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_tag");
+    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
+    ToolPreambleHarness h(cwd.string());
+    h.configure(true);
     h.provider().push_events({delta_event(kReadTag), probe_call_event(), done_event()});
     h.provider().push_text("done");
     ASSERT_TRUE(h.submit_and_wait());
 
-    EXPECT_EQ(h.system_prompt_of_turn(0).find("# Progress preamble"), std::string::npos);
-    EXPECT_TRUE(h.thinking_titles().empty());
+    EXPECT_EQ(h.streamed_tokens(), "done");
+    EXPECT_EQ(h.tui_deltas(), "done");
     EXPECT_TRUE(h.progress_labels("preamble").empty());
     const auto starts = h.tool_starts();
     ASSERT_EQ(starts.size(), 1u);
-    EXPECT_FALSE(starts[0].contains("preamble"));
-    EXPECT_EQ(h.streamed_tokens(), "done");
+    EXPECT_EQ(starts[0].value("preamble", std::string{}), kProbeBatch);
+    EXPECT_FALSE(contains(all_progress_labels(h), "Reading the loader"));
+    EXPECT_EQ(h.assistant_message_frames(), (std::vector<std::string>{"done"}));
     const auto persisted = h.persisted_tool_call_messages();
     ASSERT_EQ(persisted.size(), 1u);
     EXPECT_EQ(persisted[0].content, kReadTag);
-    EXPECT_TRUE(preamble_metadata_of(persisted[0]).is_null());
+}
+
+// 场景:开关关闭(工作模式「用于编程」),推理带加粗标题、正文带标签。
+// 期望:一切保持旧文案 ——「正在等待模型响应」「正在推理」「正在调用工具 probe_read」;
+// 没有 phase=preamble / responding 的帧,进度帧与 tool_start 都不带 preamble 字段,
+// TUI 不收到 on_thinking_title;标签照样不露到界面上。
+TEST(AgentLoopToolPreamble, DisabledKeepsLegacyTextsAndHidesTags) {
+    const auto cwd = make_temp_dir("acecode_tool_preamble_off");
+    ProjectDirCleanup cleanup{acecode::SessionStorage::get_project_dir(cwd.string())};
+    ToolPreambleHarness h(cwd.string());
+    h.configure(false);
+    h.provider().push_events({
+        reasoning_event("**Reading registry sections**"),
+        delta_event(kReadTag), probe_call_event(), done_event(),
+    });
+    h.provider().push_text("done");
+    ASSERT_TRUE(h.submit_and_wait());
+
+    EXPECT_EQ(h.progress_labels("model_waiting"),
+              (std::vector<std::string>{u8"正在等待模型响应", u8"正在等待模型响应"}));
+    for (const auto& label : h.progress_labels("reasoning")) EXPECT_EQ(label, u8"正在推理");
+    EXPECT_EQ(h.progress_labels("tool_running"),
+              (std::vector<std::string>{u8"正在调用工具 probe_read"}));
+    EXPECT_TRUE(h.progress_labels("preamble").empty());
+    EXPECT_TRUE(h.progress_labels("responding").empty());
+    for (const auto& e : h.events_of(SessionEventKind::AgentProgress)) {
+        EXPECT_FALSE(e.payload.contains("preamble")) << e.payload.dump();
+    }
+    const auto starts = h.tool_starts();
+    ASSERT_EQ(starts.size(), 1u);
+    EXPECT_FALSE(starts[0].contains("preamble"));
+    EXPECT_TRUE(h.thinking_titles().empty());
+    EXPECT_EQ(h.streamed_tokens(), "done");
 }

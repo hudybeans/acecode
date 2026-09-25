@@ -1,0 +1,537 @@
+适用于 .NET Framework MSBuild 版本 17.9.8+b34f75857
+
+  Checking File Globs
+  mcp_message.cpp
+  mcp_resource.cpp
+  mcp_server.cpp
+  mcp_tool.cpp
+  mcp_stdio_client.cpp
+  mcp_sse_client.cpp
+  mcp_streamable_http_client.cpp
+  Agent.cc
+  AgentCreateDesktop.cc
+  ConsoleFont.cc
+  ConsoleInput.cc
+  ConsoleInputReencoding.cc
+  ConsoleLine.cc
+  DebugShowInput.cc
+  DefaultInputMap.cc
+  EventLoop.cc
+  InputMap.cc
+  LargeConsoleRead.cc
+  NamedPipe.cc
+  Scraper.cc
+  Terminal.cc
+  Win32Console.cc
+  Win32ConsoleBuffer.cc
+  main.cc
+  BackgroundDesktop.cc
+  Buffer.cc
+  DebugClient.cc
+  GenRandom.cc
+  OwnedHandle.cc
+  StringUtil.cc
+  WindowsSecurity.cc
+  WindowsVersion.cc
+  WinptyAssert.cc
+  WinptyException.cc
+  WinptyVersion.cc
+  winpty-agent.vcxproj -> N:\Users\shao\acecode\build\Release\winpty-agent.exe
+  Embedding winpty-agent.exe into winpty_static
+  winpty.cc
+  winpty_agent_location.cpp
+  BackgroundDesktop.cc
+  Buffer.cc
+  DebugClient.cc
+  GenRandom.cc
+  OwnedHandle.cc
+  StringUtil.cc
+  WindowsSecurity.cc
+  WindowsVersion.cc
+  WinptyAssert.cc
+  WinptyException.cc
+  WinptyVersion.cc
+  winpty_agent_embedded.cpp
+  winpty_static.vcxproj -> N:\Users\shao\acecode\build\Release\winpty_static.lib
+  mcp.vcxproj -> N:\Users\shao\acecode\build\external\cpp-mcp\src\Release\mcp.lib
+  agent_loop.cpp
+  agent_loop_doom_guard.cpp
+  command.cpp
+  gateway.cpp
+  owner_lock.cpp
+  setup.cpp
+  state.cpp
+  interactive_options.cpp
+  builtin_commands.cpp
+  command_registry.cpp
+  compact.cpp
+  compact_prompt.cpp
+  configure.cpp
+  configure_catalog.cpp
+  configure_picker.cpp
+  desktop_command.cpp
+  goal_command.cpp
+  history_command.cpp
+  init_command.cpp
+  lsp_command.cpp
+  memory_command.cpp
+  model_command.cpp
+  models_command.cpp
+  opencode_command.cpp
+  opencode_command_registry.cpp
+  proxy_command.cpp
+  remote_control_command.cpp
+  slash_command_ranking.cpp
+  websearch_command.cpp
+  availability.cpp
+  helper_process_posix.cpp
+  pointer_capture.cpp
+  saved_models_editor.cpp
+  saved_models_revision.cpp
+  settings_mutations.cpp
+  connector_first_start_auth.cpp
+  cli.cpp
+  heartbeat.cpp
+  mcp_runtime.cpp
+  service_win.cpp
+  startup_diagnostics.cpp
+  supervisor.cpp
+  worker.cpp
+  user_install_policy.cpp
+  bootstrap.cpp
+  data_dir_migration.cpp
+  prompt_environment.cpp
+  shell_command_line.cpp
+  terminal_resolver.cpp
+  terminal_runtime.cpp
+  toolchains.cpp
+  expert_registry.cpp
+  feedback_upload.cpp
+  git_context_collector.cpp
+  git_context_core.cpp
+  headless_capability_catalog.cpp
+  headless_final_text.cpp
+  headless_jsonl.cpp
+  headless_mode.cpp
+  headless_options.cpp
+  headless_runner.cpp
+  input_history_store.cpp
+  hook_config.cpp
+  hook_manager.cpp
+  hook_payload.cpp
+  hook_registry.cpp
+  hook_runner.cpp
+  hook_runtime.cpp
+  image_processor.cpp
+  loop_schedule.cpp
+  loop_scheduler.cpp
+  loop_store.cpp
+  loop_types.cpp
+  lsp_client.cpp
+  lsp_diagnostics.cpp
+  lsp_frame.cpp
+  lsp_process.cpp
+  lsp_server_registry.cpp
+  lsp_service.cpp
+  lsp_uri.cpp
+  lsp_which.cpp
+  memory_frontmatter.cpp
+  memory_index.cpp
+  memory_paths.cpp
+  memory_registry.cpp
+  memory_types.cpp
+  proxy_resolver.cpp
+  proxy_resolver_posix.cpp
+  proxy_resolver_win.cpp
+  tcp_probe.cpp
+  tcp_probe_posix.cpp
+  tcp_probe_win.cpp
+  pa_adapter.cpp
+  pa_context_budget.cpp
+  pa_overflow_rescue.cpp
+  pa_quirks.cpp
+  path_reference.cpp
+  instructions_loader.cpp
+  context_usage_breakdown.cpp
+  system_datetime.cpp
+  system_prompt.cpp
+  anthropic_provider.cpp
+  apply_model_to_session.cpp
+  github_auth.cpp
+  xai_auth.cpp
+  codex_app_server_client.cpp
+  codex_provider.cpp
+  copilot_provider.cpp
+  cwd_model_override.cpp
+  dsml_tool_call_recovery.cpp
+  grok_provider.cpp
+  grok_responses.cpp
+  markdown_fence_tracker.cpp
+  model_context_metadata.cpp
+  model_context_resolver.cpp
+  model_pool_status.cpp
+  model_resolver.cpp
+  models_dev_paths.cpp
+  models_dev_registry.cpp
+  openai_provider.cpp
+  provider_factory.cpp
+  retry_policy.cpp
+  session_model_binding.cpp
+  text_tool_call_recovery.cpp
+  vision_capability.cpp
+  channel_plugin.cpp
+  channel_question_bridge.cpp
+  outbound_summary.cpp
+  rc_session_navigation.cpp
+  remote_control_hub.cpp
+  remote_control_service.cpp
+  session_channel_binder.cpp
+  command_classifier.cpp
+  exec_decision.cpp
+  exec_permission.cpp
+  exec_rules.cpp
+  sandbox_backend_args.cpp
+  sandbox_backend_mxc_win.cpp
+  sandbox_backend_posix.cpp
+  sandbox_backend_win.cpp
+  sandbox_denial.cpp
+  sandbox_policy.cpp
+  sandbox_runtime.cpp
+  audit_log.cpp
+  ask_user_question_prompter.cpp
+  attachment_prompt_context.cpp
+  attachment_store.cpp
+  compact_checkpoint.cpp
+  compact_notice.cpp
+  event_dispatcher.cpp
+  file_checkpoint_store.cpp
+  global_session_catalog.cpp
+  global_session_search.cpp
+  local_session_client.cpp
+  opencode_import.cpp
+  output_attachments.cpp
+  pasted_text_attachment.cpp
+  permission_prompter.cpp
+  session_attention.cpp
+  session_auto_title.cpp
+  session_history_recovery.cpp
+  session_manager.cpp
+  session_markdown_export.cpp
+  session_pin_store.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  session_registry.cpp
+  session_replay.cpp
+  session_resume_restore.cpp
+  session_rewind.cpp
+  session_serializer.cpp
+  session_storage.cpp
+  session_title_generator.cpp
+  session_trajectory.cpp
+  session_usage_ledger.cpp
+  session_user_message_search.cpp
+  session_writer_lease.cpp
+  side_chat.cpp
+  task_suggestion_service.cpp
+  task_suggestion_store.cpp
+  thread_goal_store.cpp
+  thread_repair.cpp
+  thread_service.cpp
+  todo_state.cpp
+  tool_metadata_codec.cpp
+  tool_result_storage.cpp
+  turn_net_diff.cpp
+  default_skill_seeder.cpp
+  frontmatter.cpp
+  skill_activation.cpp
+  skill_commands.cpp
+  skill_init.cpp
+  skill_loader.cpp
+  skill_registry.cpp
+  skill_usage_store.cpp
+  theme_drafts.cpp
+  theme_package.cpp
+  theme_store.cpp
+  browser_tools.cpp
+  cdp_client.cpp
+  apply_patch_format.cpp
+  apply_patch_tool.cpp
+  ask_user_question_tool.cpp
+  bash_output_capture.cpp
+  bash_tool.cpp
+  computer_use_tool.cpp
+  diff_utils.cpp
+  diff_view_truncate.cpp
+  file_edit_tool.cpp
+  file_read_tool.cpp
+  file_write_tool.cpp
+  glob_tool.cpp
+  goal_tool.cpp
+  grep_tool.cpp
+  image_generate_tool.cpp
+  image_generation_client.cpp
+  image_generation_policy.cpp
+  lsp_tool.cpp
+  mcp_manager.cpp
+  mcp_scope.cpp
+  mcp_startup_coordination.cpp
+  memory_read_tool.cpp
+  memory_write_tool.cpp
+  model_family.cpp
+  mtime_tracker.cpp
+  plan_mode_tool.cpp
+  question_policy.cpp
+  show_image_tool.cpp
+  skill_view_tool.cpp
+  skills_tool.cpp
+  spawn_subagent_tool.cpp
+  task_complete_tool.cpp
+  task_suggestion_tools.cpp
+  theme_create_tool.cpp
+  thread_tools.cpp
+  todo_write_tool.cpp
+  tool_executor.cpp
+  tool_protocol_names.cpp
+  tool_rewrites.cpp
+  tool_summary_fallback.cpp
+  vision_subagent_tool.cpp
+  backend_router.cpp
+  bing_cn_backend.cpp
+  duckduckgo_backend.cpp
+  html_utils.cpp
+  region_detector.cpp
+  rss_search_backend.cpp
+  web_search_tool.cpp
+  word_diff.cpp
+  workspace_tools.cpp
+  worktree_tool.cpp
+  tool_preamble.cpp
+  apply.cpp
+  diagnostics.cpp
+  executable_version.cpp
+  http.cpp
+  macos_bundle.cpp
+  manifest.cpp
+  package.cpp
+  upgrade.cpp
+  version.cpp
+  drag_scroll.cpp
+  models_dev_catalog.cpp
+  open_url.cpp
+  power_inhibitor.cpp
+  terminal_capability.cpp
+  terminal_theme_detect.cpp
+  terminal_theme_detect_posix.cpp
+  terminal_theme_detect_win.cpp
+  terminal_title.cpp
+  text_file_buffer.cpp
+  text_input_ops.cpp
+  token_tracker.cpp
+  auth.cpp
+  builtin_command_handler.cpp
+  commands_handler.cpp
+  computer_use_handler.cpp
+  files_handler.cpp
+  fork_handler.cpp
+  fs_browser_handler.cpp
+  git_handler.cpp
+  grok_auth_handler.cpp
+  history_handler.cpp
+  image_generation_handler.cpp
+  model_catalog_handler.cpp
+  model_connection_test_handler.cpp
+  models_handler.cpp
+  opencode_command_expander.cpp
+  permission_mode_handler.cpp
+  pinned_sessions_handler.cpp
+  security_handler.cpp
+  side_chat_handler.cpp
+  skill_command_expander.cpp
+  skills_handler.cpp
+  summary_generation_handler.cpp
+  tool_preamble_handler.cpp
+  tool_rewrites_handler.cpp
+  message_payload.cpp
+  origin.cpp
+  project_creation.cpp
+  pty_backend_posix.cpp
+  pty_backend_win.cpp
+  pty_session_registry.cpp
+  pty_shell.cpp
+  remote_control_session_event.cpp
+  remote_web.cpp
+  remote_web_proxy.cpp
+  routes_computer_use.cpp
+  routes_environment.cpp
+  routes_experts.cpp
+  routes_files.cpp
+  routes_fs.cpp
+  routes_git.cpp
+  routes_image_generation.cpp
+  routes_loops.cpp
+  routes_lsp.cpp
+  routes_mcp.cpp
+  routes_misc.cpp
+  routes_models.cpp
+  routes_pty.cpp
+  routes_security.cpp
+  routes_sessions.cpp
+  routes_summary_generation.cpp
+  routes_task_suggestions.cpp
+  routes_themes.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  routes_tool_preamble.cpp
+  routes_tool_rewrites.cpp
+  routes_workspaces.cpp
+  routes_ws.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  server.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  server_helpers.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  session_reference_context.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  static_assets.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
+  tool_event_payload.cpp
+  trajectory_legacy_projection.cpp
+  worktree_core.cpp
+  worktree_manager.cpp
+  markdown_formatter.cpp
+  markdown_lexer.cpp
+  mermaid_renderer.cpp
+  link_safety.cpp
+  syntax_highlight.cpp
+  ask_question_controller.cpp
+  ask_question_editor.cpp
+  ask_question_layout.cpp
+  ask_question_adapter.cpp
+  ask_question_panel.cpp
+  ask_question_view.cpp
+  ask_question_session.cpp
+  ask_question_text.cpp
+  chat_file_link.cpp
+  channels_setup.cpp
+  text_truncation.cpp
+  paste_handler.cpp
+  pending_attachment_selection.cpp
+  path_reference_input.cpp
+  confirm_question.cpp
+  compact_animation.cpp
+  compact_notice_row.cpp
+  diff_line_wrap.cpp
+  model_picker.cpp
+  mode_picker.cpp
+  input_history_navigation.cpp
+  sidebar_model.cpp
+  subagent_host.cpp
+  tui_ask_channel.cpp
+  terminal_key_event.cpp
+  theme_palette.cpp
+  management_center.cpp
+  settings_center.cpp
+  settings_state.cpp
+  thick_vscroll_bar.cpp
+  redraw_pacer.cpp
+  thinking_animation.cpp
+  thinking_heartbeat.cpp
+  tool_result_fold.cpp
+  tool_row_format.cpp
+  tui_helpers.cpp
+  static_assets_data.cpp
+  bridge.cpp
+  runtime.cpp
+  pointer_overlay.cpp
+  runtime.cpp
+  pointer_overlay.cpp
+  runtime.cpp
+acecode_testable.dir\Release\acecode_testable.lib : fatal error LNK1180: 没有足够的磁盘空间完成链接 [N:\Users\shao\acecode\build\acecode_testable.vcxproj]
+BUILD_EXIT=1

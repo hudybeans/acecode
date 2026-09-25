@@ -1980,10 +1980,25 @@ body {
   right: 16px;
 }
 .ace-settings-nav {
+  --ace-settings-nav-pad-x: 10px;
   width: 208px;
-  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: 16px;
   background: var(--ace-settings-nav-bg);
   border-right: 1px solid var(--ace-settings-divider);
+}
+/* 搜索框固定在导航顶部,滚动时不动;只有下面的分组导航 / 搜索结果在列表里滚动。
+   左右留白放在两块各自身上,滚动条仍贴着导航右边缘。 */
+.ace-settings-nav > .ace-settings-search {
+  flex: none;
+  padding-inline: var(--ace-settings-nav-pad-x);
+}
+.ace-settings-nav-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 var(--ace-settings-nav-pad-x) 16px;
 }
 .ace-settings-nav-item {
   margin-block: 2px;
@@ -2085,7 +2100,7 @@ body {
   .ace-settings-value :is(input, select) { flex: 1 1 100%; }
 }
 @media (max-width: 600px) {
-  .ace-settings-nav { width: 150px; padding-inline: 6px; }
+  .ace-settings-nav { width: 150px; --ace-settings-nav-pad-x: 6px; }
   .ace-settings-row { align-items: stretch; flex-direction: column; gap: 8px; }
   .ace-settings-label { flex-basis: auto; }
 }
@@ -2137,6 +2152,12 @@ body {
 .ace-desktop-context-menu-item:disabled:hover,
 .ace-desktop-context-menu-item:disabled:focus-visible {
   background: transparent;
+}
+/* 带图标的菜单里没有对应图标的项:占同样宽度,文字仍与其它项对齐。 */
+.ace-desktop-context-menu-icon-spacer {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 .ace-desktop-context-menu-separator {
   height: 1px;

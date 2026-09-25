@@ -13,6 +13,6 @@ PR #72 原始修复按请求 UUID 保留回答的方向正确；审查发现并�
 - 新增 Hook 顺序检查在原 PR 上失败，在修复后通过。
 - 从生产 App 提取认证分支与 memo 顺序，在 Chromium 和真实 React 18 中验证：修复前复现 Hook 数量错误；修复后 5 次认证状态切换和 2 次权限优先级检查通过，无页面错误。此验证聚焦真实 React 的认证控制流，不代表完整桌面壳验证。
 - PR 快照 pnpm test 通过，日志含 2784 条 pass；pnpm build 及 4478 个正则兼容检查通过。
-- 与 master c0f212ed 合并后的 pnpm build 通过；逐模块运行 318 个测试文件，仅 sidebarAlignmentArchitecture.test.js:22 失败，与未合并的 master 完全一致（旧断言 gap-0，现有界面 gap-2）。没有新增失败。
+- 初次与 master c0f212ed 合并后的构建通过；318 个测试文件中仅 sidebarAlignmentArchitecture.test.js:22 失败，与未合并的 master 完全一致（旧断言 gap-0，已提交界面 gap-2）。远端 CI 也确认同一失败，因此同步 master 并将这条断言对齐到 gap-2；最终 pnpm test 全部通过（2877 条 pass 记录）；构建使用相同运行时代码的合并快照，测试和文档调整不影响已通过的构建。
 - 原 PR 的 C++ 测试改动用于验证不存在的 workspace 会话返回 404；生产路由的归属检查与此一致。本次追加修复不修改 C++；原 head 4111ad0f 的远端 unit-tests 已通过。
 - OpenSpec strict 通过；修复提交与远端最终 CI、合并状态另见 PR 评论。
