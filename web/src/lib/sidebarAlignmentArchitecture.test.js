@@ -19,7 +19,7 @@ assert.match(sidebar, /grid-cols-\[24px_minmax\(0,1fr\)_auto\][\s\S]*?gap-x-\[7p
 assert.match(sidebar, /ace-sidebar-row-idle-slot ace-sidebar-meta-text[^\n]*text-right/);
 assert.doesNotMatch(sidebar, /ace-sidebar-row-idle-slot ace-sidebar-meta-text w-\[58px\]/);
 assert.doesNotMatch(sidebar, /!pinned && !sessionMarker[\s\S]*?ace-sidebar-row-idle-slot w-\[18px\] shrink-0/);
-assert.match(sidebar, /flex w-full min-w-0 items-center justify-end gap-0/);
+assert.match(sidebar, /flex w-full min-w-0 items-center justify-end gap-2/);
 assert.match(sidebar, /ace-session-pin-btn ace-sidebar-row-hover-action w-\[18px\]/);
 assert.match(sidebar, /ace-sidebar-row-hover-action w-\[18px\] h-7/);
 assert.match(sidebar, /ace-sidebar-session-title-button ace-sidebar-tree-content[^\n]*px-0/);
