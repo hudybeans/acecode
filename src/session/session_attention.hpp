@@ -43,4 +43,11 @@ SessionAttentionRecord mark_session_attention_read(
     std::uint64_t cursor,
     std::int64_t timestamp_ms);
 
+// 用户在会话右键菜单里「标记为未读」:把已读游标退到最新输出之前,
+// 之后任何一次标记已读(cursor=0 或最新游标)都能恢复。从没有过输出的会话
+// 也要能标成未读,所以 update_cursor 为 0 时补成 1。
+SessionAttentionRecord mark_session_attention_unread(
+    SessionAttentionRecord record,
+    std::int64_t timestamp_ms);
+
 } // namespace acecode

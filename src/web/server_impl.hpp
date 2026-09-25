@@ -556,6 +556,11 @@ struct WebServer::Impl {
                                              const std::string& workspace_hash,
                                              const std::string& cwd,
                                              std::uint64_t cursor);
+    // 会话右键「标记为未读」。与 mark_session_read_status 同一把锁、同样立即落盘并
+    // 在状态变化时广播 session_status。
+    nlohmann::json mark_session_unread_status(const std::string& session_id,
+                                               const std::string& workspace_hash,
+                                               const std::string& cwd);
     void send_status_snapshot(crow::websocket::connection& conn,
                                const acecode::desktop::WorkspaceMeta& ws);
 

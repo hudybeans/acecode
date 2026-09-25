@@ -145,7 +145,8 @@ export function createTaskbarBadgeController({
       const payload = message.payload || {};
       if (message.type === 'session_status_snapshot') {
         replaceScope(payload.workspace_hash || message.workspace_hash || '', payload.sessions || []);
-      } else if (message.type === 'session_status' || message.type === 'mark_session_read_ack') {
+      } else if (message.type === 'session_status' || message.type === 'mark_session_read_ack'
+        || message.type === 'mark_session_unread_ack') {
         updateStatus({ ...payload, session_id: payload.session_id || message.session_id });
       }
     },

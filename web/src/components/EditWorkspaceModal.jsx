@@ -79,10 +79,12 @@ export function EditWorkspaceModal({ api, workspace, onClose, onSaved, onRemove 
 
   return (
     <>
+      {/* 表单型对话框:点遮罩不关闭(与模型编辑 / 循环表单一致),挑图标时点到选择层
+          旁边的空白也不会连同未保存的改动一起消失;取消 / Esc / × 仍然直接放弃。 */}
       <Modal
         onClose={onClose}
         width={440}
-        dismissOnBackdrop={!saving}
+        dismissOnBackdrop={false}
         labelledBy="ace-edit-workspace-title"
       >
         {({ close }) => (
@@ -110,7 +112,7 @@ export function EditWorkspaceModal({ api, workspace, onClose, onSaved, onRemove 
                   onClick={() => setPickerOpen((open) => !open)}
                   className="w-[34px] shrink-0 flex items-center justify-center rounded-l-md border-r border-border text-fg hover:bg-surface-hi"
                 >
-                  <WorkspaceIcon id={draft.icon.id} color={draft.icon.color} size={15} />
+                  <WorkspaceIcon id={draft.icon.id} color={draft.icon.color} open={pickerOpen} size={15} />
                 </button>
                 <input
                   value={draft.name}

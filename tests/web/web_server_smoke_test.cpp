@@ -3864,6 +3864,114 @@ TEST(WebServerHttp, WorkspaceScopedSessionLifecycle) {
     EXPECT_EQ(sessions[0]["cwd"], other_cwd);
 }
 
+TEST(WebServerHttp, WorktreeSessionPreviewUsesExecutionDirectoryAfterResume) {
+    WebServerFixture fx;
+    const std::string hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({})"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const std::string id = json::parse(create.text).at("session_id").get<std::string>();
+    const auto worktree_dir = fx.cwd_dir / ".acecode" / "worktrees" / ("ses-" + id);
+    std::filesystem::create_directories(worktree_dir);
+    write_text(worktree_dir / "pelican-bicycle.html", "worktree page");
+
+    auto entry = fx.registry->acquire(id);
+    ASSERT_TRUE(entry);
+    ASSERT_EQ(entry->sm->ensure_active_session_id(), id);
+    acecode::WorktreeSessionInfo worktree;
+    worktree.original_cwd = fx.cwd;
+    worktree.worktree_path = acecode::path_to_utf8(worktree_dir);
+    worktree.worktree_name = "ses-" + id;
+    worktree.worktree_branch = "worktree-" + worktree.worktree_name;
+    entry->sm->set_active_worktree(worktree);
+    entry->loop->set_cwd(worktree.worktree_path);
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.content = "create pelican bicycle page";
+    message.uuid = "worktree-user";
+    entry->sm->on_message(message);
+    entry.reset();
+
+    const auto list = cpr::Get(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")});
+    ASSERT_EQ(list.status_code, 200) << list.text;
+    const auto active = json::parse(list.text);
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0]["cwd"], fx.cwd);
+    EXPECT_EQ(active[0]["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(active[0]["worktree"]["path"], worktree.worktree_path);
+
+    cpr::Response catalog_response;
+    json catalog;
+    const auto catalog_deadline = std::chrono::steady_clock::now() + 3s;
+    do {
+        catalog_response = cpr::Get(
+            cpr::Url{fx.url("/api/session-search/sessions")},
+            cpr::Parameters{{"request_id", "worktree-preview-root"}});
+        ASSERT_EQ(catalog_response.status_code, 200) << catalog_response.text;
+        catalog = json::parse(catalog_response.text);
+        if (catalog["progress"].value("complete", false)) break;
+        std::this_thread::sleep_for(5ms);
+    } while (std::chrono::steady_clock::now() < catalog_deadline);
+    ASSERT_TRUE(catalog["progress"].value("complete", false)) << catalog_response.text;
+    const auto found = std::find_if(catalog["sessions"].begin(),
+                                    catalog["sessions"].end(),
+                                    [&](const auto& item) {
+                                        return item.value("id", std::string{}) == id;
+                                    });
+    ASSERT_NE(found, catalog["sessions"].end());
+    EXPECT_EQ((*found)["cwd"], fx.cwd);
+    EXPECT_EQ((*found)["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ((*found)["worktree"]["path"], worktree.worktree_path);
+
+    const auto active_resume = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(active_resume.status_code, 200) << active_resume.text;
+    const auto resumed_active = json::parse(active_resume.text);
+    EXPECT_EQ(resumed_active["cwd"], fx.cwd);
+    EXPECT_EQ(resumed_active["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(resumed_active["worktree"]["path"], worktree.worktree_path);
+
+    const auto content = cpr::Get(
+        cpr::Url{fx.url("/api/files/content")},
+        cpr::Parameters{{"cwd", resumed_active["working_cwd"].get<std::string>()},
+                        {"path", "pelican-bicycle.html"}});
+    ASSERT_EQ(content.status_code, 200) << content.text;
+    EXPECT_EQ(content.text, "worktree page");
+
+    fx.registry->destroy(id);
+    const auto inactive_list = cpr::Get(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions")});
+    ASSERT_EQ(inactive_list.status_code, 200) << inactive_list.text;
+    const auto inactive = json::parse(inactive_list.text);
+    ASSERT_EQ(inactive.size(), 1u);
+    EXPECT_EQ(inactive[0]["cwd"], fx.cwd);
+    EXPECT_EQ(inactive[0]["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(inactive[0]["worktree"]["path"], worktree.worktree_path);
+
+    const auto restored = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(restored.status_code, 200) << restored.text;
+    EXPECT_EQ(json::parse(restored.text)["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(json::parse(restored.text)["worktree"]["path"], worktree.worktree_path);
+
+    const auto global_resume = cpr::Post(cpr::Url{
+        fx.url("/api/sessions/" + id + "/resume")});
+    ASSERT_EQ(global_resume.status_code, 200) << global_resume.text;
+    EXPECT_EQ(json::parse(global_resume.text)["working_cwd"], worktree.worktree_path);
+
+    fx.registry->destroy(id);
+    ASSERT_TRUE(std::filesystem::remove(worktree_dir / "pelican-bicycle.html"));
+    ASSERT_TRUE(std::filesystem::remove(worktree_dir));
+    const auto missing_worktree = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(missing_worktree.status_code, 200) << missing_worktree.text;
+    const auto recovered = json::parse(missing_worktree.text);
+    EXPECT_EQ(recovered["working_cwd"], fx.cwd);
+    EXPECT_TRUE(recovered["worktree"].is_null());
+}
+
 // 回归(2026-09-11 用户反馈:「新建会话失败:HTTP 500: 500 Internal Server Error」):
 // Desktop 目录选择器注册 workspace 用的是正斜杠形态,例如
 // `E:/SS项目数据库/SS项目数据库V2.0`。该 cwd 一路以 UTF-8 string 传到

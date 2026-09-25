@@ -13,6 +13,8 @@ export const ENGLISH_SOURCE_OVERRIDES = Object.freeze({
   // 具体进度提示(openspec add-tool-preamble):设置 > 常规 > 工作模式
   '工作模式切换失败:': 'Failed to switch work mode:',
   'work mode coding daily 日常工作 用于编程 进度提示 工具前言 loading': 'work mode coding daily progress status loading',
+  '标记为已读': 'Mark as read',
+  '标记为未读': 'Mark as unread',
   '打开项目菜单，选择已有工作区或添加本地代码目录，让 ACECode 知道从哪里开始；也可以选择“不使用工作区”处理通用任务。': 'Open the project menu to pick an existing workspace or add a local code folder so ACECode knows where to start; choose "No workspace" for general tasks.',
   '左侧“新建任务”会回到新任务首页，默认使用“无工作区”。它不会创建工作区目录；可在首页的项目菜单中选择或添加工作区。': '"New task" on the left returns to the new-task home page with "No workspace" selected. It does not create a workspace folder; pick or add a workspace from the project menu on the home page.',
   '开发者模式': 'Developer mode',

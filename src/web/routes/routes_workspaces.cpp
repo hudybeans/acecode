@@ -997,10 +997,23 @@ void WebServer::Impl::register_workspaces() {
                 return with_cors(req, std::move(r));
             }
             LOG_INFO("[web] workspace session resumed hash=" + ws->hash + " id=" + id);
+            auto resumed_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            const WorktreeSessionInfo worktree = resumed_entry && resumed_entry->sm
+                ? resumed_entry->sm->active_worktree()
+                : WorktreeSessionInfo{};
+            json body{{"session_id", id}, {"id", id}, {"active", true},
+                      {"workspace_hash", ws->hash}, {"cwd", ws->cwd},
+                      {"working_cwd", worktree.active() ? worktree.worktree_path : ws->cwd},
+                      {"worktree", nullptr}, {"no_workspace", false}};
+            if (worktree.active()) {
+                body["worktree"] = {{"name", worktree.worktree_name},
+                                    {"branch", worktree.worktree_branch},
+                                    {"path", worktree.worktree_path}};
+            }
             crow::response r(200);
-            r.body = json{{"session_id", id}, {"id", id}, {"active", true},
-                          {"workspace_hash", ws->hash}, {"cwd", ws->cwd},
-                          {"working_cwd", ws->cwd}, {"no_workspace", false}}.dump();
+            r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
         });

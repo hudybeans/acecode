@@ -12,8 +12,9 @@ const VIEWPORT_MARGIN = 8;
 // 「编辑项目」左上角图标按钮弹出的选择层:搜索框 + 色板 + 图标网格。
 // 放在对话框 DOM 内、用 fixed 定位:对话框本身 overflow:auto,绝对定位会被裁掉;
 // 留在对话框里则 Tab 循环与 Enter 约定(lib/dialogKeyboard.js)照常生效。
+// 点选择层外面的空白不收起(挑图标时误点旁边不该让它消失),只有再点一次图标按钮或
+// 按 Esc 才收起;网格里选中的那一格显示展开态,与侧栏项目展开时一致。
 export function WorkspaceIconPicker({ anchorRef, value, onChange, onClose }) {
-  const panelRef = useRef(null);
   const searchRef = useRef(null);
   const [query, setQuery] = useState('');
   const [position, setPosition] = useState(null);
@@ -48,22 +49,12 @@ export function WorkspaceIconPicker({ anchorRef, value, onChange, onClose }) {
       onClose?.();
       anchorRef?.current?.focus?.();
     };
-    const onPointerDown = (event) => {
-      const target = event.target;
-      if (panelRef.current?.contains(target) || anchorRef?.current?.contains(target)) return;
-      onClose?.();
-    };
     document.addEventListener('keydown', onKey, true);
-    document.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('pointerdown', onPointerDown, true);
-    };
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [anchorRef, onClose]);
 
   return (
     <div
-      ref={panelRef}
       className="ace-workspace-icon-picker fixed z-[210] rounded-xl border border-border bg-surface ace-shadow-lg p-2.5"
       style={{
         width: PICKER_WIDTH,
@@ -124,7 +115,7 @@ export function WorkspaceIconPicker({ anchorRef, value, onChange, onClose }) {
                 selected && 'bg-surface-hi',
               )}
             >
-              <WorkspaceIcon id={icon.id} color={value?.color} size={16} />
+              <WorkspaceIcon id={icon.id} color={value?.color} open={selected} size={16} />
             </button>
           );
         })}

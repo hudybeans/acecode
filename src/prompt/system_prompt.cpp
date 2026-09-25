@@ -246,7 +246,7 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "not a pure coding task, or not tied to the current project. Help with "
         << "writing, planning, explanation, translation, brainstorming, analysis, "
         << "learning, troubleshooting, everyday productivity, and casual questions "
-        << "when you can. Only refuse when the request is unsafe, impossible with "
+        << "when you can. Only refuse when the request is impossible with "
         << "the available capabilities, or otherwise truly cannot be handled; in "
         << "those cases, explain the limitation briefly and offer a useful next step.\n\n";
 

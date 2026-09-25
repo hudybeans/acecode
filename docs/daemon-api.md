@@ -4747,6 +4747,7 @@ All client frames are JSON:
 | `status_subscribe` | `{workspace_hash}` or `{session_id}` | subscribes workspace attention status and sends snapshot |
 | `status_unsubscribe` | `{workspace_hash}` | unsubscribes; ack is `status_unsubscribe_ack` |
 | `mark_session_read` | `{session_id,workspace_hash,cursor}` | persists read cursor; ack is `mark_session_read_ack` |
+| `mark_session_unread` | `{session_id,workspace_hash}` | rewinds the read cursor just before the latest output (a session with no output yet gets `update_cursor=1`), persists it and broadcasts `session_status`; a later `mark_session_read` restores `read`. A busy session still reports `in_progress` until its turn ends. Ack is `mark_session_unread_ack` with the same status payload |
 | `user_input` | `{session_id,text}` | queues plain user input |
 | `decision` | `{session_id,request_id,choice}` | responds to permission request; `choice` is `allow`, `deny`, `allow_session`, `allow_scoped`, or `allow_remember` |
 | `question_answer` | `{session_id,request_id,cancelled,answers}` | responds to AskUserQuestion |

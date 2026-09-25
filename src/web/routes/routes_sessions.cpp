@@ -63,6 +63,12 @@ bool valid_search_request_id(const std::string& value) {
 
 json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
     const auto& meta = entry.meta;
+    WorktreeSessionInfo worktree = meta.worktree;
+    if (entry.active) {
+        worktree.worktree_path = entry.active->worktree_path;
+        worktree.worktree_name = entry.active->worktree_name;
+        worktree.worktree_branch = entry.active->worktree_branch;
+    }
     const auto title = entry.active && !entry.active->title.empty()
         ? entry.active->title
         : meta.title;
@@ -77,9 +83,7 @@ json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
         {"created_at", meta.created_at},
         {"updated_at", updated_at},
         {"cwd", meta.no_workspace ? std::string{} : meta.cwd},
-        // Real working directory, published regardless of workspace membership so
-        // file preview works in no-workspace sessions too (see session_info_to_json).
-        {"working_cwd", meta.cwd},
+        {"working_cwd", worktree.active() ? worktree.worktree_path : meta.cwd},
         {"workspace_hash", meta.no_workspace ? std::string{} : entry.workspace_hash},
         {"workspaceName", meta.no_workspace
             ? std::string{"\u65e0\u5de5\u4f5c\u533a"}
@@ -92,6 +96,13 @@ json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
         {"active", entry.active.has_value()},
         {"busy", entry.active ? entry.active->busy : false},
     };
+    if (worktree.active()) {
+        item["worktree"] = {
+            {"name", worktree.worktree_name},
+            {"branch", worktree.worktree_branch},
+            {"path", worktree.worktree_path},
+        };
+    }
     if (entry.content_match) {
         item["search_match"] = json{
             {"kind", "user_message"},
@@ -1223,16 +1234,30 @@ void WebServer::Impl::register_sessions() {
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
             }
-            crow::response r(200);
-            r.body = json{
+            auto resumed_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            const WorktreeSessionInfo worktree = resumed_entry && resumed_entry->sm
+                ? resumed_entry->sm->active_worktree()
+                : WorktreeSessionInfo{};
+            json body{
                 {"session_id", id},
                 {"id", id},
                 {"active", true},
                 {"workspace_hash", opts.no_workspace ? std::string{} : ws.hash},
                 {"cwd", opts.no_workspace ? std::string{} : ws.cwd},
-                {"working_cwd", opts.cwd.empty() ? ws.cwd : opts.cwd},
+                {"working_cwd", worktree.active()
+                    ? worktree.worktree_path : (opts.cwd.empty() ? ws.cwd : opts.cwd)},
+                {"worktree", nullptr},
                 {"no_workspace", opts.no_workspace}
-            }.dump();
+            };
+            if (worktree.active()) {
+                body["worktree"] = {{"name", worktree.worktree_name},
+                                    {"branch", worktree.worktree_branch},
+                                    {"path", worktree.worktree_path}};
+            }
+            crow::response r(200);
+            r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
         });

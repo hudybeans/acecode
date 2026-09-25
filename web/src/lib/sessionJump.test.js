@@ -7,6 +7,7 @@ import {
   sessionJumpReadOnly,
   sessionJumpWorkspaceVisible,
   sessionRefFromJumpTarget,
+  sessionWorktreeFromSources,
   stripOpenSessionParams,
 } from './sessionJump.js';
 import { navigationHistoryFromHash } from './navigationHistory.js';
@@ -219,6 +220,46 @@ test('workspace session ref keeps cwd and workingCwd consistent', () => {
   assert.equal(ref.workspaceHash, 'w1');
   assert.equal(ref.cwd, 'N:/proj');
   assert.equal(ref.workingCwd, 'N:/proj');
+});
+
+test('worktree session opens relative turn files from its worktree after navigation', () => {
+  const workspaceCwd = 'N:/repo';
+  const worktreePath = 'N:/repo/.acecode/worktrees/ses-123';
+  const worktree = { name: 'ses-123', branch: 'worktree-ses-123', path: worktreePath };
+  assert.equal(sessionWorktreeFromSources({}, { worktree }), worktree);
+  for (const resumeResult of [
+    {},
+    { session_id: 's3', cwd: workspaceCwd, working_cwd: worktreePath, worktree },
+  ]) {
+    const ref = sessionRefFromJumpTarget(
+      { sessionId: 's3', workspaceHash: 'w1', cwd: workspaceCwd, worktree },
+      resumeResult,
+    );
+    const root = sessionWorkingCwd({
+      worktree: ref.worktree,
+      cwd: ref.workingCwd || ref.cwd || '',
+      fallbackCwd: workspaceCwd,
+    });
+    assert.equal(ref.cwd, workspaceCwd);
+    assert.equal(root, worktreePath);
+    assert.deepEqual(previewFileLocation({ cwd: root, path: 'pelican-bicycle.html' }), {
+      cwd: worktreePath,
+      path: 'pelican-bicycle.html',
+    });
+  }
+});
+
+test('resume clears a stale worktree before relative file preview', () => {
+  assert.equal(sessionWorktreeFromSources({ worktree: null }, {
+    worktree: { path: 'N:/repo/.acecode/worktrees/deleted' },
+  }), null);
+  const ref = sessionRefFromJumpTarget(
+    { sessionId: 's4', workspaceHash: 'w1', cwd: 'N:/repo',
+      worktree: { path: 'N:/repo/.acecode/worktrees/deleted' } },
+    { session_id: 's4', cwd: 'N:/repo', working_cwd: 'N:/repo', worktree: null },
+  );
+  assert.equal(ref.worktree, null);
+  assert.equal(sessionWorkingCwd({ worktree: ref.worktree, cwd: ref.workingCwd }), 'N:/repo');
 });
 
 // 触发场景：no-workspace 会话里模型生成了文件，用户点链接预览。

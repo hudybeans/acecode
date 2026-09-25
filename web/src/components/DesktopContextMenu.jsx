@@ -42,6 +42,8 @@ const ACTION_LABELS = {
   [DESKTOP_CONTEXT_ACTIONS.LOCATE_FILE]: '在资源管理器中显示',
   [DESKTOP_CONTEXT_ACTIONS.PIN_SESSION]: '置顶',
   [DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION]: '取消置顶',
+  [DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ]: '标记为已读',
+  [DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD]: '标记为未读',
   [DESKTOP_CONTEXT_ACTIONS.OPEN_SESSION]: '打开会话',
   [DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION]: '重命名',
   [DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE]: '复制标题',
@@ -100,19 +102,33 @@ const ACTION_LABELS = {
   [DESKTOP_CONTEXT_ACTIONS.INSPECT]: '检查',
 };
 
-const SESSION_ACTION_ICONS = {
+// 会话 / 工作区菜单的图标,全部复用 Icon.jsx 里已有的界面图标。会话菜单按钮 / 顶栏右键
+// (显式打开)与侧栏会话行、项目行的右键共用这一份;其它右键菜单(文件、消息等)不显示图标。
+const CONTEXT_ACTION_ICONS = Object.freeze({
   [DESKTOP_CONTEXT_ACTIONS.PIN_SESSION]: 'pin',
   [DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION]: 'pin',
+  [DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ]: 'check',
+  [DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD]: 'StatusNotStarted',
   [DESKTOP_CONTEXT_ACTIONS.OPEN_SESSION]: 'chat',
   [DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION]: 'edit',
   [DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE]: 'copy',
   [DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID]: 'copy',
   [DESKTOP_CONTEXT_ACTIONS.EXPORT_SESSION]: 'Download',
-  [DESKTOP_CONTEXT_ACTIONS.OPEN_IN_EXPLORER]: 'folder',
+  [DESKTOP_CONTEXT_ACTIONS.OPEN_IN_EXPLORER]: 'folderOpen',
   [DESKTOP_CONTEXT_ACTIONS.ARCHIVE_SESSION]: 'archive',
+  [DESKTOP_CONTEXT_ACTIONS.ACTIVATE_WORKSPACE]: 'arrowRight',
+  [DESKTOP_CONTEXT_ACTIONS.EXPAND_WORKSPACE]: 'expandDown',
+  [DESKTOP_CONTEXT_ACTIONS.COLLAPSE_WORKSPACE]: 'expandRight',
+  [DESKTOP_CONTEXT_ACTIONS.NEW_WORKSPACE_SESSION]: 'newSession',
+  [DESKTOP_CONTEXT_ACTIONS.IMPORT_OPENCODE_SESSIONS]: 'Download',
+  [DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE]: 'editWindow',
+  [DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE]: 'edit',
+  [DESKTOP_CONTEXT_ACTIONS.COPY_WORKSPACE_PATH]: 'copy',
+  [DESKTOP_CONTEXT_ACTIONS.REMOVE_WORKSPACE]: 'close',
   [DESKTOP_CONTEXT_ACTIONS.SELECT_ALL]: 'list',
+  [DESKTOP_CONTEXT_ACTIONS.COPY]: 'copy',
   [DESKTOP_CONTEXT_ACTIONS.INSPECT]: 'Inspect',
-};
+});
 
 function parseDesktopResult(value) {
   if (value == null) return value;
@@ -545,7 +561,9 @@ export function DesktopContextMenu() {
         [...(explicit?.leadingItems || []), ...contextItems],
         explicit?.actionOverrides,
       ));
-      const width = explicit ? ICON_MENU_WIDTH : MENU_WIDTH;
+      // 侧栏会话行 / 项目行的右键与会话菜单按钮一样带图标;其它区域的右键保持纯文字。
+      const showIcons = !!explicit || !!(contextTargets.sessionTarget || contextTargets.workspaceTarget);
+      const width = showIcons ? ICON_MENU_WIDTH : MENU_WIDTH;
       // 按钮触发时菜单右缘对齐按钮;右键委托(placement=pointer)时像原生右键一样从光标处展开。
       const x = explicit
         ? (explicit.placement === 'pointer' ? explicit.x : explicit.x - width)
@@ -561,7 +579,7 @@ export function DesktopContextMenu() {
         ...pos,
         x, y, width,
         trigger: explicit?.trigger,
-        showIcons: !!explicit,
+        showIcons,
         items,
         selectedText,
         selectionContext,
@@ -691,7 +709,9 @@ export function DesktopContextMenu() {
                   );
                 }}
               >
-                {menu.showIcons && <VsIcon name={action.icon || SESSION_ACTION_ICONS[action.id] || 'list'} size={16} />}
+                {menu.showIcons && (action.icon || CONTEXT_ACTION_ICONS[action.id]
+                  ? <VsIcon name={action.icon || CONTEXT_ACTION_ICONS[action.id]} size={16} />
+                  : <span className="ace-desktop-context-menu-icon-spacer" aria-hidden="true" />)}
                 <span>{actionLabel(action)}</span>
               </button>
             </Fragment>

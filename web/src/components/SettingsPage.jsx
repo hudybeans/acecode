@@ -24,7 +24,7 @@ import { createDeveloperModeUnlock, loadDeveloperModeUnlocked, rememberDeveloper
 import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
-import { SettingsSearch } from './SettingsSearch.jsx';
+import { SettingsSearch, SettingsSearchResults } from './SettingsSearch.jsx';
 import { settingsSearchEntries, searchSettings, locateSetting, settingsSearchResultIndex } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
@@ -288,6 +288,11 @@ export function SettingsPage({
     if (event.target === event.currentTarget) close();
   };
   const toggleExpanded = () => setExpanded((value) => !value);
+  const selectSearchResult = (index) => {
+    setSearchIndex(index);
+    setSearchNavigation((value) => value + 1);
+    setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked));
+  };
 
   return (
     <div
@@ -327,52 +332,57 @@ export function SettingsPage({
         )}
       >
         <span id="settings-window-title" className="sr-only">设置</span>
-        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+        <nav className="ace-settings-nav shrink-0 select-none">
+          {/* 搜索框固定在顶部,只有下面的导航 / 搜索结果在 ace-settings-nav-list 里滚动。 */}
           <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
-            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked)); }} onComposing={setComposing} />
-          {!searchQuery.trim() && navGroups.map((group, groupIndex) => {
-            const headingId = `settings-nav-group-${group.key}`;
-            return (
-              <div
-                key={group.key}
-                role="group"
-                aria-labelledby={headingId}
-              >
-                <div
-                  id={headingId}
-                  className={clsx(
-                    'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
-                    groupIndex === 0 ? 'pt-0' : 'pt-2',
-                  )}
-                >
-                  {group.label}
-                </div>
-                {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
-                  const active = activeNav === itemIndex;
-                  return (
-                    <button
-                      key={item.key}
-                      ref={item.key === 'developer' ? developerNavRef : undefined}
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
-                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+            onSelect={selectSearchResult} onComposing={setComposing} />
+          <div className="ace-settings-nav-list overflow-y-auto">
+            {searchQuery.trim()
+              ? <SettingsSearchResults results={searchResults} selected={searchIndex} onSelect={selectSearchResult} />
+              : navGroups.map((group, groupIndex) => {
+                const headingId = `settings-nav-group-${group.key}`;
+                return (
+                  <div
+                    key={group.key}
+                    role="group"
+                    aria-labelledby={headingId}
+                  >
+                    <div
+                      id={headingId}
                       className={clsx(
-                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
-                        active
-                          ? 'text-fg font-normal'
-                          : 'text-fg-2',
+                        'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
+                        groupIndex === 0 ? 'pt-0' : 'pt-2',
                       )}
                     >
-                      <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+                      {group.label}
+                    </div>
+                    {group.items.map((item) => {
+                      const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
+                      const active = activeNav === itemIndex;
+                      return (
+                        <button
+                          key={item.key}
+                          ref={item.key === 'developer' ? developerNavRef : undefined}
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          aria-label={item.label}
+                          onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+                          className={clsx(
+                            'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
+                            active
+                              ? 'text-fg font-normal'
+                              : 'text-fg-2',
+                          )}
+                        >
+                          <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+          </div>
         </nav>
         <div
           className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col"
@@ -452,8 +462,9 @@ export function SettingsPage({
 
 // ─── 常规 ──────────────────────────────────────────────────────────────────
 // 真实接入:默认权限模式(api.getDefaultPermissionMode / setDefaultPermissionMode)、
-// Daemon 状态(/api/health 透传 health prop)。其余字段(工作模式 / 默认打开目标 /
-// 最大轮次)目前是 UI 占位,本地 state。
+// Daemon 状态(/api/health 透传 health prop)、工作模式(= daemon 的具体进度提示
+// 开关,lib/workMode.js)。
+// 其余字段(默认打开目标 / 最大轮次)目前是 UI 占位,本地 state。
 
 function SectionGeneral({
   health,

@@ -214,6 +214,7 @@ test('未置顶会话目标显示会话动作', () => {
   });
   assert.deepEqual(ids(items), [
     DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
     DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID,
@@ -633,6 +634,7 @@ test('普通 Web 会话菜单过滤原生目录选择导出并保留 Web 会话�
     },
   })), [
     DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
     DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID,
@@ -722,6 +724,7 @@ test('右键目标提取 session JSONL path', () => {
     'data-desktop-session-title': 'Session 1',
     'data-desktop-session-path': 'C:/Users/test/.acecode/projects/hash/s1.jsonl',
     'data-desktop-session-pinned': 'false',
+    'data-desktop-session-unread': 'true',
     'data-desktop-session-archive': 'true',
   });
   assert.deepEqual(sessionTargetFromElement(element), {
@@ -732,8 +735,35 @@ test('右键目标提取 session JSONL path', () => {
     title: 'Session 1',
     sessionPath: 'C:/Users/test/.acecode/projects/hash/s1.jsonl',
     pinned: false,
+    unread: true,
     canArchive: true,
   });
+});
+
+// 场景:会话右键菜单(侧栏行 / 会话菜单按钮 / 顶栏右键共用)。期望:置顶的下一项是
+// 「标记为已读 / 未读」—— 行上有未读标记时给「标记为已读」,否则(已读、运行中)给
+// 「标记为未读」;两者都带同一个会话目标,由侧栏按 session id 处理。
+test('会话菜单在置顶下面按未读状态切换标记为已读 / 未读', () => {
+  const unreadItems = buildDesktopContextMenuItems({
+    sessionTarget: { type: 'session', sessionId: 's1', workspaceHash: 'w1', title: 'T', pinned: true, unread: true },
+  });
+  assert.deepEqual(ids(unreadItems).slice(0, 2), [
+    DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ,
+  ]);
+  assert.equal(ids(unreadItems).includes(DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD), false);
+  const markRead = unreadItems.find((item) => item.id === DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ);
+  assert.equal(markRead.target.sessionId, 's1');
+  assert.equal(markRead.target.workspaceHash, 'w1');
+
+  const readItems = buildDesktopContextMenuItems({
+    sessionTarget: { type: 'session', sessionId: 's1', title: 'T', pinned: false, unread: false },
+  });
+  assert.deepEqual(ids(readItems).slice(0, 2), [
+    DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
+  ]);
+  assert.equal(ids(readItems).includes(DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ), false);
 });
 
 test('contextTargetsFromElement 提取各类目标', () => {

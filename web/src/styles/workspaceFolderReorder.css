@@ -10,6 +10,8 @@
   cursor: pointer;
   touch-action: none;
   user-select: none;
+  padding-right:0px;
+  margin-right:0px;
 }
 
 .ace-workspace-folder-reordering,
