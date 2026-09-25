@@ -219,23 +219,19 @@ struct InputHistoryConfig {
 // the model and the loop continues, exactly like any other tool).
 
 // 工具前言(openspec add-tool-preamble,设置 > 开发者模式 > 工具前言)。
-// 默认关闭。开启后每个工具调用批次配一条短标题,来源由 mode 决定:
-//   "prompt"    提示驱动:系统提示要求模型在工具调用前先写一句 8~12 词的前言。
+// 默认关闭。开启后模型每个阶段给用户一句「正在做什么」,来源由 mode 决定:
+//   "prompt"    提示驱动:系统提示要求模型在第一次工具调用前与阶段变化时用
+//               <text_preamble type="read|write">…</text_preamble> 标出一句,
+//               daemon 流式识别后放进 loading,不进正文气泡。
 //   "reasoning" 推理服务内置摘要:从 provider 推理摘要里抠第一对 **加粗**,
 //               没有则取推理首句。不改提示词、不多花 token。
-//   "sidecar"   旁路模型摘要:用 sidecar_model(空 = 沿用会话模型)对本步材料
-//               单独发一次小请求出标签;落盘前最多等 sidecar_wait_ms。
-// 非法 mode 在 load_config 归一化为 "prompt";sidecar_wait_ms clamp [0, 15000]。
+// 非法 mode(含已废弃的 "sidecar")在 load_config 归一化为 "prompt"。
 struct ToolPreambleConfig {
     bool enabled = false;
     std::string mode = "prompt";
-    std::string sidecar_model;
-    int sidecar_wait_ms = 2000;
 
     bool operator==(const ToolPreambleConfig& other) const {
-        return enabled == other.enabled && mode == other.mode &&
-               sidecar_model == other.sidecar_model &&
-               sidecar_wait_ms == other.sidecar_wait_ms;
+        return enabled == other.enabled && mode == other.mode;
     }
     bool operator!=(const ToolPreambleConfig& other) const { return !(*this == other); }
 };

@@ -3,62 +3,78 @@
 ## ADDED Requirements
 
 ### Requirement: 配置与默认关闭
-`config.agent_loop.tool_preamble` SHALL 含 `enabled`(默认 false)、`mode`(`prompt` | `reasoning` | `sidecar`,默认 `prompt`)、`sidecar_model`(saved model 名,空 = 沿用会话模型)、`sidecar_wait_ms`(默认 2000,clamp [0, 15000])。非法 `mode` MUST 在加载时归一化为 `prompt`;保存 MUST 稀疏(与默认相同的键不写出)。
+`config.agent_loop.tool_preamble` SHALL 含 `enabled`(默认 false)与 `mode`(`prompt` | `reasoning`,默认 `prompt`)。非法 `mode`(含已废弃的 `sidecar`)MUST 在加载时归一化为 `prompt` 并记一条 WARN;旧配置里的 `sidecar_model` / `sidecar_wait_ms` MUST 被忽略;保存 MUST 稀疏(与默认相同的键不写出)。
 
 #### Scenario: 默认关闭
 - **WHEN** 配置里没有 `tool_preamble` 段
 - **THEN** 功能关闭,系统提示、事件流与落盘 metadata 与改动前逐字节一致
 
-#### Scenario: 非法 mode
-- **WHEN** `mode` 写成 `"auto"`
-- **THEN** 加载后 `mode == "prompt"` 并记一条 WARN
+#### Scenario: 旧的 sidecar 配置
+- **WHEN** `mode` 写成 `"sidecar"` 并带 `sidecar_model`
+- **THEN** 加载后 `mode == "prompt"`,多余键丢弃,再次保存不写出它们
 
-### Requirement: 标题来源
-开启后每个含工具调用的模型步 SHALL 按 `mode` 解析一条标题:
-- `prompt`:每个工具定义 MUST 注入必填(required)的 `preamble` 字符串参数,系统提示 MUST 要求模型每次调用都填写;每个调用的前言 = 其参数里 `preamble` 的规整值,该键 MUST 在权限门 / 预览 / hooks / 执行 / 落盘之前剥掉;参数流式前缀里值已闭合时 `agent_progress{tool_planning}` 的 label MUST 已是前言。此模式没有批次标题、不发 `tool_preamble` 事件。
+### Requirement: 阶段前言的来源
+开启后 AgentLoop SHALL 维护一条**阶段前言**状态 `{title, source, kind}`,按 `mode` 建立:
+- `prompt`:系统提示 MUST 追加「# Progress preamble」段(要求多步工具任务在第一次调用前与阶段 / 计划变化时用 `<text_preamble type="read|write">…</text_preamble>` 写恰好一句,最终回答不打标签;「Do not narrate every tool call」的既有口径保留)。daemon MUST 流式扫描 assistant 正文:标签闭合的那一刻标签正文(规整为单行、截到 200 个 code point)成为阶段前言,`kind` 取 `type` 属性(只认 read / write,其它为空);标签正文 MUST NOT 出现在 `token` 帧 / `message` 帧 / TUI 行 / Web 渲染里。
 - `reasoning`:推理内容里第一对闭合 `**…**` 的内文;没有时取首行首句(去掉 Okay, / 好的， 等口头填充),截到 60 个 code point;不足 2 个 code point 视为无标题。
-- `sidecar`:第一个完整工具调用露头时用用户请求、assistant 正文与调用预览另发一次请求,清洗后的第一行;落盘前最多等待 `sidecar_wait_ms`。
+
+标签识别 MUST 容错:标签切在任意字节处、没写 `type`、缺闭合标签(到行尾为止)、`<text_preamble/>`(跳过)、大小写不敏感、超过 1200 字节未闭合(到此为止)、孤立闭合标签(丢弃);非标签的相似文本(`<textarea>`、`<text_preambleX>`、`a < b`)MUST 原样放行。**无论功能是否开启**,标签 MUST 从可见正文里剥掉;只有开启 prompt 模式时才发布成前言。
+
+#### Scenario: 标签跨增量
+- **WHEN** prompt 模式下正文以 `<text_pre` / `amble type="read">Reading the loader</text_preamble>\n\n` 两个增量流出
+- **THEN** 没有任何 token 帧含标签文本,标签闭合后阶段前言为 `Reading the loader`、kind 为 `read`
 
 #### Scenario: 加粗标题
 - **WHEN** reasoning 模式下推理流含 `**Reading registry sections**`
-- **THEN** 标题为 `Reading registry sections`,且在流式期间 `agent_progress{phase:reasoning}` 的 label 已是该标题
+- **THEN** 阶段前言为 `Reading registry sections`,且在流式期间 `agent_progress{phase:reasoning}` 的 label 已是该标题
 
-#### Scenario: 参数剥离
-- **WHEN** prompt 模式下模型调用 `{"preamble":"Reading the loader","file_path":"a"}`
-- **THEN** 工具收到 `{"file_path":"a"}`,落盘的 tool_calls 参数同样不含 preamble,`tool_start.preamble` 与 `metadata.tool_preamble.calls[id]` 为 "Reading the loader"
+#### Scenario: 功能关闭时的标签
+- **WHEN** 功能关闭,模型仍输出 `<text_preamble>x</text_preamble>\n\nHello`
+- **THEN** 可见正文为 `Hello`,没有前言帧,落盘正文保留标签原文
 
-#### Scenario: 没填参数
-- **WHEN** prompt 模式下模型没填 `preamble`
-- **THEN** 该调用没有前言,一切与关闭时一致
+### Requirement: 阶段前言的生命周期
+阶段前言 SHALL 跨模型步沿用,直到:新标签 / 新加粗标题替换它;prompt 模式下未加标签的非空白可见正文出现(清除);回合结束(清空)。工具批次 MUST 沿用建立时的前言,不按批次重新解析。
 
-### Requirement: 落盘与事件
-有前言的模型步,assistant(tool_calls) 消息 MUST 在落盘前带 `metadata.tool_preamble = {source, title?, calls?}`;每个有前言的调用的 `tool_start` MUST 带 `preamble` 与 `preamble_source`;`agent_progress` 的 `tool_planning` / `tool_running` 在有前言时 label MUST 为前言(工具名退到 detail)。批次标题模式下 daemon MUST 在该批次的 `tool_start` 之前发 `tool_preamble{batch_id, tool_call_ids, title, source, late:false}` 事件;sidecar 迟到的标题 MUST 以 `late:true` 事件送达且不写入 JSONL。
+#### Scenario: 跨步沿用与清除
+- **WHEN** 第一步写 `<text_preamble>Phase A</text_preamble>` 并调工具,第二步只调工具,第三步写可见正文 `Done.` 后再调工具
+- **THEN** 第一、二步的 `tool_start.preamble` 都是 `Phase A`,第三步的 `tool_start` 不带前言
 
-#### Scenario: sidecar 迟到
-- **WHEN** 旁路摘要在 `sidecar_wait_ms` 内没有返回
-- **THEN** 消息按无标题落盘,工具执行完或回合末补发 `late:true` 事件
+#### Scenario: 最终回答误打标签
+- **WHEN** 最终的纯文本回答带 `<text_preamble>…</text_preamble>`
+- **THEN** 标签剥掉,可见正文正常显示,回合结束后阶段前言为空
+
+### Requirement: 协议与落盘
+阶段前言建立时 daemon MUST 立刻发 `agent_progress{phase:"preamble", label:<前言>, preamble:{title,source,kind}}`(不受节流);有阶段前言期间每条 `agent_progress` 帧 MUST 带 `preamble{title,source,kind}`,`model_waiting` / `reasoning` / `tool_planning` / `tool_running` 的 label MUST 为前言(通用文案 / 工具名退到 detail),`permission_waiting` / `question_waiting` / `compacting` / `model_retry` 保持自己的文案。
+
+#### Scenario: 批次之间等待模型
+- **WHEN** 阶段前言为 `Phase one`,上一批工具已执行完、下一次模型请求刚发出
+- **THEN** 这条 `agent_progress{model_waiting}` 的 label 为 `Phase one`,detail 为 `正在等待模型响应`每个在前言下执行的批次,其 `tool_start` MUST 带 `preamble` / `preamble_source`(`prompt` | `reasoning`)/ `preamble_kind`;assistant(tool_calls) 消息 MUST 在落盘前带 `metadata.tool_preamble = {source, title, kind}`(仅记录)。落盘的 assistant `content` MUST 保留标签原文;可见正文为空的 assistant(tool_calls) 消息 MUST NOT 发 `message` 帧。**没有** `tool_preamble` 事件。
+
+#### Scenario: 空正文的工具步
+- **WHEN** 模型步的正文只有一个标签,随后是工具调用
+- **THEN** 不发 assistant `message` 帧,`tool_start` 带前言,落盘 assistant 消息 content 为标签原文、metadata 带 tool_preamble
 
 ### Requirement: Web 渲染
-Web 投影 MUST NOT 按前言拆分活动段:一段活动仍是一条 `activity_summary`、落定后一条「已处理」。实时行的标题 SHALL 是正在运行的最新工具的前言(优先于阶段文案与并行计数),工具都跑完时不沿用旧前言;运行中的工具行 SHALL 以前言为 label,落定后的工具行保持原样;历史加载 MUST 从 assistant metadata(`title` 整批 / `calls` 逐调用)把前言传播到结果项;没有任何前言时投影 MUST 与改动前一致。
+Web 投影 MUST NOT 按前言拆分活动段:一段活动仍是一条 `activity_summary`、落定后一条「已处理」。实时行的标题 SHALL 是正在运行的最新工具的前言(优先于阶段文案与并行计数),工具都跑完时不沿用旧前言;运行中的工具行 SHALL 以前言为 label,落定后的工具行与关闭态同形(悬浮提示也不带前言);历史加载与 `message` 帧的 assistant 正文 MUST 经与 daemon 同款规则剥掉标签;没有任何前言时投影 MUST 与改动前一致。
 
 #### Scenario: 连续两步
 - **WHEN** 实时回合里前一个工具(前言 A)已完成、当前工具(前言 B)在跑
 - **THEN** 仍只有一行 `activity_summary`,标题为 B
 
+#### Scenario: 历史里的标签
+- **WHEN** `GET messages` 返回的 assistant content 为 `<text_preamble type="read">x</text_preamble>\n\nAll done.`
+- **THEN** 渲染的正文为 `All done.`
+
 ### Requirement: TUI 渲染
-TUI SHALL 在 reasoning 标题就绪时用它替换等待动画短语;批次标题模式在批次的 tool_call 行前插入 `● 标题` 伪行;参数模式 MUST NOT 插伪行,每个调用的前言 SHALL 渲染在它自己的 tool_call 行上(`● FileRead · 前言`),写工具的进度头同样显示前言;resume MUST 从 `metadata.tool_preamble` 还原(`title` 还原伪行,`calls` 还原到各行)。
+TUI SHALL 在阶段前言建立时用它替换等待动画短语;顺序执行的写工具进度头 SHALL 显示前言;`on_message` 与 resume 回放 MUST 剥掉标签,整段都是标签的 assistant 正文不建行;MUST NOT 插入伪行或在 tool_call 行上挂前言。
 
-#### Scenario: resume 还原
-- **WHEN** 历史 assistant(tool_calls) 消息带 `metadata.tool_preamble`
-- **THEN** 回放行序为 assistant(若非 prompt 来源)→ preamble → tool_call → tool_result
-
-#### Scenario: 参数模式 resume
-- **WHEN** 历史 assistant(tool_calls) 消息带 `metadata.tool_preamble.calls`
-- **THEN** 不出伪行,每条 tool_call 行的前言 = `calls[该调用 id]`(无 id 按 `#下标`)
+#### Scenario: resume 回放
+- **WHEN** 历史 assistant(tool_calls) 消息 content 只有标签、带 `metadata.tool_preamble`
+- **THEN** 回放行序为 tool_call → tool_result,没有 assistant 行、没有前言伪行
 
 ### Requirement: REST
-`GET /api/config/tool-preamble` SHALL 返回 `{enabled, mode, sidecar_model, sidecar_wait_ms, modes, saved_models}`;`PUT` 为 patch 语义,非法值返回 400 `BAD_REQUEST`,成功写 `config.json` 并下发到全部活跃会话。
+`GET /api/config/tool-preamble` SHALL 返回 `{enabled, mode, modes:["prompt","reasoning"]}`;`PUT` 为 patch 语义(`enabled` bool / `mode` ∈ modes 任意子集),非法值返回 400 `BAD_REQUEST`,成功写 `config.json` 并下发到全部活跃会话。
 
-#### Scenario: 非法旁路模型
-- **WHEN** PUT `sidecar_model` 不在 saved_models 里
+#### Scenario: 非法 mode
+- **WHEN** PUT `{"mode":"sidecar"}`
 - **THEN** 400,配置不变

@@ -24,142 +24,95 @@ function toolItems(state) {
   return state.items.filter((item) => item.kind === 'tool');
 }
 
+function assistantItems(state) {
+  return state.items.filter((item) => item.kind === 'msg' && item.role === 'assistant');
+}
+
 const LIVE = { deferTrailingToolSummary: true, ensureLiveActivity: true, liveTurnId: 't1' };
 
-// 触发场景:参数模式 —— daemon 从调用参数里剥出前言,随 tool_start 直接下发。
-// 期望行为:工具项建项时就带 tool.preamble(source=prompt、无 batchId);投影的
-// 实时活动行标题就是这句前言。
-run('tool_start 自带前言:建项即打标', () => {
+// 触发场景:daemon 把本批次沿用的阶段前言随 tool_start 下发(preamble / preamble_source /
+// preamble_kind)。期望行为:工具项建项时就带 tool.preamble = {title, source, kind};
+// 投影的实时活动行标题就是这句前言;kind 只透传,不影响标题。
+run('tool_start 自带前言:建项即打标,实时活动行用它当标题', () => {
   const state = reduceMany([
-    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c1', args: { file_path: 'a' }, preamble: 'Reading registry sections', preamble_source: 'prompt' }, seq: 1 },
+    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c1', args: { file_path: 'a' }, preamble: 'Reading registry sections', preamble_source: 'prompt', preamble_kind: 'read' }, seq: 1 },
   ]);
   const tools = toolItems(state);
   assert.equal(tools.length, 1);
-  assert.deepEqual(tools[0].tool.preamble, { title: 'Reading registry sections', source: 'prompt', batchId: '' });
+  assert.deepEqual(tools[0].tool.preamble, { title: 'Reading registry sections', source: 'prompt', kind: 'read' });
   const projected = projectCollapsedTranscriptItems(state.items, LIVE);
   assert.deepEqual(projected.map((item) => item.kind), ['activity_summary']);
   assert.equal(projected[0].title, 'Reading registry sections');
-  assert.equal(projected[0].live, true);
+  assert.deepEqual(projected[0].preamble, { title: 'Reading registry sections', source: 'prompt', kind: 'read' });
 });
 
-// 触发场景:批次标题模式的常规顺序 —— tool_preamble 先于该批次的 tool_start 到达。
-// 期望行为:标题先暂存在 pendingToolPreambles,两个 tool_start 建项时各自取走并挂到
-// tool.preamble(带 batchId);取完 pending 清空。
-run('tool_preamble 先到:tool_start 建项时取走暂存标题', () => {
+// 触发场景:没有前言的 tool_start(功能关闭 / 模型没打标签)。
+// 期望行为:工具项没有 preamble 字段,投影与改动前一致(模板文案)。
+run('没有前言的 tool_start 不打标', () => {
   const state = reduceMany([
-    { type: 'tool_preamble', payload: { batch_id: 'c1', tool_call_ids: ['c1', 'c2'], title: 'Reading registry sections', source: 'reasoning', late: false }, seq: 1 },
-    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c1', args: { file_path: 'a' }, preamble: 'Reading registry sections', preamble_source: 'reasoning' }, seq: 2 },
-    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c2', args: { file_path: 'b' } }, seq: 3 },
-  ]);
-  const tools = toolItems(state);
-  assert.equal(tools.length, 2);
-  for (const item of tools) {
-    assert.deepEqual(item.tool.preamble, { title: 'Reading registry sections', source: 'reasoning', batchId: 'c1' });
-  }
-  assert.deepEqual(state.pendingToolPreambles, {});
-});
-
-// 触发场景:sidecar 迟到 —— 工具已经跑完(tool_start / tool_end 都到了)标题才来,
-// 事件带 late=true。
-// 期望行为:已存在的工具项原地打标;不残留 pending。
-run('late 标题原地打到已存在的工具项上', () => {
-  const state = reduceMany([
-    { type: 'tool_start', payload: { tool: 'bash', tool_call_id: 'c1', args: { cmd: 'ls' } }, seq: 1 },
-    { type: 'tool_end', payload: { tool: 'bash', tool_call_id: 'c1', success: true, output: 'ok' }, seq: 2 },
-    { type: 'tool_preamble', payload: { batch_id: 'c1', tool_call_ids: ['c1'], title: 'Listing files', source: 'sidecar', late: true }, seq: 3 },
+    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c1', args: { file_path: 'a' } }, seq: 1 },
   ]);
   const tools = toolItems(state);
   assert.equal(tools.length, 1);
-  assert.equal(tools[0].tool.preamble.title, 'Listing files');
-  assert.equal(tools[0].tool.isDone, true);
-  assert.deepEqual(state.pendingToolPreambles, {});
+  assert.equal(tools[0].tool.preamble, undefined);
 });
 
-// 触发场景:REST 历史 / resume,参数模式 —— 前言落在 assistant(tool_calls) 消息的
-// metadata.tool_preamble.calls 里(参数本身已被剥干净),结果在后面的 role:tool 消息。
-// 期望行为:结构化结果项按自己的 tool_call_id 拿到前言(无 batchId);同批里没
-// 填前言的调用没有 preamble;下一个 user 之后映射清空,不串到后面的回合。
-run('历史加载:逐调用前言按 id 传播到结果项', () => {
-  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
-    messages: [
-      { id: 'u1', role: 'user', content: 'list files', ts: 1 },
-      {
-        id: 'a1', role: 'assistant', content: '', ts: 2,
-        tool_calls: [
-          { id: 'c1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"ls"}' } },
-          { id: 'c2', type: 'function', function: { name: 'bash', arguments: '{"cmd":"pwd"}' } },
-        ],
-        metadata: { tool_preamble: { source: 'prompt', calls: { c1: 'Listing files' } } },
-      },
-      {
-        id: 't1', role: 'tool', tool_call_id: 'c1', content: 'ok', ts: 3,
-        metadata: { tool_success: true, tool_summary: { verb: 'ran', object: 'ls', icon: '', metrics: [] } },
-      },
-      {
-        id: 't2', role: 'tool', tool_call_id: 'c2', content: '/tmp', ts: 4,
-        metadata: { tool_success: true, tool_summary: { verb: 'ran', object: 'pwd', icon: '', metrics: [] } },
-      },
-      { id: 'u2', role: 'user', content: 'again', ts: 5 },
-      {
-        id: 'a2', role: 'assistant', content: '', ts: 6,
-        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"ls"}' } }],
-      },
-      {
-        id: 't3', role: 'tool', tool_call_id: 'c1', content: 'ok', ts: 7,
-        metadata: { tool_success: true, tool_summary: { verb: 'ran', object: 'ls', icon: '', metrics: [] } },
-      },
-    ],
-  }).state;
-  const tools = toolItems(loaded);
-  assert.equal(tools.length, 3);
-  assert.deepEqual(tools[0].tool.preamble, { title: 'Listing files', source: 'prompt', batchId: '' });
-  assert.equal(tools[1].tool.preamble, undefined, '没填前言的调用不该有 preamble');
-  assert.equal(tools[2].tool.preamble, undefined, '下一回合复用同一 id 也不能继承上一回合的前言');
-});
-
-// 触发场景:REST 历史,批次标题模式 —— metadata.tool_preamble 只有 title。
-// 期望行为:整批结果项都挂批次标题(batchId = 第一个 tool_call_id);assistant
-// 派生的 tool_call 包装项 metadata 补上 batch_id;投影出的分组仍是一条模板汇总。
-run('历史加载:批次标题传播到整批结果项', () => {
-  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
-    messages: [
-      { id: 'u1', role: 'user', content: 'list files', ts: 1 },
-      {
-        id: 'a1', role: 'assistant', content: '', ts: 2,
-        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"ls"}' } }],
-        metadata: { tool_preamble: { title: 'Listing files', source: 'reasoning' } },
-      },
-      {
-        id: 't1', role: 'tool', tool_call_id: 'c1', content: 'ok', ts: 3,
-        metadata: { tool_success: true, tool_summary: { verb: 'ran', object: 'ls', icon: '', metrics: [] } },
-      },
-      { id: 'a2', role: 'assistant', content: 'Done.', ts: 4 },
-    ],
-  }).state;
-  const result = loaded.items.find((item) => item.kind === 'tool' && item.tool.toolCallId === 'c1');
-  assert.ok(result, '结构化结果项应存在');
-  assert.deepEqual(result.tool.preamble, { title: 'Listing files', source: 'reasoning', batchId: 'c1' });
-  const wrapper = loaded.items.find((item) => item.kind === 'msg' && item.role === 'tool_call' && item.toolCallId === 'c1');
-  assert.ok(wrapper, 'tool_call 包装项应存在');
-  assert.equal(wrapper.metadata.tool_preamble.batch_id, 'c1');
-  const projected = projectCollapsedTranscriptItems(loaded.items, { deferTrailingToolSummary: false });
-  assert.deepEqual(projected.map((item) => item.kind), ['msg', 'activity_summary', 'msg']);
-  assert.equal(projected[1].mode, 'processed');
-});
-
-// 触发场景:tool_preamble 事件夹在流式 token 之间到达。
-// 期望行为:它是流中性事件 —— 不会把正在流式的 assistant 草稿切成两条;随后的
-// message 帧原位定稿。
-run('tool_preamble 不切断流式草稿', () => {
+// 触发场景:标签一闭合 daemon 就发 agent_progress{phase:preamble, label, preamble:{…}},
+// 工具调用还没流出来。期望行为:activity.label 是前言,activity.preamble 带 kind,
+// 投影的实时行(还没有工具项时靠 ensureLiveActivity)显示这句前言。
+run('agent_progress 的前言帧立刻换掉活动行文案', () => {
   const state = reduceMany([
-    { type: 'token', payload: { text: 'Reading ' }, seq: 1 },
-    { type: 'tool_preamble', payload: { batch_id: 'c1', tool_call_ids: ['c1'], title: 'Reading the loader', source: 'reasoning', late: false }, seq: 2 },
-    { type: 'token', payload: { text: 'the loader' }, seq: 3 },
-    { type: 'message', payload: { id: 'm1', role: 'assistant', content: 'Reading the loader' }, seq: 4 },
-    { type: 'tool_start', payload: { tool: 'file_read', tool_call_id: 'c1', args: { file_path: 'a' } }, seq: 5 },
+    { type: 'busy_changed', payload: { busy: true }, seq: 1 },
+    { type: 'agent_progress', payload: { phase: 'model_waiting', label: '正在等待模型响应' }, seq: 2 },
+    { type: 'agent_progress', payload: { phase: 'preamble', label: 'Editing config', preamble: { title: 'Editing config', source: 'prompt', kind: 'write' } }, seq: 3 },
   ]);
-  const assistants = state.items.filter((item) => item.kind === 'msg' && item.role === 'assistant');
-  assert.equal(assistants.length, 1);
-  assert.equal(assistants[0].content, 'Reading the loader');
-  assert.equal(toolItems(state)[0].tool.preamble.title, 'Reading the loader');
+  assert.equal(state.activity.label, 'Editing config');
+  assert.deepEqual(state.activity.preamble, { title: 'Editing config', source: 'prompt', kind: 'write' });
+  const plain = reduceMany([
+    { type: 'agent_progress', payload: { phase: 'reasoning', label: '正在推理' }, seq: 1 },
+  ]);
+  assert.equal(plain.activity.preamble, null);
+});
+
+// 触发场景:落盘的 assistant 正文保留了 <text_preamble> 标签(有意为之,模型会模仿
+// 自己的历史),历史加载与实时 message 帧都可能带它。期望行为:两条路径的 assistant
+// 正文都剥掉标签(标签后的空行一起去掉);整段都是标签的 assistant(tool_calls)
+// 消息不产生正文气泡;metadata.tool_preamble 只是记录,不影响任何项。
+run('历史加载与 message 帧都剥掉 <text_preamble> 标签', () => {
+  const loaded = loadTranscriptHistory(createTranscriptState({ title: 's1' }), {
+    messages: [
+      { id: 'u1', role: 'user', content: 'list files', ts: 1 },
+      {
+        id: 'a1', role: 'assistant', ts: 2,
+        content: '<text_preamble type="read">Listing files</text_preamble>\n\n',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"ls"}' } }],
+        metadata: { tool_preamble: { source: 'prompt', title: 'Listing files', kind: 'read' } },
+      },
+      { id: 't1', role: 'tool', tool_call_id: 'c1', content: 'ok', ts: 3 },
+      { id: 'a2', role: 'assistant', ts: 4, content: '<text_preamble>x</text_preamble>\n\nAll done.' },
+    ],
+  }).state;
+  const assistants = assistantItems(loaded);
+  for (const item of assistants) {
+    assert.ok(!String(item.content || '').includes('text_preamble'), item.content);
+  }
+  assert.deepEqual(assistants.filter((item) => item.content.trim()).map((item) => item.content), ['All done.']);
+  for (const item of toolItems(loaded)) {
+    assert.equal(item.tool.preamble, undefined);
+  }
+
+  const live = reduceMany([
+    { type: 'message', payload: { role: 'assistant', id: 'm1', content: '<text_preamble type="write">Editing</text_preamble>\n\nDone editing.' }, seq: 1 },
+  ]);
+  assert.deepEqual(assistantItems(live).map((item) => item.content), ['Done editing.']);
+});
+
+// 触发场景:旧 daemon 仍发 tool_preamble 事件(已从协议里删掉)。
+// 期望行为:当作未知事件忽略,不报错、不建项。
+run('已删除的 tool_preamble 事件被忽略', () => {
+  const state = reduceMany([
+    { type: 'tool_preamble', payload: { batch_id: 'c1', tool_call_ids: ['c1'], title: 'Old', source: 'prompt', late: false }, seq: 1 },
+  ]);
+  assert.equal(state.items.length, 0);
+  assert.equal(state.pendingToolPreambles, undefined);
 });

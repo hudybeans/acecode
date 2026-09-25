@@ -50,7 +50,7 @@ export function settingsSearchEntries(developerModeUnlocked = false) {
   ];
   if (developerModeUnlocked) {
     fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
-    fields.push(['developer', '工具前言', 'tool preamble progress title status line reasoning summary sidecar 前言 标题']);
+    fields.push(['developer', '工具前言', 'tool preamble progress status line text_preamble reasoning summary 前言 阶段']);
   }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),

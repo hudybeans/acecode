@@ -1,10 +1,10 @@
-// 覆盖 resume 回放对 metadata.tool_preamble 的还原(openspec add-tool-preamble):
-//   1. reasoning / sidecar 来源:assistant 正文行之后、tool_call 行之前多一行
-//      role=preamble 的标题伪行
-//   2. prompt 来源(第一版遗留数据,title):那句正文就是标题,只出标题行,不再重复推正文行;
-//      参数模式(calls):不出伪行,前言挂到各自的 tool_call 行(Message::preamble)
-//   3. 没有 tool_calls 的 assistant 消息即使带 metadata 也不出标题行(标题只
-//      属于工具批次);没有 metadata 的老会话与改动前完全一致
+// 覆盖 resume 回放对工具前言(openspec add-tool-preamble)的处理:
+//   1. assistant 正文里的 <text_preamble> 标签回放时剥掉 —— 标签只在实时期间进
+//      loading,落定后不显示(用户决定),落盘正文却保留原文(模型会模仿自己的
+//      历史输出);整段都是标签的 assistant 消息不推正文行
+//   2. metadata.tool_preamble 只是记录,不还原任何伪行(第一版的「● 标题」伪行
+//      与参数版的 tool_call 行前言都已废)
+//   3. 没有标签 / 没有 metadata 的老会话与改动前完全一致
 
 #include <gtest/gtest.h>
 
@@ -34,14 +34,13 @@ nlohmann::json one_tool_call(const std::string& id,
 }
 
 ChatMessage assistant_with_tool(const std::string& content,
-                                const std::string& source,
-                                const std::string& title) {
+                                const nlohmann::json& preamble_metadata = nullptr) {
     ChatMessage m;
     m.role = "assistant";
     m.content = content;
     m.tool_calls = one_tool_call("call-1", "file_read", R"({"file_path":"a.txt"})");
-    if (!title.empty()) {
-        m.metadata = {{"tool_preamble", {{"title", title}, {"source", source}}}};
+    if (!preamble_metadata.is_null()) {
+        m.metadata = {{"tool_preamble", preamble_metadata}};
     }
     return m;
 }
@@ -62,79 +61,52 @@ std::vector<std::string> roles_of(const std::vector<TuiState::Message>& rows) {
 
 } // namespace
 
-// 场景:reasoning 来源,assistant 有正文 "Let me look." + 1 个 tool_call,后跟结果。
-// 期望:行序 assistant → preamble(标题)→ tool_call → tool_result;标题行内容
-// 就是 metadata 里的 title。
-TEST(SessionReplayToolPreamble, ReasoningTitleRowPrecedesToolCallRows) {
+// 场景:assistant 正文只有一个标签 "<text_preamble type=\"read\">Reading the loader</text_preamble>\n\n"
+// + 1 个 tool_call,metadata 带 {source:prompt, title, kind:read},后跟结果。
+// 期望:没有 assistant 正文行、没有任何前言伪行,只有 tool_call → tool_result。
+TEST(SessionReplayToolPreamble, TagOnlyAssistantTextProducesNoRow) {
     ToolExecutor tools;
     const auto rows = replay_session_messages({
-        assistant_with_tool("Let me look.", "reasoning", "Reading registry sections"),
+        assistant_with_tool(
+            "<text_preamble type=\"read\">Reading the loader</text_preamble>\n\n",
+            {{"source", "prompt"}, {"title", "Reading the loader"}, {"kind", "read"}}),
+        tool_result("ok"),
+    }, tools);
+    EXPECT_EQ(roles_of(rows), (std::vector<std::string>{"tool_call", "tool_result"}));
+}
+
+// 场景:标签后面还有一句真正的正文 "Checking the loader first."(模型混用)。
+// 期望:正文行只剩那句话,标签与紧跟的空行都不在里面。
+TEST(SessionReplayToolPreamble, TagIsStrippedFromAssistantRow) {
+    ToolExecutor tools;
+    const auto rows = replay_session_messages({
+        assistant_with_tool(
+            "<text_preamble type=\"write\">Editing config</text_preamble>\n\nChecking the loader first.",
+            {{"source", "prompt"}, {"title", "Editing config"}, {"kind", "write"}}),
         tool_result("ok"),
     }, tools);
     ASSERT_EQ(roles_of(rows), (std::vector<std::string>{
-        "assistant", "preamble", "tool_call", "tool_result"}));
-    EXPECT_EQ(rows[1].content, "Reading registry sections");
-    EXPECT_FALSE(rows[1].is_tool);
+        "assistant", "tool_call", "tool_result"}));
+    EXPECT_EQ(rows[0].content, "Checking the loader first.");
 }
 
-// 场景:prompt 来源,正文 "Reading the loader" 本身就是前言。期望:不出重复的
-// assistant 正文行,只有标题行 + 工具行。
-TEST(SessionReplayToolPreamble, PromptSourceFoldsTextIntoTitleRow) {
+// 场景:reasoning 来源的 metadata(只有 title,没有标签)与没有 metadata 的老会话。
+// 期望:两者都与改动前一致 —— assistant → tool_call → tool_result,不多不少。
+TEST(SessionReplayToolPreamble, MetadataAloneAddsNoRows) {
     ToolExecutor tools;
-    const auto rows = replay_session_messages({
-        assistant_with_tool("Reading the loader", "prompt", "Reading the loader"),
+    const auto reasoning = replay_session_messages({
+        assistant_with_tool("Let me look.",
+                            {{"source", "reasoning"}, {"title", "Reading registry sections"}}),
         tool_result("ok"),
     }, tools);
-    ASSERT_EQ(roles_of(rows), (std::vector<std::string>{
-        "preamble", "tool_call", "tool_result"}));
-    EXPECT_EQ(rows[0].content, "Reading the loader");
-}
+    EXPECT_EQ(roles_of(reasoning), (std::vector<std::string>{
+        "assistant", "tool_call", "tool_result"}));
+    EXPECT_EQ(reasoning[0].content, "Let me look.");
 
-// 场景:参数模式落盘的 metadata.tool_preamble = {source:"prompt", calls:{...}},两个
-// tool_call(call-1 / 没有 id 的第二个)各有自己的前言,assistant 正文为空。
-// 期望:不出 preamble 伪行、不出空正文行;两条 tool_call 行的 preamble 字段各是自己
-// 那句(没有 id 的按 "#1" 取),tool_result 照常成对相邻。
-TEST(SessionReplayToolPreamble, PromptCallsAttachPreambleToEachToolCallRow) {
-    ToolExecutor tools;
-    ChatMessage m;
-    m.role = "assistant";
-    nlohmann::json first;
-    first["id"] = "call-1";
-    first["type"] = "function";
-    first["function"]["name"] = "file_read";
-    first["function"]["arguments"] = R"({"file_path":"a.txt"})";
-    nlohmann::json second;
-    second["type"] = "function";
-    second["function"]["name"] = "grep";
-    second["function"]["arguments"] = R"({"pattern":"x"})";
-    m.tool_calls = nlohmann::json::array({first, second});
-    m.metadata = {{"tool_preamble", {
-        {"source", "prompt"},
-        {"calls", {{"call-1", "Reading a.txt"}, {"#1", "Searching for x"}}},
-    }}};
-    const auto rows = replay_session_messages(
-        {m, tool_result("ok"), tool_result("ok2")}, tools);
-    ASSERT_EQ(roles_of(rows), (std::vector<std::string>{
-        "tool_call", "tool_result", "tool_call", "tool_result"}));
-    EXPECT_EQ(rows[0].preamble, "Reading a.txt");
-    EXPECT_EQ(rows[2].preamble, "Searching for x");
-}
-
-// 场景:没有 metadata 的老会话 / 没有 tool_calls 但带 metadata 的消息。
-// 期望:前者与改动前一致(assistant → tool_call → tool_result);后者不出标题行。
-TEST(SessionReplayToolPreamble, NoTitleWithoutMetadataOrWithoutToolCalls) {
-    ToolExecutor tools;
     const auto legacy = replay_session_messages({
-        assistant_with_tool("Let me look.", "", ""),
+        assistant_with_tool("Let me look."),
         tool_result("ok"),
     }, tools);
     EXPECT_EQ(roles_of(legacy), (std::vector<std::string>{
         "assistant", "tool_call", "tool_result"}));
-
-    ChatMessage text_only;
-    text_only.role = "assistant";
-    text_only.content = "Done.";
-    text_only.metadata = {{"tool_preamble", {{"title", "Stray"}, {"source", "reasoning"}}}};
-    const auto rows = replay_session_messages({text_only}, tools);
-    EXPECT_EQ(roles_of(rows), (std::vector<std::string>{"assistant"}));
 }

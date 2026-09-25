@@ -49,9 +49,6 @@ void setup_agent_callbacks(TuiContext& ctx) {
                     m.display_override = ToolExecutor::build_tool_call_preview(
                         parts.name, parts.args);
                 }
-                // 参数模式的前言(on_tool_preamble 刚送达)挂到这一行上。
-                m.preamble = std::exchange(state.pending_tool_call_preamble,
-                                           std::string{});
             }
             state.conversation.push_back(std::move(m));
         }

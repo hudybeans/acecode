@@ -126,7 +126,7 @@
 #include "markdown/markdown_formatter.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_auto_title.hpp"
-#include "session/tool_preamble_sidecar.hpp"
+#include "tool_preamble/tool_preamble.hpp"
 #include "session/session_registry.hpp"
 #include "session/session_resume_restore.hpp"
 #include "worktree/worktree_core.hpp"
@@ -4152,12 +4152,6 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
                 segs.push_back(
                     text(display_name)
                     | bold | color(acecode::tui::tool_call_name_color(palette)));
-                if (!msg.preamble.empty()) {
-                    // 工具前言(参数模式):`● FileRead · 正在读取加载器`。前言用
-                    // 次要色,工具名仍是视觉锚点;参数(verbose 时)跟在后面。
-                    segs.push_back(text(" \xC2\xB7 ") | color(tui::theme().ui.text_dim)); // "·"
-                    segs.push_back(text(msg.preamble) | tui::readable_secondary());
-                }
                 if (show_args && !parts.args.empty()) {
                     segs.push_back(paragraph("(" + parts.args + ")")
                         | color(acecode::tui::tool_call_argument_color(palette))
@@ -4460,19 +4454,6 @@ static Element render_tui_frame(TuiRendererContext& ctx) {
             auto line = hbox({
                 text(" \xE2\x97\x8F ") | tui::readable_secondary(),
                 paragraph(msg.content) | tui::readable_secondary() | flex,
-            });
-            if (focused_message) {
-                line = line | focus;
-            }
-            message_elements.push_back(
-                tracked_message(i, line | focus_decorator));
-        } else if (msg.role == "preamble") {
-            // 工具前言(add-tool-preamble):工具批次标题伪行 "● 标题",与工具行
-            // 同列对齐、accent 色加粗。显示端专属 role,不进持久化/LLM context
-            // (resume 时由 session_replay 从 metadata.tool_preamble 还原)。
-            auto line = hbox({
-                text(" \xE2\x97\x8F ") | color(tui::theme().ui.accent),
-                paragraph(msg.content) | bold | color(tui::theme().ui.accent) | flex,
             });
             if (focused_message) {
                 line = line | focus;
@@ -5588,8 +5569,15 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
     AgentCallbacks callbacks;
     callbacks.on_message = [&state, &clamp_chat_focus, &screen,
                             &tui_turn_assistant_text](const std::string& role,
-                                                     const std::string& content,
+                                                     const std::string& raw_content,
                                                      bool is_tool) {
+        // 工具前言(add-tool-preamble):assistant 正文里的 <text_preamble> 标签
+        // 只在实时期间进 loading,不进 transcript;整段都是标签时不建空行。
+        const bool assistant_text = !is_tool && role == "assistant";
+        const std::string content = assistant_text
+            ? acecode::tool_preamble::strip_text_preamble_tags(raw_content)
+            : raw_content;
+        if (assistant_text && content.empty()) return;
         std::lock_guard<std::mutex> lk(state.mu);
         if (!is_tool && role == "assistant") {
             tui_turn_assistant_text = content;
@@ -5611,9 +5599,6 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
                     m.display_override = ToolExecutor::build_tool_call_preview(
                         parts.name, parts.args);
                 }
-                // 参数模式的前言(on_tool_preamble 刚送达)挂到这一行上。
-                m.preamble = std::exchange(state.pending_tool_call_preamble,
-                                           std::string{});
             }
             state.conversation.push_back(std::move(m));
         }
@@ -5776,27 +5761,12 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         }
         screen.PostEvent(Event::Custom);
     };
-    // 工具前言(add-tool-preamble):reasoning 模式的加粗标题替换等待动画短语;
-    // 批次标题落定后在 tool_call 行前插一行 "● 标题" 伪行(prompt 来源时把刚
-    // 流完的那条 assistant 正文原地改成标题行,同一句话不显示两遍)。
+    // 工具前言(add-tool-preamble):当前阶段的前言(<text_preamble> 标签正文 /
+    // 推理加粗标题)替换等待动画短语;只在等待期显示,不进 transcript。
     callbacks.on_thinking_title = [&state, &screen](const std::string& title) {
         if (title.empty()) return;
         std::lock_guard<std::mutex> lk(state.mu);
         state.current_thinking_phrase = title;
-        screen.PostEvent(Event::Custom);
-    };
-    callbacks.on_tool_preamble = [&state, &clamp_chat_focus, &screen](
-        const std::string& title, const std::string& source) {
-        if (title.empty()) return;
-        std::lock_guard<std::mutex> lk(state.mu);
-        if (source == "prompt") {
-            // 参数模式:没有批次标题,这是紧接着那个 tool_call 的前言,挂到该行上
-            // 而不是另起一行(一摞标题行就是被否掉的那版)。
-            state.pending_tool_call_preamble = title;
-            return;
-        }
-        state.conversation.push_back({"preamble", title, false});
-        clamp_chat_focus();
         screen.PostEvent(Event::Custom);
     };
     callbacks.on_transcript_replace = [&state, &clamp_chat_focus, &screen,
@@ -5945,20 +5915,6 @@ static int run_interactive_app(const InteractiveCliOptions& cli,
         }
     }
     agent_loop.set_session_manager(&session_manager);
-    // 工具前言 sidecar(add-tool-preamble):与自动标题同款的一次性 provider,
-    // 跑在 AgentLoop 起的 detached 线程上,config / session_manager 都活到进程尾。
-    agent_loop.set_tool_preamble_sidecar_summarizer(
-        [&config, &session_manager, &agent_loop](
-            const acecode::tool_preamble::SidecarSummaryInput& input) -> std::string {
-            auto profile = resolve_tool_preamble_sidecar_profile(
-                config, session_manager.current_model_preset(), agent_loop.cwd());
-            if (!profile.has_value()) return {};
-            auto provider =
-                create_tool_preamble_sidecar_provider(std::move(*profile), config);
-            if (!provider) return {};
-            return generate_tool_preamble_title(*provider, input)
-                .value_or(std::string{});
-        });
 
     std::mutex tui_title_threads_mu;
     std::vector<std::thread> tui_title_threads;

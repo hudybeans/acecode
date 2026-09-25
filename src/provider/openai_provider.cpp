@@ -1626,8 +1626,6 @@ ChatResponse OpenAiCompatProvider::parse_sse_stream(
                                 progress_evt.tool_index = index;
                                 progress_evt.tool_call.id = acc.id;
                                 progress_evt.tool_call.function_name = acc.name;
-                                progress_evt.tool_call.function_arguments =
-                                    acc.arguments.substr(0, kToolCallDeltaArgumentsPrefixBytes);
                                 progress_evt.tool_call_argument_bytes = acc.arguments.size();
                                 callback(progress_evt);
                             }
