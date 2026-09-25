@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   builtinCommandRequestForText,
   desktopFeedbackRequestForText,
+  inputRouteForPayload,
   inputRouteForText,
   remoteControlSessionRefreshForCommand,
   sideQuestionRequestForText,
@@ -172,6 +173,57 @@ run('home builtin session creation disables auto start', () => {
   assert.deepEqual(sessionCreateOptionsForText('/feedback reproduce this'), {
     auto_start: false,
   });
+});
+
+// ---- 粘贴块参与路由(第 2 条反馈 f300,D9) ----
+const pastePayload = (editor, ...blocks) => {
+  const composer_content = { version: 1, parts: [{ type: 'text', text: editor }, ...blocks] };
+  const inlineText = blocks.filter((part) => part.type === 'pasted_text').map((part) => part.text);
+  return { text: [editor, ...inlineText].filter(Boolean).join('\n\n'), composer_content };
+};
+const inlineBlock = (text) => ({ type: 'pasted_text', key: `k-${text.length}`, text });
+const fileBlock = {
+  type: 'attachment', key: 'pf', id: 'att', name: 'pasted-text.txt', kind: 'file',
+  mime_type: 'text/plain', paste: { title: 'log', chars: 3, lines: 1 },
+};
+
+// 触发场景:/goal 带一个小内联块。
+// 期望:仍是 builtin goal,且块正文并进参数(与以前直接粘贴长文本一致)。
+run('goal with a small inline paste stays a builtin with merged arguments', () => {
+  const route = inputRouteForPayload(pastePayload('/goal 修复登录', inlineBlock('step 1\nstep 2')));
+  assert.equal(route.kind, 'builtin');
+  assert.equal(route.command.command, 'goal');
+  assert.equal(route.command.args, '修复登录\n\nstep 1\nstep 2');
+});
+
+// 触发场景:/goal 带文件块;/btw 带超过 16000 字节的内联块。
+// 期望:paste_too_long(前端提示「太长」并保留输入框),不会偷偷改发成一条字面 /goal 消息。
+run('goal or side question with a paste that cannot fit reports paste_too_long', () => {
+  assert.deepEqual(inputRouteForPayload(pastePayload('/goal x', fileBlock)),
+    { kind: 'paste_too_long', command: 'goal', limitBytes: 4000 });
+  assert.deepEqual(inputRouteForPayload(pastePayload('/btw q', inlineBlock('e'.repeat(16001)))),
+    { kind: 'paste_too_long', command: 'btw', limitBytes: 16000 });
+});
+
+// 触发场景:编辑器为空,只有一个以 /turn 或 /compact 开头的内联块。
+// 期望:普通消息。回归:粘贴材料恰好以斜杠命令开头时被当成命令执行。
+run('an empty editor with a paste block is always an ordinary message', () => {
+  for (const pasted of ['/turn stop what you are doing', '/compact\nmore', '/goal 目标']) {
+    const payload = pastePayload('', inlineBlock(pasted));
+    assert.deepEqual(inputRouteForPayload(payload), { kind: 'message', text: pasted });
+  }
+  assert.equal(inputRouteForPayload(pastePayload('  ', fileBlock)).kind, 'message');
+});
+
+// 触发场景:没有粘贴块的普通输入经 inputRouteForPayload 路由。
+// 期望:与 inputRouteForText 完全一致(不改变旧行为)。
+run('payload routing without paste blocks matches text routing', () => {
+  for (const text of ['/compact', '/goal 完成', '/btw 问题', '/turn 改方向', 'hello', '/feedback 好用']) {
+    assert.deepEqual(inputRouteForPayload({ text }), inputRouteForText(text));
+    assert.deepEqual(inputRouteForPayload(pastePayload(text)), inputRouteForText(text));
+  }
+  assert.equal(inputRouteForPayload(pastePayload('/compact', fileBlock)).kind, 'builtin',
+    'extras handling for /compact + file block stays with the caller (sent as a message like images)');
 });
 
 run('home ordinary message session creation auto starts text', () => {

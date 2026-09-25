@@ -7,6 +7,7 @@
 #include "../server_impl.hpp"
 #include "../project_creation.hpp"
 #include "session/composer_content.hpp"
+#include "session/pasted_text_attachment.hpp"
 
 #include <cstddef>
 #include <fstream>
@@ -19,7 +20,7 @@ using nlohmann::json;
 
 namespace {
 
-json read_workspace_draft(const std::filesystem::path& path) {
+json read_workspace_draft_strict(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) return json{{"text", ""}};
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("failed to read workspace draft");
@@ -35,6 +36,22 @@ json read_workspace_draft(const std::filesystem::path& path) {
         result["composer_content"] = std::move(normalized.content);
     }
     return result;
+}
+
+// GET reports an unreadable draft as an error. PUT and DELETE pass
+// tolerate_invalid: a draft this build cannot read (for example one written by
+// a later version with part types it does not know) is treated as empty, so a
+// PUT overwrites it and DELETE simply does not match. Without this, one such
+// file would make the home composer fail with 500 forever.
+json read_workspace_draft(const std::filesystem::path& path, bool tolerate_invalid) {
+    if (!tolerate_invalid) return read_workspace_draft_strict(path);
+    try {
+        return read_workspace_draft_strict(path);
+    } catch (const std::exception& e) {
+        LOG_WARN("[web] unreadable workspace draft treated as empty path=" +
+                 path_to_utf8(path) + " error=" + e.what());
+        return json{{"text", ""}};
+    }
 }
 
 json opencode_import_status_to_json(const OpencodeImportJobStatus& status) {
@@ -112,16 +129,10 @@ void WebServer::Impl::register_workspaces() {
                 response.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(response));
             };
-            std::string workspace_hash;
-            std::filesystem::path directory;
-            if (hash == "__no_workspace__") {
-                directory = path_from_utf8(no_workspace_cache_root());
-            } else {
-                const auto workspace = resolve_workspace(hash);
-                if (!workspace) return respond(404, {{"error", "workspace not found"}});
-                workspace_hash = workspace->hash;
-                directory = path_from_utf8(projects_dir()) / workspace_hash;
-            }
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+            const std::string& workspace_hash = location->workspace_hash;
+            const std::filesystem::path& directory = location->draft_dir;
             json requested;
             if (req.method != crow::HTTPMethod::GET) {
                 std::string text;
@@ -138,13 +149,27 @@ void WebServer::Impl::register_workspaces() {
                 static std::mutex draft_mutex;
                 std::lock_guard<std::mutex> lock(draft_mutex);
                 const auto path = directory / "input_draft.json";
-                auto draft = read_workspace_draft(path);
+                auto draft = read_workspace_draft(
+                    path, /*tolerate_invalid=*/req.method != crow::HTTPMethod::GET);
                 const bool clearing = req.method == crow::HTTPMethod::DELETE;
                 const bool matched = clearing && draft == requested;
                 if (req.method == crow::HTTPMethod::PUT || matched) {
                     draft = clearing ? json{{"text", ""}} : std::move(requested);
                     if (!atomic_write_file(path_to_utf8(path), draft.dump(), true)) {
                         return respond(500, {{"error", "failed to save workspace draft"}});
+                    }
+                    // Drop pasted-text attachments the saved draft no longer
+                    // references. Still under draft_mutex, so no concurrent
+                    // save can be referencing them; the age gate protects an
+                    // upload whose referencing draft is still being debounced.
+                    const auto pruned = prune_workspace_draft_attachments(
+                        location->attachment_project_dir, draft,
+                        kWorkspaceDraftAttachmentMinAge);
+                    if (pruned > 0) {
+                        LOG_INFO("[web] pruned workspace draft attachments count=" +
+                                 std::to_string(pruned) + " workspace=" +
+                                 (workspace_hash.empty() ? std::string("__no_workspace__")
+                                                         : workspace_hash));
                     }
                 }
                 draft["workspace_hash"] = workspace_hash;
@@ -153,6 +178,108 @@ void WebServer::Impl::register_workspaces() {
             } catch (const std::exception&) {
                 return respond(500, {{"error", "failed to access workspace draft"}});
             }
+        });
+        // Home draft attachments: pasted text too large to stay inline in the
+        // home draft. Stored under <attachment_project_dir>/attachments/
+        // .workspace-draft/ and copied into a session with
+        // POST /api/sessions/:id/attachments {from_workspace_draft} right
+        // before sending. Only pasted-text snapshots are accepted here.
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments/<string>/blob").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& hash) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const std::exception& e) {
+                return respond(400, {{"error", std::string("bad json: ") + e.what()}});
+            }
+            if (!body.is_object()) return respond(400, {{"error", "request body must be an object"}});
+            if (body.contains("source_path") || body.contains("reference_only") ||
+                body.contains("from_workspace_draft")) {
+                return respond(400, {{"error",
+                    "workspace draft attachments only accept pasted text data"}});
+            }
+            json metadata = json::object();
+            std::string error;
+            if (!apply_pasted_text_upload_metadata(body, metadata, error)) {
+                return respond(400, {{"error", error}});
+            }
+            if (!metadata.contains("origin")) {
+                return respond(400, {{"error",
+                    "workspace draft attachments require origin \"pasted_text\""}});
+            }
+            const std::string name = body.contains("name") && body["name"].is_string()
+                ? body["name"].get<std::string>() : std::string{};
+            const std::string mime_type = body.contains("mime_type") && body["mime_type"].is_string()
+                ? body["mime_type"].get<std::string>() : std::string{};
+            if (!body.contains("data_base64") || !body["data_base64"].is_string()) {
+                return respond(400, {{"error", "data_base64 is required"}});
+            }
+            auto decoded = base64_decode(body["data_base64"].get_ref<const std::string&>());
+            if (!decoded.has_value()) {
+                return respond(400, {{"error", "invalid base64 attachment data"}});
+            }
+            body = json();  // release the encoded copy before writing
+            auto record = save_attachment(
+                path_to_utf8(location->attachment_project_dir),
+                kWorkspaceDraftAttachmentOwner, name, mime_type, *decoded, &error, metadata);
+            if (!record) {
+                return respond(400, {{"error", error.empty() ? "failed to save attachment" : error}});
+            }
+            // The persisted record keeps the session-shaped blob_url that
+            // save_attachment writes; that URL is never served. Clients read
+            // the workspace blob route below instead.
+            auto attachment = attachment_to_json(*record);
+            attachment["blob_url"] = "/api/workspaces/" +
+                (location->workspace_hash.empty() ? std::string("__no_workspace__")
+                                                  : location->workspace_hash) +
+                "/draft/attachments/" + record->id + "/blob";
+            return respond(201, {{"attachment", std::move(attachment)}});
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments/<string>/blob").methods(crow::HTTPMethod::GET)
+        ([this](const crow::request& req, const std::string& hash, const std::string& attachment_id) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+            std::string error;
+            const auto record = load_attachment(
+                path_to_utf8(location->attachment_project_dir),
+                kWorkspaceDraftAttachmentOwner, attachment_id, &error);
+            if (!record) {
+                return respond(404, {{"error", error.empty() ? "attachment not found" : error}});
+            }
+            auto bytes = read_attachment_bytes(*record, kMaxAttachmentBytes, &error);
+            if (!bytes) {
+                return respond(404, {{"error", error.empty() ? "attachment not found" : error}});
+            }
+            crow::response r(200);
+            r.body = std::move(*bytes);
+            r.add_header("Content-Type", record->mime_type.empty()
+                ? "application/octet-stream"
+                : record->mime_type);
+            r.add_header("Cache-Control", "private, max-age=3600");
+            return with_cors(req, std::move(r));
         });
         CROW_ROUTE(app, "/api/workspaces").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req) {

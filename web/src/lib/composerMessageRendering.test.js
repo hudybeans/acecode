@@ -10,26 +10,58 @@ import * as messageAttachments from './messageAttachments.js';
 import * as desktopContext from './desktopContextMenu.js';
 import { resolveLeadingSlashCommand } from './slashCommands.js';
 import { extractSessionReferences, formatSessionReferenceToken } from './sessionReference.js';
+import * as pastedText from './pastedText.js';
+import * as userMessagePreview from './userMessagePreview.js';
+import { clsx } from './format.js';
 
 function run(name, fn) { fn(); console.log(`[pass] ${name}`); }
-const source = readFileSync(new URL('../components/Message.jsx', import.meta.url), 'utf8');
-const ast = parseSync(source, { configFile: false, babelrc: false, parserOpts: { plugins: ['jsx'] } });
-const body = ast.program.body.filter((node) => node.type !== 'ImportDeclaration').map((node) => node.declaration || node);
-const transformed = await transformWithEsbuild(body.map((node) => source.slice(node.start, node.end)).join('\n'), 'Message.jsx', {
-  loader: 'jsx', jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment',
-});
+async function compileComponentSource(file) {
+  const source = readFileSync(new URL(`../components/${file}`, import.meta.url), 'utf8');
+  const ast = parseSync(source, { configFile: false, babelrc: false, parserOpts: { plugins: ['jsx'] } });
+  const body = ast.program.body.filter((node) => node.type !== 'ImportDeclaration').map((node) => node.declaration || node);
+  const transformed = await transformWithEsbuild(body.map((node) => source.slice(node.start, node.end)).join('\n'), file, {
+    loader: 'jsx', jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment',
+  });
+  return transformed.code;
+}
+const messageCode = await compileComponentSource('Message.jsx');
+const dialogCode = await compileComponentSource('PastedTextDialog.jsx');
 const commands = [{ name: 'review', kind: 'skill', description: 'Review source', path: '/skills/review/SKILL.md' }];
+// 卡片 / 对话框用桩:只把关键 props 暴露成 data 属性,便于断言渲染位置与来源。
+const PastedTextCardStub = ({ title, sizeBytes, status }) => React.createElement('span', {
+  'data-card': title, 'data-card-size': sizeBytes, 'data-card-status': status,
+});
+const PastedTextDialogStub = () => null;
+const contextLoader = () => Promise.resolve('');
+const LoaderContext = React.createContext(contextLoader);
 function compile(overrides = {}) {
-  return vm.runInNewContext(`${transformed.code}; ({ Message, OrderedUserMessageBody });`, {
+  return vm.runInNewContext(`${messageCode}; ({ Message, OrderedUserMessageBody });`, {
     React, ...React, ...composerContent, ...messageAttachments, ...desktopContext,
+    ...pastedText, ...userMessagePreview, clsx,
     useTranslation() {}, useSlashCommands: () => ({ commands }), resolveLeadingSlashCommand, extractSessionReferences,
     VsIcon: () => null, CommandGlyph: () => null, FileTypeIcon: () => null,
     ImageLightbox: () => null,
+    AttachmentTextLoaderContext: LoaderContext,
+    PastedTextCard: PastedTextCardStub,
+    PastedTextDialog: PastedTextDialogStub,
     AttachmentStrip: ({ contentParts = [] }) => React.createElement('aside', {}, contentParts.map((part, index) => (
       React.createElement('span', { key: index }, part.attachment?.name || part.context?.label || '')
     ))),
     ...overrides,
   });
+}
+// 直接把组件当函数调用时用的极简 hook:useState 按调用顺序存槽位,reset() 后重放。
+function hookHarness() {
+  const slots = [];
+  let index = 0;
+  return {
+    reset() { index = 0; },
+    useState(initial) {
+      const slot = index++;
+      if (!(slot in slots)) slots[slot] = typeof initial === 'function' ? initial() : initial;
+      return [slots[slot], (value) => { slots[slot] = typeof value === 'function' ? value(slots[slot]) : value; }];
+    },
+  };
 }
 const { Message } = compile();
 const ordered = { version: 1, parts: [
@@ -131,12 +163,13 @@ run('actual inline handlers preserve file, directory, image and desktop preview 
     useState: () => [null, (value) => { preview = value; }],
     useMemo: (factory) => factory(), useCallback: (handler) => handler,
     useEffect: (effect) => effect(),
+    useContext: (context) => context._currentValue,
     window: { addEventListener: (_event, handler) => { desktopHandler = handler; }, removeEventListener() {} },
   });
   const tree = OrderedUserMessageBody({ composerContent: { ...ordered, parts: [...ordered.parts,
     { type: 'path', path: 'src/', token: '@src/', directory: true },
   ] }, contentParts, onOpenFilePreview: (path) => { file = path; }, onLocateInFileTree: (path) => { directory = path; } });
-  const buttons = tree.props.children[0].filter((child) => child?.type === 'button');
+  const buttons = tree.props.children.find(Array.isArray).filter((child) => child?.type === 'button');
   buttons.find((child) => child.props['data-file-path'] === 'src/a.cpp').props.onClick();
   assert.equal(file, 'src/a.cpp');
   buttons.find((child) => child.props['data-file-path'] === 'src/').props.onClick();
@@ -148,4 +181,146 @@ run('actual inline handlers preserve file, directory, image and desktop preview 
   desktopHandler({ detail });
   assert.equal(detail.handled, true);
   assert.equal(preview.src, '/image/blob');
+});
+
+// ---- 粘贴的文本块与超长消息(第 2 条反馈 f300) ----
+
+const pastedBody = ['first line of paste', ...Array(200).fill('SECRET-BODY-LINE')].join(String.fromCharCode(10));
+const pasteMessage = { version: 1, parts: [
+  { type: 'text', text: 'please review' },
+  { type: 'pasted_text', key: 'paste-1', text: pastedBody },
+  { type: 'attachment', key: 'paste-file', id: 'f1', name: 'pasted-text-20260924-101010.txt', kind: 'file',
+    mime_type: 'text/plain', paste: { title: 'server.log head', chars: 300000, lines: 9000 } },
+] };
+const pasteContentParts = [
+  { type: 'file', attachment: { id: 'f1', name: 'pasted-text-20260924-101010.txt', kind: 'file', mime_type: 'text/plain',
+    size_bytes: 1234567, blob_url: '/api/sessions/s1/attachments/f1/blob', metadata: { origin: 'pasted_text' } } },
+];
+
+// 触发场景:用户消息带一个内联粘贴块。
+// 期望行为:块渲染成卡片(标题取正文第一条非空行),气泡 HTML 里不含块的正文。
+run('inline pasted block renders as a card without its body', () => {
+  const html = render({ composerContent: { version: 1, parts: pasteMessage.parts.slice(0, 2) } });
+  assert.match(html, /data-card="first line of paste"/);
+  assert.match(html, /please review/);
+  assert.doesNotMatch(html, /SECRET-BODY-LINE/);
+  assert.ok(html.indexOf('data-card=') < html.indexOf('please review'), 'cards sit above the text');
+});
+
+// 触发场景:用户消息带一个文件块(attachment 部件 + paste 描述),content_parts 里有对应附件记录。
+// 期望行为:渲染成带大小的卡片;不出现在 AttachmentStrip,也不落进内联附件按钮分支。
+run('file pasted block renders as a card only, not in the attachment strip or inline attachment tokens', () => {
+  const html = render({ composerContent: pasteMessage, contentParts: pasteContentParts });
+  assert.match(html, /data-card="server.log head" data-card-size="1234567"/);
+  assert.doesNotMatch(html, /<aside><span>pasted-text-/);
+  assert.doesNotMatch(html, /data-desktop-attachment-id="f1"/);
+  assert.equal((html.match(/pasted-text-20260924-101010\.txt/g) || []).length, 0);
+});
+
+// 触发场景:在对话记录里点开文件块卡片。
+// 期望行为:只读对话框拿到的是 AttachmentTextLoaderContext 提供的 loader(远程 Web 要带
+// token,不能用裸 URL),来源 URL 是附件记录的 blob_url。
+run('opening a file block uses the context loader and the record blob_url', () => {
+  const hooks = hookHarness();
+  const providedLoader = () => Promise.resolve('file text');
+  const { OrderedUserMessageBody } = compile({
+    useState: hooks.useState,
+    useMemo: (factory) => factory(), useCallback: (handler) => handler, useEffect() {},
+    useContext: (context) => (context === LoaderContext ? providedLoader : context._currentValue),
+    window: { addEventListener() {}, removeEventListener() {} },
+  });
+  const props = { composerContent: composerContent.normalizeComposerContent(pasteMessage), contentParts: pasteContentParts };
+  const first = OrderedUserMessageBody(props);
+  const cards = first.props.children[0].props.children;
+  assert.equal(cards.length, 2);
+  assert.equal(first.props.children.at(-1), null);
+  cards.find((card) => card.props.title === 'server.log head').props.onOpen();
+  hooks.reset();
+  const second = OrderedUserMessageBody(props);
+  const dialog = second.props.children.at(-1);
+  assert.equal(dialog.type, PastedTextDialogStub);
+  assert.equal(dialog.props.loader, providedLoader);
+  assert.equal(dialog.props.readOnly, true);
+  assert.equal(dialog.props.source.url, '/api/sessions/s1/attachments/f1/blob');
+  cards.find((card) => card.props.title !== 'server.log head').props.onOpen();
+  hooks.reset();
+  const inline = OrderedUserMessageBody(props).props.children.at(-1);
+  assert.equal(inline.props.source.text, pastedBody);
+});
+
+// 回归:f300 的 24,597,780 字符旧消息(没有 composer_content)切进会话时整段进气泡,页面卡死。
+// 期望行为:只渲染有界预览,HTML < 50k 且带「查看全文」。
+run('a 24.6M character legacy message renders only a bounded preview with a view-all action', () => {
+  const huge = '<tr><td>row</td></tr>\n'.repeat(Math.ceil(24_597_780 / 22)).slice(0, 24_597_780);
+  const html = render({ content: huge });
+  assert.ok(html.length < 50_000, `html length ${html.length}`);
+  assert.match(html, /查看全文/);
+  assert.match(html, /data-user-message-view-full="true"/);
+});
+
+// 触发场景:结构化消息的 text 部件超长(本版之前的大段粘贴存成一个 text 部件)。
+// 期望行为:同样只渲染预览并提供「查看全文」。
+run('an oversized composer text part is previewed too', () => {
+  const html = render({ composerContent: { version: 1, parts: [{ type: 'text', text: 'q'.repeat(200_000) }] } });
+  assert.ok(html.length < 50_000);
+  assert.match(html, /查看全文/);
+});
+
+// 触发场景:19,999 字符的普通消息(预览上限以内)。
+// 期望行为:完整渲染,没有「查看全文」。
+run('a 19,999 character message renders in full', () => {
+  const text = 'w'.repeat(19_999);
+  const html = render({ content: text });
+  assert.ok(html.includes(text));
+  assert.doesNotMatch(html, /查看全文/);
+});
+
+// ---- PastedTextDialog(真实组件,极简 hook 驱动) ----
+
+function compileDialog(contextValue) {
+  const hooks = hookHarness();
+  const scope = vm.runInNewContext(`${dialogCode}; ({ PastedTextDialog, readPastedTextSource });`, {
+    React,
+    useTranslation() {}, useId: () => 'dialog-title', useRef: () => ({ current: null }),
+    useState: hooks.useState, useMemo: (factory) => factory(),
+    useEffect: (effect) => { effect(); },
+    useContext: (context) => (context === LoaderContext ? contextValue : undefined),
+    AttachmentTextLoaderContext: LoaderContext,
+    requestAnimationFrame: () => 0, cancelAnimationFrame() {},
+    Modal: ({ children }) => React.createElement('section', {}, children),
+    VsIcon: () => null, toast() {}, copyTextToClipboard: async () => {},
+    formatNumber: (value) => String(value), ...pastedText,
+  });
+  return { ...scope, hooks };
+}
+
+// 触发场景:对话框的来源是 {url}(文件块),调用方没有显式传 loader。
+// 期望行为:用 AttachmentTextLoaderContext 的 loader 读取该 URL。
+run('PastedTextDialog reads a url source through the context loader', () => {
+  const calls = [];
+  const loader = (url) => { calls.push(url); return new Promise(() => {}); };
+  const { PastedTextDialog } = compileDialog(loader);
+  PastedTextDialog({ title: 't', source: { url: '/api/sessions/s1/attachments/f1/blob' }, readOnly: true });
+  assert.deepEqual(calls, ['/api/sessions/s1/attachments/f1/blob']);
+});
+
+// 触发场景:可编辑的内联块(未超过 50 万字符)。
+// 期望行为:textarea 不受控(没有 value 属性)、有「保存」默认按钮;超过 50 万字符时降级只读,
+// 提示用剪贴板替换、wrap=off、没有「保存」。
+run('PastedTextDialog is editable up to 500k chars and degrades to read-only beyond', () => {
+  const { PastedTextDialog } = compileDialog(contextLoader);
+  const small = renderToStaticMarkup(PastedTextDialog({ title: 't', source: { text: 'hello\nworld' }, onSave() {} }));
+  assert.match(small, /data-pasted-text-dialog="edit"/);
+  assert.match(small, /<textarea(?![^>]*\svalue=)[^>]*>/);
+  assert.match(small, /data-ace-dialog-primary="true"[^>]*>保存</);
+  assert.match(small, /2 行 · 11 字符/);
+  const { PastedTextDialog: LongDialog } = compileDialog(contextLoader);
+  const long = renderToStaticMarkup(LongDialog({
+    title: 't', source: { text: 'x'.repeat(pastedText.PASTED_TEXT_EDIT_MAX_CHARS + 1) }, onSave() {}, onReplace() {},
+  }));
+  assert.match(long, /data-pasted-text-dialog="view"/);
+  assert.match(long, /wrap="off"/);
+  assert.match(long, /内容超过 50 万字符/);
+  assert.match(long, /用剪贴板内容替换/);
+  assert.doesNotMatch(long, />保存</);
 });

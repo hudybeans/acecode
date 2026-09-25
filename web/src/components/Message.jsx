@@ -5,7 +5,7 @@
 // 消息底部同侧的复制 + 分叉按钮(左消息在左下角,右消息在右下角)。复制走 navigator.clipboard.writeText;分叉
 // 调上层 onFork(messageId) — disabled 当 messageId 缺失。
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { renderMarkdownBlocks } from '../lib/markdown.js';
@@ -22,7 +22,18 @@ import { useSlashCommands } from './SlashCommandsContext.jsx';
 import { AttachmentStrip } from './AttachmentStrip.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { attachmentsFromContentParts, isImageAttachment } from '../lib/messageAttachments.js';
-import { composerContentAttachments, composerContentClipboardText, normalizeComposerContent } from '../lib/composerContent.js';
+import {
+  composerContentAttachments,
+  composerContentClipboardText,
+  composerContentText,
+  isPasteBlockPart,
+  normalizeComposerContent,
+} from '../lib/composerContent.js';
+import { pasteBlockTextSource, pasteBlocksOf, pastedTextTitle } from '../lib/pastedText.js';
+import { composerContentMessagePreview, userMessageTextPreview } from '../lib/userMessagePreview.js';
+import { AttachmentTextLoaderContext } from './AttachmentTextLoaderContext.jsx';
+import { PastedTextCard } from './PastedTextCard.jsx';
+import { PastedTextDialog } from './PastedTextDialog.jsx';
 import { extractSessionReferences } from '../lib/sessionReference.js';
 import { DESKTOP_CONTEXT_ACTION_EVENT, DESKTOP_CONTEXT_ACTIONS } from '../lib/desktopContextMenu.js';
 
@@ -145,12 +156,38 @@ function UserMessageBody({ content }) {
   );
 }
 
+// 对话记录里的粘贴块卡片:内联块的正文就在 composer_content 里;文件块的来源取
+// content_parts 合成的附件记录(带 blob_url 与 size_bytes),经 context 的 loader 读取。
+function pasteBlockCard(block, attachments) {
+  const { part } = block;
+  if (block.kind === 'inline') {
+    return { id: block.id, title: pastedTextTitle(part.text), source: { text: part.text } };
+  }
+  const attachment = attachments.find((item) => (part.id && item.id === part.id) || item.local_id === part.key) || null;
+  return {
+    id: block.id,
+    title: part.paste?.title || part.name,
+    sizeBytes: attachment?.size_bytes,
+    uploading: !!attachment?.uploading,
+    source: pasteBlockTextSource({ part, resource: attachment }),
+  };
+}
+
 function OrderedUserMessageBody({ composerContent, contentParts, onOpenFilePreview, onLocateInFileTree }) {
   const { commands } = useSlashCommands();
+  const loadAttachmentText = useContext(AttachmentTextLoaderContext);
   const [preview, setPreview] = useState(null);
+  const [openPasteId, setOpenPasteId] = useState('');
   const attachments = useMemo(() => composerContentAttachments(
     composerContent, attachmentsFromContentParts(contentParts),
   ), [composerContent, contentParts]);
+  const pasteCards = useMemo(
+    () => pasteBlocksOf(composerContent).map((block) => pasteBlockCard(block, attachments)),
+    [composerContent, attachments],
+  );
+  const openPaste = openPasteId ? pasteCards.find((card) => card.id === openPasteId) : null;
+  // 两种粘贴块都渲染成上方的卡片;留在正文里会落进 attachment 的内联按钮分支。
+  const bodyParts = composerContent.parts.filter((part) => !isPasteBlockPart(part));
   const previewAttachment = useCallback((attachment) => {
     const url = attachment.blob_url || attachment.preview_url || attachment.url || '';
     if (isImageAttachment(attachment) && url) {
@@ -171,7 +208,23 @@ function OrderedUserMessageBody({ composerContent, contentParts, onOpenFilePrevi
   }, [attachments, previewAttachment]);
   return (
     <>
-      {composerContent.parts.map((part, index) => {
+      {pasteCards.length > 0 ? (
+        <div
+          className={clsx('flex flex-wrap gap-1.5 whitespace-normal', bodyParts.length > 0 && 'mb-1.5')}
+          data-user-message-pasted-text="true"
+        >
+          {pasteCards.map((card) => (
+            <PastedTextCard
+              key={card.id}
+              title={card.title}
+              sizeBytes={card.sizeBytes}
+              status={card.uploading ? 'uploading' : 'ready'}
+              onOpen={() => setOpenPasteId(card.id)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {bodyParts.map((part, index) => {
         if (part.type === 'text') {
           const displayText = extractSessionReferences(part.text).displayText;
           return index === 0 ? <UserMessageBody key={index} content={displayText} /> : displayText;
@@ -214,6 +267,15 @@ function OrderedUserMessageBody({ composerContent, contentParts, onOpenFilePrevi
         );
       })}
       <ImageLightbox preview={preview} onClose={() => setPreview(null)} />
+      {openPaste ? (
+        <PastedTextDialog
+          title={openPaste.title}
+          source={openPaste.source}
+          loader={loadAttachmentText}
+          readOnly
+          onClose={() => setOpenPasteId('')}
+        />
+      ) : null}
     </>
   );
 }
@@ -240,6 +302,23 @@ function UserBubble({
       inlineIds.has(part.attachment.id) || inlineKeys.has(part.attachment.local_id)
     ))
     : contentParts;
+  // f300:2400 多万字符的旧消息整段进 pre-wrap 气泡会卡死页面。气泡只渲染有界预览,
+  // 截断时显示 … 与「查看全文」(只读对话框);复制仍取全文。
+  const messagePreview = useMemo(() => {
+    if (composerContent) {
+      const result = composerContentMessagePreview(composerContent);
+      return { composerContent: result.content || composerContent, text: '', truncated: result.truncated };
+    }
+    const result = userMessageTextPreview(content);
+    return { composerContent: null, text: result.preview, truncated: result.truncated };
+  }, [composerContent, content]);
+  const [fullTextOpen, setFullTextOpen] = useState(false);
+  const fullText = useMemo(() => {
+    if (!fullTextOpen) return '';
+    return composerContent
+      ? extractSessionReferences(composerContentText(composerContent)).displayText
+      : String(content ?? '');
+  }, [fullTextOpen, composerContent, content]);
   return (
     <div className="self-end min-w-0 max-w-[70%] flex flex-col items-end gap-0.5 group">
       <AttachmentStrip
@@ -249,11 +328,32 @@ function UserBubble({
       />
       {(composerContent ? composerContent.parts.length > 0 : content) ? (
         <div className="ace-user-message-bubble ace-chat-message-content px-3.5 py-2 rounded-[14px] rounded-br-[4px] bg-accent-bg border border-accent-soft text-fg text-[13px] leading-[1.5] whitespace-pre-wrap break-words">
-          {composerContent ? (
-            <OrderedUserMessageBody composerContent={composerContent} contentParts={contentParts}
+          {messagePreview.composerContent ? (
+            <OrderedUserMessageBody composerContent={messagePreview.composerContent} contentParts={contentParts}
               onOpenFilePreview={onOpenFilePreview} onLocateInFileTree={onLocateInFileTree} />
-          ) : <UserMessageBody content={content} />}
+          ) : <UserMessageBody content={messagePreview.text} />}
+          {messagePreview.truncated ? (
+            <>
+              {'…'}
+              <button
+                type="button"
+                className="ml-1 align-baseline text-[12px] text-accent hover:underline"
+                data-user-message-view-full="true"
+                onClick={() => setFullTextOpen(true)}
+              >
+                查看全文
+              </button>
+            </>
+          ) : null}
         </div>
+      ) : null}
+      {fullTextOpen ? (
+        <PastedTextDialog
+          title={pastedTextTitle(fullText)}
+          source={{ text: fullText }}
+          readOnly
+          onClose={() => setFullTextOpen(false)}
+        />
       ) : null}
       {showFooter && (
         <div className="min-h-6 flex items-center justify-end gap-1 mr-1">
@@ -464,6 +564,12 @@ export const Message = memo(function Message({
   annotationPresentations = null,
 }) {
   useTranslation();
+  // normalize 对 text 部件逐字符归一换行;超长旧消息不能每次渲染都重跑一遍。
+  const orderedSource = role === 'user' ? (composerContent || metadata?.composer_content) : null;
+  const orderedContent = useMemo(
+    () => (orderedSource ? normalizeComposerContent(orderedSource) : null),
+    [orderedSource],
+  );
   if (role === 'user') {
     // expand-webui-skill-commands:daemon 把 /<skill> args 在送给 LLM 前展开为
     // 轻量提示;原文存到 metadata.display_text,UI 优先显示原文,不让用户看到
@@ -473,9 +579,8 @@ export const Message = memo(function Message({
     const displayContent = hasDisplayText
       ? metadata.display_text
       : content;
-    const orderedContent = composerContent || metadata?.composer_content;
     return <UserBubble content={displayContent} contentParts={contentParts} ts={ts}
-                        composerContent={orderedContent ? normalizeComposerContent(orderedContent) : null}
+                        composerContent={orderedContent}
                         onOpenFilePreview={onOpenFilePreview}
                         onLocateInFileTree={onLocateInFileTree}
                         messageId={messageId}

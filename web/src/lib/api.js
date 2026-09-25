@@ -237,6 +237,26 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 // 其余端点一律走默认超时。
 const NO_TIMEOUT = 0;
 const LLM_ROUNDTRIP_TIMEOUT_MS = 600000;
+// 粘贴的文本块上传 / 读取:单段最多 24 MiB(base64 后约 32 MB),远程 Web 慢网
+// 下默认 30 秒传不完。仍用有限值,不归入上面「合法地会阻塞很久」的无超时端点。
+// pastedText.js 以同名常量重新导出,粘贴相关代码统一从那里取。
+export const PASTED_TEXT_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+function workspaceDraftAttachmentsPath(workspaceHash = '') {
+  return `${workspaceDraftPath(workspaceHash)}/attachments`;
+}
+
+export function workspaceDraftAttachmentBlobPath(workspaceHash, attachmentId) {
+  return `${workspaceDraftAttachmentsPath(workspaceHash)}/${encodeURIComponent(attachmentId)}/blob`;
+}
+
+function timeoutOptions(options = {}, defaultTimeoutMs = undefined) {
+  const timeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : defaultTimeoutMs;
+  return {
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  };
+}
 
 async function request(method, path, body, base, options = {}) {
   const headers = {};
@@ -280,6 +300,8 @@ async function request(method, path, body, base, options = {}) {
         : (externalSignal ? { signal: externalSignal } : {})),
     });
     if (resp.ok && options.responseType === 'blob') return await resp.blob();
+    // 附件正文按原样读成字符串,不按 Content-Type 猜 JSON(粘贴的文本可能恰好是 JSON)。
+    if (resp.ok && options.responseType === 'text') return await resp.text();
     const ctype = resp.headers.get('Content-Type') || '';
     let parsed = null;
     if (resp.status !== 204 && ctype.includes('application/json')) {
@@ -480,8 +502,26 @@ export function createApi(base = null) {
         : { text: payload },
       base,
     ),
-    uploadSessionAttachment: (id, attachment) =>
-      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base),
+    uploadSessionAttachment: (id, attachment, options = {}) =>
+      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base,
+        timeoutOptions(options)),
+    // 首页(还没有会话)粘贴的大段文本落到工作区草稿附件区,刷新不丢;服务端只接受
+    // origin:"pasted_text" 的 snapshot。scope 为 workspace hash 或 __no_workspace__。
+    uploadWorkspaceDraftAttachment: (scope, attachment, options = {}) =>
+      request('POST', workspaceDraftAttachmentsPath(scope), attachment, base,
+        timeoutOptions(options, PASTED_TEXT_UPLOAD_TIMEOUT_MS)),
+    // 发送前把工作区草稿附件复制成会话附件(服务端 from_workspace_draft 分支)。
+    importWorkspaceDraftAttachment: (id, { workspace, id: attachmentId } = {}, options = {}) =>
+      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`,
+        { from_workspace_draft: { workspace: String(workspace || ''), id: String(attachmentId || '') } },
+        base, timeoutOptions(options)),
+    // 读取附件正文(粘贴的文本块查看 / 编辑)。url 是 /api/... 路径,走 request()
+    // 才能带上远程 Web 的 token 头,不能直接交给浏览器取裸 URL。
+    readAttachmentText: (url, options = {}) =>
+      request('GET', String(url || ''), undefined, base, {
+        ...timeoutOptions(options, PASTED_TEXT_UPLOAD_TIMEOUT_MS),
+        responseType: 'text',
+      }),
     createSessionAttachmentReference: (id, attachment) =>
       request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base),
     executeCommand:   (id, command)  => request('POST',   `/api/sessions/${encodeURIComponent(id)}/commands`, command, base),

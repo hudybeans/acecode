@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
-import { TOOLCHAIN_FIELDS, environmentError, migrationPercent, pickEnvironmentPath, terminalPath, toolchainPillState } from '../lib/environmentSettings.js';
+import {
+  MIGRATION_POLL_INTERVAL_MS, TOOLCHAIN_FIELDS, applyMigrationPollOutcome, environmentError, migrationFailureMessage,
+  migrationPercent, migrationPollOutcome, migrationSkippedFilesHint, pickEnvironmentPath, terminalPath, toolchainPillState,
+} from '../lib/environmentSettings.js';
 import { desktopUpdateRestartAvailable, requestDesktopUpdateRestart } from '../lib/updateJob.js';
 import { VsIcon } from './Icon.jsx';
 import { Modal } from './Modal.jsx';
@@ -57,7 +60,11 @@ export function SettingsConfigSection() {
         }
         if (tools.status === 'fulfilled') setToolchains(tools.value.toolchains || []);
         if (shell.status === 'fulfilled') setTerminal(shell.value);
-        if (dir.status === 'fulfilled') { setDirectory(dir.value); setJob(dir.value.migration); }
+        if (dir.status === 'fulfilled') {
+          setDirectory(dir.value);
+          setJob(dir.value.migration);
+          if (dir.value.migration?.state === 'failed') setError(migrationFailureMessage(dir.value.migration));
+        }
         const failed = [upgrade, tools, shell, dir].find((result) => result.status === 'rejected');
         if (failed) setError(environmentError(failed.reason));
         setBusy('');
@@ -69,16 +76,27 @@ export function SettingsConfigSection() {
     if (job?.state !== 'running') return undefined;
     let cancelled = false;
     let timer;
+    let failures = 0;
+    // 判定全部交给 migrationPollOutcome;job 用函数式更新(本 effect 只依赖 job?.state,
+    // 闭包里的 job 是旧的,直接 setJob(旧值) 会让进度条回跳)。失败即停,不再无限重试。
     const poll = async () => {
-      try {
-        const next = await api.getDataDirectoryMigration();
-        if (cancelled) return;
-        setJob(next);
-        if (next.state === 'done') { setPending(null); setDirectory(await api.getDataDirectory()); }
-        if (next.state === 'failed') setError(next.error || '迁移失败');
-        if (next.state !== 'running') return;
-      } catch (err) { if (!cancelled) setError(environmentError(err)); }
-      if (!cancelled) timer = setTimeout(poll, 750);
+      let next = null;
+      let requestError = null;
+      try { next = await api.getDataDirectoryMigration(); }
+      catch (err) { requestError = err; }
+      if (cancelled) return;
+      const outcome = migrationPollOutcome({ next, error: requestError, failures });
+      failures = outcome.failures;
+      setJob((prev) => applyMigrationPollOutcome(prev, outcome));
+      if (outcome.message) setError(outcome.message);
+      if (outcome.refreshDirectory) {
+        setPending(null);
+        // 目录刷新在轮询判定之外单独处理:失败只提示,不把已 done 的 job 打回 running。
+        // job 变为 done 会触发本 effect 清理(cancelled=true),所以这里按组件是否挂载判断。
+        try { const dir = await api.getDataDirectory(); if (mounted.current) setDirectory(dir); }
+        catch (err) { if (mounted.current) setError(environmentError(err)); }
+      }
+      if (!outcome.stop && !cancelled) timer = setTimeout(poll, MIGRATION_POLL_INTERVAL_MS);
     };
     timer = setTimeout(poll, 400);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -88,7 +106,7 @@ export function SettingsConfigSection() {
     if (operation.current) return false;
     operation.current = true;
     setBusy(name); setError(''); setSaved(false);
-    try { await action(); if (mounted.current && !['migrate', 'restart'].includes(name)) setSaved(true); return true; }
+    try { await action(); if (mounted.current && !['migrate', 'restart', 'refresh'].includes(name)) setSaved(true); return true; }
     catch (err) { if (mounted.current) setError(environmentError(err)); return false; }
     finally { operation.current = false; if (mounted.current) setBusy(''); }
   };
@@ -139,7 +157,15 @@ export function SettingsConfigSection() {
   };
   const migrating = job?.state === 'running';
   const restartRequired = job?.state === 'done' && job.restart_required;
+  const progressUnknown = job?.state === 'unknown';
   const disabled = !!busy || migrating || restartRequired;
+  const refetchMigration = () => perform('refresh', async () => {
+    const dir = await api.getDataDirectory();
+    if (!mounted.current) return;
+    setDirectory(dir);
+    setJob(dir.migration);
+    if (dir.migration?.state === 'failed') setError(migrationFailureMessage(dir.migration));
+  });
 
   return (
     <div className="ace-settings-config">
@@ -207,7 +233,11 @@ export function SettingsConfigSection() {
         </div>}
         {migrating && <div className="py-3" role="status"><div className="flex justify-between text-[13px] mb-2"><span>正在迁移工作空间…</span><span>{migrationPercent(job)}%</span></div>
           <progress className="w-full h-1.5 accent-accent" max="100" value={job.total_bytes ? migrationPercent(job) : undefined} /></div>}
-        {restartRequired && <div className="ace-settings-row"><span className="text-[13px]">迁移完成，重启后使用新路径</span>
+        {progressUnknown && <div className="ace-settings-row"><span className="text-[13px]">无法获取迁移进度</span>
+          <button className="ace-settings-button" disabled={!!busy} onClick={refetchMigration}>
+            <VsIcon name="refresh" size={15} />重新获取</button></div>}
+        {restartRequired && <div className="ace-settings-row"><div className="min-w-0 text-[13px]"><span>迁移完成，重启后使用新路径</span>
+          {migrationSkippedFilesHint(job) && <small className="block mt-1 text-[12px] text-warn">{migrationSkippedFilesHint(job)}</small>}</div>
           {desktopUpdateRestartAvailable() ? <button className="ace-settings-button ace-settings-primary" disabled={!!busy}
             onClick={() => perform('restart', () => requestDesktopUpdateRestart())}>立即重启</button>
             : <span className="text-[12px] text-fg-mute">请完全退出并重新启动 ACECode</span>}</div>}

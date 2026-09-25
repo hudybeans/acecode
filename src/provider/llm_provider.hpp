@@ -127,6 +127,31 @@ struct ProviderErrorInfo {
     bool has_error() const { return kind != ProviderErrorKind::None; }
 };
 
+// 文本形式工具调用(模型把调用写进正文而不是走原生 tool_calls)的诊断。
+// provider(OpenAiCompatProvider 的 chat / parse_sse_stream)产出,经
+// ChatResponse::text_tool_calls 与 Done 事件上报;AgentLoop 据此决定是否
+// 注入纠正提示重试。实现见 src/provider/text_tool_call_recovery.{hpp,cpp}。
+struct TextToolCallDiagnostic {
+    enum class Outcome {
+        None,              // 没有文本调用(或全是原生调用的回显)
+        Recovered,         // 执行级认出且校验通过,已转成原生 ToolCall
+        Rejected,          // 认出了调用意图,但不执行(非法 / 截断 / 块前有正文 / 可疑级)
+        IgnoredWithNative, // 已有原生调用,另有与之不一致的文本调用未执行
+    };
+    Outcome outcome = Outcome::None;
+    // function_calls|dots_function_call|invoke|tool_call_json|tool_call_function|dsml
+    std::string format;
+    std::string error;   // 英文,可直接写进纠正提示
+    // unknown_tool|bad_param|truncated|truncated_by_length|prose_prefix|malformed|parse_error
+    std::string reason;
+    std::vector<std::string> attempted_tools;    // 模型写的原名(已去掉回显)
+    std::vector<std::string> unexecuted_detail;  // IgnoredWithNative:"bash(command)" 形式
+    std::string raw_excerpt; // UTF-8 安全截断到 4096 字节,仅供诊断(日志 / metadata)
+    // 可疑级:可见正文从这个字节偏移开始截掉(命中行的行首);npos = 不截。
+    std::size_t visible_cut = std::string::npos;
+    int recovered_count = 0;
+};
+
 struct ChatResponse {
     std::string content;               // text reply (empty if tool_calls present)
     nlohmann::json content_parts = nlohmann::json::array(); // optional structured output parts
@@ -137,6 +162,8 @@ struct ChatResponse {
     // Non-streaming calls preserve the same structured failure contract as
     // StreamEvent::provider_error. It is populated when finish_reason == "error".
     ProviderErrorInfo provider_error;
+    // 文本形式工具调用的诊断(Outcome::None = 无)。
+    TextToolCallDiagnostic text_tool_calls;
 
     bool has_tool_calls() const { return !tool_calls.empty(); }
 };
@@ -183,6 +210,12 @@ struct StreamEvent {
     // Empty when the upstream never reported one — some OpenAI-compatible gateways
     // omit it entirely, so consumers must treat it as a best-effort signal.
     std::string finish_reason;
+    // Done:文本形式工具调用的诊断(Outcome::None = 无)。
+    TextToolCallDiagnostic text_tool_calls;
+    // ToolCallDelta:true = provider 正在扣住一段疑似文本工具调用(tool_index
+    // 为 -1,tool_call_argument_bytes = 已扣住字节数),只是进度提示,不代表
+    // 模型已经开始输出原生调用。
+    bool text_tool_call_hold = false;
 };
 
 using StreamCallback = std::function<void(const StreamEvent&)>;

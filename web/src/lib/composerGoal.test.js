@@ -61,3 +61,20 @@ run('goal submission retains budget and subcommand routing without duplicate pre
   assert.equal(projectComposerGoal('普通草稿', null).goalMode, false);
   assert.equal(projectComposerGoal('', null).goalMode, false);
 });
+
+// 触发场景:/goal 草稿里带内联粘贴块(块没有 token,且不属于编辑器文本)。
+// 期望:投影不抛异常,块原样保留、不参与 /goal 前缀的剥离;序列化回去后块仍在。
+// 回归:projectComposerGoal 读 part.token 为 undefined 时 .length 抛 TypeError,输入框白屏。
+run('goal projection keeps inline pasted blocks without crashing', () => {
+  const block = { type: 'pasted_text', key: 'paste-1', text: 'L1\nL2' };
+  const content = { version: 1, parts: [block, { type: 'text', text: '/goal 修复' }] };
+  const text = composerContentText(content);
+  assert.equal(text, '/goal 修复');
+  const projection = projectComposerGoal(text, content);
+  assert.equal(projection.goalMode, true);
+  assert.equal(projection.text, '修复');
+  assert.deepEqual(projection.content.parts, [block, { type: 'text', text: '修复' }]);
+  const stored = serializeComposerGoal(projection.text, projection.content, true);
+  assert.equal(stored.text, '/goal 修复');
+  assert.ok(stored.content.parts.some((part) => part.type === 'pasted_text' && part.key === 'paste-1'));
+});

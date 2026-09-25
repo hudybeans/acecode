@@ -1,11 +1,55 @@
 #include "attachment_prompt_context.hpp"
+#include "pasted_text_attachment.hpp"
 #include "tool/tool_protocol_names.hpp"
 
 #include "utils/utf8_path.hpp"
 
+#include <cstdint>
+
 #include <nlohmann/json.hpp>
 
 namespace acecode {
+
+namespace {
+
+// Paste statistics recorded at upload time (metadata.pasted_text, validated by
+// apply_pasted_text_upload_metadata). Only non-negative integers are copied;
+// anything else in a hand-edited record is ignored rather than echoed.
+struct PastedTextStats {
+    nlohmann::json fields = nlohmann::json::object();
+    std::uint64_t part = 0;
+    std::uint64_t parts = 0;
+};
+
+bool is_non_negative_integer(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) return true;
+    return value.is_number_integer() && value.get<std::int64_t>() >= 0;
+}
+
+PastedTextStats pasted_text_stats(const AttachmentRecord& record) {
+    PastedTextStats stats;
+    const auto it = record.metadata.find("pasted_text");
+    if (it == record.metadata.end() || !it->is_object()) return stats;
+    for (const char* key : {"lines", "chars"}) {
+        if (it->contains(key) && is_non_negative_integer((*it)[key])) {
+            stats.fields[key] = (*it)[key];
+        }
+    }
+    if (it->contains("part") && is_non_negative_integer((*it)["part"]) &&
+        it->contains("parts") && is_non_negative_integer((*it)["parts"])) {
+        stats.part = (*it)["part"].get<std::uint64_t>();
+        stats.parts = (*it)["parts"].get<std::uint64_t>();
+        if (stats.part >= 1 && stats.part <= stats.parts) {
+            stats.fields["part"] = stats.part;
+            stats.fields["parts"] = stats.parts;
+        } else {
+            stats.part = stats.parts = 0;
+        }
+    }
+    return stats;
+}
+
+} // namespace
 
 std::optional<std::string> attachment_source_path(
     const AttachmentRecord& record) {
@@ -43,6 +87,22 @@ std::string file_attachment_reference_text(
         reference["read_path"] = read_path;
     }
 
+    // Large pastes from the Web composer are stored as a file and reach the
+    // model only through this reference. They are the user's own material,
+    // not an incidental attachment, so the wording asks for a read up front.
+    // Everything added here comes from the attachment record, so the text
+    // stays byte-stable across requests (prompt cache prefix).
+    const bool pasted_text = is_pasted_text_attachment(record);
+    PastedTextStats paste_stats;
+    if (pasted_text) {
+        paste_stats = pasted_text_stats(record);
+        reference["origin"] = kPastedTextOrigin;
+        for (auto field = paste_stats.fields.begin();
+             field != paste_stats.fields.end(); ++field) {
+            reference[field.key()] = field.value();
+        }
+    }
+
     std::string text = "[Attached file reference]\n" + reference.dump(2);
     text += "\nThe file content is not included in this message.";
     if (read_path.empty()) {
@@ -50,10 +110,24 @@ std::string file_attachment_reference_text(
         return text;
     }
 
-    text +=
-        " Read `read_path` with `" + model_tool_name_for_native("file_read") +
-        "` or another suitable read-only "
-        "inspection tool only when the task needs the contents.";
+    const std::string read_tool = model_tool_name_for_native("file_read");
+    if (pasted_text) {
+        text += " This is text the user pasted into the message";
+        if (paste_stats.parts > 0) {
+            text += " (part " + std::to_string(paste_stats.part) + " of " +
+                    std::to_string(paste_stats.parts) + ")";
+        }
+        text +=
+            "; ACECode stored it as a file because it is large. The user's"
+            " request usually depends on it: read `read_path` with `" +
+            read_tool + "` before answering, in line or byte windows if it"
+            " is long.";
+    } else {
+        text +=
+            " Read `read_path` with `" + read_tool +
+            "` or another suitable read-only "
+            "inspection tool only when the task needs the contents.";
+    }
     if (source_path.has_value() && !snapshot_path.empty()) {
         text +=
             " If `source_path` is unavailable, read `snapshot_path` instead."

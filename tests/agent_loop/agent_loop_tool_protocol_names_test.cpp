@@ -3,6 +3,7 @@
 #include "agent_loop.hpp"
 #include "permissions.hpp"
 #include "provider/dsml_tool_call_recovery.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include "stub_provider.hpp"
 #include "tool/tool_executor.hpp"
 #include "tool/tool_protocol_names.hpp"
@@ -101,6 +102,81 @@ public:
 private:
     std::atomic<int> turns_{0};
     std::string model_ = "dsml-test-model";
+};
+
+// 第 1 轮用真实的 recover_text_tool_calls 把正文里的 `<invoke name="Write">`
+// 恢复成原生调用(与 OpenAiCompatProvider 接线后的输出同形:可见正文 +
+// ToolCall 事件 + Done 上的诊断);第 2 轮回纯文本。
+class TextToolCallRecoveryProvider : public acecode::LlmProvider {
+public:
+    acecode::ChatResponse chat(
+        const std::vector<acecode::ChatMessage>&,
+        const std::vector<acecode::ToolDef>&) override {
+        return {};
+    }
+
+    void chat_stream(
+        const std::vector<acecode::ChatMessage>& messages,
+        const std::vector<acecode::ToolDef>& tools,
+        const acecode::StreamCallback& callback,
+        std::atomic<bool>* = nullptr) override {
+        const int turn = turns_.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            requests_.push_back(messages);
+        }
+        if (turn == 0) {
+            const std::string raw =
+                "\n\n\n<invoke name=\"Write\">\n<parameter name=\"value\">\n"
+                "from-text\n</parameter>\n</invoke>";
+            auto recovered = acecode::recover_text_tool_calls(raw, tools);
+            if (!recovered.visible_text.empty()) {
+                acecode::StreamEvent delta;
+                delta.type = acecode::StreamEventType::Delta;
+                delta.content = recovered.visible_text;
+                callback(delta);
+            }
+            for (std::size_t i = 0; i < recovered.tool_calls.size(); ++i) {
+                acecode::StreamEvent call;
+                call.type = acecode::StreamEventType::ToolCall;
+                call.tool_call = recovered.tool_calls[i];
+                call.tool_index = static_cast<int>(i);
+                callback(call);
+            }
+            acecode::StreamEvent done;
+            done.type = acecode::StreamEventType::Done;
+            done.finish_reason = recovered.tool_calls.empty() ? "stop" : "tool_calls";
+            done.text_tool_calls = recovered.diagnostic;
+            callback(done);
+            return;
+        }
+
+        acecode::StreamEvent delta;
+        delta.type = acecode::StreamEventType::Delta;
+        delta.content = "done";
+        callback(delta);
+        acecode::StreamEvent done;
+        done.type = acecode::StreamEventType::Done;
+        done.finish_reason = "stop";
+        callback(done);
+    }
+
+    std::string name() const override { return "text-call-test"; }
+    bool is_authenticated() override { return true; }
+    std::string model() const override { return model_; }
+    void set_model(const std::string& model) override { model_ = model; }
+    int turns() const { return turns_.load(); }
+    std::vector<acecode::ChatMessage> request(std::size_t index) const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return index < requests_.size() ? requests_[index]
+                                        : std::vector<acecode::ChatMessage>{};
+    }
+
+private:
+    std::atomic<int> turns_{0};
+    std::string model_ = "text-call-test-model";
+    mutable std::mutex mu_;
+    std::vector<std::vector<acecode::ChatMessage>> requests_;
 };
 
 class ToolProtocolAgentHarness {
@@ -283,6 +359,52 @@ TEST(AgentLoopToolProtocolNames,
     EXPECT_EQ(internal_call->content.find(u8"<｜DSML｜"), std::string::npos);
     const std::string call_id = internal_call->tool_calls[0]["id"];
     ASSERT_NE(find_tool_result(messages, call_id), nullptr);
+
+    fs::remove_all(cwd);
+}
+
+// 场景:模型把调用写成正文 `<invoke name="Write">`(大小写与模型侧名 write 不同,
+// 映射为 write↔file_write),provider 用真实的 recover_text_tool_calls 恢复。
+// 期望:工具执行恰好 1 次、参数的换行包裹被剥掉;落盘的 assistant(tool_calls)
+// 消息与原生调用同形(原生名 file_write + call_text_ id),只多一个
+// text_tool_call_recovery metadata;第 2 次请求的历史里以模型侧名 write 出现,
+// 正文不含 `<invoke`。
+// 回归:旧实现 provider 返回 tool_calls=0,回合静默结束,调用从未执行。
+TEST(AgentLoopToolProtocolNames, TextToolCallRecoveryPersistsNativeShapedMessage) {
+    const fs::path cwd = make_protocol_temp_dir();
+    auto provider = std::make_shared<TextToolCallRecoveryProvider>();
+    ToolProtocolAgentHarness harness(cwd.string(), provider);
+
+    ASSERT_TRUE(harness.submit_and_wait());
+    harness.loop().shutdown();
+
+    EXPECT_EQ(provider->turns(), 2);
+    ASSERT_EQ(harness.calls(), 1);
+    EXPECT_EQ(nlohmann::json::parse(harness.captured_arguments())["value"],
+              "from-text");
+
+    const auto& messages = harness.loop().messages();
+    const auto* internal_call = find_assistant_call(messages);
+    ASSERT_NE(internal_call, nullptr);
+    ASSERT_EQ(internal_call->tool_calls.size(), 1u);
+    EXPECT_EQ(internal_call->tool_calls[0]["function"]["name"], "file_write");
+    const std::string call_id = internal_call->tool_calls[0]["id"];
+    EXPECT_EQ(call_id.rfind("call_text_", 0), 0u) << call_id;
+    EXPECT_EQ(internal_call->content.find("<invoke"), std::string::npos);
+    ASSERT_TRUE(internal_call->metadata.is_object());
+    ASSERT_TRUE(internal_call->metadata.contains("text_tool_call_recovery"));
+    EXPECT_EQ(internal_call->metadata["text_tool_call_recovery"]["format"], "invoke");
+    EXPECT_EQ(internal_call->metadata["text_tool_call_recovery"]["count"], 1);
+    ASSERT_NE(find_tool_result(messages, call_id), nullptr);
+
+    const auto followup = provider->request(1);
+    const auto* provider_call = find_assistant_call(followup);
+    ASSERT_NE(provider_call, nullptr);
+    EXPECT_EQ(provider_call->tool_calls[0]["function"]["name"], "write");
+    EXPECT_EQ(provider_call->tool_calls[0]["id"], call_id);
+    for (const auto& message : followup) {
+        EXPECT_EQ(message.content.find("<invoke"), std::string::npos) << message.content;
+    }
 
     fs::remove_all(cwd);
 }

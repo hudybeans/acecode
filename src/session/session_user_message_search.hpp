@@ -63,6 +63,23 @@ public:
                                 const SessionUserMessageFileSignature& before_append,
                                 std::string* error = nullptr);
 
+    // JSONL 追加了一条不含可搜索用户文本的记录(文件检查点、压缩检查点等)。
+    // 追加前索引是新鲜的,就把记下的文件签名推进到追加后的状态;追加前已经
+    // 过期的不动,留给下一次 index_appended_message 重建。
+    // 起因(YTB 反馈「长会话里发消息半天才出来」):这些追加路径以前不更新签名,
+    // 下一条消息落盘时索引判定过期,在会话锁里把整份 JSONL 重读一遍重建,
+    // 会话越长越慢,重启后冷缓存一次要 18 秒。
+    bool note_non_searchable_append(const std::string& session_id,
+                                    const std::string& jsonl_path,
+                                    const SessionUserMessageFileSignature& before_append,
+                                    std::string* error = nullptr);
+
+    // 索引记下的文件签名是否与 signature 一致(一致 = 下一次增量追加走快路径,
+    // 不整份重建)。只读查询。
+    bool source_is_fresh(const std::string& session_id,
+                         const SessionUserMessageFileSignature& signature,
+                         std::string* error = nullptr);
+
     bool rebuild_session(const std::string& session_id,
                          const std::string& jsonl_path,
                          const std::vector<ChatMessage>& messages,

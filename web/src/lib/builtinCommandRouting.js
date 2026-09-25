@@ -1,4 +1,6 @@
 import { parseExecutableBuiltinCommand } from './slashCommands.js';
+import { composerContentLeadsWithPastedText } from './composerContent.js';
+import { pasteTooLongForCommand } from './pastedText.js';
 
 export function builtinCommandRequestForText(text) {
   const builtin = parseExecutableBuiltinCommand(text);
@@ -51,6 +53,23 @@ export function inputRouteForText(text) {
   const command = builtinCommandRequestForText(text);
   if (command) return { kind: 'builtin', command };
   return { kind: 'message', text };
+}
+
+// Route a composer payload. payload.text already contains the inline pasted
+// blocks (they join command arguments exactly like text pasted before blocks
+// existed); file blocks travel as attachments.
+//   - editor empty but a paste block exists -> always an ordinary message, so
+//     pasted material starting with "/turn" or "/compact" is never executed;
+//   - /goal or /btw|/side with a file block, or whose merged argument exceeds the
+//     server limit -> {kind:'paste_too_long'}: the caller keeps the input and
+//     explains, instead of silently sending a literal "/goal ..." message.
+export function inputRouteForPayload(payload) {
+  const text = String(payload?.text ?? '');
+  if (composerContentLeadsWithPastedText(payload?.composer_content)) return { kind: 'message', text };
+  const route = inputRouteForText(text);
+  const tooLong = pasteTooLongForCommand(route, payload);
+  if (tooLong) return { kind: 'paste_too_long', ...tooLong };
+  return route;
 }
 
 export function remoteControlSessionRefreshForCommand(command = {}, sessionId = '') {

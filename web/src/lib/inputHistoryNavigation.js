@@ -1,7 +1,16 @@
 import { composerContentFromMessage, composerContentSignature, composerContentText } from './composerContent.js';
 
-export function isInputHistoryNavigationMode({ value = '', editedSinceHistory = false } = {}) {
-  return String(value ?? '').length === 0 || !editedSinceHistory;
+// hasNonTextContent:输入框里还有粘贴块 / 附件等不在编辑器文本里的内容。此时编辑器
+// 为空不代表输入框为空,上箭头不能进入历史(否则几 MB 的粘贴会被历史条目静默替换);
+// 已经在翻历史(historyPointer >= 0 且未编辑)时照常继续翻。
+// 不在翻历史(historyPointer < 0)时只要有非文本内容就一律不进入 —— 不能只靠
+// editedSinceHistory:粘贴块、恢复的草稿、旧长文本折叠都不经编辑器 onChange,
+// editedSinceHistory 可能仍是发送后复位的 false。
+export function isInputHistoryNavigationMode({
+  value = '', editedSinceHistory = false, hasNonTextContent = false, historyPointer = -1,
+} = {}) {
+  if (hasNonTextContent && !(Number.isInteger(historyPointer) && historyPointer >= 0)) return false;
+  return (String(value ?? '').length === 0 && !hasNonTextContent) || !editedSinceHistory;
 }
 
 // 富文本编辑器在程序化设值(历史导航填充 / 外部 value 同步)和 selection-only
@@ -77,13 +86,14 @@ export function shouldNavigateInputHistory({
   editedSinceHistory = false,
   historyLength = 0,
   historyPointer = -1,
+  hasNonTextContent = false,
   altKey = false,
   ctrlKey = false,
   metaKey = false,
   shiftKey = false,
 } = {}) {
   if (altKey || ctrlKey || metaKey || shiftKey) return false;
-  if (!isInputHistoryNavigationMode({ value, editedSinceHistory })) return false;
+  if (!isInputHistoryNavigationMode({ value, editedSinceHistory, hasNonTextContent, historyPointer })) return false;
   if (key === 'ArrowUp') return historyLength > 0;
   if (key === 'ArrowDown') return historyPointer >= 0;
   return false;

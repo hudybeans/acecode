@@ -111,6 +111,123 @@ std::vector<std::string> powershell_noninteractive_args() {
             "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text"};
 }
 
+const std::string& powershell_utf8_prelude() {
+    // 单行、只用 .NET 静态调用与语言结构(原因见头文件);不引入具名变量
+    // (.ForEach 的 $_ 不泄漏到用户脚本),报错行号固定只加 1。
+    static const std::string prelude =
+        "try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)}catch{};"
+        "try{$OutputEncoding=[Text.UTF8Encoding]::new($false)}catch{};"
+        "if(-not $env:PYTHONIOENCODING){$env:PYTHONIOENCODING='utf-8'};"
+        "if($PSVersionTable.PSVersion.Major -lt 6){$ProgressPreference='SilentlyContinue';"
+        "try{('Get-Content','Set-Content','Add-Content','Out-File','Select-String',"
+        "'Import-Csv','Export-Csv').ForEach({$PSDefaultParameterValues[$_+':Encoding']='utf8'})}"
+        "catch{}}\n";
+    return prelude;
+}
+
+namespace {
+
+bool is_ps_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
+}
+
+char ascii_lower_char(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// 跳过空白、# 行注释(含 #requires)与 <# #> 块注释。块注释没有闭合时返回 npos。
+std::size_t skip_ws_and_comments(const std::string& s, std::size_t i) {
+    while (i < s.size()) {
+        const char c = s[i];
+        if (is_ps_space(c)) {
+            ++i;
+            continue;
+        }
+        if (c == '<' && i + 1 < s.size() && s[i + 1] == '#') {
+            const auto end = s.find("#>", i + 2);
+            if (end == std::string::npos) return std::string::npos;
+            i = end + 2;
+            continue;
+        }
+        if (c == '#') {
+            const auto nl = s.find('\n', i);
+            if (nl == std::string::npos) return s.size();
+            i = nl + 1;
+            continue;
+        }
+        break;
+    }
+    return i;
+}
+
+// 跳过一个 [...] 特性块:方括号配对计数,单双引号里的方括号不计。
+// 返回块后的位置;没有闭合返回 npos。
+std::size_t skip_attribute_block(const std::string& s, std::size_t i) {
+    int depth = 0;
+    char quote = 0;
+    for (; i < s.size(); ++i) {
+        const char c = s[i];
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' || c == '"') {
+            quote = c;
+        } else if (c == '[') {
+            ++depth;
+        } else if (c == ']') {
+            if (--depth == 0) return i + 1;
+        }
+    }
+    return std::string::npos;
+}
+
+// s[i..] 以 word(小写)开头(不区分大小写),其后是结尾、空白或 followers 之一。
+bool starts_with_word_ci(const std::string& s, std::size_t i, const char* word,
+                         const char* followers) {
+    std::size_t k = 0;
+    for (; word[k] != '\0'; ++k) {
+        if (i + k >= s.size() || ascii_lower_char(s[i + k]) != word[k]) return false;
+    }
+    const std::size_t after = i + k;
+    if (after >= s.size() || is_ps_space(s[after])) return true;
+    for (const char* f = followers; *f != '\0'; ++f) {
+        if (s[after] == *f) return true;
+    }
+    return false;
+}
+
+bool starts_with_leading_only_statement(const std::string& s) {
+    std::size_t i = skip_ws_and_comments(s, 0);
+    // 块注释未闭合:原命令本身就会报同样的解析错误,原样交给 PowerShell。
+    if (i == std::string::npos) return true;
+    if (i >= s.size()) return false;
+    if (starts_with_word_ci(s, i, "using", "")) return true;
+    bool saw_attribute = false;
+    while (i < s.size() && s[i] == '[') {
+        const std::size_t after = skip_attribute_block(s, i);
+        if (after == std::string::npos) return false;
+        saw_attribute = true;
+        i = skip_ws_and_comments(s, after);
+        if (i == std::string::npos) return true;
+    }
+    if (i >= s.size()) return false;
+    if (starts_with_word_ci(s, i, "param", "(")) return true;
+    // 特性后面不是 param(例如 `[int]$x = 1` 类型转换、`[IO.File]::...`)→ 普通语句。
+    if (saw_attribute) return false;
+    for (const char* keyword : {"begin", "process", "end", "dynamicparam", "clean"}) {
+        if (starts_with_word_ci(s, i, keyword, "{")) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::string with_powershell_utf8_prelude(const std::string& command) {
+    if (starts_with_leading_only_statement(command)) return command;
+    return powershell_utf8_prelude() + command;
+}
+
 std::vector<std::string> probe_arguments(TerminalFamily family) {
     switch (family) {
         case TerminalFamily::Cmd:
@@ -146,7 +263,9 @@ ShellCommandLine build_shell_command_line(const ResolvedTerminal& terminal,
                 out.argv.push_back(a);
                 line += " " + a;
             }
-            const std::string encoded = encode_powershell_command(command);
+            // 编码前置脚本在权限审批之后拼接:分类器、审计、hooks 看到的仍是原始命令。
+            const std::string encoded =
+                encode_powershell_command(with_powershell_utf8_prelude(command));
             out.argv.push_back("-EncodedCommand");
             out.argv.push_back(encoded);
             line += " -EncodedCommand " + encoded;

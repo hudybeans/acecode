@@ -18,6 +18,7 @@ import { assistantChromeState } from './assistantAvatarDisplay.js';
 import { presentSystemNotice } from './systemNotice.js';
 import { tr } from '../i18n/index.js';
 import { clsx } from './format.js';
+import { userMessageTextPreview } from './userMessagePreview.js';
 
 async function run(name, fn) { await fn(); console.log(`[pass] ${name}`); }
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -234,7 +235,7 @@ await run('actual messages restrict custom wallpaper to user text and preserve a
   const Message = messageComponent({
     useTranslation: () => ({ t: tr }), useSlashCommands: () => ({ commands: [] }),
     resolveLeadingSlashCommand: () => null, renderMarkdownBlocks, assistantChromeState,
-    presentSystemNotice, clsx, VsIcon: () => null,
+    presentSystemNotice, clsx, VsIcon: () => null, userMessageTextPreview,
     ActivityLine: activityLineComponent({ clsx, VsIcon: () => null }),
     AttachmentStrip: ({ align }) => React.createElement('span', { 'data-attachment-align': align }, 'Attachment'),
   });
