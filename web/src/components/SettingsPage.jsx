@@ -12,6 +12,13 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { normalizeToolPreambleState } from '../lib/toolPreamble.js';
+import {
+  WORK_MODES,
+  WORK_MODE_CODING,
+  toolPreambleUpdateForWorkMode,
+  workModeFromToolPreamble,
+} from '../lib/workMode.js';
 import { DeveloperSettings } from './DeveloperSettings.jsx';
 import { createDeveloperModeUnlock, loadDeveloperModeUnlocked, rememberDeveloperModeUnlocked } from '../lib/developerMode.js';
 import { McpSchemaDetails } from './McpSchemaDetails.jsx';
@@ -481,7 +488,40 @@ function SectionGeneral({
   const [closeBehaviorBusy, setCloseBehaviorBusy] = useState(closeBehaviorAvailable);
   const [closeBehaviorTrayAvailable, setCloseBehaviorTrayAvailable] = useState(true);
   const [maxTurns, setMaxTurns] = useState(50);
-  const [workMode, setWorkMode] = useState('coding');
+  // 工作模式 = daemon 的具体进度提示开关(见 lib/workMode.js):「适合日常工作」时
+  // loading 只说正在做什么、不带参数。打开设置页时读一次;点选时 PUT,以响应为准,
+  // 失败回滚并提示。读取完成前按钮禁用,避免在未知状态上切换。
+  const [workMode, setWorkMode] = useState(WORK_MODE_CODING);
+  const [workModeBusy, setWorkModeBusy] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.getToolPreamble()
+      .then((state) => {
+        if (!cancelled) setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setWorkModeBusy(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const switchWorkMode = async (nextMode) => {
+    if (workModeBusy || nextMode === workMode) return;
+    const body = toolPreambleUpdateForWorkMode(nextMode);
+    if (!body) return;
+    const previous = workMode;
+    setWorkMode(nextMode);
+    setWorkModeBusy(true);
+    try {
+      const state = await api.setToolPreamble(body);
+      setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+    } catch (e) {
+      setWorkMode(previous);
+      toast({ kind: 'err', text: '工作模式切换失败:' + (e?.message || '') });
+    } finally {
+      setWorkModeBusy(false);
+    }
+  };
   const [openTarget, setOpenTarget] = useState('vscode');
   const [remoteWeb, setRemoteWeb] = useState(
     () => normalizeRemoteWebState(null),
@@ -917,18 +957,17 @@ function SectionGeneral({
       <div className="text-[14px] font-semibold mb-1">工作模式</div>
       <p className="text-[12px] text-fg-mute mb-3">选择 Agent 显示多少技术细节</p>
       <div className="grid grid-cols-2 gap-3 max-w-md mb-5">
-        {[
-          { key: 'coding', label: '用于编程', desc: '更专业的回复与控制' },
-          { key: 'daily',  label: '适合日常工作', desc: '同样强大,技术细节更少' },
-        ].map((opt) => {
+        {WORK_MODES.map((opt) => {
           const active = workMode === opt.key;
           return (
             <button
               key={opt.key}
               type="button"
-              onClick={() => setWorkMode(opt.key)}
+              aria-pressed={active}
+              disabled={workModeBusy}
+              onClick={() => switchWorkMode(opt.key)}
               className={clsx(
-                'relative p-3 rounded-lg border text-left transition',
+                'relative p-3 rounded-lg border text-left transition disabled:cursor-wait',
                 active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
               )}
             >

@@ -387,8 +387,8 @@ update their transcript presentation.
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
 | PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
-| GET | `/api/config/tool-preamble` | read the tool preamble switch and mode |
-| PUT | `/api/config/tool-preamble` | patch tool preamble settings into `config.json`, push to active sessions |
+| GET | `/api/config/tool-preamble` | read the concrete progress text switch (work mode) |
+| PUT | `/api/config/tool-preamble` | set the concrete progress text switch in `config.json`, push to active sessions |
 | GET | `/api/config/sandbox` | read sandbox switches, filesystem lists, defaults and platform probe |
 | PUT | `/api/config/sandbox` | save sandbox switches / lists to `config.json`, push to active sessions |
 | GET | `/api/security/exec-rules` | list `<data_dir>/rules/*.rules` (managed files editable) |
@@ -3761,56 +3761,55 @@ writes the file atomically, publishes the mapping to the process so the next
 model request uses it, and returns the same shape as GET. Hook matchers accept
 the rewritten names as aliases of the native tool while a rewrite is active.
 
-### Tool preamble (`openspec add-tool-preamble`)
+### Tool preamble / concrete progress text (`openspec add-tool-preamble`)
 
-Settings > Developer mode > 工具前言. Off by default. When enabled, the model
-gives the user a one-line "what is happening" for the current phase of a
-multi-step tool task; the Web UI shows it as the live activity row and as the
-label of running tool rows, and nothing of it remains once the work has
-settled. The line comes from one of two sources, chosen by `mode`:
+Settings > General > Work mode: "适合日常工作" (daily) turns it on, "用于编程"
+(coding) turns it off; off by default. The config key is still
+`agent_loop.tool_preamble.enabled`. When on, the loading text only says what the
+agent is doing right now, in present progressive and without tool arguments
+(arguments stay on the tool rows), and the vague "正在推理" / "正在等待模型响应"
+labels no longer appear. Nothing is asked of the model: every label is produced
+by the daemon, in this priority order:
 
-- `prompt`: the system prompt gains a `# Progress preamble` section asking the
-  model to emit exactly one short sentence in
-  `<text_preamble type="read">...</text_preamble>` (`type="write"` for
-  state-changing actions) before the first tool call and at major phase/plan
-  changes, and never on final answers. The daemon scans the streamed assistant
-  text: the tag body becomes the current phase preamble the moment the tag
-  closes, tag text never reaches `token` frames or `message` frames, and the
-  persisted assistant `content` keeps the tag verbatim (the model keeps seeing
-  its own format in history; clients strip it when rendering history).
-  Lenient parsing: a missing `type` is accepted, a missing closing tag ends at
-  the line break, `<text_preamble/>` is ignored, the tag name is
-  case-insensitive. The preamble persists across model steps until the next
-  tag or until untagged visible text appears; the end of the turn clears it.
-- `reasoning`: the first `**bold**` span of the provider's reasoning summary
-  (OpenAI Responses / Codex app-server / Gemini summaries start with one),
-  falling back to the first sentence of the reasoning. No prompt change, no
-  extra tokens.
+1. **Reasoning bold title** of the current model step: the first `**bold**` span
+   of the provider's reasoning summary (OpenAI Responses / Codex app-server /
+   Gemini summaries start with one). Valid for that step only. There is no
+   first-sentence fallback (raw chains of thought start with "The user wants me
+   to…").
+2. **Tool template** for the batch, from native tool names:
+   `正在读取 3 个文件`, `正在搜索代码`, `正在运行 2 条命令`, `正在修改文件`, …;
+   same-kind calls are counted, two kinds are joined with 并, three or more take
+   the first two plus 等; MCP and unknown tools become `正在调用工具`.
+3. **Context label**: `正在分析你的请求` at the start of a turn; after a batch,
+   one based on that batch's first tool kind (`正在分析文件内容`,
+   `正在分析搜索结果`, `正在分析命令输出`, `正在检查修改结果`, …); `正在撰写回复`
+   once visible text starts streaming.
 
-Live delivery: when a preamble is established the daemon emits an
-`agent_progress` frame with `phase:"preamble"` and `label` = the sentence, and
-every `agent_progress` frame carries `preamble: {title, source, kind}` while a
-phase preamble is active (`kind` is `read`, `write` or `""`; reserved for a
-future read/write visual effect). Each `tool_start` of a batch that runs under
-a preamble carries `preamble`, `preamble_source` (`prompt` | `reasoning`) and
-`preamble_kind`; the `model_waiting` / `reasoning` / `tool_planning` /
-`tool_running` frames use the preamble as their `label` (the generic phrase,
-tool name or command preview moves to `detail`), so the status line keeps the
-preamble across the whole phase including the wait between tool batches.
-`permission_waiting`, `question_waiting`, `compacting` and `model_retry` keep
-their own labels. There is no `tool_preamble` event.
+Delivery: the daemon rewrites the `label` of `model_waiting`, `reasoning`,
+`preamble` (bold title just appeared), `responding` (new phase, text started),
+`tool_planning` and `tool_running` frames and clears their `detail`
+(command preview, byte counts, fragment counts); `permission_waiting`,
+`question_waiting`, `compacting` and `model_retry` keep their own labels. Every
+rewritten frame carries `preamble: {title, source, kind}` with `source` one of
+`reasoning` / `template` / `context` and `kind` `read` / `write` / `""`
+(derived from the tool kinds; reserved for a future read/write visual effect).
+Each `tool_start` of the batch carries `preamble`, `preamble_source` and
+`preamble_kind`; its own `args` / `display_override` are unchanged, so tool rows
+keep showing arguments. `metadata.tool_preamble = {source, title, kind}` is
+persisted on the `assistant` message that carries the `tool_calls`, as a record
+only. There is no `tool_preamble` event.
 
-Persistence: `metadata.tool_preamble = {source, title, kind}` on the `assistant`
-message that carries the `tool_calls`, as a record only; neither the Web UI nor
-the TUI renders it after the fact.
+Older builds asked the model to emit `<text_preamble>` tags; those tags may still
+be present in persisted assistant `content`. They are always stripped from
+`token` and `message` frames (on or off), never used as labels, and clients strip
+them when rendering history.
 
-`GET /api/config/tool-preamble` returns `{enabled, mode, modes:["prompt","reasoning"]}`.
-`PUT /api/config/tool-preamble` is a patch: any subset of `enabled` (bool) and
-`mode` (one of `modes`). Invalid values return 400 `BAD_REQUEST` with
-`message`; success writes `agent_loop.tool_preamble` to `config.json`, pushes
-the new config to every active session and returns the GET shape. Legacy
-`sidecar_model` / `sidecar_wait_ms` keys are ignored and a persisted
-`mode:"sidecar"` loads as `prompt`.
+`GET /api/config/tool-preamble` returns `{enabled}`.
+`PUT /api/config/tool-preamble` is a patch: `{enabled: bool}`. A non-boolean
+`enabled` returns 400 `BAD_REQUEST` with `message`; legacy `mode` /
+`sidecar_model` / `sidecar_wait_ms` keys are ignored. Success writes
+`agent_loop.tool_preamble` to `config.json`, pushes the new config to every
+active session and returns the GET shape.
 
 ### Security center (`openspec add-security-center`)
 

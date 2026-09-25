@@ -1761,23 +1761,14 @@ static AppConfig load_config_from_path_once(
                     }
                     cfg.agent_loop.question_timeout_seconds = v;
                 }
-                // 工具前言(add-tool-preamble):默认关闭;mode 非法(含已废弃的
-                // "sidecar")归一化为 "prompt";旧配置里的 sidecar_* 键静默忽略。
+                // 具体进度提示(add-tool-preamble):默认关闭;旧配置里的 mode /
+                // sidecar_* 键(提示驱动 / 推理摘要 / 旁路模型三版的遗留)静默忽略,
+                // 下次保存时稀疏序列化自然把它们去掉。
                 if (alj.contains("tool_preamble") && alj["tool_preamble"].is_object()) {
                     const auto& tpj = alj["tool_preamble"];
                     auto& tp = cfg.agent_loop.tool_preamble;
                     if (tpj.contains("enabled") && tpj["enabled"].is_boolean()) {
                         tp.enabled = tpj["enabled"].get<bool>();
-                    }
-                    if (tpj.contains("mode") && tpj["mode"].is_string()) {
-                        const std::string mode = tpj["mode"].get<std::string>();
-                        if (mode == "prompt" || mode == "reasoning") {
-                            tp.mode = mode;
-                        } else {
-                            LOG_WARN("[config] agent_loop.tool_preamble.mode=\"" + mode +
-                                     "\" is invalid (expected prompt|reasoning); using \"prompt\"");
-                            tp.mode = "prompt";
-                        }
                     }
                 }
                 // Legacy keys (auto_continue, max_consecutive_empty_iterations)
@@ -2422,7 +2413,6 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             const auto& tp = cfg.agent_loop.tool_preamble;
             nlohmann::json tpj = nlohmann::json::object();
             if (tp.enabled != tp_d.enabled) tpj["enabled"] = tp.enabled;
-            if (tp.mode != tp_d.mode) tpj["mode"] = tp.mode;
             if (!tpj.empty()) alj["tool_preamble"] = tpj;
         }
         if (!alj.empty()) j["agent_loop"] = alj;

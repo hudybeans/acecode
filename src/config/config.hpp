@@ -218,20 +218,15 @@ struct InputHistoryConfig {
 // `AskUserQuestion` is NEVER a terminator (its tool_result feeds back to
 // the model and the loop continues, exactly like any other tool).
 
-// 工具前言(openspec add-tool-preamble,设置 > 开发者模式 > 工具前言)。
-// 默认关闭。开启后模型每个阶段给用户一句「正在做什么」,来源由 mode 决定:
-//   "prompt"    提示驱动:系统提示要求模型在第一次工具调用前与阶段变化时用
-//               <text_preamble type="read|write">…</text_preamble> 标出一句,
-//               daemon 流式识别后放进 loading,不进正文气泡。
-//   "reasoning" 推理服务内置摘要:从 provider 推理摘要里抠第一对 **加粗**,
-//               没有则取推理首句。不改提示词、不多花 token。
-// 非法 mode(含已废弃的 "sidecar")在 load_config 归一化为 "prompt"。
+// 具体进度提示(openspec add-tool-preamble;设置 > 常规 > 工作模式:「适合日常工作」
+// = 开启,「用于编程」= 关闭)。开启后 loading 行只说正在做什么、不带参数:推理
+// 加粗标题 > 工具现在进行时模板 > 场景文案,见 tool_preamble/tool_preamble.hpp。
+// 键名沿用 tool_preamble 以兼容旧配置;旧的 mode / sidecar_* 键加载时忽略。
 struct ToolPreambleConfig {
     bool enabled = false;
-    std::string mode = "prompt";
 
     bool operator==(const ToolPreambleConfig& other) const {
-        return enabled == other.enabled && mode == other.mode;
+        return enabled == other.enabled;
     }
     bool operator!=(const ToolPreambleConfig& other) const { return !(*this == other); }
 };

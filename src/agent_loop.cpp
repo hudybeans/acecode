@@ -1975,7 +1975,7 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode(), &workspace_folders_state);
+        &workspace_folders_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -3076,7 +3076,7 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         &worktree_state,
         active_model_can_read_images(),
         &prompt_environment, &sandbox_state, &model_state,
-        tool_preamble_prompt_mode(), &workspace_folders_state);
+        &workspace_folders_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -3437,19 +3437,13 @@ ToolPreambleConfig AgentLoop::tool_preamble_config() const {
     return tool_preamble_cfg_;
 }
 
-bool AgentLoop::tool_preamble_prompt_mode() const {
-    const ToolPreambleConfig cfg = tool_preamble_config();
-    return cfg.enabled && cfg.mode == tool_preamble::kModePrompt;
+bool AgentLoop::concrete_activity_enabled() const {
+    return tool_preamble_config().enabled;
 }
 
 void AgentLoop::set_phase_preamble(const ToolPreambleTitle& preamble) {
     std::lock_guard<std::mutex> lk(tool_preamble_mu_);
     phase_preamble_ = preamble;
-}
-
-void AgentLoop::clear_phase_preamble() {
-    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
-    phase_preamble_ = {};
 }
 
 AgentLoop::ToolPreambleTitle AgentLoop::phase_preamble() const {
@@ -3461,35 +3455,105 @@ void AgentLoop::publish_phase_preamble(const ToolPreambleTitle& preamble,
                                        const ProgressEmitter& emit_progress) {
     if (preamble.title.empty()) return;
     set_phase_preamble(preamble);
-    if (callbacks_.on_thinking_title) {
-        callbacks_.on_thinking_title(preamble.title);
-    }
-    // 独立的 phase 键 + force,绕开进度节流:前言一闭合活动行就换文案,
-    // 不用等下一条 tool_planning / tool_running。
+    // 独立的 phase 键 + force,绕开进度节流:标题一出现 loading 就换文案,
+    // 不用等下一条 reasoning / tool_planning。
     emit_progress("preamble", preamble.title, std::string{},
                   std::string{}, std::string{}, -1, true);
 }
 
-AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
-    ProviderCallResult& result) {
-    const ToolPreambleConfig cfg = tool_preamble_config();
-    const ChatResponse& accumulated = result.accumulated;
-    if (!cfg.enabled || accumulated.tool_calls.empty()) return {};
-    ToolPreambleTitle current = phase_preamble();
-    if (cfg.mode == tool_preamble::kModeReasoning && current.title.empty()) {
-        // 推理里没有加粗标题:落盘前用推理首句兜底(Codex TUI 同款)。只影响
-        // 本批次的 metadata / tool_start,工具马上要开跑,不再另发进度帧。
-        const std::string fallback =
-            tool_preamble::title_from_reasoning(accumulated.reasoning_content);
-        if (!fallback.empty()) {
-            current = {};
-            current.title = fallback;
-            current.source = tool_preamble::kModeReasoning;
-            set_phase_preamble(current);
-            if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(fallback);
+void AgentLoop::note_planned_tool(int tool_index, const std::string& native_name) {
+    if (tool_index < 0 || native_name.empty()) return;
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    const auto index = static_cast<std::size_t>(tool_index);
+    if (step_planned_tools_.size() <= index) step_planned_tools_.resize(index + 1);
+    step_planned_tools_[index] = native_name;
+}
+
+void AgentLoop::reset_activity_for_step() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+}
+
+void AgentLoop::reset_activity_for_turn() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+    last_batch_tools_.clear();
+    last_announced_activity_.clear();
+}
+
+void AgentLoop::announce_activity(const std::string& label) {
+    if (label.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+        if (label == last_announced_activity_) return;
+        last_announced_activity_ = label;
+    }
+    if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(label);
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::concrete_activity_for_phase(
+    const std::string& phase) const {
+    if (!concrete_activity_enabled()) return {};
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    if (phase == "responding") {
+        return {tool_preamble::kRespondingActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    const bool tool_phase = phase == "tool_running" || phase == "tool_planning";
+    const bool waiting_phase =
+        phase == "model_waiting" || phase == "reasoning" || phase == "preamble";
+    if (!tool_phase && !waiting_phase) return {};
+    if (phase == "tool_running" && !current_batch_activity_.title.empty()) {
+        return current_batch_activity_;
+    }
+    if (tool_phase) {
+        std::vector<std::string> planned;
+        for (const auto& name : step_planned_tools_) {
+            if (!name.empty()) planned.push_back(name);
+        }
+        if (!phase_preamble_.title.empty()) {
+            ToolPreambleTitle out = phase_preamble_;
+            out.kind = tool_preamble::batch_activity_kind(planned);
+            return out;
+        }
+        if (!planned.empty()) {
+            return {tool_preamble::batch_activity_label(planned),
+                    tool_preamble::kSourceTemplate,
+                    tool_preamble::batch_activity_kind(planned)};
         }
     }
-    return current;
+    if (!phase_preamble_.title.empty()) return phase_preamble_;
+    if (last_batch_tools_.empty()) {
+        return {tool_preamble::kInitialActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    return {tool_preamble::after_batch_activity_label(last_batch_tools_),
+            tool_preamble::kSourceContext, ""};
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
+    ProviderCallResult& result) {
+    const ChatResponse& accumulated = result.accumulated;
+    if (!concrete_activity_enabled() || accumulated.tool_calls.empty()) return {};
+    std::vector<std::string> names;
+    names.reserve(accumulated.tool_calls.size());
+    for (const auto& tc : accumulated.tool_calls) names.push_back(tc.function_name);
+    ToolPreambleTitle out;
+    out.kind = tool_preamble::batch_activity_kind(names);
+    const ToolPreambleTitle title = phase_preamble();
+    if (!title.title.empty()) {
+        out.title = title.title;
+        out.source = tool_preamble::kSourceReasoning;
+    } else {
+        out.title = tool_preamble::batch_activity_label(names);
+        out.source = tool_preamble::kSourceTemplate;
+    }
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    last_batch_tools_ = std::move(names);
+    current_batch_activity_ = out;
+    return out;
 }
 
 AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
@@ -3507,48 +3571,40 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     int provider_attempt = 1;
     bool first_output_recorded = false;
 
-    // 工具前言(add-tool-preamble):本次调用期间的配置快照。prompt 模式在正文
-    // 流里识别 <text_preamble> 标签(标签正文进 loading,不进正文);reasoning
-    // 模式在推理流里抠第一对加粗标题。
-    const ToolPreambleConfig preamble_cfg = tool_preamble_config();
-    const bool preamble_reasoning =
-        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModeReasoning;
-    const bool preamble_text =
-        preamble_cfg.enabled && preamble_cfg.mode == tool_preamble::kModePrompt;
+    // 具体进度提示(add-tool-preamble):本次调用期间的开关快照。开启时在推理流
+    // 里抠第一对加粗标题作本步文案;正文开始流出时 loading 换成「正在撰写回复」。
+    // 每次调用(含重试)都从干净的本步状态开始。
+    const bool concrete = concrete_activity_enabled();
     bool reasoning_title_found = false;
+    bool step_text_started = false;
+    reset_activity_for_step();
     text_preamble_scanner_.reset();
-    // 正文增量的统一出口:可见文本给 TUI / Web。prompt 模式下非空白可见正文一
-    // 出现就清掉当前阶段前言 —— 未加标签的正文意味着模型在说话,不是在报进度。
+    // 正文增量的统一出口:可见文本给 TUI / Web。
     auto publish_visible_text = [&](const std::string& text) {
         if (text.empty()) return;
-        if (preamble_text && text.find_first_not_of(" \t\r\n") != std::string::npos) {
-            clear_phase_preamble();
+        if (concrete && !step_text_started &&
+            text.find_first_not_of(" \t\r\n") != std::string::npos) {
+            step_text_started = true;
+            emit_progress("responding", tool_preamble::kRespondingActivityLabel,
+                          std::string{}, std::string{}, std::string{}, -1, true);
         }
         if (callbacks_.on_delta) {
             callbacks_.on_delta(text);
         }
         events_.emit(SessionEventKind::Token, nlohmann::json{{"text", text}});
     };
-    // 标签总是从可见正文里剥掉(关闭功能时模型也可能沿着历史习惯打标签,
-    // 界面不该露出原始标签);只有开启 prompt 模式时才把它当阶段前言发布。
+    // 历史里残留的 <text_preamble> 标签(前一版要求模型打标签)总是从可见正文里
+    // 剥掉,不再当 loading 文案。
     auto publish_scanned = [&](tool_preamble::TextPreambleScanner::Output out) {
         publish_visible_text(out.visible);
-        if (!preamble_text) return;
-        for (const auto& found : out.preambles) {
-            ToolPreambleTitle title;
-            title.title = found.title;
-            title.kind = found.kind;
-            title.source = tool_preamble::kModePrompt;
-            publish_phase_preamble(title, emit_progress);
-        }
     };
 
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
-                            &reasoning_title_found, &publish_visible_text,
+                            &reasoning_title_found, &step_text_started,
                             &publish_scanned,
-                            model_step_index, preamble_reasoning, preamble_text,
+                            model_step_index, concrete,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3587,7 +3643,7 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             reasoning_bytes += evt.content.size();
             reasoning_fragments++;
-            if (preamble_reasoning && !reasoning_title_found) {
+            if (concrete && !reasoning_title_found) {
                 std::string reasoning_so_far;
                 {
                     std::lock_guard<std::mutex> lk(resp_mu);
@@ -3602,19 +3658,16 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                         reasoning_title_found = true;
                         ToolPreambleTitle found;
                         found.title = title;
-                        found.source = tool_preamble::kModeReasoning;
+                        found.source = tool_preamble::kSourceReasoning;
                         publish_phase_preamble(found, emit_progress);
                     }
                 }
             }
-            {
-                const ToolPreambleTitle current = phase_preamble();
-                emit_progress("reasoning",
-                    current.title.empty() ? std::string("正在推理") : current.title,
-                    "片段 " + std::to_string(reasoning_fragments) + ", " +
-                    human_bytes(reasoning_bytes),
-                    std::string{}, std::string{}, -1, false);
-            }
+            // 开启具体进度提示时,发射口会把这条换成本步标题或场景文案。
+            emit_progress("reasoning", "正在推理",
+                "片段 " + std::to_string(reasoning_fragments) + ", " +
+                human_bytes(reasoning_bytes),
+                std::string{}, std::string{}, -1, false);
             events_.emit(SessionEventKind::Reasoning, nlohmann::json{{"text", evt.content}});
             break;
         case StreamEventType::ToolCallDelta:
@@ -3645,13 +3698,10 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
-                // 工具前言:有当前阶段前言时,准备调用的进度行就显示它(工具名退到
-                // detail),loading 提示不在前言与通用文案之间来回跳。
-                const std::string titled_label = phase_preamble().title;
-                const bool titled = !titled_label.empty();
-                emit_progress("tool_planning",
-                    titled ? titled_label : label,
-                    titled ? label : format_bytes_detail(evt.tool_call_argument_bytes),
+                // 具体进度提示:记下本步流出来的工具,发射口据此拼「正在读取 2 个文件」。
+                note_planned_tool(evt.tool_index, tool_name);
+                emit_progress("tool_planning", label,
+                    format_bytes_detail(evt.tool_call_argument_bytes),
                     tool_name, evt.tool_call.id, evt.tool_index, false);
             }
             break;
@@ -3721,6 +3771,8 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             ++provider_attempt;
             first_output_recorded = false;
             reasoning_title_found = false;
+            step_text_started = false;
+            reset_activity_for_step();
             text_preamble_scanner_.reset();
             if (callbacks_.on_stream_retry_reset) {
                 callbacks_.on_stream_retry_reset();
@@ -4621,11 +4673,8 @@ bool AgentLoop::execute_tool_calls(
                 SessionEventKind::ToolStart, std::move(start_payload));
         }
 
-        // 工具前言:有前言时 loading 提示显示前言,工具名 / 命令预览退到 detail。
-        emit_progress("tool_running",
-            call_preamble.empty()
-                ? "正在调用工具 " + tc.function_name
-                : call_preamble,
+        // 开启具体进度提示时,发射口把这条换成本批次文案、清掉命令预览。
+        emit_progress("tool_running", "正在调用工具 " + tc.function_name,
             cmd_preview, tc.function_name, tc.id, tool_index_int, true);
 
         struct ProgressState {
@@ -4770,7 +4819,7 @@ bool AgentLoop::execute_tool_calls(
         };
         ProgressGuard guard;
         if (emit_tui_progress && callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, call_preamble);
+            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, std::string{});
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 
@@ -5433,16 +5482,10 @@ bool AgentLoop::execute_tool_calls(
                                                                   : security::kAuditDecisionAllow,
                         security::kAuditSourceUser,
                         exec_permission ? exec_permission->decision.reason : "confirmation");
-                    {
-                        const std::string confirmed_preamble =
-                            preamble_for_call(effective_tc, entry.original_index);
-                        emit_progress("tool_running",
-                            confirmed_preamble.empty()
-                                ? "正在调用工具 " + effective_tc.function_name
-                                : confirmed_preamble,
-                            effective_tc.function_name, effective_tc.function_name, effective_tc.id,
-                            static_cast<int>(entry.original_index), true);
-                    }
+                    emit_progress("tool_running",
+                        "正在调用工具 " + effective_tc.function_name,
+                        effective_tc.function_name, effective_tc.function_name, effective_tc.id,
+                        static_cast<int>(entry.original_index), true);
                     if (perm == PermissionResult::AllowScoped) {
                         // D4:只放行建议目录 —— 记进会话授权,命令留在 workspace-write 里带着
                         // 该目录执行,而不是整个出沙盒。
@@ -5872,6 +5915,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     bool emergency_request_profile = false;
     pa_rescue_state_ = pa::RescueState{};
     skip_auto_compact_once_ = false;
+    reset_activity_for_turn();
 
     const int max_iter = loop_cfg_.max_iterations;
     const bool has_max_iterations = max_iter > 0;
@@ -5920,16 +5964,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                    bool force = false) {
         const auto now = std::chrono::steady_clock::now();
         const std::string key = phase + "\0" + tool + "\0" + tool_call_id + "\0" + std::to_string(tool_index);
-        // 工具前言(add-tool-preamble):阶段前言要一直留在 loading 提示里,直到下一段
-        // 正文 / 下一条前言出现。批次之间等待模型的那一帧若退回「正在等待模型响应」,
-        // Web 实时行会在「前言 → 通用文案 → 前言」之间闪动(实测会话
-        // 20260925-013722-4299 的 seq 51),所以 model_waiting 也把 label 换成前言,
-        // 原文案退到 detail;reasoning / tool_planning / tool_running 在各自的
-        // 发射点已按同一规则处理,权限 / 提问 / 压缩这些必须被看见的状态不换。
-        const ToolPreambleTitle preamble = phase_preamble();
-        const bool titled_waiting = phase == "model_waiting" && !preamble.title.empty();
-        const std::string& effective_label = titled_waiting ? preamble.title : label;
-        const std::string& effective_detail = titled_waiting ? label : detail;
+        // 具体进度提示(add-tool-preamble,「适合日常工作」):开启时 loading 只说正在
+        // 做什么、不带参数 —— 等待 / 推理 / 准备调用 / 执行 / 撰写回复这几类 phase 的
+        // 文案在这里统一换成 推理加粗标题 > 工具模板 > 场景文案,detail(命令预览、
+        // 字节数、片段计数)一律清空;权限 / 提问 / 压缩 / 重试这些必须被看见的状态
+        // 不换。批次之间的 model_waiting 也换(「正在分析文件内容」),否则 Web 实时行
+        // 会在具体文案与「正在等待模型响应」之间闪动。
+        const ToolPreambleTitle preamble = concrete_activity_for_phase(phase);
+        const bool concrete_label = !preamble.title.empty();
+        const std::string effective_label = concrete_label ? preamble.title : label;
+        const std::string effective_detail = concrete_label ? std::string{} : detail;
+        if (concrete_label) announce_activity(preamble.title);
         nlohmann::json payload;
         {
             std::lock_guard<std::mutex> lk(progress_mu);
@@ -5947,9 +5992,9 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                 phase, effective_label, effective_detail, tool, tool_call_id, tool_index,
                 active_progress_started_at_ms);
         }
-        // 当前阶段前言随每条进度帧透传,界面据此区分「前言」与普通阶段文案;kind
-        // 给以后的读 / 写效果留位。
-        if (!preamble.title.empty()) {
+        // 具体文案随进度帧透传,界面据此区分它与普通阶段文案;kind 给以后的
+        // 读 / 写效果留位。
+        if (concrete_label) {
             payload["preamble"] = {
                 {"title", preamble.title},
                 {"source", preamble.source},
@@ -6614,7 +6659,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     }
 
     // 回合结束:阶段前言不留到下一回合。
-    clear_phase_preamble();
+    reset_activity_for_turn();
     computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);

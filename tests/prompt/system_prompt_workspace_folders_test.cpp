@@ -13,7 +13,7 @@ namespace {
 std::string build_with(const acecode::SystemPromptWorkspaceFolders* folders) {
     acecode::ToolExecutor tools;
     return acecode::build_system_prompt(tools, "C:/work/main", nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, true, nullptr, nullptr, nullptr, false, folders);
+        nullptr, nullptr, nullptr, true, nullptr, nullptr, nullptr, folders);
 }
 
 } // namespace
