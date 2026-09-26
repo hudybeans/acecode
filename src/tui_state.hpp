@@ -420,6 +420,9 @@ struct TuiState {
     struct ToolProgress {
         std::string tool_name;
         std::string command_preview;
+        // 工具前言(add-tool-preamble):该次调用的前言,非空时进度头显示
+        // "● 前言 · Tool(args)",让等待期一眼看到「在干什么」。
+        std::string preamble;
         std::vector<std::string> tail_lines;    // up to last 5 complete lines
         std::string current_partial;            // current line in progress (no \n yet)
         int total_lines = 0;

@@ -13,6 +13,7 @@
 #include "resume_state_sync.hpp"
 #include "websearch_command.hpp"
 #include "../config/config.hpp"
+#include "../config/mcp_config.hpp"
 #include "../tui/mode_picker.hpp"
 #include "../tui/theme_palette.hpp"
 #include "../config/saved_models.hpp"
@@ -501,18 +502,10 @@ static void cmd_feedback(CommandContext& ctx, const std::string& raw_args) {
     package_req.session_id = session_id;
     package_req.session_jsonl_path = session_jsonl;
     package_req.acecode_version = ACECODE_VERSION;
-    // TUI 自己的日志(cwd/acecode.log)+ 同机 daemon / desktop 的滚动日志:
-    // TUI 会话也可能被 daemon 侧的组件影响,缺失的来源会被静默跳过。
-    {
-        acecode::feedback::FeedbackLogSource tui_log;
-        tui_log.path = path_from_utf8(ctx.cwd) / "acecode.log";
-        tui_log.entry_name = "logs/acecode.log.tail.txt";
-        package_req.logs.push_back(std::move(tui_log));
-    }
+    // TUI feedback carries its own surface log plus the shared daemon log, but not
+    // an unrelated Desktop surface log. Missing sources are skipped.
     const fs::path logs_dir = path_from_utf8(get_logs_dir());
-    for (auto& source : acecode::feedback::collect_runtime_log_sources(logs_dir)) {
-        package_req.logs.push_back(std::move(source));
-    }
+    package_req.logs = acecode::feedback::collect_tui_runtime_log_sources(logs_dir);
     // 最近三天的升级记录合并成一个条目:「更新之后就不对了」这类反馈要看的就是它。
     if (auto upgrade_logs = acecode::feedback::collect_recent_upgrade_log_bundle(logs_dir)) {
         package_req.log_bundles.push_back(std::move(*upgrade_logs));
@@ -837,13 +830,13 @@ static void mcp_push(CommandContext& ctx, const std::string& msg) {
     ctx.state.chat_follow_tail = true;
 }
 
-static std::string mcp_known_servers(const McpManager& mgr) {
-    auto names = mgr.server_names();
+static std::string mcp_known_servers(const std::map<std::string, std::string>& names) {
     if (names.empty()) return "(none)";
     std::ostringstream oss;
-    for (size_t i = 0; i < names.size(); ++i) {
-        if (i) oss << ", ";
-        oss << names[i];
+    for (const auto& [name, owner] : names) {
+        (void)owner;
+        if (oss.tellp() > 0) oss << ", ";
+        oss << name;
     }
     return oss.str();
 }
@@ -865,6 +858,23 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
     }
     McpManager& mgr = *ctx.mcp_manager;
     ToolExecutor& tools = *ctx.tools;
+    // Commands address the current project's effective names. A project
+    // override (including a disabled one) never falls back to a global owner.
+    const auto project_scope = ctx.cwd.empty() ? std::string{} : mcp_project_root(ctx.cwd);
+    std::map<std::string, std::string> visible;
+    for (const auto& server : mgr.list_servers()) {
+        if (mgr.server_scope(server.name).empty()) visible[server.name] = server.name;
+    }
+    if (!project_scope.empty()) {
+        for (const auto& server : mgr.list_servers()) {
+            if (mgr.server_scope(server.name) == project_scope)
+                visible[mcp_server_display_name(server.name)] = server.name;
+        }
+    }
+    const auto is_visible = [&](const std::string& id) {
+        const auto found = visible.find(mcp_server_display_name(id));
+        return found != visible.end() && found->second == id;
+    };
 
     // Parse: first token is subcommand, remainder is name.
     std::string trimmed = normalized_args;
@@ -892,14 +902,15 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
     // Default view: list servers with state summary.
     if (sub.empty()) {
         auto servers = mgr.list_servers();
-        if (servers.empty()) {
+        if (visible.empty()) {
             mcp_push(ctx, "No MCP servers configured.");
             return;
         }
         std::ostringstream oss;
         oss << "MCP servers:";
         for (const auto& s : servers) {
-            oss << "\n  " << s.name
+            if (!is_visible(s.name)) continue;
+            oss << "\n  " << mcp_server_display_name(s.name)
                 << "  [" << mcp_state_label(s.state) << "]"
                 << "  [" << s.transport << "]"
                 << "  tools=" << s.tool_count
@@ -927,7 +938,7 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
 
     if (sub == "list") {
         auto grouped = mgr.list_tools_by_server();
-        if (grouped.empty()) {
+        if (visible.empty()) {
             mcp_push(ctx, "No MCP servers configured.");
             return;
         }
@@ -938,9 +949,10 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
         std::ostringstream oss;
         oss << "MCP tools:";
         for (const auto& [server, defs] : grouped) {
+            if (!is_visible(server)) continue;
             auto it = state_map.find(server);
             const char* label = (it != state_map.end()) ? mcp_state_label(it->second) : "unknown";
-            oss << "\n  " << server << "  [" << label << "]";
+            oss << "\n  " << mcp_server_display_name(server) << "  [" << label << "]";
             if (defs.empty()) {
                 oss << "\n    (no tools registered)";
             } else {
@@ -963,28 +975,38 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
             mcp_push(ctx, "Usage: /mcp " + sub + " <server-name>");
             return;
         }
-        if (!mgr.has_server(name)) {
-            mcp_push(ctx, "Unknown MCP server '" + name + "'. Known: " + mcp_known_servers(mgr));
+        const auto found = visible.find(name);
+        if (found == visible.end()) {
+            mcp_push(ctx, "Unknown MCP server '" + name + "'. Known: " + mcp_known_servers(visible));
             return;
+        }
+        const auto& owner = found->second;
+        // Slash commands remain runtime controls; persisted configuration is
+        // edited in MCP management. Preserve all other capability restrictions.
+        auto policy = ctx.agent_loop.tool_capability_policy();
+        if (policy.mcp_servers) {
+            if (sub == "disable") policy.mcp_servers->erase(owner);
+            else policy.mcp_servers->insert(owner);
+            ctx.agent_loop.set_tool_capability_policy(std::move(policy));
         }
 
         bool changed = false;
         if (sub == "disable") {
-            changed = mgr.disable(name, tools);
+            changed = mgr.disable(owner, tools);
             if (changed) {
                 mcp_push(ctx, "Disabled MCP server '" + name + "'.");
             } else {
                 mcp_push(ctx, "MCP server '" + name + "' is already disabled.");
             }
         } else if (sub == "enable") {
-            changed = mgr.enable(name, tools);
+            changed = mgr.enable(owner, tools);
             if (changed) {
                 mcp_push(ctx, "Starting MCP server '" + name + "' in the background.");
             } else {
                 // Distinguish already-connected vs failed.
                 auto servers = mgr.list_servers();
                 for (const auto& s : servers) {
-                    if (s.name == name) {
+                    if (s.name == owner) {
                         if (s.state == McpServerState::Connected) {
                             mcp_push(ctx, "MCP server '" + name + "' is already connected.");
                         } else if (s.state == McpServerState::Starting) {
@@ -997,7 +1019,7 @@ static void cmd_mcp(CommandContext& ctx, const std::string& args) {
                 }
             }
         } else { // reconnect
-            changed = mgr.reconnect(name, tools);
+            changed = mgr.reconnect(owner, tools);
             if (changed) {
                 mcp_push(ctx, "Reconnecting MCP server '" + name + "' in the background.");
             } else {

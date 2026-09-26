@@ -103,6 +103,14 @@ struct SystemPromptModelState {
     bool prefers_apply_patch = false;
 };
 
+// 「编辑项目」里添加的附加工作目录(workspace.json extra_folders)。只随用户
+// 保存变化,留在可缓存的静态前缀里。read_only 是有写边界(worktree / LOOP)时
+// 因与主 checkout 重叠而收回写权限的那些;nullptr 或两者皆空 = 不输出任何行。
+struct SystemPromptWorkspaceFolders {
+    std::vector<std::string> additional;
+    std::vector<std::string> read_only;
+};
+
 // Build the static system prompt with identity, stable environment info, and
 // behavior rules. Per-request context such as current time/CWD, mutable project
 // instructions, mutable memory index content, and full tool JSON schemas belong
@@ -121,7 +129,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 bool active_model_can_read_images = true,
                                 const SystemPromptEnvironment* environment = nullptr,
                                 const SystemPromptSandboxState* sandbox = nullptr,
-                                const SystemPromptModelState* model = nullptr);
+                                const SystemPromptModelState* model = nullptr,
+                                const SystemPromptWorkspaceFolders* workspace_folders = nullptr);
 
 // Build provider-visible, session-scoped context blocks. These are assembled
 // for the current API request only and must not be persisted into the visible

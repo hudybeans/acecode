@@ -6,7 +6,7 @@
 //
 // 输入布局(与 package.yml 的 Package 步骤产物一致):
 //   extracted/acecode-linux-x64/{acecode,acecode-desktop,share/...}
-//   extracted/acecode-windows-x64/{acecode.exe,acecode-desktop.exe,share/...}
+//   extracted/acecode-windows-x64/{acecode.exe,acecode-desktop.exe,acecode-computer-use.exe,share/...}
 //   extracted/acecode-macos-arm64/{acecode,ACECode.app/...,share/...}
 //
 // 输出布局(发布顺序:先 platform/* 再 cli / desktop):
@@ -56,29 +56,29 @@ const PLATFORMS = [
     ciId: 'windows-x64',
     os: 'win32',
     cpu: 'x64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'acecode-computer-use.exe', 'share', 'channels'],
     executables: [],
   },
   {
     ciId: 'windows-arm64',
     os: 'win32',
     cpu: 'arm64',
-    files: ['acecode.exe', 'acecode-desktop.exe', 'share', 'channels'],
+    files: ['acecode.exe', 'acecode-desktop.exe', 'acecode-computer-use.exe', 'share', 'channels'],
     executables: [],
   },
   {
     ciId: 'macos-x64',
     os: 'darwin',
     cpu: 'x64',
-    files: ['acecode', 'ACECode.app', 'share', 'channels'],
-    executables: ['acecode'],
+    files: ['acecode', 'acecode-computer-use', 'ACECode.app', 'share', 'channels'],
+    executables: ['acecode', 'acecode-computer-use'],
   },
   {
     ciId: 'macos-arm64',
     os: 'darwin',
     cpu: 'arm64',
-    files: ['acecode', 'ACECode.app', 'share', 'channels'],
-    executables: ['acecode'],
+    files: ['acecode', 'acecode-computer-use', 'ACECode.app', 'share', 'channels'],
+    executables: ['acecode', 'acecode-computer-use'],
   },
 ];
 
@@ -164,6 +164,10 @@ function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
     if (!fs.existsSync(src)) {
       throw new Error(`平台 ${platform.ciId} 缺少产物文件: ${src}`);
     }
+    if ((file === 'acecode-computer-use.exe' || file === 'acecode-computer-use') &&
+        (!fs.statSync(src).isFile() || fs.statSync(src).size === 0)) {
+      throw new Error(`平台 ${platform.ciId} 的 Computer Use runtime 无效: ${src}`);
+    }
     if (file === 'channels') {
       const channelDir = path.join(outDir, CHANNEL_RELATIVE_DIR);
       fs.mkdirSync(channelDir, { recursive: true });
@@ -182,6 +186,10 @@ function buildPlatformPackage(platform, version, inputRoot, outputRoot) {
     const macosDir = path.join(outDir, 'ACECode.app', 'Contents', 'MacOS');
     if (!fs.existsSync(path.join(macosDir, 'ACECode'))) {
       throw new Error(`平台 ${platform.ciId} 的 ACECode.app 不完整: 缺少 ${macosDir}/ACECode`);
+    }
+    const bundledHelper = path.join(macosDir, 'acecode-computer-use');
+    if (!fs.existsSync(bundledHelper) || !fs.statSync(bundledHelper).isFile() || fs.statSync(bundledHelper).size === 0) {
+      throw new Error(`平台 ${platform.ciId} 的 ACECode.app 缺少 Computer Use runtime: ${bundledHelper}`);
     }
     validateModelsDevRegistry(
       path.join(outDir, 'ACECode.app', 'Contents', 'Resources'),

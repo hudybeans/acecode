@@ -69,6 +69,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     printf '%s\n' 'MIT' > "$models_dev_dir/LICENSE"
     printf '%s\n' 'int main(void) { return 0; }' > "$temporary_root/main.c"
     xcrun clang -arch "$(uname -m)" "$temporary_root/main.c" -o "$fake_exec"
+    cp "$fake_exec" "$fake_app/Contents/MacOS/acecode-computer-use"
 
     /usr/bin/plutil -create xml1 "$info_plist"
     /usr/bin/plutil -insert CFBundleIdentifier -string dev.acecode.desktop "$info_plist"

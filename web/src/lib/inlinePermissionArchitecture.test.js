@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseSync } from '@babel/core';
 
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -26,6 +27,36 @@ function run(name, fn) {
     throw error;
   }
 }
+
+run('App hooks run before authentication branches can return early', () => {
+  const ast = parseSync(source('App.jsx'), {
+    configFile: false, babelrc: false, parserOpts: { plugins: ['jsx'] },
+  });
+  const app = ast.program.body.find((node) => (
+    node.type === 'ExportNamedDeclaration' && node.declaration?.id?.name === 'App'
+  ))?.declaration;
+  assert.ok(app, 'the production App component must exist');
+
+  // Callback/helper returns do not return from App, and their hooks have a
+  // separate lifetime. Inspect only control flow in the component itself.
+  function componentNodes(node) {
+    if (!node || typeof node !== 'object') return [];
+    if (/Function|Method/.test(node.type || '')) return [];
+    return [node, ...Object.values(node).flatMap((value) => (
+      Array.isArray(value) ? value.flatMap(componentNodes) : componentNodes(value)
+    ))];
+  }
+
+  let canReturnEarly = false;
+  for (const statement of app.body.body) {
+    const nodes = componentNodes(statement);
+    const hooks = nodes.filter((node) => node.type === 'CallExpression'
+      && node.callee.type === 'Identifier' && /^use[A-Z]/.test(node.callee.name));
+    assert.ok(!canReturnEarly || hooks.length === 0,
+      `App calls ${hooks.map((node) => node.callee.name).join(', ')} after an early return`);
+    if (nodes.some((node) => node.type === 'ReturnStatement')) canReturnEarly = true;
+  }
+});
 
 run('permission cards are chat rows inside the transcript before activity', () => {
   const chat = source('components/ChatView.jsx');
@@ -88,7 +119,10 @@ run('App reconciles server close events and sends decisions to the request sessi
 run('permission is conversation-scoped and is not a global focus/search/tour blocker', () => {
   const app = source('App.jsx');
   assert.match(app, /visiblePermissionRequests\(permReqs, activeId, permissionOwnership\)/);
-  assert.match(app, /const visibleQuestionReq = !visiblePermissionUnresolved/);
+  assert.match(app, /visibleQuestionRequest\(questionReqs, activeId, permissionOwnership\)/);
+  // 权限未解决时问题必须让位(permission 优先于 question);memoize 后以提前 return 表达。
+  assert.match(app, /const visibleQuestionReq = useMemo\(/);
+  assert.match(app, /if \(visiblePermissionUnresolved\) return null/);
   assert.match(app, /permissionOpen: false/);
 
   const tourBlock = between(app, 'const guidedTourBlocked', 'useEffect(() => initInactiveSelection');

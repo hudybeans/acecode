@@ -67,8 +67,8 @@ export function previewScopeKey({ cwd = '', workspaceHash = '', worktreePath = '
   return workspaceHash || normalizePreviewCwd(cwd) || '';
 }
 
-// The sessionId field is also the local tab-owner key. Before a real session
-// exists, scope-owned previews share this namespace without making API sessions.
+// sessionId is also the local tab-owner key. ChatView passes its unique draft
+// owner before creation; the scope fallback supports standalone preview callers.
 export function previewTabContext({ scopeKey = '', sessionId = '' } = {}) {
   return { scopeKey, sessionId: sessionId || (scopeKey ? `@workspace:${scopeKey}` : '') };
 }
@@ -112,7 +112,7 @@ export function previewAbsolutePath({ cwd = '', path = '' } = {}) {
 
 export function visiblePreviewTabs(state, { scopeKey = '', sessionId = '' } = {}) {
   const source = state && typeof state === 'object' ? state : {};
-  const fileTabs = source.fileTabsByScope?.[scopeKey] || [];
+  const fileTabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
   const changeTab = sessionId ? source.changeTabsBySession?.[sessionId] : null;
   const storedBrowserTabs = sessionId ? source.browserTabsBySession?.[sessionId] : null;
   const browserTabs = Array.isArray(storedBrowserTabs)
@@ -127,7 +127,7 @@ export function visiblePreviewTabs(state, { scopeKey = '', sessionId = '' } = {}
 }
 
 function viewKey(scopeKey, sessionId) {
-  return `${scopeKey || ''}::${sessionId || ''}`;
+  return JSON.stringify([scopeKey || '', sessionId || '']);
 }
 
 function applyVisibleTabOrder(tabs, order) {
@@ -165,13 +165,41 @@ function activeKeyFor(state, scopeKey, sessionId) {
   const activeByView = source.activeTabByView?.[viewKey(scopeKey, sessionId)];
   if (activeByView) return activeByView;
   if (sessionId && source.activeTabBySession?.[sessionId]) return source.activeTabBySession[sessionId];
-  return source.activeTabByScope?.[scopeKey] || '';
+  return '';
 }
 
 export function activePreviewTab(state, context = {}) {
   const tabs = visiblePreviewTabs(state, context);
   const activeKey = activeKeyFor(state, context.scopeKey || '', context.sessionId || '');
   return tabs.find((tab) => tab.key === activeKey) || tabs[0] || null;
+}
+
+// 新建入口只移交给刚创建的会话，键也一起重建；已有会话不会隐式读工作区页签。
+export function transferPreviewTabs(state, from, to) {
+  const tabs = visiblePreviewTabs(state, from);
+  const active = activePreviewTab(state, from)?.key;
+  const keys = new Map();
+  let next = state;
+  for (const tab of tabs) {
+    if (tab.type === PREVIEW_TAB_TYPES.FILE) {
+      next = openFileTab(next, { ...to, cwd: tab.cwd, path: tab.path });
+      const key = fileTabKey(to.scopeKey, to.sessionId, tab.path);
+      keys.set(tab.key, key);
+      const owner = viewKey(to.scopeKey, to.sessionId);
+      next.fileTabsByView[owner] = next.fileTabsByView[owner].map((created) => created.key === key
+        ? { ...tab, key, scopeKey: to.scopeKey, sessionId: to.sessionId } : created);
+    } else if (tab.type === PREVIEW_TAB_TYPES.GIT_CHANGES) {
+      next = openGitChangesTab(next, { ...tab, ...to });
+      keys.set(tab.key, gitChangesTabKey(to.sessionId));
+    }
+  }
+  next = closeVisiblePreviewTabs(next, from);
+  const target = viewKey(to.scopeKey, to.sessionId);
+  return {
+    ...next,
+    tabOrderByView: { ...next.tabOrderByView, [target]: tabs.map((tab) => keys.get(tab.key)).filter(Boolean) },
+    activeTabByView: { ...next.activeTabByView, [target]: keys.get(active) || '' },
+  };
 }
 
 export function previewTabHasUnsavedDraft(tab) {
@@ -189,8 +217,8 @@ export function visibleUnsavedPreviewTabs(state, context = {}) {
   return previewTabsWithUnsavedDrafts(visiblePreviewTabs(state, context));
 }
 
-function fileTabKey(scopeKey, path) {
-  return `file:${scopeKey}:${normalizeTreePath(path)}`;
+function fileTabKey(scopeKey, sessionId, path) {
+  return `file:${viewKey(scopeKey, sessionId)}:${normalizeTreePath(path)}`;
 }
 
 function sessionChangesTabKey(sessionId) {
@@ -218,7 +246,8 @@ function isChangeTabKey(tabKey) {
     && (tabKey.startsWith('session-changes:') || tabKey.startsWith('git-changes:'));
 }
 
-function nextActiveAfterClose(tabs, closedKey) {
+function nextActiveAfterClose(tabs, closedKey, activeKey) {
+  if (activeKey !== closedKey && tabs.some((tab) => tab.key === activeKey)) return activeKey;
   const index = tabs.findIndex((tab) => tab.key === closedKey);
   if (index < 0) return tabs[0]?.key || '';
   return tabs[index + 1]?.key || tabs[index - 1]?.key || '';
@@ -228,8 +257,8 @@ export function openFileTab(state, { scopeKey = '', sessionId = '', cwd = '', pa
   const normalizedPath = normalizeTreePath(path);
   if (!scopeKey || !normalizedPath) return state || {};
   const source = state && typeof state === 'object' ? state : {};
-  const tabs = source.fileTabsByScope?.[scopeKey] || [];
-  const key = fileTabKey(scopeKey, normalizedPath);
+  const tabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
+  const key = fileTabKey(scopeKey, sessionId, normalizedPath);
   // 聊天正文的 foo.cpp:42 链接带行号进来:tab 记录 line + lineRevision(仿
   // expandedFileRevision 模式)。revision 每次带行号打开都递增,让重复点击同一
   // 链接也能触发预览重新滚动。不带行号的打开(文件树点击)不清已有定位。
@@ -245,6 +274,7 @@ export function openFileTab(state, { scopeKey = '', sessionId = '', cwd = '', pa
       key,
       type: PREVIEW_TAB_TYPES.FILE,
       scopeKey,
+      sessionId,
       cwd,
       path: normalizedPath,
       title: normalizedPath.split('/').pop() || normalizedPath,
@@ -253,13 +283,9 @@ export function openFileTab(state, { scopeKey = '', sessionId = '', cwd = '', pa
   }
   return {
     ...source,
-    fileTabsByScope: {
-      ...(source.fileTabsByScope || {}),
-      [scopeKey]: nextTabs,
-    },
-    activeTabByScope: {
-      ...(source.activeTabByScope || {}),
-      [scopeKey]: key,
+    fileTabsByView: {
+      ...(source.fileTabsByView || {}),
+      [viewKey(scopeKey, sessionId)]: nextTabs,
     },
     activeTabByView: {
       ...(source.activeTabByView || {}),
@@ -270,12 +296,13 @@ export function openFileTab(state, { scopeKey = '', sessionId = '', cwd = '', pa
 
 export function updateFileTabDraft(state, {
   scopeKey = '',
+  sessionId = '',
   tabKey = '',
   patch = {},
 } = {}) {
   if (!scopeKey || !tabKey) return state || {};
   const source = state && typeof state === 'object' ? state : {};
-  const tabs = source.fileTabsByScope?.[scopeKey] || [];
+  const tabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
   const index = tabs.findIndex((tab) => tab.key === tabKey && tab.type === PREVIEW_TAB_TYPES.FILE);
   if (index < 0) return source;
 
@@ -299,23 +326,23 @@ export function updateFileTabDraft(state, {
   nextTabs[index] = { ...tabs[index], edit: nextEdit };
   return {
     ...source,
-    fileTabsByScope: {
-      ...(source.fileTabsByScope || {}),
-      [scopeKey]: nextTabs,
+    fileTabsByView: {
+      ...(source.fileTabsByView || {}),
+      [viewKey(scopeKey, sessionId)]: nextTabs,
     },
   };
 }
 
-export function discardFileTabDraft(state, { scopeKey = '', tabKey = '' } = {}) {
+export function discardFileTabDraft(state, { scopeKey = '', sessionId = '', tabKey = '' } = {}) {
   if (!scopeKey || !tabKey) return state || {};
   const source = state && typeof state === 'object' ? state : {};
-  const tabs = source.fileTabsByScope?.[scopeKey] || [];
+  const tabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
   if (!tabs.some((tab) => tab.key === tabKey && tab.edit)) return source;
   return {
     ...source,
-    fileTabsByScope: {
-      ...(source.fileTabsByScope || {}),
-      [scopeKey]: tabs.map((tab) => {
+    fileTabsByView: {
+      ...(source.fileTabsByView || {}),
+      [viewKey(scopeKey, sessionId)]: tabs.map((tab) => {
         if (tab.key !== tabKey || !tab.edit) return tab;
         const baselineText = String(tab.edit.baselineText ?? '');
         return {
@@ -618,13 +645,13 @@ export function refreshPreviewTab(state, {
   const source = state && typeof state === 'object' ? state : {};
 
   if (tabKey.startsWith('file:')) {
-    const tabs = source.fileTabsByScope?.[scopeKey] || [];
+    const tabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
     if (!tabs.some((tab) => tab.key === tabKey)) return source;
     return {
       ...source,
-      fileTabsByScope: {
-        ...(source.fileTabsByScope || {}),
-        [scopeKey]: tabs.map((tab) => (tab.key === tabKey
+      fileTabsByView: {
+        ...(source.fileTabsByView || {}),
+        [viewKey(scopeKey, sessionId)]: tabs.map((tab) => (tab.key === tabKey
           ? (previewTabHasUnsavedDraft(tab)
             ? {
               ...tab,
@@ -743,22 +770,18 @@ export function closePreviewTab(state, { scopeKey = '', sessionId = '', tabKey =
   if (!tabKey) return state || {};
   const source = state && typeof state === 'object' ? state : {};
   const visibleBeforeClose = visiblePreviewTabs(source, { scopeKey, sessionId });
+  if (!visibleBeforeClose.some((tab) => tab.key === tabKey)) return source;
+  const activeKey = activePreviewTab(source, { scopeKey, sessionId })?.key;
   if (tabKey.startsWith('file:')) {
-    const tabs = source.fileTabsByScope?.[scopeKey] || [];
+    const tabs = source.fileTabsByView?.[viewKey(scopeKey, sessionId)] || [];
     const nextTabs = tabs.filter((tab) => tab.key !== tabKey);
-    const nextFileTabs = { ...(source.fileTabsByScope || {}) };
-    if (nextTabs.length > 0) nextFileTabs[scopeKey] = nextTabs;
-    else delete nextFileTabs[scopeKey];
-    const nextVisibleActive = nextActiveAfterClose(visibleBeforeClose, tabKey);
+    const nextFileTabs = { ...(source.fileTabsByView || {}) };
+    if (nextTabs.length > 0) nextFileTabs[viewKey(scopeKey, sessionId)] = nextTabs;
+    else delete nextFileTabs[viewKey(scopeKey, sessionId)];
+    const nextVisibleActive = nextActiveAfterClose(visibleBeforeClose, tabKey, activeKey);
     return {
       ...source,
-      fileTabsByScope: nextFileTabs,
-      activeTabByScope: {
-        ...(source.activeTabByScope || {}),
-        [scopeKey]: nextVisibleActive.startsWith('file:')
-          ? nextVisibleActive
-          : nextActiveAfterClose(tabs, tabKey),
-      },
+      fileTabsByView: nextFileTabs,
       activeTabByView: {
         ...(source.activeTabByView || {}),
         [viewKey(scopeKey, sessionId)]: nextVisibleActive,
@@ -775,6 +798,7 @@ export function closePreviewTab(state, { scopeKey = '', sessionId = '', tabKey =
     nextActiveByView[viewKey(scopeKey, sessionId)] = nextActiveAfterClose(
       visibleBeforeClose,
       tabKey,
+      activeKey,
     );
     return {
       ...source,
@@ -796,6 +820,7 @@ export function closePreviewTab(state, { scopeKey = '', sessionId = '', tabKey =
     const nextVisibleActive = nextActiveAfterClose(
       visibleBeforeClose,
       tabKey,
+      activeKey,
     );
     nextActiveByView[viewKey(scopeKey, sessionId)] = nextVisibleActive;
     if (isBrowserTabKey(nextVisibleActive) || isChangeTabKey(nextVisibleActive)) {
@@ -817,11 +842,9 @@ export function closePreviewTab(state, { scopeKey = '', sessionId = '', tabKey =
 export function closeVisiblePreviewTabs(state, { scopeKey = '', sessionId = '' } = {}) {
   const source = state && typeof state === 'object' ? state : {};
   const closedKeys = visiblePreviewTabs(source, { scopeKey, sessionId }).map((tab) => tab.key);
-  const nextFileTabs = { ...(source.fileTabsByScope || {}) };
-  const nextActiveByScope = { ...(source.activeTabByScope || {}) };
+  const nextFileTabs = { ...(source.fileTabsByView || {}) };
   const nextActiveByView = { ...(source.activeTabByView || {}) };
-  delete nextFileTabs[scopeKey];
-  delete nextActiveByScope[scopeKey];
+  delete nextFileTabs[viewKey(scopeKey, sessionId)];
   delete nextActiveByView[viewKey(scopeKey, sessionId)];
 
   const nextChangeTabs = { ...(source.changeTabsBySession || {}) };
@@ -835,8 +858,7 @@ export function closeVisiblePreviewTabs(state, { scopeKey = '', sessionId = '' }
 
   return {
     ...source,
-    fileTabsByScope: nextFileTabs,
-    activeTabByScope: nextActiveByScope,
+    fileTabsByView: nextFileTabs,
     changeTabsBySession: nextChangeTabs,
     browserTabsBySession: nextBrowserTabs,
     activeTabBySession: nextActiveBySession,
@@ -855,6 +877,7 @@ export function closeOtherPreviewTabs(state, { scopeKey = '', sessionId = '', ta
   if (!tabKey) return state || {};
   const source = state && typeof state === 'object' ? state : {};
   const visible = visiblePreviewTabs(source, { scopeKey, sessionId });
+  if (!visible.some((tab) => tab.key === tabKey)) return source;
   const closedKeys = visible.filter((tab) => tab.key !== tabKey).map((tab) => tab.key);
   if (closedKeys.length === 0) return source;
   let next = source;
@@ -887,6 +910,7 @@ export function closePreviewTabsToRight(state, { scopeKey = '', sessionId = '', 
 export function activatePreviewTab(state, { scopeKey = '', sessionId = '', tabKey = '' } = {}) {
   if (!tabKey) return state || {};
   const source = state && typeof state === 'object' ? state : {};
+  if (!visiblePreviewTabs(source, { scopeKey, sessionId }).some((tab) => tab.key === tabKey)) return source;
   if ((isChangeTabKey(tabKey) || isBrowserTabKey(tabKey)) && sessionId) {
     return {
       ...source,
@@ -903,10 +927,6 @@ export function activatePreviewTab(state, { scopeKey = '', sessionId = '', tabKe
   if (scopeKey) {
     return {
       ...source,
-      activeTabByScope: {
-        ...(source.activeTabByScope || {}),
-        [scopeKey]: tabKey,
-      },
       activeTabByView: {
         ...(source.activeTabByView || {}),
         [viewKey(scopeKey, sessionId)]: tabKey,

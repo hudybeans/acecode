@@ -12,6 +12,7 @@ const panelLeft = [panel, p('M7.5 3.5v13')];
 const panelRight = [panel, p('M12.5 3.5v13')];
 const search = [c(8.7, 8.7, 5.9), p('m13 13 4.3 4.3')];
 const ellipsis = [dot(4.5, 10), dot(10, 10), dot(15.5, 10)];
+const goalReticle = [c(10, 10, 5.8), p('M10 2.5V5.2M10 14.8V17.5M2.5 10H5.2M14.8 10H17.5')];
 
 function softPolygon(points, radius = .3) {
   return points.map(([x, y], index) => {
@@ -29,6 +30,7 @@ function softPolygon(points, radius = .3) {
 const swarmCenters = [[10, 10], [10, 5.7], [13.72, 7.85], [13.72, 12.15], [10, 14.3], [6.28, 12.15], [6.28, 7.85]];
 
 export const controlIcons = {
+  Columns: [panel, p('M10 3.5v13')],
   Add: [p('M10 4v12M4 10h12')],
   AddFolder: [p('M8.5 17H3.8q-1.3 0-1.3-1.3V5.3Q2.5 4 3.8 4h4.3q.5 0 .8.4l1.1 1.7q.3.4.8.4h5.4q1.3 0 1.3 1.3v2.7'), p('M14 11.5v6M11 14.5h6')],
   ArrowLeft: left,
@@ -54,7 +56,7 @@ export const controlIcons = {
   LeftBar: panelLeft,
   List: [p('M7.5 5h9M7.5 10h9M7.5 15h9'), dot(3.5, 5, .65), dot(3.5, 10, .65), dot(3.5, 15, .65)],
   ListPanel: [p('M3 5h10M3 10h14M3 15h8')],
-  NewSession: [p('M9 3H4.5Q3 3 3 4.5v11Q3 17 4.5 17h5M6 7h2M6 10h1'), p('m9 9 6.1-6.1q.6-.6 1.2 0l.8.8q.6.6 0 1.2L11 11l-2.5.5q-.4.1-.3-.3L9 9ZM14 4l2 2M14 12v6M11 15h6')],
+  NewSession: [p('M10 3.5H6.5q-3 0-3 3v7q0 3 3 3h7q3 0 3-3v-2.5'), p('M8.6 9.9 15.1 3.4q.6-.6 1.2 0l.3.3q.6.6 0 1.2L10.1 11.4Q9.5 12 8.72 12.195L7.9 12.4Q7.5 12.5 7.6 12.1L7.805 11.28Q8 10.5 8.6 9.9Z')],
   OpenFile: [p('M8.5 17H5q-1.5 0-1.5-1.5V4q0-1.5 1.5-1.5h6.4q.6 0 1 .4l3.2 3.2q.4.4.4 1V8M11.5 2.8v3.6q0 .9.9.9h3.2'), c(12.4, 12.5, 3), p('m14.6 14.7 2.4 2.4')],
   PanelBottom: [panel, p('M2.5 12.5h15')],
   PanelBottomFilled: [panel, p('M2.5 12.5h15v2.4q0 1.6-1.6 1.6H4.1q-1.6 0-1.6-1.6Z', { fill: 'currentColor', stroke: 'none' }), p('M2.5 12.5h15')],
@@ -80,7 +82,14 @@ export const controlIcons = {
   Clock: [c(10, 10, 7.1), p('M10 5.8v3.7q0 .5.4.8l2.8 1.7')],
   Compact: [p('M3 8V5q0-1 1-1h3M13 4h3q1 0 1 1v3M17 12v3q0 1-1 1h-3M7 16H4q-1 0-1-1v-3M6.5 8l2 2-2 2M13.5 8l-2 2 2 2')],
   Download: [p('M10 2.8v9.7M6.5 9.5l3.1 3.1q.4.4.8 0l3.1-3.1M3 12.5v3q0 1.5 1.5 1.5h11q1.5 0 1.5-1.5v-3')],
-  Goal: [p('M4 17V3.5M4 4q3-2 6 0t6 0v7q-3 2-6 0t-6 0')],
+  Goal: [
+    ...goalReticle,
+    dot(10, 10, .9),
+  ],
+  GoalBlocked: [
+    ...goalReticle,
+    p('M5.9 5.9L14.1 14.1'),
+  ],
   GripVertical: [dot(7.5, 5, .7), dot(12.5, 5, .7), dot(7.5, 10, .7), dot(12.5, 10, .7), dot(7.5, 15, .7), dot(12.5, 15, .7)],
   MagicWand: [p('m3.1 15.1 8.3-8.3q.5-.5 1 0l.8.8q.5.5 0 1l-8.3 8.3q-.5.5-1 0l-.8-.8q-.5-.5 0-1ZM9.2 9l1.8 1.8M6 2.5v3M4.5 4h3M15 10.5v3M13.5 12h3M14 2l.5 1.5L16 4l-1.5.5L14 6l-.5-1.5L12 4l1.5-.5Z')],
   Maximize: [r(4, 4, 12, 12, 1.4)],
@@ -90,6 +99,7 @@ export const controlIcons = {
   Restore: [r(3, 6.5, 10.5, 10.5, 1.4), p('M6.5 6.5V4.4Q6.5 3 7.9 3h7.7Q17 3 17 4.4v7.7q0 1.4-1.4 1.4h-2.1')],
   ShieldWarning: [p('M10 2.5Q6.8 4.7 3.5 5v4.1q0 5.1 6.5 8.4 6.5-3.3 6.5-8.4V5Q13.2 4.7 10 2.5ZM10 6.5v4.2'), dot(10, 13.5, .65)],
   Signal: [p('M4 15v-3M8 15V9M12 15V6M16 15V3')],
+  Sliders: [p('M3 6.5h4.5M10.5 6.5H17M3 13.5h7.5M13.5 13.5H17'), c(9, 6.5, 1.6), c(12, 13.5, 1.6)],
   Sparkle: [p('M8 3.5q.6 4.9 5.5 5.5Q8.6 9.6 8 14.5 7.4 9.6 2.5 9 7.4 8.4 8 3.5ZM15 10q.4 3.1 3.5 3.5-3.1.4-3.5 3.5-.4-3.1-3.5-3.5 3.1-.4 3.5-3.5ZM15.5 2.5v4M13.5 4.5h4')],
   Swarm: swarmCenters.map(([x, y], index) => p(softPolygon(Array.from({ length: 6 }, (_, n) => [x + 2.35 * Math.cos(n * Math.PI / 3), y + 2.35 * Math.sin(n * Math.PI / 3)])), index === 0 ? { fill: 'currentColor', fillOpacity: .14 } : {})),
   Upload: [p('M10 12.5V2.8M6.5 6l3.1-3.1q.4-.4.8 0L13.5 6M3 12.5v3q0 1.5 1.5 1.5h11q1.5 0 1.5-1.5v-3')],

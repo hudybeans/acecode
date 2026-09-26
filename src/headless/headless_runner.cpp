@@ -1,7 +1,9 @@
+#include "../config/mcp_config.hpp"
 #include "../environment/bootstrap.hpp"
 #include "headless_runner.hpp"
 
 #include "headless_capability_catalog.hpp"
+#include "headless_final_text.hpp"
 #include "headless_jsonl.hpp"
 #include "headless_mode.hpp"
 #include "headless_name_selection.hpp"
@@ -161,14 +163,11 @@ std::string build_effective_prompt(const std::string& arg_prompt) {
     return piped + "\n\n" + arg;
 }
 
-// 从最终消息列表里取 baseline 之后最后一条非空 assistant 回复。
+// 从最终消息列表里取 baseline 之后的最终 assistant 回复(规则见
+// headless_final_text.hpp:跳过纯空白,回合以文本工具调用被拒告终时返回空)。
 std::string last_assistant_text_after(SessionManager& sm, std::size_t baseline) {
-    auto messages = sm.load_active_messages();
-    for (std::size_t i = messages.size(); i > baseline; --i) {
-        const auto& m = messages[i - 1];
-        if (m.role == "assistant" && !m.content.empty()) return m.content;
-    }
-    return {};
+    return acecode::headless::headless_final_assistant_text(
+        sm.load_active_messages(), baseline);
 }
 
 // 配置字符串 → PermissionMode(与 daemon worker.cpp 的 permission_mode_from_config
@@ -215,6 +214,8 @@ void register_headless_tools(
 
 int print_available_capabilities(const HeadlessCliOptions& opts) {
     AppConfig cfg = load_config();
+    cfg.mcp_servers = effective_mcp_config(
+        cfg.mcp_servers, load_project_mcp_config(acecode::current_path_utf8()));
     const auto config_errors = validate_config(cfg);
     if (!config_errors.empty()) {
         for (const auto& error : config_errors) {
@@ -307,6 +308,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
 
     // 日志进文件,不镜像 stderr —— stdout/stderr 必须保持干净给管道消费。
     Logger::instance().init_with_rotation(get_logs_dir(), "headless", /*mirror_stderr=*/false);
+    // 数据目录重定向的解析告警发生在日志初始化之前(被 Logger 丢掉),这里补记。
+    acecode::log_deferred_data_dir_resolution_warning();
     Logger::instance().set_level(LogLevel::Dbg);
 
     headless::set_active(true);
@@ -320,6 +323,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
     }
 
     AppConfig cfg = load_config();
+    cfg.mcp_servers = effective_mcp_config(
+        cfg.mcp_servers, load_project_mcp_config(acecode::current_path_utf8()));
     acecode::environment::bootstrap(cfg, {false, true});
     {
         auto errs = validate_config(cfg);
@@ -516,6 +521,8 @@ int run_print_mode(const HeadlessCliOptions& opts) {
         reg_deps.tools                    = &tools;
         reg_deps.cwd                      = cwd;
         reg_deps.config                   = &cfg;
+        reg_deps.mcp_manager              = &mcp_runtime.manager();
+        reg_deps.load_project_mcp         = false;
         reg_deps.skill_registry           = &skill_registry;
         reg_deps.memory_registry          = nullptr;
         reg_deps.memory_cfg               = nullptr;

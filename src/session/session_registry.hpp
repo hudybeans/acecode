@@ -132,6 +132,8 @@ struct SessionRegistryDeps {
     // Shared MCP runtime. Explicit expert MCP selections may start a
     // configured server even when its daemon-global default is disabled.
     McpManager*                      mcp_manager = nullptr;
+    // Headless resolves its project overlay before applying --enable-mcp.
+    bool                             load_project_mcp = true;
     // 全局 PermissionManager(用于派生 per-session perm 的 mode + rules
     // 起始值)。每个 session 自己的 PermissionManager 是独立实例,session_allowed_
     // 不串。
@@ -290,13 +292,19 @@ public:
     // Whether an attached expert in any active session explicitly selects the
     // named MCP server. Used to avoid tearing down shared runtime tools that an
     // expert still needs after the global default is disabled.
-    bool expert_requires_mcp_server(const std::string& name) const;
+    bool expert_requires_mcp_server(const std::string& name,
+                                    const std::string& scope = {}) const;
 
     // 安全中心(openspec add-security-center):设置页改了 config.sandbox / 托管
     // 规则文件之后,把新状态下发到每个活跃会话。经 enqueue_control 与回合串行,
     // 不在模型请求中途翻转策略;空闲会话立即生效。返回入队的会话数。
     std::size_t refresh_sandbox_config(const SandboxConfig& sandbox);
     std::size_t refresh_exec_rules();
+
+    // 工具前言(add-tool-preamble):设置页改了 config.agent_loop.tool_preamble
+    // 之后直接下发到每个活跃会话 —— AgentLoop 每次用时取快照,不必等回合边界。
+    // 返回下发的会话数。
+    std::size_t refresh_tool_preamble_config(const ToolPreambleConfig& cfg);
 
     // Fire-and-forget hidden title generation for the first visible user input.
     // It never writes to transcript or blocks send_input.
@@ -344,6 +352,11 @@ public:
     // 本 daemon 里是否有任何会话正在跑回合(数据目录迁移的前置门:复制期间
     // 有会话落盘会让新目录少数据)。
     bool any_busy() const;
+
+    // 判定条件与 any_busy 相同的会话 id 列表(按字典序排序)。用途是数据目录迁移被
+    // SESSIONS_BUSY 拒绝时,在日志与 409 响应里列出到底是哪些会话占着 —— 只给一个
+    // bool 时,用户看到「有会话在运行」却找不到是哪个。
+    std::vector<std::string> busy_session_ids() const;
 
     // checkout 成功后标记该 workspace 全部会话的 gitStatus 快照过期
     // (AgentLoop::invalidate_git_snapshot,线程安全)。

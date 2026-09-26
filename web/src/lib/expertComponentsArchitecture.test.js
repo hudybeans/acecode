@@ -46,7 +46,7 @@ test('standalone expert page dispatches to the real new-task composer without re
   assert.match(chat, /const stagedExpertDraft = expertDispatchDraftFromRef\(ref\)/);
   assert.match(chat, /if \(sid \|\| !stagedExpertDraft\.present\) return/);
   assert.match(chat, /setComposerValue\(stagedExpertDraft\.text\)/);
-  assert.match(chat, /onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, stagedExpertDraft\.text\)/);
+  assert.match(chat, /onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, stagedExpertDraft\.text, api\)/);
   assert.match(chat, /onInitialDraftConsumed\?\.\(\)/);
   assert.doesNotMatch(page, /api\.setSessionDraft/);
   assert.doesNotMatch(page, /<InputBar|data-composer|模拟聊天|悬浮输入/);

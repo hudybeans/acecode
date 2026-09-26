@@ -20,6 +20,9 @@ nlohmann::json attachment_content_part(const AttachmentRecord& record);
 nlohmann::json output_attachments_to_content_parts(const nlohmann::json& attachments);
 nlohmann::json output_attachments_from_content_parts(const nlohmann::json& content_parts);
 std::string output_attachments_fallback_text(const nlohmann::json& attachments);
+// Whitelisted, bounded provenance for native desktop screenshots. An empty
+// object means absent or invalid metadata; ordinary attachments are unchanged.
+nlohmann::json computer_use_image_provenance(const nlohmann::json& metadata);
 
 OutputAttachmentMaterializeResult materialize_output_attachments(
     const nlohmann::json& attachments,

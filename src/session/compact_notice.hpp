@@ -22,7 +22,8 @@ struct CompactNotice {
 
 nlohmann::json make_compact_notice_metadata(const std::string& id,
                                             const std::string& stage,
-                                            bool complete = false);
+                                            bool complete = false,
+                                            nlohmann::json params = nlohmann::json::object());
 
 std::optional<CompactNotice> decode_compact_notice(
     const nlohmann::json& metadata);

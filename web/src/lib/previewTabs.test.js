@@ -3,6 +3,8 @@ import {
   activePreviewTab,
   activatePreviewTab,
   closePreviewTab,
+  closeOtherPreviewTabs,
+  closePreviewTabsToRight,
   closeVisiblePreviewTabs,
   closeVisiblePreviewTabsConfirmationMessage,
   defaultBrowserTabTitle,
@@ -23,6 +25,7 @@ import {
   resolveSessionChangesTabContent,
   sessionWorkingCwd,
   syncBrowserTabsForSession,
+  transferPreviewTabs,
   updateBrowserTabFavicon,
   updateBrowserTabMetadata,
   updateBrowserTabTitle,
@@ -43,6 +46,40 @@ function run(name, fn) {
   }
 }
 
+run('same workspace A five tabs and B two tabs keep independent order, active item and drafts', () => {
+  const a = { scopeKey: 'shared', sessionId: 'a', cwd: '/same' };
+  const b = { ...a, sessionId: 'b' };
+  let state = {};
+  for (const path of ['1.txt', '2.txt', '3.txt', '4.txt', '5.txt']) state = openFileTab(state, { ...a, path });
+  assert.equal(visiblePreviewTabs(state, b).length, 0);
+  for (const path of ['1.txt', '2.txt']) state = openFileTab(state, { ...b, path });
+  state = updateFileTabDraft(state, { ...a, tabKey: visiblePreviewTabs(state, a)[0].key, patch: { text: 'A edit', baselineText: '' } });
+  const originalA = visiblePreviewTabs(state, a);
+  const originalActiveA = activePreviewTab(state, a);
+  const bTabs = visiblePreviewTabs(state, b);
+  for (const operation of [closePreviewTab, closeOtherPreviewTabs, closePreviewTabsToRight, activatePreviewTab]) {
+    assert.equal(operation(state, { ...b, tabKey: originalA[0].key }), state, 'foreign tab actions cannot change this session');
+  }
+  assert.equal(bTabs[0].edit, undefined);
+  state = reorderPreviewTab(state, { ...b, sourceKey: bTabs[1].key, targetKey: bTabs[0].key, placement: 'before' });
+  state = activatePreviewTab(state, { ...b, tabKey: bTabs[0].key });
+  assert.deepEqual(visiblePreviewTabs(state, b).map((tab) => tab.path), ['2.txt', '1.txt']);
+  assert.deepEqual(visiblePreviewTabs(state, a), originalA);
+  assert.deepEqual(activePreviewTab(state, a), originalActiveA);
+  const rightClosed = closePreviewTabsToRight(state, { ...b, tabKey: bTabs[1].key });
+  assert.equal(visiblePreviewTabs(rightClosed, b).length, 1);
+  assert.deepEqual(visiblePreviewTabs(rightClosed, a), originalA);
+  const othersClosed = closeOtherPreviewTabs(state, { ...b, tabKey: bTabs[0].key });
+  assert.equal(visiblePreviewTabs(othersClosed, b).length, 1);
+  assert.deepEqual(visiblePreviewTabs(othersClosed, a), originalA);
+  state = closePreviewTab(state, { ...b, tabKey: bTabs[1].key });
+  assert.equal(visiblePreviewTabs(state, b).length, 1);
+  state = closeVisiblePreviewTabs(state, b);
+  assert.equal(visiblePreviewTabs(state, b).length, 0);
+  assert.deepEqual(visiblePreviewTabs(state, a), originalA);
+  assert.equal(visibleUnsavedPreviewTabs(state, a).length, 1);
+});
+
 run('workspace previews open and close without a real session', () => {
   const context = previewTabContext({ scopeKey: 'workspace-a' });
   let state = openFileTab({}, { ...context, cwd: '/project', path: 'README.md' });
@@ -55,12 +92,15 @@ run('workspace previews open and close without a real session', () => {
   assert.equal(visiblePreviewTabs(closeVisiblePreviewTabs(changed, context), context).length, 0);
 });
 
-run('preview ownership keeps real sessions unchanged and workspace files available after creation', () => {
+run('new sessions only receive home previews through explicit transfer', () => {
   const home = previewTabContext({ scopeKey: 'workspace-a' });
   const session = previewTabContext({ scopeKey: 'workspace-a', sessionId: 'real-session' });
   assert.deepEqual(session, { scopeKey: 'workspace-a', sessionId: 'real-session' });
   const state = openFileTab({}, { ...home, cwd: '/project', path: 'README.md' });
-  assert.equal(visiblePreviewTabs(state, session)[0].path, 'README.md');
+  assert.equal(visiblePreviewTabs(state, session).length, 0);
+  const transferred = transferPreviewTabs(state, home, session);
+  assert.equal(visiblePreviewTabs(transferred, session)[0].path, 'README.md');
+  assert.equal(visiblePreviewTabs(transferred, home).length, 0);
   assert.deepEqual(previewTabContext(), { scopeKey: '', sessionId: '' });
 });
 
@@ -82,6 +122,7 @@ run('file preview drafts remain tab-scoped and derive the unsaved state from tex
   const tabKey = activePreviewTab(state, { scopeKey: 'workspace-a', sessionId: 's1' }).key;
   state = updateFileTabDraft(state, {
     scopeKey: 'workspace-a',
+    sessionId: 's1',
     tabKey,
     patch: {
       editing: true,
@@ -102,7 +143,7 @@ run('file preview drafts remain tab-scoped and derive the unsaved state from tex
   );
 
   state = updateFileTabDraft(state, {
-    scopeKey: 'workspace-a', tabKey, patch: { baselineText: '# 草稿\n' },
+    scopeKey: 'workspace-a', sessionId: 's1', tabKey, patch: { baselineText: '# 草稿\n' },
   });
   assert.equal(
     previewTabHasUnsavedDraft(activePreviewTab(state, { scopeKey: 'workspace-a', sessionId: 's1' })),
@@ -117,10 +158,11 @@ run('discarding a file draft restores the latest baseline and keeps direct editi
   const tabKey = activePreviewTab(state, { scopeKey: 'workspace-a', sessionId: 's1' }).key;
   state = updateFileTabDraft(state, {
     scopeKey: 'workspace-a',
+    sessionId: 's1',
     tabKey,
     patch: { editing: true, baselineText: 'saved', text: 'draft', error: 'conflict' },
   });
-  state = discardFileTabDraft(state, { scopeKey: 'workspace-a', tabKey });
+  state = discardFileTabDraft(state, { scopeKey: 'workspace-a', sessionId: 's1', tabKey });
   const tab = activePreviewTab(state, { scopeKey: 'workspace-a', sessionId: 's1' });
   assert.equal(tab.edit.text, 'saved');
   assert.equal(tab.edit.editing, true);
@@ -135,6 +177,7 @@ run('automatic file refresh preserves dirty drafts and marks possible disk chang
   const tabKey = activePreviewTab(state, { scopeKey: 'workspace-a', sessionId: 's1' }).key;
   state = updateFileTabDraft(state, {
     scopeKey: 'workspace-a',
+    sessionId: 's1',
     tabKey,
     patch: { editing: true, baselineText: 'saved', text: 'draft' },
   });
@@ -904,7 +947,7 @@ run('syncBrowserTabsForSession adds missing pages, drops vanished ones and keeps
     ],
   });
   const tabs = visiblePreviewTabs(synced, context);
-  assert.deepEqual(tabs.map((tab) => tab.key), ['file:workspace-a:README.md', 'browser:p1', 'browser:p2']);
+  assert.deepEqual(tabs.map((tab) => tab.key), [visiblePreviewTabs(state, context)[0].key, 'browser:p1', 'browser:p2']);
   assert.equal(tabs[1].title, '首页(已加载)');
   assert.equal(tabs[1].favicon, 'https://a.example/favicon.ico');
   assert.equal(tabs[2].title, '新标签页', '空标题回退默认名');
@@ -921,11 +964,24 @@ run('syncBrowserTabsForSession adds missing pages, drops vanished ones and keeps
   assert.equal(again, synced, '输入未变化必须返回原状态引用');
 
   const dropped = syncBrowserTabsForSession(synced, { ...context, pages: [{ pageId: 'p2', title: '' }] });
-  assert.deepEqual(visiblePreviewTabs(dropped, context).map((tab) => tab.key), ['file:workspace-a:README.md', 'browser:p2']);
+  assert.deepEqual(visiblePreviewTabs(dropped, context).map((tab) => tab.key), [tabs[0].key, 'browser:p2']);
   assert.equal(activePreviewTab(dropped, context).pageId, 'p2', '激活页被关闭后回退到相邻页签');
 
   // 没有 sessionId 的调用是 no-op;pages 里没有 id 的条目忽略。
   assert.equal(syncBrowserTabsForSession(dropped, { scopeKey: 'workspace-a', pages: [] }), dropped);
   const emptied = syncBrowserTabsForSession(dropped, { ...context, pages: [{ title: 'no id' }] });
-  assert.deepEqual(visiblePreviewTabs(emptied, context).map((tab) => tab.key), ['file:workspace-a:README.md']);
+  assert.deepEqual(visiblePreviewTabs(emptied, context).map((tab) => tab.key), [tabs[0].key]);
+});
+
+run('closing or reconciling a background tab preserves the active file', () => {
+  const context = { scopeKey: 'same', sessionId: 'a' };
+  let state = openFileTab({}, { ...context, path: 'active.txt' });
+  const activeKey = activePreviewTab(state, context).key;
+  state = openGitChangesTab(state, { ...context, cwd: '/same', base: 'HEAD' });
+  state = openBrowserTab(state, { ...context, pageId: 'background' });
+  state = activatePreviewTab(state, { ...context, tabKey: activeKey });
+  state = syncBrowserTabsForSession(state, { ...context, pages: [] });
+  assert.equal(activePreviewTab(state, context).key, activeKey);
+  state = closePreviewTab(state, { ...context, tabKey: visiblePreviewTabs(state, context)[1].key });
+  assert.equal(activePreviewTab(state, context).key, activeKey);
 });

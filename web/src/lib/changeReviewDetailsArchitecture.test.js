@@ -44,8 +44,8 @@ run('Shared review details default to single-column wrapped diffs with manual to
   const shared = source('ChangeReviewDetails.jsx');
   const globals = styles('globals.css');
 
-  assert.match(shared, /const \[sideBySide, setSideBySide\] = useState\(false\);/);
-  assert.match(shared, /const \[wrapLines, setWrapLines\] = useState\(true\);/);
+  assert.match(shared, /const \[sideBySide, setSideBySide\] = useWorkbenchState\(owner, `\$\{field\}:columns`, false\);/);
+  assert.match(shared, /const \[wrapLines, setWrapLines\] = useWorkbenchState\(owner, `\$\{field\}:wrap`, true\);/);
   assert.match(shared, /const outputFormat = sideBySide \? 'side-by-side' : 'line-by-line';/);
   assert.doesNotMatch(shared, /REVIEW_SIDE_BY_SIDE_MIN_WIDTH|ResizeObserver/);
   assert.match(
@@ -86,7 +86,7 @@ run('File tree and Git/non-Git review rows expose shared Explorer reveal metadat
   assert.match(sharedDetails, /data-desktop-review-can-reveal=\{(?:status|row\.status) === 'D' \? 'false' : 'true'\}/);
 });
 
-run('Git and session compact changes share one flat/tree renderer and one cwd-scoped preference owner', () => {
+run('Git and session compact changes share one renderer with session-owned cwd preferences', () => {
   const sidePanel = source('SidePanel.jsx');
   const gitList = source('GitChangesPanel.jsx');
   const sessionReview = source('ChangeReview.jsx');
@@ -99,7 +99,7 @@ run('Git and session compact changes share one flat/tree renderer and one cwd-sc
 
   assert.match(
     sidePanel,
-    /usePreference\(\s*CHANGE_LIST_VIEW_BY_CWD_STORAGE_KEY,\s*DEFAULT_CHANGE_LIST_VIEW_BY_CWD,\s*validateChangeListViewByCwd,/,
+    /useWorkbenchState\(\s*owner, 'changeListViews', DEFAULT_CHANGE_LIST_VIEW_BY_CWD,/,
   );
   assert.match(
     sidePanel,
@@ -115,7 +115,7 @@ run('Git and session compact changes share one flat/tree renderer and one cwd-sc
   );
   assert.match(sidePanel, /role="group" aria-label="变更文件展示方式"/);
   assert.match(sidePanel, /aria-pressed=\{changeListView === option\.key\}/);
-  assert.equal((sidePanel.match(/CHANGE_LIST_VIEW_BY_CWD_STORAGE_KEY/g) || []).length, 2);
+  assert.doesNotMatch(sidePanel, /usePreference\(/);
   assert.doesNotMatch(gitList, /usePreference\(/);
   assert.doesNotMatch(sessionReview, /usePreference\(/);
 
@@ -185,7 +185,7 @@ run('Top bar keeps direct task search while new-conversation and loop stay in qu
   assert.doesNotMatch(topBar, /<QuickBtn[^>]*title="循环"/);
   assert.match(
     topBar,
-    /<QuickBtn title="前进"[\s\S]*?<\/QuickBtn>\s*<QuickBtn title="搜索任务" onClick=\{onOpenSearch\}>/,
+    /<QuickBtn title="前进"[\s\S]*?<\/QuickBtn>\s*<QuickBtn title=\{withSearchPaletteShortcutHint\('搜索任务'\)\} onClick=\{onOpenSearch\}>/,
   );
   assert.match(source('SidebarQuickMenu.jsx'), /invokeTopBarQuickAction/);
 });

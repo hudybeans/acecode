@@ -2,12 +2,18 @@
 
 #include "application_icon.hpp"
 #include "external_url.hpp"
+#include "linux_webview_scale_policy.hpp"
 #include "taskbar_badge_win.hpp"
+#include "tray_icon_win.hpp"
 #include "web_host_close_policy.hpp"
 #include "webview2_runtime_probe.hpp"
 #include "window_background.hpp"
 #include "window_chrome.hpp"
 #include "window_size.hpp"
+
+#ifdef ACECODE_DEEPIN
+#include "deepin_window_effects.hpp"
+#endif
 
 #include "../utils/encoding.hpp"
 #include "../utils/logger.hpp"
@@ -27,6 +33,8 @@
 #include <webview/webview.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -39,12 +47,27 @@
 #  include <wrl.h>  // Microsoft::WRL::Callback,挂 WebView2 事件 handler
 #endif
 #if !defined(_WIN32) && !defined(__APPLE__)
+#  include "linux_desktop.hpp"
 #  include <dlfcn.h>
+#  include <gtk/gtk.h>
+#  include <webkit2/webkit2.h>
+#  ifdef GDK_WINDOWING_X11
+#    include <gdk/gdkx.h>
+#  endif
 #endif
 #ifdef __APPLE__
 #  include <CoreGraphics/CoreGraphics.h>
 #  import <AppKit/AppKit.h>
 #  include <objc/runtime.h>
+#endif
+
+// X11 arrives through WebKitGTK and defines these common C++ enum names as
+// macros. Keep them from rewriting the clipboard result type below.
+#ifdef Status
+#  undef Status
+#endif
+#ifdef Success
+#  undef Success
 #endif
 
 namespace acecode::desktop {
@@ -57,7 +80,7 @@ std::function<bool()> g_close_handler;
 // 系统文件拖放 handler(plan: 桌面控制台拖放文件 → 插入完整路径)。Windows 的
 // WebView2 事件回调 / macOS swizzle 的拖放回调命中文件时调它,把路径交给 main.cpp
 // eval 回前端。主线程 only(WebView2 事件与 AppKit 拖放均在 GUI 主线程)。
-std::function<void(std::vector<std::string>)> g_file_drop_handler;
+WebHost::FileDropHandler g_file_drop_handler;
 
 // A second Desktop process can carry more intent than "show the window".
 // main.cpp uses this GUI-thread callback to consume its one-shot open request.
@@ -96,11 +119,58 @@ bool mac_window_is_fullscreen(NSWindow* window) {
            (([window styleMask] & NSWindowStyleMaskFullScreen) != 0);
 }
 
+constexpr CGFloat kMacTopbarControlCenterFromTop = 20.0;
+
+void show_and_align_mac_standard_button(NSWindow* window,
+                                        NSWindowButton button,
+                                        CGFloat horizontal_offset) {
+    NSButton* button_view = [window standardWindowButton:button];
+    if (!button_view) return;
+    [button_view setHidden:NO];
+
+    NSView* container = [button_view superview];
+    if (!container) return;
+
+    const NSRect bounds = [container bounds];
+    NSRect frame = [button_view frame];
+    const CGFloat target_center_y = [container isFlipped]
+        ? NSMinY(bounds) + kMacTopbarControlCenterFromTop
+        : NSMaxY(bounds) - kMacTopbarControlCenterFromTop;
+    frame.origin.x += horizontal_offset;
+    frame.origin.y = target_center_y - NSHeight(frame) / 2.0;
+    [button_view setFrame:frame];
+}
+
+void align_mac_standard_buttons(NSWindow* window) {
+    NSButton* close_button =
+        [window standardWindowButton:NSWindowCloseButton];
+    CGFloat horizontal_offset = 0.0;
+    if (close_button && [close_button superview]) {
+        const NSRect container_bounds = [[close_button superview] bounds];
+        const NSRect close_frame = [close_button frame];
+        const CGFloat equal_edge_inset =
+            kMacTopbarControlCenterFromTop - NSHeight(close_frame) / 2.0;
+        const CGFloat target_close_x =
+            NSMinX(container_bounds) + equal_edge_inset;
+        horizontal_offset = target_close_x - NSMinX(close_frame);
+    }
+
+    show_and_align_mac_standard_button(
+        window, NSWindowCloseButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowMiniaturizeButton, horizontal_offset);
+    show_and_align_mac_standard_button(
+        window, NSWindowZoomButton, horizontal_offset);
+}
+
 void notify_mac_window_fullscreen_if_changed(NSWindow* window) {
     if (!window) return;
     const bool fullscreen = mac_window_is_fullscreen(window);
     if (fullscreen == g_mac_last_known_fullscreen) return;
     g_mac_last_known_fullscreen = fullscreen;
+    if (!fullscreen) {
+        align_mac_standard_buttons(window);
+    }
     if (g_mac_window_fullscreen_handler) {
         g_mac_window_fullscreen_handler(fullscreen);
     }
@@ -117,12 +187,6 @@ id install_mac_window_fullscreen_observer(webview::webview& w,
                 usingBlock:^(__unused NSNotification* note) {
                     notify_mac_window_fullscreen_if_changed(window);
                 }];
-}
-
-void show_mac_standard_button(NSWindow* window, NSWindowButton button) {
-    NSButton* button_view = [window standardWindowButton:button];
-    if (!button_view) return;
-    [button_view setHidden:NO];
 }
 
 void configure_mac_window_chrome(webview::webview& w) {
@@ -149,11 +213,9 @@ void configure_mac_window_chrome(webview::webview& w) {
     min_size.height = std::max(min_size.height, static_cast<CGFloat>(240.0));
     [window setMinSize:min_size];
 
-    // Keep AppKit's title-bar hierarchy intact so the native traffic lights
-    // retain their standard layout, actions, and full-screen behavior.
-    show_mac_standard_button(window, NSWindowCloseButton);
-    show_mac_standard_button(window, NSWindowMiniaturizeButton);
-    show_mac_standard_button(window, NSWindowZoomButton);
+    // Keep AppKit's hierarchy and actions intact, but align the native traffic
+    // lights with the web top-bar controls and match their top/left edge insets.
+    align_mac_standard_buttons(window);
 
     g_mac_last_known_maximized = [window isZoomed] == YES;
     g_mac_last_known_fullscreen = mac_window_is_fullscreen(window);
@@ -470,8 +532,27 @@ static bool mac_drag_has_file_urls(id sender) {
                                options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
 }
 
+static std::optional<WebHost::FileDropLocation> mac_drop_location(id self, id sender) {
+    NSView* view = [self isKindOfClass:[NSView class]] ? static_cast<NSView*>(self) : nil;
+    if (!view || !sender) return std::nullopt;
+    const NSRect bounds = [view bounds];
+    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) return std::nullopt;
+
+    const NSPoint window_point = [sender draggingLocation];
+    const NSPoint local_point = [view convertPoint:window_point fromView:nil];
+    const double x = (local_point.x - NSMinX(bounds)) / NSWidth(bounds);
+    const double local_y = (local_point.y - NSMinY(bounds)) / NSHeight(bounds);
+    const double y = [view isFlipped] ? local_y : 1.0 - local_y;
+    if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || x >= 1.0 ||
+        y < 0.0 || y >= 1.0) {
+        return std::nullopt;
+    }
+    return WebHost::FileDropLocation{x, y};
+}
+
 static BOOL ace_perform_drag_operation(id self, SEL cmd, id sender) {
-    if (mac_drag_has_file_urls(sender)) {
+    const bool has_file_urls = mac_drag_has_file_urls(sender);
+    if (has_file_urls) {
         NSArray<NSURL*>* urls = [[sender draggingPasteboard]
             readObjectsForClasses:@[ [NSURL class] ]
                           options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
@@ -482,10 +563,19 @@ static BOOL ace_perform_drag_operation(id self, SEL cmd, id sender) {
                 if (p) paths.emplace_back(p);
             }
         }
+        const auto location = mac_drop_location(self, sender);
         if (!paths.empty() && g_file_drop_handler) {
-            g_file_drop_handler(paths);
+            if (!location) {
+                LOG_WARN("[file-drop] macOS drop rejected count=" +
+                         std::to_string(paths.size()) + " reason=invalid-coordinate");
+            }
+            g_file_drop_handler(paths, WebHost::FileDropContext{location, true});
             return YES;
         }
+        LOG_WARN("[file-drop] macOS drop rejected count=" +
+                 std::to_string(paths.size()) +
+                 " coordinate_valid=" + (location ? "true" : "false") +
+                 " handler=" + (g_file_drop_handler ? "available" : "missing"));
     }
     if (g_orig_perform_drag) return g_orig_perform_drag(self, cmd, sender);
     return NO;
@@ -510,6 +600,9 @@ void install_mac_file_drop(webview::webview& w) {
     if (![view isKindOfClass:[NSView class]]) return;
     Class cls = object_getClass(view);  // WKWebView 实际类
     if (!cls) return;
+    LOG_INFO("[file-drop] macOS installation class=" +
+             std::string(class_getName(cls)) +
+             " handler=" + (g_file_drop_handler ? "available" : "missing"));
 
     // 补注册 fileURL 拖放类型(WKWebView 已注册网页拖放类型,合并而非覆盖)。
     @try {
@@ -729,13 +822,122 @@ HMONITOR active_monitor() {
     return ::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
 }
 
+// ── Win10 顶边 1px 边框线 ─────────────────────────────────────────────
+// 系统在 Win10 上不画无标题栏窗口的顶边线(原因见 window_chrome.hpp)。非最大化
+// 时把主 WebView 下移 inset 像素,宿主窗口在露出的这一行按系统配色自己画线。
+// 不走 DwmExtendFrameIntoClientArea 让系统画:Win10 上那样激活时四边边框都会
+// 变白(microsoft/terminal#4577)。不画在网页里:页面拿不到激活态 / 主题色,
+// 非整数缩放下 CSS 1px 也不等于 1 个物理像素(VS Code 因此在 Windows 上停用了
+// CSS 窗口边框)。这一行归宿主窗口,frameless_hit_test 会给它原生 HTTOP。
+
+// 宿主窗口按激活态画线;由 WM_NCACTIVATE 维护,与系统画左/右/下边框同源。
+bool g_top_border_active = false;
+// 线下方的标题栏底色 = 前端推来的 --ace-bg(apply_window_background 同步)。
+WindowBackgroundColor g_top_border_background = kDefaultWindowBackground;
+
+std::uint32_t windows_build_number() {
+    static const std::uint32_t build = [] {
+        HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll) return std::uint32_t{0};
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        auto get_version = reinterpret_cast<RtlGetVersionFn>(
+            reinterpret_cast<void*>(::GetProcAddress(ntdll, "RtlGetVersion")));
+        RTL_OSVERSIONINFOW info{};
+        info.dwOSVersionInfoSize = sizeof(info);
+        if (!get_version || get_version(&info) != 0) return std::uint32_t{0};
+        return static_cast<std::uint32_t>(info.dwBuildNumber);
+    }();
+    return build;
+}
+
+int top_border_inset(HWND hwnd) {
+    if (!hwnd || !::IsWindow(hwnd)) return 0;
+    SelfDrawnTopBorderLayoutInput input;
+    input.supported = windows_needs_self_drawn_top_border(windows_build_number());
+    if (!input.supported) return 0;
+    input.has_resize_frame =
+        (::GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
+    input.maximized = ::IsZoomed(hwnd) != FALSE;
+    input.minimized = ::IsIconic(hwnd) != FALSE;
+    input.system_dpi = static_cast<int>(::GetDpiForSystem());
+    return self_drawn_top_border_inset(input);
+}
+
+std::optional<std::uint32_t> read_dwm_dword(const wchar_t* name) {
+    DWORD value = 0;
+    DWORD value_size = sizeof(value);
+    const LONG result = ::RegGetValueW(HKEY_CURRENT_USER,
+                                       L"Software\\Microsoft\\Windows\\DWM",
+                                       name,
+                                       RRF_RT_REG_DWORD,
+                                       nullptr,
+                                       &value,
+                                       &value_size);
+    if (result != ERROR_SUCCESS || value_size != sizeof(value)) return std::nullopt;
+    return static_cast<std::uint32_t>(value);
+}
+
+// 每次绘制现读注册表:只在这 1px 进入重绘区时才走到,开销可忽略;用户改了
+// 主题色设置但没有广播到本窗口时,下一次重绘也能自行纠正。
+COLORREF top_border_colorref() {
+    SelfDrawnTopBorderColorInput input;
+    input.active = g_top_border_active;
+    input.windows_build = windows_build_number();
+    const auto prevalence = read_dwm_dword(L"ColorPrevalence");
+    input.accent_on_borders = prevalence && *prevalence == 1;
+    if (input.active && input.accent_on_borders) {
+        input.colorization_color = read_dwm_dword(L"ColorizationColor");
+        input.colorization_balance = read_dwm_dword(L"ColorizationColorBalance");
+    }
+    input.background = RgbColor{g_top_border_background.r,
+                                g_top_border_background.g,
+                                g_top_border_background.b};
+    const RgbColor color = self_drawn_top_border_color(input);
+    return RGB(color.r, color.g, color.b);
+}
+
+void invalidate_top_border(HWND hwnd) {
+    const int inset = top_border_inset(hwnd);
+    if (inset <= 0) return;
+    RECT client{};
+    if (!::GetClientRect(hwnd, &client)) return;
+    const RECT strip{0, 0, client.right, inset};
+    ::InvalidateRect(hwnd, &strip, FALSE);
+}
+
+// 返回 false 表示当前不画线(Win11 / 最大化等),调用方走默认 WM_PAINT。
+bool paint_top_border(HWND hwnd) {
+    const int inset = top_border_inset(hwnd);
+    if (inset <= 0) return false;
+    PAINTSTRUCT paint{};
+    HDC dc = ::BeginPaint(hwnd, &paint);
+    if (dc) {
+        RECT client{};
+        ::GetClientRect(hwnd, &client);
+        const RECT strip{0, 0, client.right, inset};
+        RECT dirty{};
+        if (::IntersectRect(&dirty, &strip, &paint.rcPaint)) {
+            if (HBRUSH brush = ::CreateSolidBrush(top_border_colorref())) {
+                ::FillRect(dc, &dirty, brush);
+                ::DeleteObject(brush);
+            }
+        }
+    }
+    ::EndPaint(hwnd, &paint);
+    return true;
+}
+
 void resize_webview_widget(HWND hwnd) {
-    HWND widget = ::FindWindowExW(hwnd, nullptr, L"webview_widget", nullptr);
+    HWND widget = ::FindWindowExW(hwnd, nullptr, kWebViewWidgetClassName, nullptr);
     if (!widget) return;
 
     RECT client{};
     if (!::GetClientRect(hwnd, &client)) return;
-    ::MoveWindow(widget, 0, 0, client.right - client.left, client.bottom - client.top, TRUE);
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int inset = std::clamp(top_border_inset(hwnd), 0, std::max(0, height));
+    ::MoveWindow(widget, 0, inset, width, height - inset, TRUE);
+    if (inset > 0) invalidate_top_border(hwnd);
 }
 
 void refresh_non_client_frame(HWND hwnd) {
@@ -950,6 +1152,9 @@ void apply_window_background(webview::webview& host,
         apply_class_background_brush(static_cast<HWND>(widget_result.value()), color);
     }
     apply_webview2_default_background(host, color);
+    // Win10 顶边线是叠在标题栏底色上算出来的,主题切换后要重画。
+    g_top_border_background = color;
+    invalidate_top_border(host_hwnd);
 }
 
 // ── Windows 系统文件拖放 + 外部新窗口接管 ─────────────────────────────
@@ -972,7 +1177,7 @@ bool win_is_file_uri(const std::wstring& uri) {
 
 void dispatch_file_uri(const std::wstring& uri) {
     if (g_file_drop_handler) {
-        g_file_drop_handler({acecode::wide_to_utf8(uri)});
+        g_file_drop_handler({acecode::wide_to_utf8(uri)}, WebHost::FileDropContext{});
     }
 }
 
@@ -1039,7 +1244,7 @@ void install_win_webview_navigation_handlers(webview::webview& host) {
                ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
                 auto paths = win_web_message_file_paths(args);
                 if (!paths.empty() && g_file_drop_handler) {
-                    g_file_drop_handler(std::move(paths));
+                    g_file_drop_handler(std::move(paths), WebHost::FileDropContext{});
                 }
                 return S_OK;
             })
@@ -1180,7 +1385,26 @@ LRESULT CALLBACK host_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
             return frameless_nc_calc(hwnd, wparam, lparam);
         case WM_NCHITTEST:
             return frameless_hit_test(hwnd, lparam);
-        case WM_SIZE:
+        case WM_NCACTIVATE:
+            g_top_border_active = wparam != FALSE;
+            invalidate_top_border(hwnd);
+            return call_host_default_proc(hwnd, msg, wparam, lparam);
+        case WM_PAINT:
+            if (paint_top_border(hwnd)) return 0;
+            break;
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+        case WM_SYSCOLORCHANGE:
+        case WM_DWMCOLORIZATIONCOLORCHANGED: {
+            // 用户改「在标题栏和窗口边框上显示主题色」或主题色时,顶边线跟着重画。
+            const LRESULT result = call_host_default_proc(hwnd, msg, wparam, lparam);
+            invalidate_top_border(hwnd);
+            return result;
+        }
+        case WM_SIZE: {
+            // 降级路径(webview 库自建窗口)的原窗口过程收到 WM_SIZE 会把 WebView
+            // 拉满整个客户区,所以先让它跑完,再按顶边线让位重新摆放。
+            const LRESULT result = call_host_default_proc(hwnd, msg, wparam, lparam);
             resize_webview_widget(hwnd);
             notify_window_visibility(wparam != SIZE_MINIMIZED);
             if (g_window_state_handler) {
@@ -1190,7 +1414,8 @@ LRESULT CALLBACK host_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
                     g_window_state_handler(maximized);
                 }
             }
-            return call_host_default_proc(hwnd, msg, wparam, lparam);
+            return result;
+        }
         case WM_SHOWWINDOW: {
             const LRESULT result =
                 call_host_default_proc(hwnd, msg, wparam, lparam);
@@ -1276,6 +1501,8 @@ void install_host_window_proc(HWND hwnd) {
     ::SetPropW(hwnd,
                kHostWindowPreviousProcProperty,
                reinterpret_cast<HANDLE>(previous));
+    // 降级路径的窗口在接管前已被 webview 库显示并激活,错过了那次 WM_NCACTIVATE。
+    g_top_border_active = ::GetForegroundWindow() == hwnd;
     refresh_non_client_frame(hwnd);
 }
 
@@ -1428,6 +1655,161 @@ struct ComApartment {
 namespace {
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+#ifdef ACECODE_DEEPIN
+class LinuxWebviewScaleController {
+public:
+    explicit LinuxWebviewScaleController(webview::webview& host) {
+        const char* current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+        const char* session_desktop = std::getenv("XDG_SESSION_DESKTOP");
+        if (!is_deepin_desktop(current_desktop ? current_desktop : "") &&
+            !is_deepin_desktop(session_desktop ? session_desktop : "")) {
+            return;
+        }
+        const auto widget = host.widget();
+        if (!widget.ok() || !widget.value()) return;
+        webview_ = WEBKIT_WEB_VIEW(widget.value());
+        screen_ = gtk_widget_get_screen(GTK_WIDGET(webview_));
+        gtk_settings_ = gtk_widget_get_settings(GTK_WIDGET(webview_));
+        if (!gtk_settings_ || !screen_) return;
+#ifdef GDK_WINDOWING_X11
+        GdkDisplay* display = gdk_screen_get_display(screen_);
+        if (!GDK_IS_X11_DISPLAY(display)) return;
+        xsettings_atom_ = gdk_x11_get_xatom_by_name_for_display(
+            display, "_XSETTINGS_SETTINGS");
+        manager_atom_ = gdk_x11_get_xatom_by_name_for_display(display, "MANAGER");
+        gdk_window_add_filter(nullptr, native_settings_changed, this);
+        filter_installed_ = true;
+#else
+        return;
+#endif
+
+        dpi_signal_ = g_signal_connect(
+            gtk_settings_, "notify::gtk-xft-dpi",
+            G_CALLBACK(+[](GObject*, GParamSpec*, gpointer context) {
+                static_cast<LinuxWebviewScaleController*>(context)->refresh();
+            }), this);
+        widget_scale_signal_ = g_signal_connect(
+            webview_, "notify::scale-factor",
+            G_CALLBACK(+[](GObject*, GParamSpec*, gpointer context) {
+                static_cast<LinuxWebviewScaleController*>(context)->refresh();
+            }), this);
+        refresh();
+    }
+
+    ~LinuxWebviewScaleController() {
+#ifdef GDK_WINDOWING_X11
+        if (filter_installed_) {
+            gdk_window_remove_filter(nullptr, native_settings_changed, this);
+        }
+#endif
+        if (refresh_source_) g_source_remove(refresh_source_);
+        if (dpi_signal_) g_signal_handler_disconnect(gtk_settings_, dpi_signal_);
+        if (widget_scale_signal_ &&
+            g_signal_handler_is_connected(webview_, widget_scale_signal_)) {
+            // A native delete-event can destroy the GTK widget before the
+            // host releases its retained WebView reference.
+            g_signal_handler_disconnect(webview_, widget_scale_signal_);
+        }
+        if (active_) {
+            gtk_settings_reset_property(gtk_settings_, "gtk-xft-dpi");
+        }
+        set_linux_tray_font_scale(1.0);
+    }
+
+    LinuxWebviewScaleController(const LinuxWebviewScaleController&) = delete;
+    LinuxWebviewScaleController& operator=(const LinuxWebviewScaleController&) = delete;
+
+private:
+#ifdef GDK_WINDOWING_X11
+    static GdkFilterReturn native_settings_changed(
+        GdkXEvent* native_event, GdkEvent*, gpointer context) {
+        auto* self = static_cast<LinuxWebviewScaleController*>(context);
+        const auto* event = static_cast<const XEvent*>(native_event);
+        if ((event->type == PropertyNotify &&
+             event->xproperty.atom == self->xsettings_atom_) ||
+            (event->type == ClientMessage &&
+             event->xclient.message_type == self->manager_atom_)) {
+            self->schedule_refresh();
+        }
+        return GDK_FILTER_CONTINUE;
+    }
+#endif
+
+    void schedule_refresh() {
+        if (refresh_source_) return;
+        // Let GDK consume the native event and update its XSettings cache first.
+        refresh_source_ = g_idle_add(+[](gpointer context) -> gboolean {
+            auto* self = static_cast<LinuxWebviewScaleController*>(context);
+            self->refresh_source_ = 0;
+            self->refresh();
+            return G_SOURCE_REMOVE;
+        }, this);
+    }
+
+    void refresh() {
+        if (updating_ || !gtk_settings_ || !screen_ || !webview_) return;
+        // GtkSettings is overridden while active. Read the native value below
+        // that override; Deepin's scale-factor preference can be stale as well.
+        GValue dpi_value = G_VALUE_INIT;
+        g_value_init(&dpi_value, G_TYPE_INT);
+        const int native_font_dpi = gdk_screen_get_setting(
+            screen_, "gtk-xft-dpi", &dpi_value) ? g_value_get_int(&dpi_value) : -1;
+        g_value_unset(&dpi_value);
+        const int window_scale = gtk_widget_get_scale_factor(GTK_WIDGET(webview_));
+        const auto plan = plan_linux_webview_scale(native_font_dpi, window_scale);
+        if (native_font_dpi != last_font_dpi_ || window_scale != last_window_scale_) {
+            LOG_INFO("[desktop] UOS WebView native font DPI=" +
+                     std::to_string(native_font_dpi / 1024.0) +
+                     " GTK window scale=" + std::to_string(window_scale) +
+                     " page zoom=" + std::to_string(plan.page_zoom));
+            last_font_dpi_ = native_font_dpi;
+            last_window_scale_ = window_scale;
+        }
+
+        updating_ = true;
+        if (!plan.apply) {
+            if (active_) {
+                webkit_web_view_set_zoom_level(webview_, 1.0);
+                active_ = false;
+                set_linux_tray_font_scale(1.0);
+                gtk_settings_reset_property(gtk_settings_, "gtk-xft-dpi");
+            }
+            updating_ = false;
+            return;
+        }
+
+        int gtk_font_dpi = -1;
+        g_object_get(gtk_settings_, "gtk-xft-dpi", &gtk_font_dpi, nullptr);
+        if (gtk_font_dpi != plan.font_dpi) {
+            g_object_set(gtk_settings_, "gtk-xft-dpi", plan.font_dpi, nullptr);
+        }
+        if (!active_ || std::abs(webkit_web_view_get_zoom_level(webview_) -
+                                  plan.page_zoom) > 0.001) {
+            webkit_web_view_set_zoom_level(webview_, plan.page_zoom);
+        }
+        active_ = true;
+        set_linux_tray_font_scale(native_font_dpi / (96.0 * 1024.0));
+        updating_ = false;
+    }
+
+    WebKitWebView* webview_ = nullptr;
+    GtkSettings* gtk_settings_ = nullptr;
+    GdkScreen* screen_ = nullptr;
+    guint refresh_source_ = 0;
+    gulong dpi_signal_ = 0;
+    gulong widget_scale_signal_ = 0;
+    int last_font_dpi_ = -1;
+    int last_window_scale_ = -1;
+#ifdef GDK_WINDOWING_X11
+    Atom xsettings_atom_ = 0;
+    Atom manager_atom_ = 0;
+    bool filter_installed_ = false;
+#endif
+    bool active_ = false;
+    bool updating_ = false;
+};
+#endif
+
 struct GtkWindowApi {
     using GtkWidgetShow = void (*)(void*);
     using GtkWidgetHide = void (*)(void*);
@@ -1887,11 +2269,28 @@ struct WebHost::Impl {
 #else
         w = std::make_unique<webview::webview>(debug, nullptr);
         auto native_window = w->window();
+        set_linux_folder_picker(pick_linux_folder);
+        linux_center_on_first_show = true;
+        if (native_window.ok() && native_window.value() &&
+            startup_mode == StartupWindowMode::OffscreenUntilReady) {
+            auto* widget = GTK_WIDGET(native_window.value());
+            // Keep WebKit mapped so startup animation frames can complete.
+            // Hide it visually before DTK synchronizes the GTK event queue.
+            gtk_widget_set_opacity(widget, 0.0);
+            gtk_window_set_accept_focus(GTK_WINDOW(widget), FALSE);
+            gtk_window_set_focus_on_map(GTK_WINDOW(widget), FALSE);
+        }
         if (native_window.ok() && native_window.value() &&
             !set_linux_window_icon(native_window.value(), application_icon_path())) {
             LOG_WARN("[desktop] could not load the Linux application window icon");
         }
         configure_linux_window_chrome(*w);
+#ifdef ACECODE_DEEPIN
+        if (native_window.ok()) {
+            deepin_effects = std::make_unique<DeepinWindowEffects>(native_window.value());
+        }
+        linux_scale = std::make_unique<LinuxWebviewScaleController>(*w);
+#endif
         install_linux_close_handler(*w);
         install_linux_window_state_handler(*w);
 #endif
@@ -1927,6 +2326,11 @@ struct WebHost::Impl {
             mac_exit_fullscreen_observer = nil;
         }
 #endif
+        // The controller owns GTK signals that reference the WebView widget.
+#ifdef ACECODE_DEEPIN
+        deepin_effects.reset();
+        linux_scale.reset();
+#endif
         w.reset();
 #ifdef _WIN32
         if (hwnd && ::IsWindow(hwnd)) {
@@ -1950,6 +2354,13 @@ struct WebHost::Impl {
     }
 #endif
     std::unique_ptr<webview::webview> w;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    bool linux_center_on_first_show = false;
+#endif
+#ifdef ACECODE_DEEPIN
+    std::unique_ptr<LinuxWebviewScaleController> linux_scale;
+    std::unique_ptr<DeepinWindowEffects> deepin_effects;
+#endif
 #ifdef __APPLE__
     id mac_focus_observer = nil;
     id mac_enter_fullscreen_observer = nil;
@@ -2036,6 +2447,13 @@ void WebHost::set_visible(bool visible) {
     auto& api = gtk_window_api();
     if (!api.load()) return;
     if (visible) {
+        if (impl_->linux_center_on_first_show) {
+            center_linux_window(window.value(), linux_active_work_area());
+            impl_->linux_center_on_first_show = false;
+        }
+        gtk_widget_set_opacity(GTK_WIDGET(window.value()), 1.0);
+        gtk_window_set_accept_focus(GTK_WINDOW(window.value()), TRUE);
+        gtk_window_set_focus_on_map(GTK_WINDOW(window.value()), TRUE);
         api.widget_show(window.value());
         api.window_present(window.value());
     } else {
@@ -2069,6 +2487,32 @@ void WebHost::dispatch(std::function<void()> task) {
     if (!task) return;
     impl_->w->dispatch(std::move(task));
 }
+bool WebHost::focus_after_file_drop() {
+#ifdef _WIN32
+    HWND hwnd = impl_->hwnd();
+    if (!hwnd) return false;
+    const DWORD current_thread = ::GetCurrentThreadId();
+    const DWORD foreground_thread =
+        ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
+    // The drag source owns the last native input. Briefly share its input
+    // queue for this explicit drop, then detach before returning to WebView.
+    const bool attached = foreground_thread && foreground_thread != current_thread &&
+        ::AttachThreadInput(current_thread, foreground_thread, TRUE) != FALSE;
+    set_visible(true);
+    if (attached) ::AttachThreadInput(current_thread, foreground_thread, FALSE);
+    if (::GetForegroundWindow() != hwnd) return false;
+
+    auto controller_result = impl_->w->browser_controller();
+    if (!controller_result.ok()) return false;
+    auto* controller = static_cast<ICoreWebView2Controller*>(controller_result.value());
+    return controller && SUCCEEDED(
+        controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+#else
+    set_visible(true);
+    return true;
+#endif
+}
+
 bool WebHost::open_dev_tools() {
 #ifdef _WIN32
     auto controller_result = impl_->w->browser_controller();
@@ -2346,6 +2790,61 @@ void WebHost::set_file_drop_handler(FileDropHandler handler) {
 #endif
     // Linux/WebKitGTK:前端经 text/uri-list 处理,native 不安装拦截。
 }
+acecode::ClipboardPathsReadResult WebHost::read_clipboard_paths() {
+    using Result = acecode::ClipboardPathsReadResult;
+#ifdef _WIN32
+    return acecode::read_system_clipboard_paths();
+#else
+    Result result;
+    result.status = Result::Status::Empty;
+#ifdef __APPLE__
+    NSArray<NSURL*>* urls = [[NSPasteboard generalPasteboard]
+        readObjectsForClasses:@[[NSURL class]]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    for (NSURL* url in urls) {
+        const char* path = [url.path UTF8String];
+        if (path) result.paths.emplace_back(path);
+    }
+#else
+    // WebKitGTK already loads these libraries. Keep GTK types out of the
+    // desktop wrapper's public API, as with the window operations above.
+    auto& api = gtk_window_api();
+    if (!api.load()) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    const auto atom = reinterpret_cast<void* (*)(const char*, int)>(dlsym(api.gdk, "gdk_atom_intern"));
+    const auto clipboard_get = reinterpret_cast<void* (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_get"));
+    const auto read_uris = reinterpret_cast<char** (*)(void*)>(dlsym(api.gtk, "gtk_clipboard_wait_for_uris"));
+    const auto filename = reinterpret_cast<char* (*)(const char*, char**, void**)>(dlsym(api.gtk, "g_filename_from_uri"));
+    const auto free_string = reinterpret_cast<void (*)(void*)>(dlsym(api.gtk, "g_free"));
+    const auto free_strings = reinterpret_cast<void (*)(char**)>(dlsym(api.gtk, "g_strfreev"));
+    if (!atom || !clipboard_get || !read_uris || !filename || !free_string || !free_strings) {
+        result.status = Result::Status::Unavailable;
+        result.detail = "filesystem clipboard is unavailable";
+        return result;
+    }
+    char** uris = read_uris(clipboard_get(atom("CLIPBOARD", 0)));
+    if (uris) {
+        for (char** uri = uris; *uri; ++uri) {
+            char* path = filename(*uri, nullptr, nullptr);
+            if (path) {
+                result.paths.emplace_back(path);
+                free_string(path);
+            }
+        }
+        free_strings(uris);
+    }
+#endif
+    if (result.paths.size() > acecode::kMaxClipboardFilesystemPaths) {
+        result.status = Result::Status::TooMany;
+        result.paths.clear();
+        result.detail = "clipboard contains too many filesystem items";
+    } else if (!result.paths.empty()) result.status = Result::Status::Success;
+    return result;
+#endif
+}
 void WebHost::request_quit() {
 #ifdef _WIN32
     HWND hwnd = impl_->hwnd();
@@ -2353,6 +2852,12 @@ void WebHost::request_quit() {
     ::PostMessageW(hwnd, kRequestQuitMsg, 0, 0);
 #else
 #if !defined(__APPLE__)
+#ifdef ACECODE_DEEPIN
+    // gtk_window_close can destroy the widget before WebHost's destructor.
+    // Release foreign handles and GTK signal owners while it is still alive.
+    impl_->deepin_effects.reset();
+    impl_->linux_scale.reset();
+#endif
     auto window = impl_->w->window();
     g_linux_force_close = true;
     if (window.ok() && window.value()) {

@@ -163,12 +163,12 @@ export function sidebarWorkspaceListKeys(workspaces = []) {
 }
 
 export function expandedSessionListsAfterWorkspaceCollapseAll(
-  currentExpanded = new Set(),
+  currentExpanded = new Map(),
   workspaces = [],
 ) {
-  const next = currentExpanded instanceof Set
-    ? new Set(currentExpanded)
-    : new Set();
+  const next = currentExpanded instanceof Map
+    ? new Map(currentExpanded)
+    : new Map();
   for (const hash of sidebarWorkspaceListKeys(workspaces)) {
     next.delete(hash);
   }
@@ -176,13 +176,13 @@ export function expandedSessionListsAfterWorkspaceCollapseAll(
 }
 
 export function expandedSessionListsAfterWorkspaceDisclosure(
-  currentExpanded = new Set(),
+  currentExpanded = new Map(),
   workspaceHash = '',
 ) {
   const hash = String(workspaceHash || '').trim();
-  const current = currentExpanded instanceof Set ? currentExpanded : new Set();
+  const current = currentExpanded instanceof Map ? currentExpanded : new Map();
   if (!hash || !current.has(hash)) return current;
-  const next = new Set(current);
+  const next = new Map(current);
   next.delete(hash);
   return next;
 }
@@ -215,17 +215,28 @@ export function allowSidebarSessionListRevealExpansion({
   return true;
 }
 
-export function sidebarSessionProjection(sessions = [], expanded = false, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT, total = null) {
+function sidebarSessionLimit(value, fallback = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback;
+}
+
+export function sidebarSessionProjection(
+  sessions = [],
+  visibleLimit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  limit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  total = null,
+) {
   const list = Array.isArray(sessions) ? sessions : [];
-  const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : SIDEBAR_SESSION_COLLAPSE_LIMIT;
+  const max = sidebarSessionLimit(limit);
+  const visibleCount = Math.max(max, sidebarSessionLimit(visibleLimit, max));
   const knownTotal = Number.isFinite(total) && total > list.length ? Math.floor(total) : list.length;
   const collapsible = knownTotal > max;
-  const visibleSessions = collapsible && !expanded ? list.slice(0, max) : list;
+  const visibleSessions = list.slice(0, visibleCount);
+  const hiddenCount = Math.max(0, knownTotal - visibleSessions.length);
   return {
     visibleSessions,
     collapsible,
-    action: collapsible ? (expanded ? 'collapse' : 'expand') : '',
-    hiddenCount: collapsible && !expanded ? Math.max(0, knownTotal - visibleSessions.length) : 0,
+    action: collapsible ? (hiddenCount > 0 ? 'expand' : 'collapse') : '',
+    hiddenCount,
   };
 }
 
@@ -260,13 +271,26 @@ export function sessionMatchesRevealTarget(session = {}, target = {}) {
   return sessionWorkspace(session) === targetWorkspace;
 }
 
-export function sessionListNeedsRevealExpansion(sessions = [], target = {}, expanded = false, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
-  if (expanded || !target?.sessionId) return false;
-  const projection = sidebarSessionProjection(sessions, false, limit);
+export function sessionListNeedsRevealExpansion(
+  sessions = [],
+  target = {},
+  visibleLimit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+  limit = SIDEBAR_SESSION_COLLAPSE_LIMIT,
+) {
+  if (!target?.sessionId) return false;
+  const projection = sidebarSessionProjection(sessions, visibleLimit, limit);
   if (!projection.collapsible) return false;
-  const hasTarget = sessions.some((session) => sessionMatchesRevealTarget(session, target));
+  const list = Array.isArray(sessions) ? sessions : [];
+  const hasTarget = list.some((session) => sessionMatchesRevealTarget(session, target));
   if (!hasTarget) return false;
   return !projection.visibleSessions.some((session) => sessionMatchesRevealTarget(session, target));
+}
+
+export function sidebarSessionRevealLimit(sessions = [], target = {}, limit = SIDEBAR_SESSION_COLLAPSE_LIMIT) {
+  const batchSize = sidebarSessionLimit(limit);
+  const list = Array.isArray(sessions) ? sessions : [];
+  const targetIndex = list.findIndex((session) => sessionMatchesRevealTarget(session, target));
+  return Math.max(batchSize, Math.ceil((targetIndex + 1) / batchSize) * batchSize);
 }
 
 export function sortSidebarSessionsNewestFirst(sessions = []) {
@@ -336,13 +360,36 @@ export function reconcileSidebarSessions(previousSessions = [], incomingSessions
     if (key) incomingByKey.set(key, session);
   }
 
+  // 每个工作区当前显示的最新活动时间。新出现的会话只有比它更新(新建、或刚有
+  // 动静)才顶到最前;更旧的是「补位」—— 折叠态只取最新 5 条,归档 / 删除一条后
+  // 下一条旧会话被拉进来。补位按时间插回原位,不能顶到最前:否则 3 天前的会话
+  // 会在归档别的会话时突然窜到顶部(LIUXIN557 反馈)。
+  const newestPreviousByWorkspace = new Map();
+  for (const session of previous) {
+    const workspace = sessionWorkspace(session);
+    const time = sessionTime(session);
+    if (!newestPreviousByWorkspace.has(workspace) || time > newestPreviousByWorkspace.get(workspace)) {
+      newestPreviousByWorkspace.set(workspace, time);
+    }
+  }
+  // 只有双方都有时间戳、且严格更旧才算补位;没有时间戳的保持原来的置顶行为。
+  const isBackfill = (session) => {
+    const newest = newestPreviousByWorkspace.get(sessionWorkspace(session)) || 0;
+    const time = sessionTime(session);
+    return newest > 0 && time > 0 && time < newest;
+  };
+
   const promoted = new Set();
   const top = [];
+  const backfill = [];
   for (const session of sortSidebarSessionsNewestFirst(incoming)) {
     const key = sessionKey(session);
     if (!key || promoted.has(key)) continue;
     const previousSession = previousByKey.get(key);
-    if (!previousSession || sessionContentChanged(previousSession, session)) {
+    if (!previousSession && isBackfill(session)) {
+      promoted.add(key);
+      backfill.push(session);
+    } else if (!previousSession || sessionContentChanged(previousSession, session)) {
       promoted.add(key);
       top.push(session);
     }
@@ -357,6 +404,13 @@ export function reconcileSidebarSessions(previousSessions = [], incomingSessions
     if (!next) continue;
     emitted.add(key);
     stable.push(next);
+  }
+
+  for (const session of backfill) {
+    const time = sessionTime(session);
+    const index = stable.findIndex((existing) => sessionTime(existing) < time);
+    if (index < 0) stable.push(session);
+    else stable.splice(index, 0, session);
   }
 
   return [...top, ...stable];

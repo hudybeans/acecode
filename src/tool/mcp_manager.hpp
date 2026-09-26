@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,15 @@ public:
     // servers are logged and skipped. Safe to call when cfg.mcp_servers is
     // empty — no work is done. Returns true if at least one server connected.
     bool connect_all(const AppConfig& cfg);
+
+    // Replace one configuration scope without disturbing other projects.
+    // Empty scope means global; project scope is a canonical workspace root.
+    void reconcile_scope(const std::string& scope,
+                         const std::map<std::string, McpServerConfig>& servers,
+                         ToolExecutor& executor,
+                         const std::unordered_set<std::string>& keep_enabled = {});
+    std::string server_scope(const std::string& id) const;
+    std::optional<McpServerConfig> server_config(const std::string& id) const;
 
     // Discover tools from each connected server and register them into
     // executor with the `mcp_{server}_{tool}` naming convention. All MCP
@@ -139,6 +149,7 @@ private:
 
     struct ServerEntry {
         std::string name;
+        std::string scope;
         McpServerConfig cfg;                 // remembered so reconnect needs only the name
         std::string command_line;            // human-readable locator (command line or url)
         std::shared_ptr<mcp::client> client; // stdio_client or sse_client via base interface
@@ -184,7 +195,8 @@ private:
                              const std::string& server_name,
                              const std::string& tool_name,
                              const std::string& arguments_json,
-                             const std::atomic<bool>* abort_flag = nullptr);
+                             const std::atomic<bool>* abort_flag,
+                             std::uint64_t generation);
 
     // Locate an entry by name. Returns nullptr if missing. Caller must hold
     // state_->mu.

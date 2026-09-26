@@ -1,13 +1,14 @@
 // Shared `/api/git/info` cache.
 //
 // The endpoint starts several Git subprocesses, so visible consumers share a
-// 30-second result and one in-flight request. The key is deliberately two-part:
-// effective API connection + cwd. A cwd-only singleton can route a session to
+// 30-second result and one in-flight request. The key includes:
+// effective API connection + session owner + cwd. A cwd-only singleton can route a session to
 // the mutable global client or leak a result between different daemon ports.
 
 import { apiConnectionScope } from './api.js';
 import { GIT_STATE_CHANGED_EVENT } from './gitSessionPill.js';
 import { SESSION_HOVER_GIT_CACHE_TTL_MS } from './sessionHoverDetails.js';
+import { sessionWorkbench } from './sessionWorkbench.js';
 
 function finiteNumber(value) {
   const number = Number(value);
@@ -24,25 +25,40 @@ export function createGitInfoCache({
   const allScopeEntries = new Set();
   const safeTtlMs = Math.max(0, finiteNumber(ttlMs));
 
-  const entriesFor = (apiClient, create = false) => {
+  const entriesFor = (apiClient, owner = '', create = false) => {
     const scope = apiConnectionScope(apiClient);
-    let entries = entriesByScope.get(scope);
+    let owners = entriesByScope.get(scope);
+    if (!owners && create) {
+      owners = new Map();
+      entriesByScope.set(scope, owners);
+    }
+    const ownerKey = sessionWorkbench.resolve(owner);
+    let entries = owners?.get(ownerKey);
+    if (!entries && owners) {
+      for (const [oldOwner, oldEntries] of owners) {
+        if (sessionWorkbench.resolve(oldOwner) !== ownerKey) continue;
+        entries = oldEntries;
+        owners.delete(oldOwner);
+        owners.set(ownerKey, entries);
+        break;
+      }
+    }
     if (!entries && create) {
       entries = new Map();
-      entriesByScope.set(scope, entries);
+      owners.set(ownerKey, entries);
       allScopeEntries.add(entries);
     }
     return entries;
   };
 
-  const load = (apiClient, cwd, { force = false } = {}) => {
+  const load = (apiClient, cwd, { force = false, owner = '' } = {}) => {
     const key = typeof cwd === 'string' ? cwd : '';
     if (!key.trim()) return Promise.resolve(null);
     if (!apiClient || typeof apiClient.gitInfo !== 'function') {
       return Promise.reject(new TypeError('API client with gitInfo is required'));
     }
 
-    const entries = entriesFor(apiClient, true);
+    const entries = entriesFor(apiClient, owner, true);
     const timestamp = finiteNumber(now());
     const existing = entries.get(key);
     if (existing?.promise) return existing.promise;
@@ -85,13 +101,13 @@ export function createGitInfoCache({
     return request;
   };
 
-  const peek = (apiClient, cwd) => {
+  const peek = (apiClient, cwd, owner = '') => {
     const key = typeof cwd === 'string' ? cwd : '';
     if (!key.trim()) return undefined;
     if (!apiClient || (typeof apiClient !== 'object' && typeof apiClient !== 'function')) {
       return undefined;
     }
-    const entries = entriesFor(apiClient);
+    const entries = entriesFor(apiClient, owner);
     const existing = entries?.get(key);
     const expiresAt = Number(existing?.expiresAt);
     if (!existing || !Number.isFinite(expiresAt) || expiresAt < finiteNumber(now())) {
@@ -108,15 +124,15 @@ export function createGitInfoCache({
   };
 
   return {
-    get(apiClient, cwd) {
-      return load(apiClient, cwd);
+    get(apiClient, cwd, owner = '') {
+      return load(apiClient, cwd, { owner });
     },
     peek,
-    refresh(apiClient, cwd) {
-      return load(apiClient, cwd, { force: true });
+    refresh(apiClient, cwd, owner = '') {
+      return load(apiClient, cwd, { force: true, owner });
     },
-    invalidate(apiClient, cwd = '') {
-      invalidateEntries(entriesFor(apiClient), cwd);
+    invalidate(apiClient, cwd = '', owner = '') {
+      invalidateEntries(entriesFor(apiClient, owner), cwd);
     },
     invalidateAll(cwd = '') {
       for (const entries of allScopeEntries) invalidateEntries(entries, cwd);
@@ -135,7 +151,7 @@ export function refreshWorkspaceGitInfo(apiClient, workspaceOrCwd) {
     ? workspaceOrCwd
     : String(source?.cwd || '');
   if (!cwd.trim()) return Promise.resolve(null);
-  return gitInfoCache.refresh(apiClient, cwd);
+  return gitInfoCache.refresh(apiClient, cwd, source ? sessionWorkbench.ownerFor(source) : '');
 }
 
 if (typeof window !== 'undefined') {

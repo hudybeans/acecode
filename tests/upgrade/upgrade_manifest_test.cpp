@@ -29,6 +29,33 @@ TEST(UpgradeManifest, UsesCapabilityVersionedTargetsOnlyForSupportedLinuxBuilds)
               "linux-unknown");
     EXPECT_EQ(manifest_target_for_platform("windows-x64"), "windows-x64");
     EXPECT_EQ(manifest_target_for_platform("macos-arm64"), "macos-arm64");
+    EXPECT_EQ(manifest_target_for_platform("linux-deepin-x64"), "linux-deepin-x64");
+    EXPECT_EQ(manifest_target_for_platform("linux-deepin-arm64"), "linux-deepin-arm64");
+    EXPECT_EQ(manifest_target_for_platform("linux-deepin-armv7"), "linux-deepin-armv7");
+}
+
+TEST(UpgradeManifest, DeepinCannotInstallGenericLinuxPackages) {
+    UpdateManifest manifest;
+    manifest.schema_version = 1;
+    manifest.latest = "1.2.4";
+    ReleaseInfo release;
+    release.version = "1.2.4";
+    for (const auto* target : {"linux-x64-updater-v1", "linux-arm64-updater-v1"}) {
+        PackageInfo package;
+        package.target = target;
+        package.file = std::string(target) + ".zip";
+        package.sha256 = acecode::sha256_hex("package");
+        release.packages.push_back(package);
+    }
+    manifest.releases.push_back(release);
+    for (const auto* target : {"linux-deepin-x64", "linux-deepin-arm64", "linux-deepin-armv7"}) {
+        const auto selected = select_update_package(
+            manifest, "1.2.3", manifest_target_for_platform(target));
+        EXPECT_EQ(selected.status, SelectionStatus::NoCompatiblePackage);
+        EXPECT_FALSE(selected.selected.has_value());
+    }
+    EXPECT_EQ(select_update_package(manifest, "1.2.3", "linux-x64-updater-v1").status,
+              SelectionStatus::UpdateAvailable);
 }
 
 TEST(UpgradeManifest, SelectsNewestCompatiblePackage) {

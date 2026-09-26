@@ -2,7 +2,9 @@
 
 import { useEffect, useRef } from 'react';
 import { clsx } from '../lib/format.js';
+import { SESSION_HEADER_CONTEXT_MENU_DELEGATE } from '../lib/desktopContextMenu.js';
 import { shouldInsetMacTopBar } from '../lib/desktopShellMode.js';
+import { withSearchPaletteShortcutHint } from '../lib/searchPaletteShortcut.js';
 import { NavigationArrowIcon, PanelToggleIcon, VsIcon } from './Icon.jsx';
 import { isTopBarDragBackdrop, isTopBarDragExcludedTarget, topBarWindowControlAt, topBarWindowDragAction } from '../lib/topBarWindowDrag.js';
 import {
@@ -149,6 +151,7 @@ export function TopBar({
   return (
     <div
       ref={topBarRef}
+      data-desktop-context-menu-delegate={SESSION_HEADER_CONTEXT_MENU_DELEGATE}
       className={clsx(
         'ace-topbar px-2 flex items-center gap-1 bg-surface relative z-10 shrink-0',
         framelessDesktop && 'ace-desktop-frameless-topbar',
@@ -171,7 +174,7 @@ export function TopBar({
         <QuickBtn title="前进" onClick={onGoForward} disabled={!canGoForward}>
           <NavigationArrowIcon direction="forward" size={16} />
         </QuickBtn>
-        <QuickBtn title="搜索任务" onClick={onOpenSearch}>
+        <QuickBtn title={withSearchPaletteShortcutHint('搜索任务')} onClick={onOpenSearch}>
           <VsIcon name="search" size={16} />
         </QuickBtn>
       </div>

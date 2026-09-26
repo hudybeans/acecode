@@ -4,6 +4,7 @@ import {
   normalizeTaskSuggestion,
   suggestionTargetRef,
   SUGGESTION_POLL_INTERVAL_MS,
+  SUGGESTION_DISMISS_DELAY_MS,
 } from './taskSuggestions.js';
 
 const suggestion = (patch = {}) => ({
@@ -24,6 +25,7 @@ function harness(overrides = {}, options = {}) {
   const changes = [];
   const started = [];
   let nextTimer = 0;
+  let time = 0;
   const api = {
     listTaskSuggestions: async () => response(suggestion()),
     acceptTaskSuggestion: async () => ({ suggestion: suggestion({ status: 'queued', location: 'current_branch' }) }),
@@ -33,16 +35,31 @@ function harness(overrides = {}, options = {}) {
   const controller = createTaskSuggestionsController({
     api, sessionId: 'source', onChange: (state) => changes.push(state),
     onStarted: (...args) => started.push(args),
-    setTimer: (fn, delay) => { const id = ++nextTimer; timers.set(id, { fn, delay }); return id; },
+    now: () => time,
+    setTimer: (fn, delay) => { const id = ++nextTimer; timers.set(id, { fn, delay, due: time + delay }); return id; },
     clearTimer: (id) => timers.delete(id),
     ...options,
   });
+  const next = () => [...timers.entries()].sort((a, b) => a[1].due - b[1].due)[0] || [];
   return { controller, timers, changes, started, async tick() {
-    const [id, timer] = timers.entries().next().value || [];
-    assert.ok(timer, 'expected a scheduled refresh');
+    const [id, timer] = next();
+    assert.ok(timer, 'expected a scheduled timer');
     timers.delete(id);
+    time = Math.max(time, timer.due);
     timer.fn();
     await settle();
+  }, async advance(ms) {
+    const target = time + ms;
+    while (next()[1]?.due <= target) {
+      const [id, timer] = next();
+      timers.delete(id);
+      time = timer.due;
+      timer.fn();
+      await settle();
+    }
+    time = target;
+  }, jump(ms) {
+    time += ms;
   } };
 }
 
@@ -63,7 +80,7 @@ await run('list alone never starts a task and idle suggestions do not poll', asy
   await h.controller.refresh();
   assert.equal(h.controller.getSnapshot().suggestions.length, 1);
   assert.equal(accepted, 0);
-  assert.equal(h.timers.size, 0);
+  assert.deepEqual([...h.timers.values()].map((timer) => timer.delay), [SUGGESTION_DISMISS_DELAY_MS]);
   h.controller.dispose();
 });
 
@@ -78,7 +95,7 @@ await run('busy polling is single flight and bounded by the refresh interval', a
   await first;
   await h.tick();
   assert.equal(calls, 2);
-  assert.equal([...h.timers.values()][0].delay, SUGGESTION_POLL_INTERVAL_MS);
+  assert.ok([...h.timers.values()].some((timer) => timer.delay === SUGGESTION_POLL_INTERVAL_MS));
   h.controller.dispose();
   assert.equal(h.timers.size, 0);
 });
@@ -227,8 +244,160 @@ await run('a source awaiting restore does not disable the endpoint as an old bac
   assert.equal(h.controller.getSnapshot().unsupported, false);
   await h.tick();
   assert.equal(h.controller.getSnapshot().suggestions.length, 1);
-  assert.equal(h.timers.size, 0);
+  assert.deepEqual([...h.timers.values()].map((timer) => timer.delay), [SUGGESTION_DISMISS_DELAY_MS]);
   h.controller.dispose();
+});
+
+await run('both suggestion kinds dismiss exactly once after 30 seconds without acceptance or resurrection', async () => {
+  for (const kind of ['side_task', 'context_handoff']) {
+    let current = suggestion({ kind });
+    const calls = [];
+    const h = harness({
+      listTaskSuggestions: async () => response(current),
+      acceptTaskSuggestion: () => assert.fail('countdown must never accept a task'),
+      dismissTaskSuggestion: async (...args) => {
+        calls.push(args);
+        current = { ...current, status: 'dismissed' };
+        return { suggestion: current };
+      },
+    });
+    await h.controller.refresh();
+    assert.equal(h.controller.getSnapshot().dismissDeadlines[current.id], 30_000);
+    await h.advance(29_999);
+    assert.equal(calls.length, 0);
+    await h.advance(1);
+    assert.deepEqual(calls, [['source', current.id]]);
+    assert.deepEqual(h.controller.getSnapshot().suggestions, []);
+    await h.controller.refresh();
+    await h.advance(60_000);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(h.controller.getSnapshot().suggestions, []);
+    h.controller.dispose();
+  }
+});
+
+await run('polling keeps the original deadline and later cards receive their own 30 seconds', async () => {
+  const first = suggestion();
+  const second = suggestion({ id: 'later', kind: 'context_handoff' });
+  let current = [first];
+  const closed = [];
+  const h = harness({
+    listTaskSuggestions: async () => response(...current),
+    dismissTaskSuggestion: async (_source, id) => {
+      closed.push(id);
+      const item = current.find((entry) => entry.id === id);
+      current = current.filter((entry) => entry.id !== id);
+      return { suggestion: { ...item, status: 'dismissed' } };
+    },
+  }, { busy: true });
+  await h.controller.refresh();
+  await h.advance(10_000);
+  current.push(second);
+  await h.controller.refresh();
+  assert.deepEqual(h.controller.getSnapshot().dismissDeadlines, { 'suggestion-1': 30_000, later: 40_000 });
+  await h.advance(20_000);
+  assert.deepEqual(closed, ['suggestion-1']);
+  await h.advance(10_000);
+  assert.deepEqual(closed, ['suggestion-1', 'later']);
+  h.controller.dispose();
+});
+
+await run('accepting at the deadline stops auto-close even while the accept request is in flight', async () => {
+  const accepted = deferred();
+  let current = suggestion();
+  const h = harness({
+    listTaskSuggestions: async () => response(current),
+    acceptTaskSuggestion: () => accepted.promise,
+    dismissTaskSuggestion: () => assert.fail('accepted tasks must not be cancelled by the timer'),
+  });
+  await h.controller.refresh();
+  await h.advance(29_999);
+  const request = h.controller.accept(current.id, 'current_branch');
+  assert.deepEqual(h.controller.getSnapshot().dismissDeadlines, {});
+  await h.advance(60_000);
+  current = { ...current, status: 'queued' };
+  accepted.resolve({ suggestion: current });
+  await request;
+  await h.advance(60_000);
+  h.controller.dispose();
+});
+
+await run('automatic close failure stays visible and never loops but manual retry remains available', async () => {
+  let attempts = 0;
+  let current = suggestion();
+  const h = harness({
+    listTaskSuggestions: async () => response(current),
+    dismissTaskSuggestion: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('offline');
+      current = { ...current, status: 'dismissed' };
+      return { suggestion: current };
+    },
+  });
+  await h.controller.refresh();
+  await h.advance(30_000);
+  assert.equal(h.controller.getSnapshot().errors[current.id], 'offline');
+  assert.equal(h.controller.getSnapshot().suggestions.length, 1);
+  assert.deepEqual(h.controller.getSnapshot().dismissDeadlines, {});
+  await h.controller.refresh();
+  await h.advance(60_000);
+  assert.equal(attempts, 1);
+  await h.controller.dismiss(current.id);
+  assert.equal(attempts, 2);
+  assert.equal(h.controller.getSnapshot().suggestions.length, 0);
+  h.controller.dispose();
+});
+
+await run('remote state changes and errors stop countdowns without silently cancelling queued work', async () => {
+  for (const patch of [{ status: 'queued' }, { status: 'starting' }, { status: 'started' }, { status: 'failed' }, { error: 'recoverable failure' }]) {
+    let current = suggestion();
+    const h = harness({
+      listTaskSuggestions: async () => response(current),
+      dismissTaskSuggestion: () => assert.fail('non-pending or failed cards must remain visible'),
+    });
+    await h.controller.refresh();
+    await h.advance(10_000);
+    current = { ...current, ...patch };
+    await h.controller.refresh();
+    assert.deepEqual(h.controller.getSnapshot().dismissDeadlines, {});
+    await h.advance(60_000);
+    h.controller.dispose();
+  }
+});
+
+await run('manual close and a pending expiry share one request', async () => {
+  const dismissed = deferred();
+  let calls = 0;
+  const h = harness({ dismissTaskSuggestion: () => { calls += 1; return dismissed.promise; } });
+  await h.controller.refresh();
+  await h.advance(30_000);
+  const request = h.controller.dismiss('suggestion-1');
+  await settle();
+  assert.equal(calls, 1);
+  dismissed.resolve({ suggestion: suggestion({ status: 'dismissed' }) });
+  await request;
+  h.controller.dispose();
+});
+
+await run('delayed timers use the absolute deadline and disposal clears expiry callbacks', async () => {
+  let calls = 0;
+  const h = harness({ dismissTaskSuggestion: async () => {
+    calls += 1;
+    return { suggestion: suggestion({ status: 'dismissed' }) };
+  } });
+  await h.controller.refresh();
+  h.jump(45_000);
+  await h.tick();
+  assert.equal(calls, 1);
+  h.controller.dispose();
+
+  const other = harness({ dismissTaskSuggestion: () => assert.fail('old source countdown must be disposed') });
+  await other.controller.refresh();
+  const stale = [...other.timers.values()][0].fn;
+  other.controller.dispose();
+  assert.equal(other.timers.size, 0);
+  stale();
+  await settle();
 });
 
 await run('target navigation preserves real worktree path and excludes source-only state', () => {

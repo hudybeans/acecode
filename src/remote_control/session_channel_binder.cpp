@@ -1,6 +1,7 @@
 #include "session_channel_binder.hpp"
 
 #include "session/session_registry.hpp"
+#include "session/system_notice.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -259,12 +260,18 @@ SessionChannelBinder::CommandOutcome
 SessionChannelBinder::execute_command(const std::string& session_id,
                                       const std::string& args) {
     const std::string sub = trim(args);
-    if (sub.empty()) return bind_session(session_id);
-    if (sub == "off") return unbind_and_stop();
-    if (sub == "show") return {true, status_text()};
+    if (sub.empty() || sub == "off") {
+        auto outcome = sub.empty() ? bind_session(session_id) : unbind_and_stop();
+        if (outcome.notice_metadata.empty()) {
+            outcome.notice_metadata = make_system_notice_metadata(
+                outcome.ok ? "remote_control_connected" : "remote_control_error");
+        }
+        return outcome;
+    }
+    if (sub == "show") return {true, status_text(), make_system_notice_metadata("remote_control_status")};
     return {false,
             "Unknown subcommand. Usage: /rc [off|show] — bare /rc binds this "
-            "session to the default channel."};
+            "session to the default channel.", make_system_notice_metadata("remote_control_usage")};
 }
 
 void SessionChannelBinder::with_config_lock(const std::function<void()>& fn) const {
@@ -767,7 +774,9 @@ SessionChannelBinder::CommandOutcome SessionChannelBinder::unbind_and_stop() {
     std::string message = was_running ? "Remote control stopped."
                                       : "Remote control is not running.";
     if (!warning.empty()) message += "\nChannel deactivate warning: " + warning;
-    return {true, message};
+    return {true, message, make_system_notice_metadata(
+        was_running ? "remote_control_stopped" : "remote_control_not_running",
+        {{"warning", warning}})};
 }
 
 void SessionChannelBinder::shutdown() {

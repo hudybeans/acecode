@@ -12,8 +12,8 @@
 //  - buildQueueCardItems 保持 FIFO 顺序
 
 import assert from 'node:assert/strict';
-import { QUEUED_INPUT_STATE } from './chatInputQueue.js';
-import { buildQueueCardItem, buildQueueCardItems } from './queueCardItem.js';
+import { QUEUED_INPUT_STATE, QUEUE_PAUSE_REASON } from './chatInputQueue.js';
+import { buildQueueCardItem, buildQueueCardItems, buildQueuePausedBanner } from './queueCardItem.js';
 
 function run(name, fn) {
   try {
@@ -150,4 +150,94 @@ run('buildQueueCardItem 长文本完整保留,UI 端用 CSS 截断 + title', () 
   // 数据层不截断 — 完整文本传到 DOM,truncation 由 CSS 完成,title 保留全文
   assert.equal(card.content, longText);
   assert.equal(card.content.length, 2000);
+});
+
+// ---- 「队列已暂停」横幅 -------------------------------------------------------
+// 触发场景:用户中断回合后 chatInputQueue 记下 { reason:'interrupted', pausedAt }。
+// 期望行为:横幅文案点明「由于你中断了当前响应」,右侧按钮文案「继续」;
+// 未暂停(null / 非对象)时返回 null,QueueCardList 不渲染横幅。
+run('buildQueuePausedBanner:中断暂停给出说明文案与「继续」按钮', () => {
+  const banner = buildQueuePausedBanner({ reason: QUEUE_PAUSE_REASON.INTERRUPTED, pausedAt: 1 });
+  assert.equal(banner.reason, 'interrupted');
+  assert.equal(banner.message, '由于你中断了当前响应，队列已暂停');
+  assert.equal(banner.resumeLabel, '继续');
+  assert.equal(banner.resumeTitle, '继续发送排队的消息');
+  assert.equal(buildQueuePausedBanner(null), null);
+  assert.equal(buildQueuePausedBanner(undefined), null);
+  assert.equal(buildQueuePausedBanner('interrupted'), null, '只接受对象形态');
+});
+
+// 触发场景:将来出现别的暂停原因(或 reason 缺失)。
+// 期望行为:退回通用文案「队列已暂停」,按钮仍是「继续」,不因未知原因而不渲染。
+run('buildQueuePausedBanner:未知 / 缺失原因退回通用文案', () => {
+  assert.equal(buildQueuePausedBanner({ reason: 'other' }).message, '队列已暂停');
+  assert.equal(buildQueuePausedBanner({ reason: 'other' }).resumeLabel, '继续');
+  assert.equal(buildQueuePausedBanner({}).reason, 'interrupted', '缺失原因按中断处理');
+});
+
+// ---- 粘贴的文本块(第 2 条反馈 f300) -----------------------------------------
+
+function makePasteItem(parts, { attachments = [] } = {}) {
+  const composer_content = { version: 1, parts };
+  const text = parts.map((part) => (part.type === 'pasted_text' || part.type === 'text' ? part.text : ''))
+    .filter(Boolean).join('\n\n');
+  return {
+    kind: 'msg',
+    id: 'queued-paste',
+    role: 'user',
+    content: text,
+    queued: {
+      id: 'queued-paste',
+      sessionId: 's',
+      state: QUEUED_INPUT_STATE.QUEUED,
+      payload: { text, attachments, contexts: [], composer_content },
+    },
+  };
+}
+
+// 触发场景:排队的消息带一个 20 万字符的内联粘贴块,编辑器里只写了「分析下面日志」。
+// 期望行为:卡片文字把块显示成「[粘贴的文本]」且不超过 1000 字符;编辑框拿到的
+// editText 只有编辑器文本(块在编辑框上方以卡片呈现),不含粘贴正文;可编辑。
+run('buildQueueCardItem 带内联粘贴块:卡片显示 [粘贴的文本],编辑文本不含正文', () => {
+  const block = 'L'.repeat(200_000);
+  const card = buildQueueCardItem(makePasteItem([
+    { type: 'text', text: '分析下面日志' },
+    { type: 'pasted_text', key: 'p1', text: block },
+  ]));
+  assert.equal(card.content, '分析下面日志\n\n[粘贴的文本]');
+  assert.ok(card.content.length <= 1000);
+  assert.equal(card.editText, '分析下面日志');
+  assert.equal(card.canEdit, true);
+  assert.equal(card.composerContent.parts[1].text.length, block.length, '块原样留在 composer 里');
+});
+
+// 触发场景:只有一个文件块(粘贴文本已落成附件),编辑器为空。
+// 期望行为:卡片同样显示「[粘贴的文本]」,editText 为空但仍可编辑(附件算 extras)。
+run('buildQueueCardItem 只有文件粘贴块:同样显示为 [粘贴的文本]', () => {
+  const card = buildQueueCardItem(makePasteItem([
+    {
+      type: 'attachment', key: 'a1', id: 'a1', name: 'pasted-text-20260925-101010.txt',
+      kind: 'file', mime_type: 'text/plain', paste: { title: '日志', chars: 3, lines: 1 },
+    },
+  ], { attachments: [{ id: 'a1' }] }));
+  assert.equal(card.content, '[粘贴的文本]');
+  assert.equal(card.editText, '');
+  assert.equal(card.hasExtras, true);
+  assert.equal(card.canEdit, true);
+});
+
+// 触发场景(回归 f300):旧版本排进来的一条 2400 万字符纯文本消息(没有块信息)。
+// bug 表现:整段 trim 一遍、整段放进卡片文字与 title 属性,渲染明显卡顿。
+// 期望行为:hasText 正确(可编辑),卡片文字只保留前 4096 字符。耗时断言只是粗防护
+// (300ms 给慢 CI 留余量),主断言是输出长度有界。
+run('buildQueueCardItem 2400 万字符旧文本:卡片文字有界且 hasText 正确', () => {
+  const huge = `${' '.repeat(10)}${'x'.repeat(24_000_000)}`;
+  const started = Date.now();
+  const card = buildQueueCardItem(makeItem(QUEUED_INPUT_STATE.QUEUED, huge));
+  const elapsed = Date.now() - started;
+  assert.equal(card.canEdit, true);
+  assert.equal(card.content.length, 4096);
+  assert.ok(elapsed < 300, `took ${elapsed}ms`);
+  const blank = buildQueueCardItem(makeItem(QUEUED_INPUT_STATE.QUEUED, ' '.repeat(5000)));
+  assert.equal(blank.canEdit, false, '全空白的文本仍然不算有内容');
 });

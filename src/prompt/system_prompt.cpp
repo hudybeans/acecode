@@ -74,6 +74,21 @@ static std::string get_powershell_guidance(const std::string& multiline_tool,
         << "`Get-Content` (`cat`), `Select-String` (`grep`).\n"
         << "- Native executables get their arguments after PowerShell parsing: quote arguments "
         << "containing spaces or special characters, or use `--%` to pass the rest verbatim.\n"
+        // 与 shell_command_line.cpp::powershell_utf8_prelude 的实际行为逐项一致,
+        // 改任何一边都要同步另一边(fix-feedback-0924 第 4 条)。纯静态 ASCII、
+        // 不含工具名,不打穿 prompt cache 前缀。
+        << "- Text encoding: project files are usually UTF-8 without a BOM. Commands start with "
+        << "the console and native-program pipes set to UTF-8, and under Windows PowerShell 5.1 "
+        << "`Get-Content`, `Set-Content`, `Add-Content`, `Out-File`/`>`, `Select-String`, "
+        << "`Import-Csv` and `Export-Csv` default to UTF-8 (5.1 writes a BOM when it creates a "
+        << "file). Nested `powershell.exe`/`pwsh` processes and scripts that start with "
+        << "`using`/`param` do not get these defaults; pass `-Encoding` explicitly there. Read "
+        << "and edit source files with the file tools rather than PowerShell; if a script must "
+        << "write a file, use `[IO.File]::WriteAllText((Join-Path $PWD 'REL_PATH'), TEXT, "
+        << "[Text.UTF8Encoding]::new($false))`. If text comes back garbled (mojibake or U+FFFD "
+        << "replacement characters), the file is in another encoding, often legacy ANSI/GBK: "
+        << "re-read it with the file tools or with `-Encoding Default` under 5.1. Never guess "
+        << "the original wording and never write garbled text back to a file.\n"
         << "- Use `$env:ACECODE_TMPDIR` for temporary scripts; ACECode rejects this placeholder "
         << "if no active session scratch directory is available.\n";
     if (!multiline_tool.empty()) {
@@ -113,6 +128,12 @@ static std::string get_cmd_guidance(const std::string& multiline_tool) {
         << "- Copy: `copy SRC DST`, or `xcopy /e /i SRC DST` for directories. There is no `cp -r`.\n"
         << "- Rename/move: `move` or `ren`. There is no `mv`.\n"
         << "- Variables: `%VAR%` (not `$VAR`). Set with `set VAR=value` (not `export`).\n"
+        // 用户反馈项目里出现名为 `%T%` 的目录:cmd 在解析整行时就展开 %VAR%,
+        // 同一行里刚 set 的变量还取不到,而未定义的 %VAR% 会原样留成文字。
+        << "- cmd expands `%VAR%` when it parses the whole line, so a variable set earlier on the "
+        << "same line (`set T=x && mkdir %T%`) is not visible yet, and an undefined `%VAR%` stays "
+        << "as literal text (this creates a directory literally named `%T%`). Set variables in a "
+        << "separate command before using them.\n"
         << "- Quoting: use double quotes for arguments containing spaces; cmd.exe does NOT strip "
         << "single quotes — they become literal characters.\n";
     if (!multiline_tool.empty()) {
@@ -176,7 +197,8 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
                                 bool active_model_can_read_images,
                                 const SystemPromptEnvironment* environment,
                                 const SystemPromptSandboxState* sandbox,
-                                const SystemPromptModelState* model) {
+                                const SystemPromptModelState* model,
+                                const SystemPromptWorkspaceFolders* workspace_folders) {
     (void)cwd;
     (void)skills;
     (void)memory;
@@ -224,7 +246,7 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
         << "not a pure coding task, or not tied to the current project. Help with "
         << "writing, planning, explanation, translation, brainstorming, analysis, "
         << "learning, troubleshooting, everyday productivity, and casual questions "
-        << "when you can. Only refuse when the request is unsafe, impossible with "
+        << "when you can. Only refuse when the request is impossible with "
         << "the available capabilities, or otherwise truly cannot be handled; in "
         << "those cases, explain the limitation briefly and offer a useful next step.\n\n";
 
@@ -466,6 +488,27 @@ std::string build_system_prompt(const ToolExecutor& tools, const std::string& cw
     } else {
         oss << "- You cannot see image attachments. Image parts arrive as text "
             << "handles instead; use `vision_analyze` to inspect them.\n";
+    }
+    if (workspace_folders) {
+        const auto join = [](const std::vector<std::string>& folders) {
+            std::string out;
+            for (const auto& folder : folders) {
+                if (!out.empty()) out += "; ";
+                out += folder;
+            }
+            return out;
+        };
+        if (!workspace_folders->additional.empty()) {
+            oss << "- Additional working directories: " << join(workspace_folders->additional) << "\n"
+                << "- These directories belong to this project alongside the working directory. "
+                << "Read, search, and edit files in them with absolute paths; relative paths "
+                << "still resolve against the working directory.\n";
+        }
+        if (!workspace_folders->read_only.empty()) {
+            oss << "- Additional directories readable but not writable in this session "
+                << "(they overlap the checkout protected by the session write root): "
+                << join(workspace_folders->read_only) << "\n";
+        }
     }
     if (worktree && worktree->active) {
         oss << "- Session worktree: active";

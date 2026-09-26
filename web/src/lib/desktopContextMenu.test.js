@@ -214,6 +214,7 @@ test('未置顶会话目标显示会话动作', () => {
   });
   assert.deepEqual(ids(items), [
     DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
     DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID,
@@ -633,6 +634,7 @@ test('普通 Web 会话菜单过滤原生目录选择导出并保留 Web 会话�
     },
   })), [
     DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
     DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE,
     DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID,
@@ -722,6 +724,7 @@ test('右键目标提取 session JSONL path', () => {
     'data-desktop-session-title': 'Session 1',
     'data-desktop-session-path': 'C:/Users/test/.acecode/projects/hash/s1.jsonl',
     'data-desktop-session-pinned': 'false',
+    'data-desktop-session-unread': 'true',
     'data-desktop-session-archive': 'true',
   });
   assert.deepEqual(sessionTargetFromElement(element), {
@@ -732,8 +735,35 @@ test('右键目标提取 session JSONL path', () => {
     title: 'Session 1',
     sessionPath: 'C:/Users/test/.acecode/projects/hash/s1.jsonl',
     pinned: false,
+    unread: true,
     canArchive: true,
   });
+});
+
+// 场景:会话右键菜单(侧栏行 / 会话菜单按钮 / 顶栏右键共用)。期望:置顶的下一项是
+// 「标记为已读 / 未读」—— 行上有未读标记时给「标记为已读」,否则(已读、运行中)给
+// 「标记为未读」;两者都带同一个会话目标,由侧栏按 session id 处理。
+test('会话菜单在置顶下面按未读状态切换标记为已读 / 未读', () => {
+  const unreadItems = buildDesktopContextMenuItems({
+    sessionTarget: { type: 'session', sessionId: 's1', workspaceHash: 'w1', title: 'T', pinned: true, unread: true },
+  });
+  assert.deepEqual(ids(unreadItems).slice(0, 2), [
+    DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ,
+  ]);
+  assert.equal(ids(unreadItems).includes(DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD), false);
+  const markRead = unreadItems.find((item) => item.id === DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ);
+  assert.equal(markRead.target.sessionId, 's1');
+  assert.equal(markRead.target.workspaceHash, 'w1');
+
+  const readItems = buildDesktopContextMenuItems({
+    sessionTarget: { type: 'session', sessionId: 's1', title: 'T', pinned: false, unread: false },
+  });
+  assert.deepEqual(ids(readItems).slice(0, 2), [
+    DESKTOP_CONTEXT_ACTIONS.PIN_SESSION,
+    DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD,
+  ]);
+  assert.equal(ids(readItems).includes(DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ), false);
 });
 
 test('contextTargetsFromElement 提取各类目标', () => {
@@ -868,4 +898,37 @@ test('已有右键菜单时重开前短暂隐藏', () => {
   assert.equal(contextMenuOpenDelay(), 0);
   assert.equal(contextMenuOpenDelay({ hasVisibleMenu: true }), CONTEXT_MENU_REOPEN_DELAY_MS);
   assert.equal(contextMenuOpenDelay({ hasPendingMenu: true }), CONTEXT_MENU_REOPEN_DELAY_MS);
+});
+
+// 场景:侧栏项目行带 data-desktop-workspace-edit(有真实项目 hash,不是 __local__ 兼容行)。
+// 期望:右键菜单在「重命名项目」前出现「编辑项目」,其余项目动作顺序不变。
+test('可编辑的 workspace 目标在重命名前显示编辑项目', () => {
+  const actions = ids(buildDesktopContextMenuItems({
+    workspaceTarget: {
+      workspaceHash: 'w1',
+      path: 'C:/repo',
+      active: true,
+      expanded: true,
+      canEdit: true,
+    },
+  }));
+  const edit = actions.indexOf(DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE);
+  assert.notEqual(edit, -1);
+  assert.equal(actions[edit + 1], DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE);
+});
+
+// 场景:从 DOM 属性解析 workspace 目标。期望:只有显式 data-desktop-workspace-edit="true"
+// 才算可编辑,缺省(__local__ 兼容行不带该属性)时菜单里不出现「编辑项目」。
+test('workspace target parses edit attribute', () => {
+  const editable = workspaceTargetFromElement(elementFor(WORKSPACE_TARGET_SELECTOR, {
+    'data-desktop-workspace-id': 'w1',
+    'data-desktop-workspace-edit': 'true',
+  }));
+  assert.equal(editable.canEdit, true);
+  const plain = workspaceTargetFromElement(elementFor(WORKSPACE_TARGET_SELECTOR, {
+    'data-desktop-workspace-id': '__local__',
+  }));
+  assert.equal(plain.canEdit, false);
+  assert.equal(ids(buildDesktopContextMenuItems({ workspaceTarget: plain }))
+    .includes(DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE), false);
 });

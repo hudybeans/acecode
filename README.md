@@ -123,6 +123,7 @@ The best requests name the desired outcome, relevant files or constraints, and h
 - [Skills guide](docs/skills.md) — create and use reusable workflows.
 - [Desktop workspaces](docs/desktop-shell/multi-workspace.md) — workspace and task behavior in the desktop app.
 - [Linux self-update](docs/linux-self-update.md) — updater ZIPs, one-time legacy bootstrap, and release verification.
+- [UOS / Deepin builds](docs/deepin-desktop.md) — optional DTK frame effects, WebKitGTK 4.0, and dedicated release packages.
 
 ## License
 

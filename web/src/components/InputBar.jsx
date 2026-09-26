@@ -1,11 +1,11 @@
 // 输入框:富文本 composer 自动撑高(最多 8 行) + Enter 发 / Shift+Enter 换行 +
 // 空输入或未编辑的历史项用上下键翻 history。
 //
-// 底部工具栏单独占一行,提交按钮在右侧(只在有内容时变蓝),空内容时灰色不可点。
+// 底部工具栏单独占一行,提交按钮在右侧;空内容仅在可重试末尾用户消息时允许发送。
 //
 // 斜杠命令:value 以 / 开头且无空白时,SlashDropdown 浮层显示在输入框上方。
-// 选中后插入 `/<name> ` 到输入框,不立即发送(builtin 与 skill 行为统一)。
-// 已识别的首段命令以原子 token 样式在同一 editable layout 内渲染。
+// 目标指令显示在加号旁的标签中；其他已确认命令仍在正文中显示原子 token。
+// 选择命令不立即发送，草稿与发送继续使用原始命令协议。
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -21,6 +21,8 @@ import { GoalStatusBar } from './GoalStatusBar.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { SwarmModeIcon } from './SwarmModeIcon.jsx';
 import { RichComposer } from './RichComposer.jsx';
+import { PastedTextCard } from './PastedTextCard.jsx';
+import { PastedTextDialog } from './PastedTextDialog.jsx';
 import { PathReferenceDropdown } from './PathReferenceDropdown.jsx';
 import { SlashDropdown } from './SlashDropdown.jsx';
 import { toast } from './Toast.jsx';
@@ -29,13 +31,24 @@ import { getNextInputHistoryPointer, isUserComposerEdit, shouldNavigateInputHist
 import { filesFromTransfer, hasFileTransfer } from '../lib/composerFileTransfer.js';
 import { composerContentWithoutImages, isComposerThumbnailAttachment, withComposerImageAttachments } from '../lib/composerImagePresentation.js';
 import { composerDraftEditFingerprint, removeComposerAttachmentReference } from '../lib/composerDraft.js';
+import { projectComposerGoal, serializeComposerGoal } from '../lib/composerGoal.js';
+import { isComposerCompletionSelectionCollapsed } from '../lib/composerDropdownKeyboard.js';
 import { commandQueryAtCursor } from '../lib/slashCommands.js';
 import { normalizeComposerContent, composerContentSignature, composerContentText, composerContentAttachments, composerContentFromText } from '../lib/composerContent.js';
+import {
+  editorAttachmentResources,
+  legacyTextNeedsFold,
+  pasteBlockTextSource,
+  pasteBlocksOf,
+  pastedTextTitle,
+  removePastedTextPart,
+} from '../lib/pastedText.js';
 import {
   captureComposerTextareaSelection,
   isComposerEditorFocused,
   preserveComposerFocusOnPointerDown,
   requestDesktopFileDragActivation,
+  requestDesktopFileDropFocus,
   requestDesktopWindowFocus,
   restoreComposerTextareaCaret,
 } from '../lib/composerCaretRestore.js';
@@ -63,22 +76,19 @@ import {
 } from '../lib/sessionReference.js';
 import {
   hasNativeContextPicker,
-  nativeFolderReferencePath,
   parseNativeContextPickerResult,
 } from '../lib/desktopContextPicker.js';
 import {
   desktopHostOs,
-  hasNativeFilesystemClipboard,
   hasNativeFilesystemMaterializer,
-  insertAbsolutePathReferences,
   localPathsFromDropPayload,
   localPathsFromUriList,
-  materializeNativeFilesystemPaths,
   nativeFileDropEnabled,
-  readNativeClipboardFilesystemItems,
   uriListFromTransfer,
 } from '../lib/desktopFilesystemTransfer.js';
+import { resolveComposerFileIntake } from '../lib/composerFileIntake.js';
 import { postWindowsNativeFilesystemDrop } from '../lib/desktopNativeFilesystemDrop.js';
+import { fileDropDiagnostic, registerNativeComposerFileDrop } from '../lib/macNativeFileDrag.js';
 import {
   nextExpertMenuItemIndex,
   placeExpertSubmenu,
@@ -104,6 +114,23 @@ function composerAttachmentContext(item, index = 0) {
     path: item?.path || '',
     sourcePath: item?.source_path || item?.metadata?.source_path || '',
   };
+}
+
+// 粘贴块卡片的状态:由块对应的资源(上传状态、内存 File)推导。
+//   uploading 正在上传;failed 上传失败(点卡片重试);deferred 来自旧输入历史、
+//   尚未上传;lost 没有附件 id 也没有内存 File(刷新前没传完),只能删除。
+function pasteBlockCardState(block, resource) {
+  if (block.kind === 'inline') return 'ready';
+  if (resource?.uploading) return 'uploading';
+  if (resource?.upload_error) return 'failed';
+  if (resource?.upload_deferred && resource?.pending_upload) return 'deferred';
+  if (!block.part?.id && !resource?.id && !resource?.file) return 'lost';
+  return 'ready';
+}
+
+function pasteBlockCardTitle(block) {
+  if (block.kind === 'inline') return pastedTextTitle(block.part.text);
+  return String(block.part?.paste?.title || block.part?.name || '');
 }
 
 function composerContextKey(item, index = 0) {
@@ -179,7 +206,8 @@ function ComposerBrowserContextCard({ item, onRemove }) {
 }
 
 export const InputBar = forwardRef(function InputBar({
-  disabled, submitting = false,
+  disabled, submitting = false, canRetryLastUserMessage = false,
+  queuePaused = false, onResumeQueue,
   placeholder = '输入消息或 / 命令…', onSubmit, onAbort, busy, goal = null,
   onGoalEdit, onGoalStatusChange, onGoalClear,
   history = [], historyEntries = [], variant = 'default', attentionRequest = 0,
@@ -187,6 +215,8 @@ export const InputBar = forwardRef(function InputBar({
   composerContent: controlledComposerContent, onComposerContentChange,
   attachments = EMPTY_COMPOSER_ATTACHMENTS, contexts = [], annotationPresentations = null,
   onMediaFiles, onRemoveAttachment, onRemoveContext,
+  onLargeTextPaste, onReplacePasteBlock, onRetryPasteUpload, onCommitDeferredPastes,
+  attachmentTextLoader,
   swarmMode = false, onSwarmModeChange,
   expertOptions = [],
   selectedExpertId = '',
@@ -207,10 +237,15 @@ export const InputBar = forwardRef(function InputBar({
   const isControlled = controlledValue != null;
   const [internalValue, setInternalValue] = useState('');
   const [internalContent, setInternalContent] = useState(null);
-  const composerContent = controlledComposerContent !== undefined ? controlledComposerContent : internalContent;
+  const draftContent = controlledComposerContent !== undefined ? controlledComposerContent : internalContent;
+  const draftValue = isControlled ? String(controlledValue || '') : internalValue;
+  const { goalMode, text: value, content: composerContent } = useMemo(
+    () => projectComposerGoal(draftValue, draftContent), [draftValue, draftContent],
+  );
+  const goalModeRef = useRef(goalMode);
+  goalModeRef.current = goalMode;
   const contentRef = useRef(composerContent);
   contentRef.current = composerContent;
-  const value = isControlled ? String(controlledValue || '') : internalValue;
   const valueRef = useRef(value);
   valueRef.current = value;
   const [histPtr, setHistPtr] = useState(-1);
@@ -224,11 +259,21 @@ export const InputBar = forwardRef(function InputBar({
   const [pathMention, setPathMention] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState(null);
+  // 打开的粘贴块对话框:打开那一刻固定文本来源,上传中途资源从 File 换成服务端记录
+  // 时不重新装载(否则会覆盖用户正在编辑的内容)。
+  const [openPaste, setOpenPaste] = useState(null);
   const ta = useRef(null);
   const rootRef = useRef(null);
   const attentionRingRef = useRef(null);
   const lastAttentionRequestRef = useRef(attentionRequest);
   const fileInputRef = useRef(null);
+  const fileIntakeQueueRef = useRef(Promise.resolve());
+  const fileIntakeScope = JSON.stringify([cwd, currentSessionId]);
+  const fileIntakeScopeRef = useRef(fileIntakeScope);
+  if (fileIntakeScopeRef.current !== fileIntakeScope) {
+    fileIntakeScopeRef.current = fileIntakeScope;
+    fileIntakeQueueRef.current = Promise.resolve();
+  }
   const dismissedPathSignatureRef = useRef('');
   const mentionGenerationRef = useRef(0);
   const capabilityMenuRef = useRef(null);
@@ -276,7 +321,13 @@ export const InputBar = forwardRef(function InputBar({
   const attachmentItems = Array.isArray(attachments) ? attachments : EMPTY_COMPOSER_ATTACHMENTS;
   const attachmentItemsRef = useRef(attachmentItems);
   attachmentItemsRef.current = attachmentItems;
-  const editorAttachmentItems = useMemo(() => attachmentItems.filter((item) => !isComposerThumbnailAttachment(item)), [attachmentItems]);
+  // 交给 RichComposer 的附件剥掉图片(缩略图条)与粘贴资源(卡片条):否则 RichComposer
+  // 会把上传完成后丢了 paste 标记的粘贴资源当成新附件插进编辑器。
+  const editorAttachmentItems = useMemo(
+    () => editorAttachmentResources(attachmentItems, composerContent),
+    [attachmentItems, composerContent],
+  );
+  const pasteBlocks = useMemo(() => pasteBlocksOf(composerContent), [composerContent]);
   const editorContent = useMemo(() => composerContentWithoutImages(composerContent), [composerContent]);
   const mergeEditorContent = useCallback((content) => withComposerImageAttachments(
     content, contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current),
@@ -294,13 +345,29 @@ export const InputBar = forwardRef(function InputBar({
   const otherContextItems = contextItems.filter((item) => (
     item?.type !== SELECTION_CONTEXT_TYPE && item?.type !== 'browser'
   ));
-  const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0;
+  // 文件块是附件,已计入 activeAttachmentItems;内联块不是附件,单独计入。
+  const hasExtras = activeAttachmentItems.length > 0 || contextItems.length > 0
+    || pasteBlocks.some((block) => block.kind === 'inline');
+  const pasteCards = useMemo(() => pasteBlocks.map((block) => {
+    const resource = block.kind === 'file'
+      ? activeAttachmentItems.find((item) => item?.local_id === block.part.key
+        || (block.part.id && item?.id === block.part.id)) || null
+      : null;
+    return {
+      block,
+      resource,
+      title: pasteBlockCardTitle(block),
+      sizeBytes: resource?.size_bytes,
+      status: pasteBlockCardState(block, resource),
+    };
+  }), [activeAttachmentItems, pasteBlocks]);
+  const openPasteCard = openPaste
+    ? pasteCards.find((card) => card.block.id === openPaste.id) || null
+    : null;
   const nativeContextPickerAvailable = hasNativeContextPicker();
   const nativeFilesystemMaterializerAvailable = hasNativeFilesystemMaterializer();
-  const nativeFilesystemClipboardAvailable = hasNativeFilesystemClipboard();
   const canChooseLocalContext = !!onMediaFiles || nativeContextPickerAvailable;
   const hasExpertHandlers = !!onSelectExpert || !!onOpenExpertComponents;
-  const hasCapabilityHandlers = !!onSwarmModeChange || canChooseLocalContext || hasExpertHandlers;
   const composerLayoutSignature = useMemo(() => [
     ...attachmentItems.map((item, index) => [
       composerAttachmentKey(item, index),
@@ -313,7 +380,8 @@ export const InputBar = forwardRef(function InputBar({
       item?.type || '',
       item?.id || '',
     ].join(':')),
-  ].join('\n'), [attachmentItems, contextItems]);
+    ...pasteBlocks.map((block) => `paste:${block.id}`),
+  ].join('\n'), [attachmentItems, contextItems, pasteBlocks]);
 
   const previewComposerAttachment = useCallback((item) => {
     const src = String(item?.url || item?.preview_url || item?.blob_url || '');
@@ -321,19 +389,51 @@ export const InputBar = forwardRef(function InputBar({
     setAttachmentPreview({ src, alt: String(item?.name || 'attachment') });
   }, []);
 
-  const updateValue = useCallback((next, content, replacementRange) => {
+  const updateValue = useCallback((next, content, replacementRange, options = {}) => {
     const text = String(next || '');
     const nextContent = content === undefined
       ? mergeEditorContent(ta.current?.replaceTextPreservingReferences?.(text, replacementRange) || composerContentFromText(text))
       : normalizeComposerContent(content);
-    if (valueRef.current === text && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
-    valueRef.current = text;
-    contentRef.current = nextContent;
-    if (!isControlled) setInternalValue(text);
-    if (controlledComposerContent === undefined) setInternalContent(nextContent);
-    onChange?.(text, nextContent);
-    onComposerContentChange?.(nextContent);
+    const nextGoalMode = options.goalMode ?? goalModeRef.current;
+    if (goalModeRef.current === nextGoalMode && valueRef.current === text
+        && composerContentSignature(contentRef.current) === composerContentSignature(nextContent)) return;
+    const draft = serializeComposerGoal(text, nextContent, nextGoalMode);
+    const editor = projectComposerGoal(draft.text, draft.content);
+    const newlyConfirmedGoal = options.goalMode === undefined && !goalModeRef.current && editor.goalMode;
+    const selection = newlyConfirmedGoal ? captureComposerTextareaSelection(ta.current) : null;
+    valueRef.current = editor.text;
+    contentRef.current = editor.content;
+    goalModeRef.current = editor.goalMode;
+    if (!isControlled) setInternalValue(draft.text);
+    if (controlledComposerContent === undefined) setInternalContent(draft.content);
+    onChange?.(draft.text, draft.content);
+    onComposerContentChange?.(draft.content);
+    if (newlyConfirmedGoal) {
+      const cursor = Math.max(0, (selection?.end ?? text.length) - editor.prefixLength);
+      const scope = fileIntakeScopeRef.current;
+      // The empty body can match an earlier Slate local echo. Remove the
+      // confirmed token explicitly before another input event can reuse it.
+      queueMicrotask(() => {
+        if (fileIntakeScopeRef.current !== scope || !goalModeRef.current || valueRef.current !== editor.text) return;
+        if (ta.current?.getEditorStateText?.() !== editor.text) {
+          ta.current?.replaceTextPreservingReferences?.(editor.text, { begin: 0, end: editor.prefixLength });
+        }
+        ta.current?.setSelectionRange(cursor, cursor);
+      });
+    }
   }, [isControlled, controlledComposerContent, onChange, onComposerContentChange, mergeEditorContent]);
+
+  const removePasteBlock = useCallback((id) => {
+    const current = contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current);
+    updateValue(valueRef.current, removePastedTextPart(current, id));
+  }, [updateValue]);
+
+  const openPasteBlock = useCallback((card) => {
+    setOpenPaste({
+      id: card.block.id,
+      source: pasteBlockTextSource({ part: card.block.part, resource: card.resource }, { sessionId: currentSessionId }),
+    });
+  }, [currentSessionId]);
 
   const removeAttachment = useCallback((key) => {
     const current = contentRef.current || composerContentFromText(valueRef.current, attachmentItemsRef.current);
@@ -469,7 +569,8 @@ export const InputBar = forwardRef(function InputBar({
   );
 
   // 触发条件:value 非空、首字符 /、整段无空白
-  const commandQuery = commandQueryAtCursor(value, composerSelection.end);
+  const composerSelectionCollapsed = isComposerCompletionSelectionCollapsed(composerSelection);
+  const commandQuery = composerSelectionCollapsed ? commandQueryAtCursor(value, composerSelection.end) : null;
   const commandItems = commandQuery?.leading ? commands : commands.filter((item) => item.kind === 'skill');
   const showDropdownRaw = !!commandQuery;
   const showDropdown = showDropdownRaw && !dropdownClosed && !composerComposing && commandItems.length > 0;
@@ -495,9 +596,10 @@ export const InputBar = forwardRef(function InputBar({
       cursor = commandQuery.begin + String(item.mention || `$${item.name}`).length + 1;
     } else {
       if (!commandQuery.leading) return;
-      const next = '/' + item.name + ' ' + value.slice(commandQuery.end);
-      updateValue(next, undefined, commandQuery);
-      cursor = item.name.length + 2;
+      const selectedGoal = item.kind === 'builtin' && item.name === 'goal';
+      const next = (selectedGoal ? '' : '/' + item.name + ' ') + value.slice(commandQuery.end);
+      updateValue(next, undefined, commandQuery, { goalMode: selectedGoal });
+      cursor = selectedGoal ? 0 : item.name.length + 2;
     }
     setEditedSinceHistory(true);
     setDropdownClosed(true);
@@ -511,10 +613,15 @@ export const InputBar = forwardRef(function InputBar({
   };
 
   const submit = () => {
-    const v = value.trim();
-    if ((!v && !hasExtras) || disabled || submitting) return;
-    onSubmit?.(value);
-    if (!isControlled) updateValue('');
+    if (!actionState.canSubmit) return;
+    // 队列暂停 + 空输入框:这一下是「继续」,不是发送 —— 空内容本来也没什么可发。
+    if (actionState.mode === 'resume') {
+      onResumeQueue?.();
+      requestAnimationFrame(() => ta.current?.focus());
+      return;
+    }
+    onSubmit?.(serializeComposerGoal(valueRef.current, contentRef.current, goalModeRef.current).text);
+    if (!isControlled) updateValue('', composerContentFromText(''), undefined, { goalMode: false });
     setHistPtr(-1);
     setEditedSinceHistory(false);
     setDropdownClosed(false);
@@ -531,6 +638,13 @@ export const InputBar = forwardRef(function InputBar({
     });
   }, []);
 
+  const changeGoalMode = (enabled) => {
+    updateValue(valueRef.current, contentRef.current, undefined, { goalMode: enabled });
+    setEditedSinceHistory(true);
+    setCapabilityOpen(false);
+    requestAnimationFrame(() => ta.current?.focus());
+  };
+
   // `@` reference menu: files keep the existing visible-path behavior, while
   // sessions use a stable inline token that is expanded only when submitted.
   // Directory contents and session transcripts are never preloaded here.
@@ -538,7 +652,7 @@ export const InputBar = forwardRef(function InputBar({
     const cursor = composerSelection.end;
     const token = pathReferenceTokenAtCursor(value, cursor);
     const signature = pathReferenceSignature(token, cursor, cwd);
-    const unavailable = disabled || !pathReferenceApi || composerComposing || showDropdown || !token;
+    const unavailable = disabled || !pathReferenceApi || composerComposing || !composerSelectionCollapsed || showDropdown || !token;
     if (unavailable || dismissedPathSignatureRef.current === signature) {
       mentionGenerationRef.current += 1;
       setPathMention(null);
@@ -624,6 +738,7 @@ export const InputBar = forwardRef(function InputBar({
     };
   }, [
     composerComposing,
+    composerSelectionCollapsed,
     composerSelection.end,
     currentSessionId,
     cwd,
@@ -669,78 +784,46 @@ export const InputBar = forwardRef(function InputBar({
     restorePathCaret(replacement.cursor);
   }, [pathMention?.token, restorePathCaret, updateValue, value]);
 
-  const activePathDropdown = pathMention;
+  const activePathDropdown = composerSelectionCollapsed ? pathMention : null;
 
-  const addMediaFiles = useCallback((files, { requestNativeFocus = true } = {}) => {
-    const fileList = Array.from(files || []).filter(Boolean);
-    if (disabled || !onMediaFiles || fileList.length === 0) return false;
+  const handleFileIntake = useCallback((payload, transfer) => {
+    if (disabled || !transfer?.isActive()) return Promise.resolve(true);
     setCapabilityOpen(false);
-    requestComposerCaretRestore({ requestNativeFocus });
-    ta.current?.reserveAttachmentSelection?.();
-    onMediaFiles(fileList);
-    return true;
-  }, [disabled, onMediaFiles, requestComposerCaretRestore]);
+    // Start acquisition immediately (the clipboard can change), but commit
+    // batches in gesture order even when native requests finish out of order.
+    const request = resolveComposerFileIntake(payload).then(
+      result => ({ result }), error => ({ error }),
+    );
+    const completion = fileIntakeQueueRef.current.then(async () => {
+      const { result, error } = await request;
+      if (!transfer.isActive()) return true;
+      if (error) {
+        toast({ kind: 'err', text: `添加文件或文件夹失败:${error.message || '原生文件系统不可用'}` });
+        return true;
+      }
+      if (result.kind === 'none') return false;
+      if (result.kind === 'paths') transfer.insertPaths(result.items);
+      else if (onMediaFiles && transfer.reserveAttachments()) onMediaFiles(result.files);
+      setEditedSinceHistory(true);
+      return true;
+    }).catch(error => {
+      if (transfer.isActive()) toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '原生文件系统不可用'}` });
+      return true;
+    });
+    fileIntakeQueueRef.current = completion;
+    return completion;
+  }, [disabled, onMediaFiles]);
 
-  const addNativeFilesystemItems = useCallback((
-    items,
-    savedCursor = composerSelection.end,
-  ) => {
-    const list = Array.from(items || []);
-    if (list.length === 0) return false;
+  const acceptFileIntake = useCallback((payload) => {
+    const transfer = ta.current?.beginFileTransfer();
+    if (!transfer) return;
+    ta.current?.focus();
+    handleFileIntake(payload, transfer).finally(() => transfer.dispose());
+  }, [handleFileIntake]);
 
-    const currentValue = valueRef.current;
-    const insertion = insertAbsolutePathReferences(currentValue, savedCursor, list);
-    if (insertion.text === currentValue) return false;
-
-    valueRef.current = insertion.text;
-    updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
-    setEditedSinceHistory(true);
-    restorePathCaret(insertion.cursor);
-    return true;
-  }, [composerSelection.end, restorePathCaret, updateValue]);
-
-  const addMaterializedPaths = useCallback(async (paths, savedCursor, options) => {
-    const result = await materializeNativeFilesystemPaths(paths);
-    return addNativeFilesystemItems(result.items, savedCursor, options);
-  }, [addNativeFilesystemItems]);
-
-  const handleFilesystemPaste = useCallback(({ files = [], uriList = '' } = {}) => {
-    const fallbackFiles = Array.from(files || []);
-    const savedCursor = composerSelection.end;
-    const uriPaths = nativeFilesystemMaterializerAvailable
-      ? localPathsFromUriList(uriList, HOST_OS)
-      : [];
-
-    let request = null;
-    if (uriPaths.length > 0) {
-      request = materializeNativeFilesystemPaths(uriPaths);
-    } else if (nativeFilesystemClipboardAvailable) {
-      request = readNativeClipboardFilesystemItems();
-    }
-
-    if (!request) {
-      addMediaFiles(fallbackFiles);
-      return;
-    }
-
-    Promise.resolve(request)
-      .then((result) => {
-        if (result.items.length > 0) {
-          addNativeFilesystemItems(result.items, savedCursor);
-        } else {
-          addMediaFiles(fallbackFiles);
-        }
-      })
-      .catch((error) => {
-        toast({ kind: 'err', text: `粘贴文件或文件夹失败:${error?.message || '原生文件系统不可用'}` });
-      });
-  }, [
-    addMediaFiles,
-    addNativeFilesystemItems,
-    composerSelection.end,
-    nativeFilesystemClipboardAvailable,
-    nativeFilesystemMaterializerAvailable,
-  ]);
+  const handleFilesystemPaste = useCallback((payload, transfer) => (
+    handleFileIntake({ ...payload, source: 'paste' }, transfer)
+  ), [handleFileIntake]);
 
   const chooseLocalContext = useCallback(async () => {
     setCapabilityOpen(false);
@@ -749,46 +832,31 @@ export const InputBar = forwardRef(function InputBar({
       return;
     }
 
-    const savedCursor = composerSelection.end;
+    const transfer = ta.current?.beginFileTransfer();
+    if (!transfer) return;
     try {
       const raw = await window.aceDesktop_pickContextItems({ cwd });
       const picked = parseNativeContextPickerResult(raw);
-      if (picked.cancelled) {
-        restorePathCaret(savedCursor);
-        return;
-      }
-      if (picked.folder) {
-        const referencePath = nativeFolderReferencePath(cwd, picked.folder);
-        const insertion = insertPathReferenceAtCaret(value, savedCursor, referencePath, {
-          directory: true,
-        });
-        updateValue(insertion.text, undefined, { begin: savedCursor, end: savedCursor });
-        setEditedSinceHistory(true);
-        restorePathCaret(insertion.cursor);
-        return;
-      }
-
-      if (!addNativeFilesystemItems(picked.files, savedCursor)) {
-        restorePathCaret(savedCursor);
-      }
+      if (!transfer.isActive()) return;
+      ta.current?.focus();
+      if (!picked.cancelled) await handleFileIntake({
+        source: 'picker', items: picked.folder ? [picked.folder] : picked.files,
+      }, transfer);
     } catch (error) {
-      toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '选择器不可用'}` });
-      restorePathCaret(savedCursor);
+      if (transfer.isActive()) toast({ kind: 'err', text: `添加文件或文件夹失败:${error?.message || '选择器不可用'}` });
+    } finally {
+      transfer.dispose();
     }
   }, [
-    addNativeFilesystemItems,
-    composerSelection.end,
+    handleFileIntake,
     cwd,
     nativeContextPickerAvailable,
-    restorePathCaret,
-    updateValue,
-    value,
   ]);
 
   const handleFiles = (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
-    addMediaFiles(files);
+    acceptFileIntake({ source: 'picker', files });
   };
 
   const restoreCapabilityMenuFocus = useCallback(() => {
@@ -861,7 +929,8 @@ export const InputBar = forwardRef(function InputBar({
   }, [setFileDragActive]);
 
   const handleDrop = useCallback((event) => {
-    const files = disabled || !onMediaFiles ? [] : filesFromTransfer(event.dataTransfer, { source: 'drop' });
+    if (disabled || !onMediaFiles) return;
+    const files = filesFromTransfer(event.dataTransfer, { source: 'drop' });
     if (NATIVE_FILE_DROP) {
       markNativeDropHover();
       if (HOST_OS === 'windows' && postWindowsNativeFilesystemDrop(event.dataTransfer)) {
@@ -877,22 +946,12 @@ export const InputBar = forwardRef(function InputBar({
     if (files.length > 0 || uriPaths.length > 0) {
       event.preventDefault();
       event.stopPropagation();
-      if (uriPaths.length > 0) {
-        const savedCursor = composerSelection.end;
-        addMaterializedPaths(uriPaths, savedCursor, { requestNativeFocus: false })
-          .catch((error) => toast({
-            kind: 'err',
-            text: `拖入文件或文件夹失败:${error?.message || '原生文件系统不可用'}`,
-          }));
-      } else {
-        addMediaFiles(files, { requestNativeFocus: false });
-      }
+      requestDesktopFileDropFocus();
+      acceptFileIntake({ source: 'drop', paths: uriPaths, files });
     }
     resetDragState();
   }, [
-    addMaterializedPaths,
-    addMediaFiles,
-    composerSelection.end,
+    acceptFileIntake,
     disabled,
     markNativeDropHover,
     nativeFilesystemMaterializerAvailable,
@@ -902,20 +961,25 @@ export const InputBar = forwardRef(function InputBar({
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
-    getComposerContent: () => mergeEditorContent(ta.current?.getComposerContent?.() || contentRef.current),
+    getComposerContent: () => serializeComposerGoal(
+      valueRef.current,
+      mergeEditorContent(ta.current?.getComposerContent?.() || contentRef.current),
+      goalModeRef.current,
+    ).content,
     setComposerContent: (content, options) => {
       const normalized = normalizeComposerContent(content) || composerContentFromText('');
-      updateValue(composerContentText(normalized), normalized);
-      ta.current?.setComposerContent?.(composerContentWithoutImages(normalized), options);
+      const editor = projectComposerGoal(composerContentText(normalized), normalized);
+      updateValue(editor.text, editor.content, undefined, { goalMode: editor.goalMode });
+      ta.current?.setComposerContent?.(composerContentWithoutImages(editor.content), options);
     },
     replaceText: (text) => {
-      const content = composerContentFromText(text);
-      updateValue(text, content);
-      ta.current?.setComposerContent?.(content);
+      const editor = projectComposerGoal(text, composerContentFromText(text));
+      updateValue(editor.text, editor.content, undefined, { goalMode: editor.goalMode });
+      ta.current?.setComposerContent?.(editor.content);
     },
     clear: () => {
       const content = composerContentFromText('');
-      updateValue('', content);
+      updateValue('', content, undefined, { goalMode: false });
       ta.current?.setComposerContent?.(content);
       setHistPtr(-1);
       setEditedSinceHistory(false);
@@ -973,41 +1037,70 @@ export const InputBar = forwardRef(function InputBar({
   useEffect(() => {
     if (!NATIVE_FILE_DROP || !nativeFilesystemMaterializerAvailable) return undefined;
     const handler = (payload) => {
-      let rawPaths = payload;
+      const coordinateAuthorized = payload?.nativeLocation === true;
+      let rawPaths = coordinateAuthorized ? payload.paths : payload;
       if (typeof rawPaths === 'string') {
-        try { rawPaths = JSON.parse(rawPaths); } catch { return; }
+        try { rawPaths = JSON.parse(rawPaths); } catch {
+          fileDropDiagnostic('composer-rejected', {
+            disabled: !!disabled, hover: false, ageMs: -1, count: 0, invalid: true,
+          });
+          return;
+        }
       }
       const hover = nativeDropHoverRef.current;
-      if (!Array.isArray(rawPaths) || rawPaths.length === 0 ||
-          !hover.active || Date.now() - hover.ts > 1500) return;
+      const ageMs = hover.ts > 0 ? Math.max(0, Date.now() - hover.ts) : -1;
+      const count = Array.isArray(rawPaths) ? rawPaths.length : 0;
+      if (!Array.isArray(rawPaths) || count === 0 || disabled || !onMediaFiles ||
+          (!coordinateAuthorized && (!hover.active || ageMs > 1500))) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          coordinateAuthorized,
+        });
+        return;
+      }
 
       nativeDropHoverRef.current = { active: false, ts: 0 };
       resetDragState();
       const paths = localPathsFromDropPayload(rawPaths, HOST_OS);
-      if (paths.length === 0) return;
-      const savedCursor = composerSelection.end;
-      addMaterializedPaths(paths, savedCursor, { requestNativeFocus: false })
-        .catch((error) => toast({
-          kind: 'err',
-          text: `拖入文件或文件夹失败:${error?.message || '原生文件系统不可用'}`,
-        }));
+      if (paths.length === 0) {
+        fileDropDiagnostic('composer-rejected', {
+          disabled: !!disabled,
+          hover: !!hover.active,
+          ageMs,
+          count,
+          normalizedCount: 0,
+          coordinateAuthorized,
+        });
+        return;
+      }
+      // Drag-enter activation is best effort: the source window can still
+      // own keyboard focus while Slate shows a caret. Retry at acceptance,
+      // before async materialization; later completions must not foreground us.
+      requestDesktopFileDropFocus();
+      acceptFileIntake({ source: 'drop', paths });
     };
+    const unregister = registerNativeComposerFileDrop(rootRef.current, handler);
     window.__aceComposerAcceptFileDrop = handler;
     return () => {
+      unregister();
       if (window.__aceComposerAcceptFileDrop !== handler) return;
       try { delete window.__aceComposerAcceptFileDrop; }
       catch { window.__aceComposerAcceptFileDrop = undefined; }
     };
   }, [
-    addMaterializedPaths,
-    composerSelection.end,
+    acceptFileIntake,
+    disabled,
     nativeFilesystemMaterializerAvailable,
+    onMediaFiles,
     resetDragState,
   ]);
 
   useEffect(() => {
-    if (!hasCapabilityHandlers && capabilityOpen) setCapabilityOpen(false);
-  }, [capabilityOpen, hasCapabilityHandlers]);
+    if (disabled && capabilityOpen) setCapabilityOpen(false);
+  }, [capabilityOpen, disabled]);
 
   useEffect(() => {
     if (!capabilityOpen) {
@@ -1150,6 +1243,26 @@ export const InputBar = forwardRef(function InputBar({
     if (edited) setEditedSinceHistory(next.length > 0 || !!content?.parts?.length);
   };
 
+  // 用户粘贴 / 拖放的超长文本经父组件变成粘贴块,编辑器文本不变,上面的
+  // handleComposerChange 不会被调用。粘贴本身就是编辑:折叠成功即置 editedSinceHistory,
+  // 否则翻历史途中粘贴一块后再按上箭头,历史条目会把刚粘贴的块整体替换掉。
+  // 上箭头翻旧历史的折叠(deferUpload)直接调 onLargeTextPaste,不经这里。
+  const onLargeTextPasteRef = useRef(onLargeTextPaste);
+  onLargeTextPasteRef.current = onLargeTextPaste;
+  const handleEditorLargeTextPaste = useCallback((text) => {
+    const handled = onLargeTextPasteRef.current?.(text);
+    if (handled !== false) setEditedSinceHistory(true);
+    return handled;
+  }, []);
+
+  // 翻到旧超长历史时暂存的粘贴文件块(「待上传」):用户在该条目上开始编辑才上传,
+  // 即 editedSinceHistory 从 false 变 true 的那一刻。没有暂存块时父组件什么也不做。
+  const onCommitDeferredPastesRef = useRef(onCommitDeferredPastes);
+  onCommitDeferredPastesRef.current = onCommitDeferredPastes;
+  useEffect(() => {
+    if (editedSinceHistory) onCommitDeferredPastesRef.current?.();
+  }, [editedSinceHistory]);
+
   const handleComposerSelection = useCallback((selection) => {
     setComposerSelection(selection);
     if (caretRestoreUntilRef.current) caretRestoreSelectionRef.current = selection;
@@ -1160,10 +1273,12 @@ export const InputBar = forwardRef(function InputBar({
     // 这里只处理常规情况。
     if (shouldNavigateInputHistory({
       key: e.key,
-      value,
+      value: draftValue,
       editedSinceHistory,
       historyLength: history.length,
       historyPointer: histPtr,
+      // 输入框里有粘贴块 / 附件时编辑器为空不代表输入框为空,不能被历史条目替换。
+      hasNonTextContent: pasteBlocks.length > 0 || activeAttachmentItems.length > 0,
       altKey: e.altKey,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
@@ -1177,19 +1292,27 @@ export const InputBar = forwardRef(function InputBar({
       });
       if (next === -1) {
         setHistPtr(-1);
-        updateValue('', composerContentFromText(''));
+        updateValue('', composerContentFromText(''), undefined, { goalMode: false });
       } else {
         setHistPtr(next);
         const entry = historyEntries[next];
         const content = normalizeComposerContent(entry?.composer_content || entry) || composerContentFromText(history[next] || '');
-        updateValue(composerContentText(content), content);
+        const entryText = composerContentText(content);
+        if (onLargeTextPaste && legacyTextNeedsFold(entryText, content)) {
+          // 本版之前的超长历史(如 f300 那条 24 MB):编辑器置空,正文走粘贴块分类。
+          // 落文件时只在内存暂存、显示「待上传」,不上传 —— 否则每按一次上箭头就重传一次。
+          updateValue('', composerContentFromText(''), undefined, { goalMode: false });
+          onLargeTextPaste(entryText, { deferUpload: true });
+        } else {
+          updateValue(entryText, content, undefined, { goalMode: false });
+        }
       }
       setEditedSinceHistory(false);
       return;
     }
   };
 
-  const actionState = getInputBarActionState({ value, disabled, busy, hasExtras, submitting });
+  const actionState = getInputBarActionState({ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused });
   const stopControl = getGoalStopControlState({ busy });
   const composerSpacingClass = isHero ? 'px-4 pt-3 pb-1 text-[14px]' : 'px-3 pt-2 pb-1 text-[13px]';
   const hasInlineContexts = otherContextItems.length > 0;
@@ -1198,7 +1321,7 @@ export const InputBar = forwardRef(function InputBar({
       <button
         ref={capabilityButtonRef}
         type="button"
-        disabled={disabled || !hasCapabilityHandlers}
+        disabled={disabled}
         className="w-7 h-7 rounded-full flex items-center justify-center text-fg-mute hover:bg-surface-hi hover:text-fg disabled:opacity-50"
         onClick={() => setCapabilityOpen((open) => !open)}
         title="添加能力或上下文"
@@ -1206,13 +1329,27 @@ export const InputBar = forwardRef(function InputBar({
       >
         <VsIcon name="add" size={15} />
       </button>
-      {capabilityOpen && hasCapabilityHandlers && (
+      {capabilityOpen && (
         <div
           data-composer-capability-menu="true"
           data-ace-native-overlay="overlap"
           role="menu"
           className="absolute left-0 bottom-8 z-50 w-52 py-1 rounded-lg border border-border bg-surface ace-shadow"
         >
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={goalMode}
+            className={clsx(
+              'w-full h-8 px-2 flex items-center gap-2 text-left text-[13px] hover:bg-surface-hi',
+              goalMode ? 'bg-accent-bg text-accent' : 'text-fg',
+            )}
+            onPointerEnter={() => closeExpertSubmenu(false)}
+            onClick={() => changeGoalMode(!goalMode)}
+          >
+            <VsIcon name="Goal" size={15} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">目标</span>
+          </button>
           <button
             type="button"
             role="menuitemcheckbox"
@@ -1401,6 +1538,8 @@ export const InputBar = forwardRef(function InputBar({
           type="button"
           onClick={submit}
           disabled={!actionState.canSubmit}
+          data-composer-action={actionState.mode}
+          aria-label={actionState.submitLabel}
           className={clsx(
             'ace-composer-send w-7 h-7 rounded-full flex items-center justify-center transition',
             actionState.canSubmit
@@ -1409,7 +1548,13 @@ export const InputBar = forwardRef(function InputBar({
           )}
           title={actionState.submitTitle}
         >
-          <VsIcon name="send" size={14} mono={false} className={actionState.canSubmit ? 'ace-icon-on-accent' : ''} />
+          {/* 队列暂停 + 空输入框:按钮语义是「继续」,图标换成播放三角与横幅上的一致 */}
+          <VsIcon
+            name={actionState.mode === 'resume' ? 'run' : 'send'}
+            size={14}
+            mono={false}
+            className={actionState.canSubmit ? 'ace-icon-on-accent' : ''}
+          />
         </button>
       )}
     </>
@@ -1441,6 +1586,7 @@ export const InputBar = forwardRef(function InputBar({
         dragActive && 'is-drag-active',
       )}
       ref={rootRef}
+      data-native-file-drop-disabled={disabled ? 'true' : undefined}
       onPointerDownCapture={(event) => preserveComposerFocusOnPointerDown(event, rootRef.current)}
       onDragEnter={fileDropManagedExternally ? undefined : handleDragEnter}
       onDragOver={fileDropManagedExternally ? undefined : handleDragOver}
@@ -1538,6 +1684,28 @@ export const InputBar = forwardRef(function InputBar({
             })}
           </div>
         )}
+        {pasteCards.length > 0 && (
+          <div
+            data-composer-pasted-text-strip="true"
+            className={clsx(
+              'px-3 pt-3 flex flex-wrap items-start gap-2',
+              isHero && 'px-4',
+            )}
+          >
+            {pasteCards.map((card) => (
+              <PastedTextCard
+                key={card.block.id}
+                title={card.title}
+                sizeBytes={card.sizeBytes}
+                status={card.status}
+                removable={!disabled}
+                onOpen={() => openPasteBlock(card)}
+                onRemove={() => removePasteBlock(card.block.id)}
+                onRetry={() => onRetryPasteUpload?.(card.block.part.key || card.block.id)}
+              />
+            ))}
+          </div>
+        )}
         {(selectionPreview || selectionContextItems.length > 0 || browserContextItems.length > 0) && (
           <div className={clsx(
             'px-3 pt-2 flex flex-wrap items-center gap-1.5',
@@ -1578,7 +1746,7 @@ export const InputBar = forwardRef(function InputBar({
           <RichComposer
             ref={ta}
             value={value}
-            syncKey={currentSessionId}
+            syncKey={fileIntakeScope}
             commands={commands}
             composerContent={editorContent}
             attachments={editorAttachmentItems}
@@ -1591,12 +1759,8 @@ export const InputBar = forwardRef(function InputBar({
             onSubmit={submit}
             onPreviewAttachment={previewComposerAttachment}
             onRemoveAttachment={removeAttachment}
-            onPasteFiles={addMediaFiles}
-            onPasteFilesystemItems={
-              nativeFilesystemClipboardAvailable || nativeFilesystemMaterializerAvailable
-                ? handleFilesystemPaste
-                : undefined
-            }
+            onPasteFilesystemItems={handleFilesystemPaste}
+            onLargeTextPaste={onLargeTextPaste ? handleEditorLargeTextPaste : undefined}
             allowNativeFilesystemDrop={NATIVE_FILE_DROP}
             disabled={disabled}
             placeholder={placeholder}
@@ -1617,6 +1781,9 @@ export const InputBar = forwardRef(function InputBar({
           {...(sessionControls || {})}
           className={isHero ? 'px-2.5 pb-2.5' : 'px-1.5 pb-1'}
           addControl={capabilityControl}
+          goalMode={goalMode}
+          goalDisabled={disabled}
+          onDisableGoal={() => changeGoalMode(false)}
           contexts={inlineContextControls}
           actions={submitControls}
           onCaptureComposerSelection={() => {
@@ -1640,6 +1807,18 @@ export const InputBar = forwardRef(function InputBar({
         />
       </div>
       <ImageLightbox preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
+      {openPasteCard ? (
+        <PastedTextDialog
+          key={openPasteCard.block.id}
+          title={openPasteCard.title}
+          source={openPaste.source}
+          readOnly={disabled || typeof onReplacePasteBlock !== 'function'}
+          loader={attachmentTextLoader}
+          onSave={(next) => onReplacePasteBlock?.(openPasteCard.block.id, next)}
+          onReplace={(next) => onReplacePasteBlock?.(openPasteCard.block.id, next)}
+          onClose={() => setOpenPaste(null)}
+        />
+      ) : null}
     </div>
   );
 });

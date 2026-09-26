@@ -53,6 +53,10 @@ public:
     AdditionalPermissions session_grants() const;
     void clear_session_grants();
 
+    // 「编辑项目」附加文件夹:与配置里的 writable_roots 一样进可写根。AgentLoop 每回合
+    // 开头与切 cwd 时刷新;configure() 不清它(配置刷新与项目设置是两份来源)。
+    void set_workspace_writable_roots(std::vector<std::string> roots);
+
     // 策略选项:配置 + 会话授权(+ 本次申请)。
     SandboxPolicyOptions policy_options(const AdditionalPermissions* extra = nullptr) const;
     SandboxPolicy policy_for(SandboxMode mode, const std::string& write_root,
@@ -80,6 +84,7 @@ private:
     std::optional<BackendProbe> probe_;
     std::optional<bool> override_;
     AdditionalPermissions session_grants_;
+    std::vector<std::string> workspace_writable_roots_;
 };
 
 inline SandboxRuntime& runtime() { return SandboxRuntime::instance(); }

@@ -11,6 +11,7 @@
 #include "session/permission_prompter.hpp"
 #include "session/ask_user_question_prompter.hpp"
 #include "config/config.hpp"
+#include "tool_preamble/tool_preamble.hpp"
 #include "hooks/hook_runtime.hpp"
 #include "skills/skill_usage_store.hpp"
 #include "pa/pa_overflow_rescue.hpp"
@@ -95,6 +96,7 @@ struct ProjectInstructionsConfig;
 struct ExpertDefinition;
 struct CompactResult;
 struct SystemPromptModelState;
+struct SystemPromptWorkspaceFolders;
 class AgentLoopDoomGuard;
 
 // Callbacks for the TUI to observe agent loop events
@@ -143,6 +145,11 @@ struct AgentCallbacks {
     // The payload shape matches the todo_updated session event.
     std::function<void(const nlohmann::json& payload)> on_todo_updated;
 
+    // 具体进度提示(add-tool-preamble,「适合日常工作」):loading 文案变化时回调
+    // (「正在分析你的请求」「正在读取 3 个文件」「正在分析命令输出」、推理加粗
+    // 标题…),TUI 用它替换等待动画里的随机短语。关闭时不回调。
+    std::function<void(const std::string& title)> on_thinking_title;
+
     // Legacy display observer for replacement-style transcript updates. Normal
     // compact success appends marker messages and no longer calls this hook.
     std::function<void(const std::vector<ChatMessage>& messages,
@@ -160,8 +167,11 @@ struct AgentCallbacks {
 
     // Called just before a tool begins executing. `command_preview` is a short
     // human-readable summary (e.g. the first 60 chars of a bash command).
+    // `preamble` 保留给以后用,当前恒为空:进度头是工具行,参数照常显示;具体
+    // 进度提示只走 on_thinking_title(loading 行)。
     std::function<void(const std::string& tool_name,
-                       const std::string& command_preview)> on_tool_progress_start;
+                       const std::string& command_preview,
+                       const std::string& preamble)> on_tool_progress_start;
 
     // Called from the tool's streaming thread with each cleaned chunk.
     // `tail_snapshot` is the last-5-lines sliding window; `current_partial` is
@@ -206,6 +216,11 @@ public:
     // context parts. Existing text-only submit overloads delegate here.
     void submit(const UserInput& input);
 
+    // Retry the trailing user or the last user of an explicitly aborted turn
+    // while idle. Reuses stored input without adding adjacent user messages.
+    bool retry_last_user_message(const std::string& expected_user_message_id,
+                                 std::string& error);
+
     // Submit a user-initiated shell command triggered by `!` mode. Non-blocking:
     // enqueues on the same worker so it serialises with LLM turns. The worker
     // invokes BashTool directly (no LLM round-trip), emits tool_call + tool_result
@@ -230,7 +245,8 @@ public:
 
     // Emit a visible system message without adding it to LLM history. Used by
     // daemon-owned builtin commands for TUI-like progress and fallback output.
-    void emit_system_message(const std::string& content);
+    void emit_system_message(const std::string& content,
+                             nlohmann::json metadata = nlohmann::json::object());
     void emit_transcript_system_message(const std::string& content,
                                         nlohmann::json metadata = nlohmann::json::object());
 
@@ -299,6 +315,7 @@ public:
     // Clear all messages (for /clear command)
     void clear_messages() {
         messages_.clear();
+        live_transcript_tail_blocked_ = false;
         last_api_total_tokens_.store(0, std::memory_order_relaxed);
         compact_window_initialized_ = false;
         compact_window_number_ = 0;
@@ -340,6 +357,15 @@ public:
     // project dir)不动 —— worktree 是同一个项目会话的临时工作区,不是新项目。
     // 只应在工具执行线程(turn 内)或会话未运行时调用。
     void set_cwd(const std::string& new_cwd);
+    // 重读会话所属项目 workspace.json 里的附加文件夹(「编辑项目」保存的
+    // extra_folders)。每回合开始调一次,保存后已打开的会话下一轮即生效。
+    void refresh_workspace_folders();
+    // 系统提示列出的附加文件夹(已过滤掉磁盘上不存在的)。
+    std::vector<std::string> workspace_extra_folders() const;
+    // 真正放行写入的附加文件夹:文件工具的路径校验、bash 写边界守卫与沙箱可写
+    // 根都用它。有写边界(worktree / LOOP / 继承)时去掉与主文件夹重叠的项 ——
+    // 否则附加一个主仓的上级目录就能绕开 worktree 隔离。
+    std::vector<std::string> writable_workspace_folders() const;
     void set_sandbox_config(const SandboxConfig& config);
     void set_exec_rules(sandbox::ExecRules rules) { exec_rules_ = std::move(rules); }
     // 测试用:把全局规则目录(默认 `<data_dir>/rules`)指到临时目录,让
@@ -372,7 +398,16 @@ public:
     // Install / update the agent-loop termination policy. Called once from
     // main.cpp at startup (and could be called again if config reloads).
     // A fresh-default AgentLoopConfig is used when this setter is never called.
-    void set_agent_loop_config(AgentLoopConfig cfg) { loop_cfg_ = cfg; }
+    void set_agent_loop_config(AgentLoopConfig cfg) {
+        loop_cfg_ = cfg;
+        set_tool_preamble_config(cfg.tool_preamble);
+    }
+
+    // 工具前言(add-tool-preamble)。配置可在设置页动态改,所以单独一把锁、
+    // 每次用时取快照。
+    void set_tool_preamble_config(const ToolPreambleConfig& cfg);
+    ToolPreambleConfig tool_preamble_config() const;
+
     void set_task_suggestion_compact_threshold(int threshold) {
         task_suggestion_compact_threshold_.store(
             threshold > 0 ? threshold : 0, std::memory_order_relaxed);
@@ -455,6 +490,9 @@ public:
     void set_tool_capability_policy(ToolCapabilityPolicy policy) {
         tool_capability_policy_ = std::move(policy);
     }
+    const ToolCapabilityPolicy& tool_capability_policy() const {
+        return tool_capability_policy_;
+    }
     void set_git_context_config(const GitContextConfig* cfg) {
         git_context_cfg_ = cfg;
     }
@@ -506,7 +544,10 @@ private:
     void join_side_question_threads();
     void run_agent(const std::string& user_message);
     void run_agent_with_input(const UserInput& input,
-                              bool hidden_goal_context = false);
+                              bool hidden_goal_context = false,
+                              const ChatMessage* retry_message = nullptr);
+    std::optional<ChatMessage> retryable_user_message(
+        const std::string& expected_user_message_id) const;
     // Variant that records `display_text` into the user message's metadata.display_text
     // so UI can show the original input while the LLM sees an expanded `prompt`.
     // When `display_text` is empty, behaves identically to run_agent(prompt).
@@ -542,11 +583,6 @@ private:
     // acceptance under the same lock, eliminating the final-response race.
     bool drain_active_turn_inputs(bool close_if_empty);
     void append_interrupted_turn_context(const std::string& turn_id);
-    // Visible abort notice: manual stop keeps [Interrupted]; interjection
-    // uses a dedicated [Interjected] system marker so the transcript does
-    // not look like a user stop.
-    std::string abort_notice_text() const;
-    nlohmann::json abort_notice_metadata() const;
     std::size_t close_active_turn_and_discard();
     bool maybe_run_auto_compact();
     // 摘要压缩失败后的兜底:改用不调用模型的机械修剪腾出空间。返回 true 表示
@@ -634,6 +670,13 @@ private:
         std::int64_t turn_started_at_ms = 0;
     };
     UserTurnInfo prepare_user_turn(const UserInput& input, bool hidden_goal_context);
+    UserTurnInfo prepare_retry_user_turn(const ChatMessage& message);
+    void append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context);
+    // 用户消息落盘后把新的会话摘要(无标题时的显示标题)以 session_updated
+    // {summary} 推给界面:侧栏与顶部标题栏同源于这一个字段,前端不再各自从
+    // 消息正文现推标题(那正是两处标题不一致、且长度不受限的根因)。
+    void emit_session_summary_updated();
+    void start_user_turn(const UserTurnInfo& info);
 
     // Phase 2: Build the full message list for the LLM provider.
     struct ApiRequestBundle {
@@ -646,6 +689,13 @@ private:
     void publish_side_question_context(
         const std::vector<ChatMessage>& messages_with_system);
 
+    // 具体进度提示(add-tool-preamble)的一条 loading 文案。
+    struct ToolPreambleTitle {
+        std::string title;
+        std::string source;   // reasoning | template | context
+        std::string kind;     // read | write | ""(按工具类型定,透传给界面)
+    };
+
     // Phase 3: Stream provider response and accumulate.
     struct ProviderCallResult {
         ChatResponse accumulated;
@@ -654,6 +704,25 @@ private:
         std::shared_ptr<LlmProvider> provider_snapshot;
         int provider_attempt = 1;
     };
+    bool concrete_activity_enabled() const;
+    // 本模型步的工具批次文案(推理加粗标题 > 工具模板),同时记下这批工具,
+    // 供下一次等待模型时给出「正在分析文件内容」这类场景文案。关闭时返回空。
+    ToolPreambleTitle resolve_tool_preamble_for_step(ProviderCallResult& result);
+    // 推理加粗标题就绪时的出口:记成本步标题,并发一条 agent_progress 让
+    // loading 立刻换文案。
+    void publish_phase_preamble(const ToolPreambleTitle& preamble,
+                                const ProgressEmitter& emit_progress);
+    // 本步推理加粗标题的读写(受 tool_preamble_mu_ 保护)。
+    void set_phase_preamble(const ToolPreambleTitle& preamble);
+    ToolPreambleTitle phase_preamble() const;
+    // 给某个进度 phase 算具体文案;关闭或该 phase 不替换时返回空(调用方沿用
+    // 原文案)。权限 / 提问 / 压缩 / 重试不替换。
+    ToolPreambleTitle concrete_activity_for_phase(const std::string& phase) const;
+    // loading 文案变了就回调 TUI(on_thinking_title),同一句不重复回调。
+    void announce_activity(const std::string& label);
+    void note_planned_tool(int tool_index, const std::string& native_name);
+    void reset_activity_for_step();
+    void reset_activity_for_turn();
     ProviderCallResult call_provider_and_collect(
         const std::shared_ptr<LlmProvider>& provider,
         const ApiRequestBundle& bundle,
@@ -738,12 +807,16 @@ private:
         std::string display_text;
         bool hidden_goal_context = false;
         std::function<void()> control;
+        std::string retry_user_message_id;
     };
 
     ProviderAccessor provider_accessor_;
     ToolExecutor& tools_;
     AgentCallbacks callbacks_;
     std::vector<ChatMessage> messages_;
+    // Visible events (notably errors and partial output) may not be present
+    // in model history or JSONL. They must also invalidate an empty retry.
+    std::atomic<bool> live_transcript_tail_blocked_{false};
     mutable std::mutex side_question_context_mu_;
     std::vector<ChatMessage> side_question_context_;
     std::mutex side_question_threads_mu_;
@@ -781,11 +854,43 @@ private:
     mutable std::optional<std::pair<PermissionMode, std::string>> sandbox_prompt_snapshot_;
     PermissionManager& permissions_;
     PathValidator path_validator_;
+    // 「编辑项目」的主文件夹与附加文件夹快照(refresh_workspace_folders 每回合重读)。
+    // 并行只读工具会在工作线程上查它,用锁保护。
+    mutable std::mutex workspace_folders_mu_;
+    std::string workspace_main_folder_;
+    std::vector<std::string> workspace_extra_folders_;
+    // 路径落在某个可写附加文件夹内(相对路径按 cwd_ 解析)。
+    bool path_in_workspace_folders(const std::string& path) const;
+    // 系统提示 # Environment 的附加工作目录两行(可写 / 本会话只读)。
+    SystemPromptWorkspaceFolders system_prompt_workspace_folders() const;
     std::atomic<int> context_window_{128000};
     std::string no_model_config_prompt_;
     // agent_loop termination policy. Fresh defaults come from AgentLoopConfig
     // until set_agent_loop_config is called from main.cpp.
     AgentLoopConfig loop_cfg_;
+    // 具体进度提示(add-tool-preamble)状态,全部受 tool_preamble_mu_ 保护(设置页
+    // 可在回合中途改配置;进度帧可能在工具线程上发)。
+    mutable std::mutex tool_preamble_mu_;
+    ToolPreambleConfig tool_preamble_cfg_;
+    // 本模型步的推理加粗标题:每次 provider 调用开头(含重试)清空。
+    ToolPreambleTitle phase_preamble_;
+    // 本模型步已经流出来的工具调用(按 tool_index,原生名),给「准备调用」阶段拼模板。
+    std::vector<std::string> step_planned_tools_;
+    // 正在执行的这批工具的文案,tool_running 用。
+    ToolPreambleTitle current_batch_activity_;
+    // 本回合上一批工具(原生名):下一次等待模型时据此说「正在分析文件内容」等。
+    std::vector<std::string> last_batch_tools_;
+    // 上一次回调给 TUI 的 loading 文案,避免同一句重复回调。
+    std::string last_announced_activity_;
+    // 流式标签扫描器:历史里残留的 <text_preamble> 标签只从界面上剥掉,不再当文案。
+    tool_preamble::TextPreambleScanner text_preamble_scanner_;
+    // 本模型步给工具批次的前言:run_agent_with_input 在 Phase 5 之前填,
+    // execute_tool_calls 开头消费(挂 metadata、随 tool_start 下发)后清空。
+    ToolPreambleTitle current_step_preamble_;
+    // 本次模型请求实际发出的模型侧工具名(bundle.tool_defs[i].name,已经过
+    // 「工具重写」映射)。主循环每次组装请求后刷新;只在 worker 线程的工具批次
+    // 之间写入,并行工具线程只读。Unknown tool 错误文本据此列出可用名。
+    std::vector<std::string> current_request_model_tool_names_;
     LoopExecutionPolicy loop_execution_policy_;
     // spawn_subagent 透传的父会话写边界根;见 write_root()。
     std::string inherited_write_root_;
@@ -802,6 +907,12 @@ private:
     // Latest server-reported total active-context usage. For providers that do
     // not return total_tokens, prompt_tokens is used as the fallback.
     std::atomic<int> last_api_total_tokens_{0};
+    // Aggregate usage for the regular turn currently owned by the worker.
+    // Kept as worker state (rather than a stack local) so the outer worker
+    // recovery boundary can still publish an accurate terminal summary after
+    // an exception unwinds run_agent_with_input().
+    TokenUsage active_turn_usage_;
+    bool active_turn_usage_initialized_ = false;
     // PA 兜底的 episode 进度(见 run_pa_overflow_rescue)。服务端收下请求即
     // 清零;回合开始也清零。只在回合线程上读写。
     pa::RescueState pa_rescue_state_;

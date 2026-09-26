@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { usePreference } from '../lib/usePreference.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { useWorkbenchScroll } from '../lib/useWorkbenchScroll.js';
 import { clsx } from '../lib/format.js';
 import {
   PREVIEW_TAB_TYPES,
@@ -18,12 +19,6 @@ import { AgentBrowserPanel } from './AgentBrowserPanel.jsx';
 import { SessionChangeDetails } from './ChangeReview.jsx';
 import { GitChangeDetails } from './GitChangeReview.jsx';
 import { FileTypeIcon, VsIcon } from './Icon.jsx';
-
-const FILE_PREVIEW_WRAP_STORAGE_KEY = 'acecode.filePreviewWrap.v1';
-
-function validateBooleanPreference(value) {
-  return typeof value === 'boolean';
-}
 
 function fileName(path) {
   const name = String(path || '').split(/[\\/]/).filter(Boolean).pop();
@@ -306,12 +301,14 @@ function PreviewTabScrollbar({ scrollRef, onOverflowChange }) {
 }
 
 export function PreviewDetailsPanel({
+  owner,
   api,
   cwd,
   tabs = [],
   activeTab = null,
   changeGroups = [],
   changeSummary = null,
+  sessionChangesReady = true,
   turnChangeSets = [],
   maximized = false,
   busy = false,
@@ -347,11 +344,8 @@ export function PreviewDetailsPanel({
   const [tabDragGhost, setTabDragGhost] = useState(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [tabsOverflow, setTabsOverflow] = useState(false);
-  const [wrapPreview, setWrapPreview] = usePreference(
-    FILE_PREVIEW_WRAP_STORAGE_KEY,
-    false,
-    validateBooleanPreference,
-  );
+  const [wrapPreview, setWrapPreview] = useWorkbenchState(owner, 'fileWrap', false);
+  useWorkbenchScroll(owner, 'previewTabScroll', tabListRef, tabs.length);
   const active = activeTab || tabs[0] || null;
 
   // 预览标签右键菜单复用全局 DesktopContextMenu:菜单项命中 close_* action 后,
@@ -402,6 +396,10 @@ export function PreviewDetailsPanel({
       });
       return (
         <SessionChangeDetails
+          owner={owner}
+          viewKey={active.key}
+          ready={sessionChangesReady}
+          key={active.key}
           groups={scopedChanges.groups}
           summary={scopedChanges.summary}
           cwd={cwd}
@@ -420,6 +418,8 @@ export function PreviewDetailsPanel({
     if (active.type === PREVIEW_TAB_TYPES.GIT_CHANGES) {
       return (
         <GitChangeDetails
+          key={active.key}
+          owner={owner}
           api={api}
           cwd={active.cwd || cwd}
           base={active.base || ''}
@@ -436,6 +436,8 @@ export function PreviewDetailsPanel({
     const activeCwd = active.type === PREVIEW_TAB_TYPES.FILE ? (active.cwd || cwd) : cwd;
     return (
       <FilePreviewContent
+        key={active.key}
+        owner={owner}
         api={api}
         cwd={activeCwd}
         path={active.path}
@@ -450,7 +452,7 @@ export function PreviewDetailsPanel({
         onRefresh={() => onRefreshTab?.(active.key)}
       />
     );
-  }, [active, agentBrowserActive, api, busy, changeGroups, changeSummary, cwd, nativeSurfacesVisible, onAddBrowserContext, onEditFileTab, onOpenFilePreview, onRefreshTab, onSelectChangeFile, onSelectGitChangeFile, selectionContexts, setWrapPreview, turnChangeSets, wrapPreview]);
+  }, [active, agentBrowserActive, api, busy, changeGroups, changeSummary, cwd, nativeSurfacesVisible, onAddBrowserContext, onEditFileTab, onOpenFilePreview, onRefreshTab, onSelectChangeFile, onSelectGitChangeFile, owner, selectionContexts, sessionChangesReady, setWrapPreview, turnChangeSets, wrapPreview]);
 
   const handleTabWheel = useCallback((event) => {
     const el = tabListRef.current;
@@ -931,19 +933,6 @@ export function PreviewDetailsPanel({
         </div>
         {tabsOverflow && addButton}
         <div className="ace-preview-details-actions">
-          {sidePanelListCollapsed && onToggleSidePanelList && (
-            <button
-              type="button"
-              className="ace-preview-details-action ace-list-panel-toggle"
-              onClick={onToggleSidePanelList}
-              title="展开列表面板"
-              aria-label="展开列表面板"
-              aria-expanded="false"
-              aria-pressed="false"
-            >
-              <VsIcon name="listPanel" size={16} />
-            </button>
-          )}
           <button
             type="button"
             className="ace-preview-details-action"
@@ -963,6 +952,19 @@ export function PreviewDetailsPanel({
           >
             <VsIcon name="close" size={14} />
           </button>
+          {sidePanelListCollapsed && onToggleSidePanelList && (
+            <button
+              type="button"
+              className="ace-preview-details-action ace-list-panel-toggle"
+              onClick={onToggleSidePanelList}
+              title="展开列表面板"
+              aria-label="展开列表面板"
+              aria-expanded="false"
+              aria-pressed="false"
+            >
+              <VsIcon name="listPanel" size={16} />
+            </button>
+          )}
         </div>
       </div>
       <div className="ace-preview-details-body">

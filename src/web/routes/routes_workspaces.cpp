@@ -1,14 +1,58 @@
 // routes_workspaces.cpp — Route registrations extracted from server.cpp
+#include "utils/atomic_file.hpp"
+// Parse the Windows ACL helper before Crow, then expose Crow's HTTP aliases.
+#ifdef DELETE
+#undef DELETE
+#endif
 #include "../server_impl.hpp"
 #include "../project_creation.hpp"
+#include "session/composer_content.hpp"
+#include "session/pasted_text_attachment.hpp"
 
 #include <cstddef>
+#include <fstream>
+#include <mutex>
+#include <stdexcept>
 
 namespace acecode::web {
 
 using nlohmann::json;
 
 namespace {
+
+json read_workspace_draft_strict(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return json{{"text", ""}};
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("failed to read workspace draft");
+    auto draft = json::parse(input);
+    if (!draft.is_object() || !draft.contains("text") || !draft["text"].is_string()) {
+        throw std::runtime_error("invalid workspace draft");
+    }
+    json result{{"text", draft["text"]}};
+    if (draft.contains("composer_content") && !draft["composer_content"].is_null()) {
+        auto normalized = normalize_composer_content(draft["composer_content"]);
+        if (!normalized.ok) throw std::runtime_error(normalized.error);
+        result["text"] = std::move(normalized.text);
+        result["composer_content"] = std::move(normalized.content);
+    }
+    return result;
+}
+
+// GET reports an unreadable draft as an error. PUT and DELETE pass
+// tolerate_invalid: a draft this build cannot read (for example one written by
+// a later version with part types it does not know) is treated as empty, so a
+// PUT overwrites it and DELETE simply does not match. Without this, one such
+// file would make the home composer fail with 500 forever.
+json read_workspace_draft(const std::filesystem::path& path, bool tolerate_invalid) {
+    if (!tolerate_invalid) return read_workspace_draft_strict(path);
+    try {
+        return read_workspace_draft_strict(path);
+    } catch (const std::exception& e) {
+        LOG_WARN("[web] unreadable workspace draft treated as empty path=" +
+                 path_to_utf8(path) + " error=" + e.what());
+        return json{{"text", ""}};
+    }
+}
 
 json opencode_import_status_to_json(const OpencodeImportJobStatus& status) {
     return json{
@@ -72,11 +116,180 @@ int project_creation_http_status(ProjectCreationError error) {
 } // namespace
 
 void WebServer::Impl::register_workspaces() {
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft")
+            .methods(crow::HTTPMethod::GET, crow::HTTPMethod::PUT, crow::HTTPMethod::DELETE)
+        ([this](const crow::request& req, const std::string& hash) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+            const std::string& workspace_hash = location->workspace_hash;
+            const std::filesystem::path& directory = location->draft_dir;
+            json requested;
+            if (req.method != crow::HTTPMethod::GET) {
+                std::string text;
+                json content;
+                if (auto error = parse_session_input_draft_request(req, text, content)) {
+                    return std::move(*error);
+                }
+                requested = json{{"text", std::move(text)}};
+                if (content.is_object()) requested["composer_content"] = std::move(content);
+            }
+            try {
+                // The shared daemon owns all home drafts. Serialize conditional
+                // clears with writes, including atomic_write_file's temp file.
+                static std::mutex draft_mutex;
+                std::lock_guard<std::mutex> lock(draft_mutex);
+                const auto path = directory / "input_draft.json";
+                auto draft = read_workspace_draft(
+                    path, /*tolerate_invalid=*/req.method != crow::HTTPMethod::GET);
+                const bool clearing = req.method == crow::HTTPMethod::DELETE;
+                const bool matched = clearing && draft == requested;
+                if (req.method == crow::HTTPMethod::PUT || matched) {
+                    draft = clearing ? json{{"text", ""}} : std::move(requested);
+                    if (!atomic_write_file(path_to_utf8(path), draft.dump(), true)) {
+                        return respond(500, {{"error", "failed to save workspace draft"}});
+                    }
+                    // Drop pasted-text attachments the saved draft no longer
+                    // references. Still under draft_mutex, so no concurrent
+                    // save can be referencing them; the age gate protects an
+                    // upload whose referencing draft is still being debounced.
+                    const auto pruned = prune_workspace_draft_attachments(
+                        location->attachment_project_dir, draft,
+                        kWorkspaceDraftAttachmentMinAge);
+                    if (pruned > 0) {
+                        LOG_INFO("[web] pruned workspace draft attachments count=" +
+                                 std::to_string(pruned) + " workspace=" +
+                                 (workspace_hash.empty() ? std::string("__no_workspace__")
+                                                         : workspace_hash));
+                    }
+                }
+                draft["workspace_hash"] = workspace_hash;
+                if (clearing) draft["cleared"] = matched;
+                return respond(200, std::move(draft));
+            } catch (const std::exception&) {
+                return respond(500, {{"error", "failed to access workspace draft"}});
+            }
+        });
+        // Home draft attachments: pasted text too large to stay inline in the
+        // home draft. Stored under <attachment_project_dir>/attachments/
+        // .workspace-draft/ and copied into a session with
+        // POST /api/sessions/:id/attachments {from_workspace_draft} right
+        // before sending. Only pasted-text snapshots are accepted here.
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments/<string>/blob").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&, const std::string&) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& hash) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const std::exception& e) {
+                return respond(400, {{"error", std::string("bad json: ") + e.what()}});
+            }
+            if (!body.is_object()) return respond(400, {{"error", "request body must be an object"}});
+            if (body.contains("source_path") || body.contains("reference_only") ||
+                body.contains("from_workspace_draft")) {
+                return respond(400, {{"error",
+                    "workspace draft attachments only accept pasted text data"}});
+            }
+            json metadata = json::object();
+            std::string error;
+            if (!apply_pasted_text_upload_metadata(body, metadata, error)) {
+                return respond(400, {{"error", error}});
+            }
+            if (!metadata.contains("origin")) {
+                return respond(400, {{"error",
+                    "workspace draft attachments require origin \"pasted_text\""}});
+            }
+            const std::string name = body.contains("name") && body["name"].is_string()
+                ? body["name"].get<std::string>() : std::string{};
+            const std::string mime_type = body.contains("mime_type") && body["mime_type"].is_string()
+                ? body["mime_type"].get<std::string>() : std::string{};
+            if (!body.contains("data_base64") || !body["data_base64"].is_string()) {
+                return respond(400, {{"error", "data_base64 is required"}});
+            }
+            auto decoded = base64_decode(body["data_base64"].get_ref<const std::string&>());
+            if (!decoded.has_value()) {
+                return respond(400, {{"error", "invalid base64 attachment data"}});
+            }
+            body = json();  // release the encoded copy before writing
+            auto record = save_attachment(
+                path_to_utf8(location->attachment_project_dir),
+                kWorkspaceDraftAttachmentOwner, name, mime_type, *decoded, &error, metadata);
+            if (!record) {
+                return respond(400, {{"error", error.empty() ? "failed to save attachment" : error}});
+            }
+            // The persisted record keeps the session-shaped blob_url that
+            // save_attachment writes; that URL is never served. Clients read
+            // the workspace blob route below instead.
+            auto attachment = attachment_to_json(*record);
+            attachment["blob_url"] = "/api/workspaces/" +
+                (location->workspace_hash.empty() ? std::string("__no_workspace__")
+                                                  : location->workspace_hash) +
+                "/draft/attachments/" + record->id + "/blob";
+            return respond(201, {{"attachment", std::move(attachment)}});
+        });
+        CROW_ROUTE(app, "/api/workspaces/<string>/draft/attachments/<string>/blob").methods(crow::HTTPMethod::GET)
+        ([this](const crow::request& req, const std::string& hash, const std::string& attachment_id) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            const auto location = workspace_draft_location(hash);
+            if (!location) return respond(404, {{"error", "workspace not found"}});
+            std::string error;
+            const auto record = load_attachment(
+                path_to_utf8(location->attachment_project_dir),
+                kWorkspaceDraftAttachmentOwner, attachment_id, &error);
+            if (!record) {
+                return respond(404, {{"error", error.empty() ? "attachment not found" : error}});
+            }
+            auto bytes = read_attachment_bytes(*record, kMaxAttachmentBytes, &error);
+            if (!bytes) {
+                return respond(404, {{"error", error.empty() ? "attachment not found" : error}});
+            }
+            crow::response r(200);
+            r.body = std::move(*bytes);
+            r.add_header("Content-Type", record->mime_type.empty()
+                ? "application/octet-stream"
+                : record->mime_type);
+            r.add_header("Cache-Control", "private, max-age=3600");
+            return with_cors(req, std::move(r));
+        });
         CROW_ROUTE(app, "/api/workspaces").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req) {
             return cors_preflight(req);
         });
         CROW_ROUTE(app, "/api/workspaces/pick-folder").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req) {
+            return cors_preflight(req);
+        });
+        CROW_ROUTE(app, "/api/workspaces/order").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req) {
             return cors_preflight(req);
         });
@@ -149,6 +362,49 @@ void WebServer::Impl::register_workspaces() {
             return with_cors(req, std::move(r));
         });
 
+        CROW_ROUTE(app, "/api/workspaces/order").methods(crow::HTTPMethod::PUT)
+        ([this](const crow::request& req) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.workspace_registry) {
+                return respond(503, {{"error", "WORKSPACE_REGISTRY_UNAVAILABLE"},
+                                     {"message", "workspace registry unavailable"}});
+            }
+            std::vector<std::string> hashes;
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.is_object() || !body.contains("hashes") || !body["hashes"].is_array()) {
+                    return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes array required"}});
+                }
+                for (const auto& hash : body["hashes"]) {
+                    if (!hash.is_string()) {
+                        return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes must contain strings"}});
+                    }
+                    hashes.push_back(hash.get<std::string>());
+                }
+            } catch (const std::exception&) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", "invalid workspace order JSON"}});
+            }
+
+            using acecode::desktop::WorkspaceOrderStatus;
+            const auto status = deps.workspace_registry->set_order(projects_dir(), hashes);
+            if (status == WorkspaceOrderStatus::InvalidOrder) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", "hashes must be nonempty and unique"}});
+            }
+            if (status == WorkspaceOrderStatus::Conflict) {
+                return respond(409, {{"error", "WORKSPACE_ORDER_CONFLICT"},
+                                     {"message", "workspace list changed; refresh before reordering"}});
+            }
+            if (status == WorkspaceOrderStatus::WriteFailed) {
+                return respond(500, {{"error", "PERSIST_FAILED"}, {"message", "failed to save workspace order"}});
+            }
+            return respond(200, {{"hashes", hashes}});
+        });
+
         CROW_ROUTE(app, "/api/workspaces").methods(crow::HTTPMethod::POST)
         ([this](const crow::request& req) {
             if (auto rej = require_auth(req)) return std::move(*rej);
@@ -183,6 +439,117 @@ void WebServer::Impl::register_workspaces() {
             r.body = workspace_to_json(m).dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        // 「编辑项目」:名称 / 图标 / 附加文件夹。必须注册在 /api/workspaces/order、
+        // /api/workspaces/pick-folder 之后 —— Crow 在静态段与 <string> 同时匹配时
+        // 取注册更早的规则,静态路由因此不会被这里抢走。
+        CROW_ROUTE(app, "/api/workspaces/<string>").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
+
+        CROW_ROUTE(app, "/api/workspaces/<string>").methods(crow::HTTPMethod::PUT)
+        ([this](const crow::request& req, const std::string& hash) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.workspace_registry) {
+                return respond(503, {{"error", "WORKSPACE_REGISTRY_UNAVAILABLE"},
+                                     {"message", "workspace registry unavailable"}});
+            }
+            // resolve_workspace 只接受 16 位 hex 的持久化目录,顺带挡住路径穿越。
+            const auto existing = resolve_workspace(hash);
+            if (!existing || existing->hash != hash) {
+                return respond(404, {{"error", "WORKSPACE_NOT_FOUND"},
+                                     {"message", "workspace not found"}});
+            }
+
+            acecode::desktop::WorkspaceProfileUpdate update;
+            update.icon = existing->icon;
+            update.extra_folders = existing->extra_folders;
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.is_object() || !body.contains("name") || !body["name"].is_string()) {
+                    return respond(400, {{"error", "BAD_REQUEST"}, {"message", "name required"}});
+                }
+                std::string name = body["name"].get<std::string>();
+                const auto first = name.find_first_not_of(" \t\r\n");
+                const auto last = name.find_last_not_of(" \t\r\n");
+                update.name = first == std::string::npos ? std::string{} : name.substr(first, last - first + 1);
+                // icon / extra_folders 缺省 = 保持原值;icon:null = 恢复默认图标。
+                if (body.contains("icon")) {
+                    update.icon = {};
+                    const auto& icon = body["icon"];
+                    if (icon.is_object()) {
+                        if (icon.contains("id") && icon["id"].is_string()) update.icon.id = icon["id"].get<std::string>();
+                        if (icon.contains("color") && icon["color"].is_string()) update.icon.color = icon["color"].get<std::string>();
+                    } else if (!icon.is_null()) {
+                        return respond(400, {{"error", "BAD_REQUEST"}, {"message", "icon must be an object or null"}});
+                    }
+                }
+                if (body.contains("extra_folders")) {
+                    if (!body["extra_folders"].is_array()) {
+                        return respond(400, {{"error", "BAD_REQUEST"}, {"message", "extra_folders must be an array"}});
+                    }
+                    update.extra_folders.clear();
+                    for (const auto& folder : body["extra_folders"]) {
+                        if (!folder.is_string()) {
+                            return respond(400, {{"error", "BAD_REQUEST"}, {"message", "extra_folders must contain strings"}});
+                        }
+                        update.extra_folders.push_back(folder.get<std::string>());
+                    }
+                }
+            } catch (const std::exception&) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", "invalid workspace JSON"}});
+            }
+
+            using acecode::desktop::WorkspaceProfileStatus;
+            acecode::desktop::WorkspaceMeta saved;
+            std::string error;
+            const auto status = deps.workspace_registry->update_profile(
+                projects_dir(), hash, update, &saved, error);
+            if (status == WorkspaceProfileStatus::NotFound) {
+                return respond(404, {{"error", "WORKSPACE_NOT_FOUND"}, {"message", "workspace not found"}});
+            }
+            if (status == WorkspaceProfileStatus::Invalid) {
+                return respond(400, {{"error", "BAD_REQUEST"}, {"message", error}});
+            }
+            if (status == WorkspaceProfileStatus::WriteFailed) {
+                return respond(500, {{"error", "PERSIST_FAILED"}, {"message", error}});
+            }
+            if (global_session_search) global_session_search->request_discovery();
+            LOG_INFO("[web] workspace profile updated hash=" + hash +
+                     " extra_folders=" + std::to_string(saved.extra_folders.size()));
+            return respond(200, workspace_to_json(saved));
+        });
+
+        // 「移除本地项目」:只把 desktop_visible 写成 false,不删会话数据与磁盘文件。
+        // Desktop 壳走自己的 aceDesktop_removeWorkspace(顺带维护活动项目),这里给
+        // 没有桥接的网页模式用。
+        CROW_ROUTE(app, "/api/workspaces/<string>").methods(crow::HTTPMethod::Delete)
+        ([this](const crow::request& req, const std::string& hash) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            const auto respond = [&](int status, json body) {
+                crow::response response(status, body.dump());
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.workspace_registry) {
+                return respond(503, {{"error", "WORKSPACE_REGISTRY_UNAVAILABLE"},
+                                     {"message", "workspace registry unavailable"}});
+            }
+            const auto existing = resolve_workspace(hash);
+            if (!existing || existing->hash != hash ||
+                !deps.workspace_registry->hide(projects_dir(), hash)) {
+                return respond(404, {{"error", "WORKSPACE_NOT_FOUND"}, {"message", "workspace not found"}});
+            }
+            if (global_session_search) global_session_search->request_discovery();
+            LOG_INFO("[web] workspace hidden hash=" + hash);
+            return respond(200, {{"ok", true}});
         });
 
         CROW_ROUTE(app, "/api/projects/defaults").methods(crow::HTTPMethod::GET)
@@ -577,7 +944,13 @@ void WebServer::Impl::register_workspaces() {
             opts.workspace_hash = ws->hash;
             auto project_dir = SessionStorage::get_project_dir(ws->cwd);
             auto meta = SessionStorage::read_meta(SessionStorage::meta_path(project_dir, id));
-            if (meta.no_workspace) {
+            auto active_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            // resume_session() also returns true for an already-active id. A
+            // missing project-local meta must not let another workspace claim it.
+            if (meta.id.empty() || meta.no_workspace ||
+                (active_entry && !session_entry_matches_workspace(*active_entry, *ws))) {
                 crow::response r(404);
                 r.body = R"({"error":"session not found"})";
                 r.add_header("Content-Type", "application/json");
@@ -624,8 +997,23 @@ void WebServer::Impl::register_workspaces() {
                 return with_cors(req, std::move(r));
             }
             LOG_INFO("[web] workspace session resumed hash=" + ws->hash + " id=" + id);
+            auto resumed_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            const WorktreeSessionInfo worktree = resumed_entry && resumed_entry->sm
+                ? resumed_entry->sm->active_worktree()
+                : WorktreeSessionInfo{};
+            json body{{"session_id", id}, {"id", id}, {"active", true},
+                      {"workspace_hash", ws->hash}, {"cwd", ws->cwd},
+                      {"working_cwd", worktree.active() ? worktree.worktree_path : ws->cwd},
+                      {"worktree", nullptr}, {"no_workspace", false}};
+            if (worktree.active()) {
+                body["worktree"] = {{"name", worktree.worktree_name},
+                                    {"branch", worktree.worktree_branch},
+                                    {"path", worktree.worktree_path}};
+            }
             crow::response r(200);
-            r.body = json{{"session_id", id}, {"id", id}, {"active", true}, {"workspace_hash", ws->hash}, {"cwd", ws->cwd}}.dump();
+            r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
         });

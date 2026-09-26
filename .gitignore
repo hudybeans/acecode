@@ -91,3 +91,10 @@ skills-lock.json
 /tatus
 /tatu
 /tat
+# Local Comet state and documents
+/.comet/
+/docs/comet/
+/docs/desktop-shell/*comet*.md
+/docs/desktop-shell/composer-diagnostic.md
+/docs/desktop-shell/composer-diagnostic-handoff.md
+/pnpm-lock.yaml

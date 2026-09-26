@@ -44,6 +44,11 @@ ftxui::Element render_tool_progress(const TuiState& state) {
     const auto& th = tui::theme();
     Elements header_segs;
     header_segs.push_back(text(" \xE2\x97\x8F ") | color(th.ui.text_dim)); // "●"
+    // 工具前言:有前言时先显示前言(accent 色),再接工具名。
+    if (!p.preamble.empty()) {
+        header_segs.push_back(text(p.preamble) | color(th.ui.accent));
+        header_segs.push_back(text(" \xC2\xB7 ") | color(th.ui.text_dim)); // " · "
+    }
     header_segs.push_back(text(tui::pascal_case_tool_name(p.tool_name))
         | bold | color(tui::tool_call_name_color(th)));
     if (tui::tool_call_arguments_visible(state.transcript_expanded) &&

@@ -132,7 +132,7 @@ function composerCommandTag(command) {
   };
 }
 
-function composerPathTag(token, path) {
+export function composerPathTag(token, path) {
   const normalizedPath = normalizeReferencePath(path);
   return {
     type: COMPOSER_PATH_TAG,

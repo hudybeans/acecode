@@ -1,20 +1,18 @@
 #!/bin/bash
-# ACECode Desktop 一键开发脚本 (macOS / Linux)
-# 用法: ./scripts/dev_desktop.sh [选项]
-# 详见 python scripts/dev_desktop.py --help
+# ACECode Desktop development launcher (macOS / Linux)
+# Usage: ./scripts/dev_desktop.sh [Desktop launcher options]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 选择 python 解释器
-if command -v python3 &>/dev/null; then
+if command -v python3 >/dev/null 2>&1; then
     PYTHON=python3
-elif command -v python &>/dev/null; then
+elif command -v python >/dev/null 2>&1; then
     PYTHON=python
 else
-    echo "[ERROR] 未找到 python3 或 python，请先安装 Python 3.8+"
+    echo "[ERROR] python3 or python was not found. Install Python 3.8+ first." >&2
     exit 1
 fi
 
-exec "$PYTHON" "$SCRIPT_DIR/dev_desktop.py" "$@"
+exec "$PYTHON" "$SCRIPT_DIR/dev_environment.py" desktop "$@"

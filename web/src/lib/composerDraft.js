@@ -25,6 +25,9 @@ export function composerDraftEditFingerprint(text, content) {
   const references = [];
   for (const part of normalizeComposerContent(content)?.parts || []) {
     if (part.type === 'attachment') references.push([offset, part.key]);
+    // Inline pasted blocks are not editor text: record them by key without
+    // advancing the offset (editing a block replaces its key).
+    else if (part.type === 'pasted_text') references.push([offset, 'pasted_text', part.key || '']);
     else offset += (part.type === 'text' ? part.text : part.token).length;
   }
   // Tokenizing existing text or completing an upload is not a new user edit.
@@ -59,7 +62,8 @@ export function composerContentForGuidance(content) {
   let remaining = prefix.length;
   const parts = [];
   for (const part of normalized.parts) {
-    if (part.type === 'attachment') { parts.push(part); continue; }
+    // Attachments and both kinds of paste blocks are not part of the /turn prefix.
+    if (part.type === 'attachment' || part.type === 'pasted_text') { parts.push(part); continue; }
     if (!remaining) { parts.push(part); continue; }
     const value = part.type === 'text' ? part.text : part.token;
     if (remaining >= value.length) { remaining -= value.length; continue; }

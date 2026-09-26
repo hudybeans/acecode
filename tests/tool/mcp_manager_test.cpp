@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "config/config.hpp"
+#include "config/mcp_config.hpp"
 #include "tool/mcp_manager.hpp"
+#include "tool/mcp_scope.hpp"
 #include "tool/tool_executor.hpp"
 
 #include <nlohmann/json.hpp>
@@ -94,6 +96,86 @@ TEST(McpManagerAsync, ConnectAllOnlyRecordsConfiguration) {
     EXPECT_EQ(manager.discovered_tool_count(), 0u);
     EXPECT_FALSE(manager.has_starting_servers());
     EXPECT_FALSE(tools.has_tool("mcp_alpha_echo"));
+}
+
+TEST(McpManagerAsync, ProjectOverridesHaveIsolatedToolDiscoveryAndDispatch) {
+    ScopedTempDirectory temp;
+    const auto project_a = (temp.path / "project-a").string();
+    const auto project_b = (temp.path / "project-b").string();
+    fs::create_directories(fs::path(project_a) / ".git");
+    fs::create_directories(fs::path(project_b) / ".git");
+    auto global = config_with_stdio_server("shared", helper_args({"--tool", "global"}));
+    auto a = config_with_stdio_server("shared", helper_args({"--tool", "alpha"}));
+    auto b = config_with_stdio_server("shared", helper_args({"--tool", "beta"}));
+    acecode::save_project_mcp_config(project_a, acecode::serialize_mcp_config(a.mcp_servers));
+    acecode::save_project_mcp_config(project_b, acecode::serialize_mcp_config(b.mcp_servers));
+    acecode::ToolExecutor tools;
+    acecode::McpManager manager;
+    manager.connect_all(global);
+    manager.start_async(tools);
+    const auto policy_a = acecode::mcp_scope_policy(&global, project_a, std::nullopt, &manager, &tools);
+    const auto policy_b = acecode::mcp_scope_policy(&global, project_b, std::nullopt, &manager, &tools);
+    ASSERT_TRUE(manager.wait_for_startup_settled(std::chrono::seconds(5)));
+    const auto tools_a = tools.get_tool_definitions(&policy_a);
+    const auto tools_b = tools.get_tool_definitions(&policy_b);
+    ASSERT_EQ(tools_a.size(), 1u);
+    ASSERT_EQ(tools_b.size(), 1u);
+    EXPECT_NE(tools_a[0].name, tools_b[0].name);
+    EXPECT_NE(tools_a[0].name.find("alpha"), std::string::npos);
+    EXPECT_NE(tools_b[0].name.find("beta"), std::string::npos);
+    acecode::ToolContext context_a;
+    context_a.capability_policy = policy_a;
+    EXPECT_TRUE(tools.execute(tools_a[0].name, R"({"text":"hello"})", context_a).success);
+    EXPECT_FALSE(tools.execute(tools_b[0].name, R"({"text":"hello"})", context_a).success);
+    EXPECT_FALSE(tools.execute("mcp_shared_global", "{}", context_a).success);
+    a.mcp_servers.at("shared").disabled = true;
+    acecode::save_project_mcp_config(project_a, acecode::serialize_mcp_config(a.mcp_servers));
+    const auto disabled = acecode::mcp_scope_policy(&global, project_a, std::nullopt, &manager, &tools);
+    EXPECT_TRUE(tools.get_tool_definitions(&disabled).empty());
+    EXPECT_EQ(tools.get_tool_definitions(&policy_b).size(), 1u);
+    EXPECT_TRUE(tools.has_tool("mcp_shared_global"));
+    manager.shutdown();
+}
+
+TEST(McpManagerAsync, ScopeReconfigurationRejectsInvalidInputAndLateOldStartup) {
+    acecode::ToolExecutor tools;
+    acecode::McpManager manager;
+    auto slow = config_with_stdio_server("same", helper_args({"--delay-ms", "450", "--tool", "old"}));
+    manager.reconcile_scope("", slow.mcp_servers, tools);
+    auto next = config_with_stdio_server("same", helper_args({"--tool", "new"}));
+    manager.reconcile_scope("", next.mcp_servers, tools);
+    ASSERT_TRUE(manager.wait_for_startup_settled(std::chrono::seconds(5)));
+    EXPECT_TRUE(tools.has_tool("mcp_same_new"));
+    next.mcp_servers.at("same").timeout_seconds = 0;
+    EXPECT_THROW(manager.reconcile_scope("", next.mcp_servers, tools), acecode::McpConfigError);
+    EXPECT_TRUE(tools.has_tool("mcp_same_new"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    EXPECT_FALSE(tools.has_tool("mcp_same_old"));
+    EXPECT_TRUE(tools.has_tool("mcp_same_new"));
+    manager.shutdown();
+}
+
+TEST(McpManagerAsync, ExpertRetentionPreservesConnectionAndPersistedDisabledDefinition) {
+    ScopedTempDirectory temp;
+    fs::create_directories(temp.path / ".git");
+    auto cfg = config_with_stdio_server("shared", helper_args({"--tool", "echo"}));
+    acecode::ToolExecutor tools;
+    acecode::McpManager manager;
+    manager.reconcile_scope(temp.path.string(), cfg.mcp_servers, tools);
+    ASSERT_TRUE(manager.wait_for_startup_settled(std::chrono::seconds(5)));
+    cfg.mcp_servers.at("shared").disabled = true;
+    manager.reconcile_scope(temp.path.string(), cfg.mcp_servers, tools, {"shared"});
+    EXPECT_EQ(manager.connected_server_count(), 1u);
+    EXPECT_FALSE(manager.has_starting_servers());
+    const auto owner = acecode::mcp_project_server_id(temp.path.string(), "shared");
+    ASSERT_TRUE(manager.server_config(owner).has_value());
+    EXPECT_TRUE(manager.server_config(owner)->disabled);
+    // Subsequent session refreshes see the persisted definition, and must not
+    // tear down the expert's existing connection a second time.
+    manager.reconcile_scope(temp.path.string(), cfg.mcp_servers, tools);
+    EXPECT_EQ(manager.connected_server_count(), 1u);
+    EXPECT_FALSE(manager.has_starting_servers());
+    manager.shutdown();
 }
 
 TEST(McpManagerAsync, StartAsyncPublishesToolsAndStatusUpdates) {

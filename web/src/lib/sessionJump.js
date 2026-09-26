@@ -19,6 +19,13 @@ function firstDefined(...values) {
   return undefined;
 }
 
+export function sessionWorktreeFromSources(...sources) {
+  for (const source of sources) {
+    if (source?.worktree !== undefined) return source.worktree;
+  }
+  return undefined;
+}
+
 function boolParam(value) {
   const s = text(value).toLowerCase();
   return s === '1' || s === 'true' || s === 'yes';
@@ -87,6 +94,30 @@ export function sessionJumpWorkspaceHash(target = {}, fallback = {}) {
     fallback.workspace_hash,
     fallback.hash,
   );
+}
+
+export async function resumeSessionFromTarget(client, sessionId, {
+  noWorkspace = false,
+  workspaceHash = '',
+  shouldResume = true,
+} = {}) {
+  if (!shouldResume) return {};
+  if (noWorkspace || !workspaceHash) return client.resumeSession(sessionId);
+  try {
+    return await client.resumeWorkspaceSession(workspaceHash, sessionId);
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+    // A stale Desktop target can name a no-workspace session under the last
+    // active workspace. Only the canonical no-workspace response may recover it.
+    let resumed;
+    try {
+      resumed = await client.resumeSession(sessionId);
+    } catch {
+      throw error;
+    }
+    if (resumed?.no_workspace === true) return resumed;
+    throw error;
+  }
 }
 
 // Missing visibility is the legacy/visible-workspace behavior. Only an
@@ -194,6 +225,8 @@ export function sessionRefFromJumpTarget(target = {}, resumeResult = {}, fallbac
 
   const cwd = noWorkspace ? '' : firstText(resumeResult.cwd, target.cwd, fallback.cwd);
   if (cwd || noWorkspace) ref.cwd = cwd;
+  const worktree = sessionWorktreeFromSources(resumeResult, target, fallback);
+  if (worktree !== undefined) ref.worktree = worktree;
   const searchMatch = normalizedSearchMatch(resumeResult, target, fallback);
   if (searchMatch) ref.searchMatch = searchMatch;
   for (const key of ['port', 'token']) {

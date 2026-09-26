@@ -119,7 +119,7 @@ export function rankCommands(query, items) {
 
 export function slashCommandKindPresentation(item) {
   if (item && item.kind === 'builtin') {
-    return { icon: 'tool', label: tr('commands.kindBuiltin') };
+    return { icon: lower(item.name) === 'goal' ? 'Goal' : 'tool', label: tr('commands.kindBuiltin') };
   }
   if (item && item.kind === 'command') {
     return { icon: 'command', label: tr('commands.kindCommand') };

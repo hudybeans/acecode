@@ -3,6 +3,7 @@
 
 #include "ask_user_question_prompter.hpp"
 #include "session_storage.hpp"
+#include "system_notice.hpp"
 #include "../utils/logger.hpp"
 
 namespace acecode {
@@ -68,14 +69,33 @@ bool LocalSessionClient::send_input(const std::string& session_id, const UserInp
         if (!reload->ok) {
             LOG_WARN("[client] model profile reload failed; using current provider");
             entry->loop->emit_system_message(
-                "Warning: model profile reload failed; continuing with the current provider.");
+                "Warning: model profile reload failed; continuing with the current provider.",
+                make_system_notice_metadata("model_profile_reload_failed"));
         } else if (!reload->warning.empty()) {
-            entry->loop->emit_system_message("Warning: " + reload->warning);
+            entry->loop->emit_system_message("Warning: " + reload->warning,
+                make_system_notice_metadata("model_profile_warning", {{"text", reload->warning}}));
         }
     }
     registry_.maybe_start_auto_title(session_id, input);
     entry->loop->submit(input);
     return true;
+}
+
+bool LocalSessionClient::retry_last_user_message(
+    const std::string& session_id,
+    const std::string& expected_user_message_id,
+    std::string& error) {
+    std::shared_lock<std::shared_mutex> migration_lock(environment::data_dir_write_mutex());
+    if (environment::data_dir_writes_blocked()) {
+        error = "data directory migration is in progress";
+        return false;
+    }
+    auto entry = registry_.acquire(session_id);
+    if (!entry || !entry->loop) {
+        error = "unknown session";
+        return false;
+    }
+    return entry->loop->retry_last_user_message(expected_user_message_id, error);
 }
 
 TurnSteerResult LocalSessionClient::steer_input(

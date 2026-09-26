@@ -244,6 +244,14 @@ struct DataDirCacheEntry {
 };
 std::mutex g_data_dir_mu;
 std::optional<DataDirCacheEntry> g_data_dir_cache[2];
+// 待补记的解析告警(见 paths.hpp::take_data_dir_resolution_warning),由
+// g_data_dir_mu 保护。只保留首条:同一进程里第一次解析失败的原因最有诊断价值。
+std::optional<std::string> g_pending_resolution_warning;
+
+// 调用方持有 g_data_dir_mu。已有待补告警时不覆盖。
+void stash_resolution_warning_locked(const std::string& text) {
+    if (!g_pending_resolution_warning) g_pending_resolution_warning = text;
+}
 
 // 指针目标可用 = 非空、绝对路径、且目录存在。相对路径一律拒绝:进程 cwd 因
 // workspace 而异,相对指针会让不同入口解析到不同地方。
@@ -269,6 +277,7 @@ std::string resolve_data_dir(RunMode mode) {
     DataDirCacheEntry fresh;
     fresh.default_dir = default_dir;
     fresh.resolved = default_dir;
+    const bool already_warned = entry && entry->warned;
     if (auto redirect = read_data_dir_redirect(default_dir)) {
         if (redirect_target_usable(redirect->data_dir)) {
             std::string normalized = path_to_utf8(
@@ -280,10 +289,30 @@ std::string resolve_data_dir(RunMode mode) {
             }
             fresh.resolved = normalized;
         } else {
-            const bool already_warned = entry && entry->warned;
             if (!already_warned) {
-                LOG_WARN("[paths] data-dir redirect target unusable, using default: target=" +
-                         redirect->data_dir + " default=" + default_dir);
+                const std::string text =
+                    "data-dir redirect target unusable, using default: target=" +
+                    redirect->data_dir + " default=" + default_dir;
+                // 日志已初始化时(例如运行期重新解析)当场就能记下;启动早期会被
+                // Logger 丢掉,由待补告警在 init_with_rotation 之后补记。
+                LOG_WARN("[paths] " + text);
+                stash_resolution_warning_locked(text);
+            }
+            fresh.warned = true;
+        }
+    } else {
+        // read 返回 nullopt 有两种情况:指针不存在(正常,静默)和指针存在但读不出
+        // / 不是合法 JSON / 缺 data_dir。后者以前完全静默回退默认目录,用户只看到
+        // 「迁移后数据不见了」,日志里一个字都没有。
+        const std::string pointer = data_dir_redirect_path(default_dir);
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(path_from_utf8(pointer), ec) && !ec) {
+            if (!already_warned) {
+                const std::string text =
+                    "data-dir redirect pointer unreadable or invalid, using default: file=" +
+                    pointer;
+                LOG_WARN("[paths] " + text);
+                stash_resolution_warning_locked(text);
             }
             fresh.warned = true;
         }
@@ -292,10 +321,25 @@ std::string resolve_data_dir(RunMode mode) {
     return entry->resolved;
 }
 
+std::optional<std::string> take_data_dir_resolution_warning() {
+    std::lock_guard<std::mutex> lk(g_data_dir_mu);
+    std::optional<std::string> out = std::move(g_pending_resolution_warning);
+    g_pending_resolution_warning.reset();
+    return out;
+}
+
+void log_deferred_data_dir_resolution_warning() {
+    // 锁外写日志:take 已经把文本移出,Logger 自己有锁,不必嵌套 g_data_dir_mu。
+    if (auto text = take_data_dir_resolution_warning()) {
+        LOG_WARN("[paths] (deferred) " + *text);
+    }
+}
+
 void reset_data_dir_cache_for_test() {
     std::lock_guard<std::mutex> lk(g_data_dir_mu);
     g_data_dir_cache[0].reset();
     g_data_dir_cache[1].reset();
+    g_pending_resolution_warning.reset();
 }
 
 void set_run_dir_override(const std::string& path) {

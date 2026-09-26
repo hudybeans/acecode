@@ -39,7 +39,10 @@ def prepend(name, dirs):
 
 prepend("PATH", [SDK_BIN, MSVC_BIN, cmake, ninja])
 prepend("LIB", [MSVC_LIB, SDK_LIB + r"\ucrt\x64", SDK_LIB + r"\um\x64"])
-prepend("INCLUDE", [MSVC_INC, SDK_INC + r"\ucrt", SDK_INC + r"\um", SDK_INC + r"\shared"])
+# `winrt` and `cppwinrt` are required by the desktop WebView2 host: wrl.h and
+# EventToken.h live there, not under um/ or shared/.
+prepend("INCLUDE", [MSVC_INC, SDK_INC + r"\ucrt", SDK_INC + r"\um",
+                    SDK_INC + r"\shared", SDK_INC + r"\winrt", SDK_INC + r"\cppwinrt"])
 
 # vcpkg config for manifest-mode find_package
 env["VCPKG_ROOT"] = VCPKG_ROOT

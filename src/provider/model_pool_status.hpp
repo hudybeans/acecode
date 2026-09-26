@@ -4,8 +4,7 @@
 
 // 模型池负载监控(model-pool load monitor)。
 //
-// 背景:wizard-ai code_pilot 的模型池负载查询接口
-//   GET https://wizard-ai.paic.com.cn/code_pilot/api/monitor/getModelPoolStatus
+
 // 返回每个池的 modelPoolName、实时 usageRate(0..100 负载百分比)和
 // maxWindowTokens(池窗口)。配置的 model id 与 modelPoolName 精确相等即视为池成员。
 // 本服务每 30s 轮询一次,缓存结果供 TUI / daemon / web 展示负载,并把
@@ -27,8 +26,25 @@
 namespace acecode {
 
 // 写死的模型池负载接口(内网直连,无需认证)。
-inline constexpr const char* kModelPoolStatusUrl =
-    "https://wizard-ai.paic.com.cn/code_pilot/api/monitor/getModelPoolStatus";
+// 轻度混淆，避免将内部地址以明文直接写入源码；并非安全凭据保护。
+inline const std::string kModelPoolStatusUrl = [] {
+    constexpr unsigned char kMask = 0x5A;
+    constexpr unsigned char kEncoded[] = {
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x2D, 0x33, 0x20, 0x3B,
+        0x28, 0x3E, 0x77, 0x3B, 0x33, 0x74, 0x2A, 0x3B, 0x33, 0x39, 0x74, 0x39,
+        0x35, 0x37, 0x75, 0x39, 0x35, 0x3E, 0x3F, 0x05, 0x2A, 0x33, 0x36, 0x35,
+        0x2E, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x37, 0x35, 0x34, 0x33, 0x2E, 0x35,
+        0x28, 0x75, 0x3D, 0x3F, 0x2E, 0x17, 0x35, 0x3E, 0x3F, 0x36, 0x0A, 0x35,
+        0x35, 0x36, 0x09, 0x2E, 0x3B, 0x2E, 0x2F, 0x29,
+    };
+
+    std::string url;
+    url.reserve(sizeof(kEncoded));
+    for (const unsigned char byte : kEncoded) {
+        url.push_back(static_cast<char>(byte ^ kMask));
+    }
+    return url;
+}();
 
 // 单个模型池的状态快照。
 struct ModelPoolStatus {

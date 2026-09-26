@@ -292,9 +292,42 @@ TEST(HookAgentLoop, UserPromptSubmitBlockPreventsPersistenceAndProviderCall) {
         });
     h.loop->set_hook_manager(&hooks);
 
+    struct TerminalEvents {
+        std::mutex mu;
+        std::condition_variable cv;
+        nlohmann::json busy;
+        nlohmann::json done;
+    };
+    auto terminal_events = std::make_shared<TerminalEvents>();
+    h.loop->events().subscribe([terminal_events](const acecode::SessionEvent& event) {
+        std::lock_guard<std::mutex> lk(terminal_events->mu);
+        if (event.kind == acecode::SessionEventKind::BusyChanged &&
+            !event.payload.value("busy", true)) {
+            terminal_events->busy = event.payload;
+        } else if (event.kind == acecode::SessionEventKind::Done) {
+            terminal_events->done = event.payload;
+            terminal_events->cv.notify_all();
+        }
+    });
+
     ASSERT_TRUE(h.submit_and_wait("blocked"));
+    {
+        std::unique_lock<std::mutex> lk(terminal_events->mu);
+        ASSERT_TRUE(terminal_events->cv.wait_for(lk, 5s, [&] {
+            return terminal_events->done.is_object();
+        }));
+    }
     EXPECT_EQ(provider->turn_count(), 0);
     EXPECT_TRUE(h.loop->messages().empty());
+    ASSERT_TRUE(terminal_events->busy.is_object());
+    const std::string turn_id =
+        terminal_events->done.value("turn_id", std::string{});
+    EXPECT_FALSE(turn_id.empty());
+    EXPECT_EQ(
+        terminal_events->busy.value("turn_id", std::string{}), turn_id);
+    EXPECT_EQ(terminal_events->done["usage"].value("total_tokens", -1), 0);
+    EXPECT_EQ(
+        terminal_events->busy["usage"], terminal_events->done["usage"]);
 }
 
 TEST(HookAgentLoop, UserPromptSubmitAdditionalContextReachesNextRequestOnly) {

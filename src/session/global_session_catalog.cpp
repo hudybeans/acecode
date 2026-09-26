@@ -219,7 +219,10 @@ ProjectScanResult scan_project(const fs::path& project_path,
         if (meta.archived) {
             result.archived_identities.push_back(identity);
         }
-        if (meta.archived || !meta.parent_session_id.empty()) continue;
+        if ((!options.include_archived && meta.archived) ||
+            (!options.include_subagents && !meta.parent_session_id.empty())) {
+            continue;
+        }
 
         GlobalSessionCatalogEntry entry;
         entry.project_dir = project_dir;
@@ -273,7 +276,9 @@ GlobalSessionCatalog merge_project_results(
     const fs::path& root,
     std::vector<ProjectScanResult> project_results,
     const std::vector<SessionInfo>& active_sessions,
-    bool prefer_content) {
+    bool prefer_content,
+    bool include_archived = false,
+    bool include_subagents = false) {
     GlobalSessionCatalog catalog;
     std::unordered_set<std::string> archived_identities;
     std::unordered_map<std::string, std::size_t> index_by_identity;
@@ -304,7 +309,8 @@ GlobalSessionCatalog merge_project_results(
     }
 
     for (const auto& active : active_sessions) {
-        if (active.id.empty() || !active.parent_session_id.empty()) continue;
+        if (active.id.empty() ||
+            (!include_subagents && !active.parent_session_id.empty())) continue;
         const std::string workspace_hash = active.no_workspace
             ? std::string{}
             : (!active.workspace_hash.empty()
@@ -312,7 +318,7 @@ GlobalSessionCatalog merge_project_results(
                 : compute_cwd_hash(active.cwd));
         const std::string identity = global_session_catalog_identity(
             active.no_workspace, workspace_hash, active.id);
-        if (archived_identities.count(identity)) continue;
+        if (!include_archived && archived_identities.count(identity)) continue;
 
         auto found = index_by_identity.find(identity);
         if (found != index_by_identity.end()) {
@@ -407,7 +413,8 @@ GlobalSessionCatalog build_global_session_catalog(
     const bool prefer_content = options.content_query.has_value() &&
         !options.content_query->empty();
     auto catalog = merge_project_results(
-        root, std::move(project_results), active_sessions, prefer_content);
+        root, std::move(project_results), active_sessions, prefer_content,
+        options.include_archived, options.include_subagents);
     for (auto& error : discovery.errors) {
         catalog.errors.push_back(std::move(error));
     }

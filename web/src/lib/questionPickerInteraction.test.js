@@ -219,3 +219,33 @@ run('empty custom input Enter skips locally and only the last question submits',
   key(picker, 'Enter', { ctrlKey: true });
   assert.equal(picker.sent[0].answers[0].not_answered, true);
 });
+
+run('same request re-rendered with a new object reference keeps answers and position', () => {
+  const picker = harness([q1, q2]);
+  // 双击第一题第一个选项:选中并本地推进到第二题(daemon first-wins,中途不发送)。
+  rows(picker.render())[0].props.onMouseDown(event({ detail: 2 }));
+  const tabular = (tree) => nodes(tree).find(
+    (n) => /tabular-nums/.test(n.props?.className || '') && typeof n.props.children === 'string');
+  assert.equal(tabular(picker.render()).props.children, '2 / 2');
+  input(picker.render()).props.onChange({ target: { value: 'keep this draft' } });
+  // 模拟 App 重渲染:request_id 不变,但传入内容相同、引用全新的 request 对象。
+  picker.render({ request_id: 'r1', session_id: 's1', questions: [q1, q2] });
+  // 修复前:重置 effect 误把引用变化当作新请求 -> 跳回第一题('1 / 2')并清空答案。
+  assert.equal(tabular(picker.render()).props.children, '2 / 2');
+  assert.equal(input(picker.render()).props.value, 'keep this draft');
+  // 回到第一题,断言已选答案内容仍保留(不只是位置没跳)。
+  button(picker.render(), '上一题').props.onClick();
+  assert.match(rows(picker.render())[0].props.className, /text-accent/);
+});
+
+run('switching to a new request resets answers and position', () => {
+  const picker = harness([q1, q2]);
+  rows(picker.render())[0].props.onMouseDown(event({ detail: 2 }));
+  const tabular = (tree) => nodes(tree).find(
+    (n) => /tabular-nums/.test(n.props?.className || '') && typeof n.props.children === 'string');
+  assert.equal(tabular(picker.render()).props.children, '2 / 2');
+  // 切换到新的提问请求(request_id 变化):必须重置到第一题并清空答案。
+  picker.render({ request_id: 'r2', session_id: 's1', questions: [q1, q2] });
+  assert.equal(tabular(picker.render()).props.children, '1 / 2');
+  assert.doesNotMatch(rows(picker.render())[0].props.className, /text-accent/);
+});

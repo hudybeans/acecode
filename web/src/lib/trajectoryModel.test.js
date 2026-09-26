@@ -391,3 +391,18 @@ run('compact notices project as the canonical standalone Compaction request', ()
   assert.equal(projection.turns[0].turn, null);
   assert.equal(projection.turns[0].groups[0].cells[0].kind, 'compacted');
 });
+
+// 场景：文本工具调用被拒后本步以 text_tool_call_retry 结束（fix-feedback-0924 第 3 条）。
+// 期望：与空回复重试一样归为失败的请求，而不是「已完成」。回归表现：纠正重试的那一步在
+// trajectory 里显示为成功，看不出模型那次回复其实没被执行。
+run('text-form tool call retry steps are shown as failed requests', () => {
+  const projection = buildDeepSeekTrajectory([
+    recorded(1, 1000, 'turn_start', { turn_id: 'turn-1' }),
+    recorded(2, 1001, 'message', { role: 'user', id: 'turn-1', content: 'ls' }),
+    recorded(3, 1010, 'model_step_start', { step_index: 1 }),
+    recorded(4, 1011, 'model_request', { step_index: 1, messages: [], tools: [] }),
+    recorded(5, 1020, 'model_response', { step_index: 1, status: 'complete', content: '' }),
+    recorded(6, 1030, 'model_step_finish', { step_index: 1, reason: 'text_tool_call_retry' }),
+  ]);
+  assert.equal(projection.requests[0].status, 'error');
+});

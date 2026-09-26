@@ -298,6 +298,19 @@ std::optional<ModelProfile> parse_one_entry(const nlohmann::json& node, std::siz
         // carry capabilities_source=manual and do not enter this branch.
         if (const ModelEntry* model = find_acemodel_catalog_model(e.model)) {
             e.capabilities = model_capability_tags(*model);
+            if (e.reasoning.has_value()) {
+                // The built-in catalog has stable vision/tool tags, while a
+                // saved upstream /models declaration may add reasoning.
+                // Reconcile that tag with the explicit declaration before
+                // validating the profile, including last-good snapshots.
+                e.capabilities.erase(
+                    std::remove(e.capabilities.begin(), e.capabilities.end(),
+                                "reasoning"),
+                    e.capabilities.end());
+                if (e.reasoning->supported) {
+                    e.capabilities.push_back("reasoning");
+                }
+            }
         }
 
         // The previous first-party catalog and Windows seeder persisted 200K

@@ -11,6 +11,7 @@
 #include <array>
 #include <cctype>
 #include <filesystem>
+#include <set>
 #include <sstream>
 #include <string_view>
 
@@ -355,6 +356,20 @@ std::string ToolExecutor::resolve_model_tool_name_to_native(
     if (native_alias && tools_.find(*native_alias) != tools_.end()) {
         return *native_alias;
     }
+    if (model_name.empty()) return model_name;
+
+    // 第 3 步:大小写容错。模型(实测 dots 系)常把 bash 写成 Bash;只在候选
+    // 唯一时采用,否则 fail-open 原样返回。
+    std::set<std::string> candidates;
+    for (const auto& [name, impl] : tools_) {
+        (void)impl;
+        if (ascii_iequals(name, model_name)) candidates.insert(name);
+    }
+    const auto native_alias_ci = native_tool_name_for_public_alias_ci(model_name);
+    if (native_alias_ci && tools_.find(*native_alias_ci) != tools_.end()) {
+        candidates.insert(*native_alias_ci);
+    }
+    if (candidates.size() == 1) return *candidates.begin();
     return model_name;
 }
 
@@ -433,6 +448,13 @@ bool ToolExecutor::is_read_only(const std::string& name) const {
     std::lock_guard<std::mutex> lk(tools_mu_);
     auto it = tools_.find(name);
     return it != tools_.end() && it->second.is_read_only;
+}
+
+bool ToolExecutor::can_execute_in_parallel(const std::string& name) const {
+    std::lock_guard<std::mutex> lk(tools_mu_);
+    const auto it = tools_.find(name);
+    return it != tools_.end() && it->second.is_read_only &&
+        !it->second.requires_serial_execution;
 }
 
 std::string ToolExecutor::generate_tools_prompt(

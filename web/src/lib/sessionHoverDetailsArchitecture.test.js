@@ -51,7 +51,9 @@ test('Sidebar owns one lifecycle reducer and clears stale trigger boundaries', (
   assert.match(sidebar, /activeOwner: activeSessionHoverOwner\(sessionHoverState\)/);
   assert.match(sidebar, /<SessionHoverLifecycleContext\.Provider value=\{sessionHoverContextValue\}>/);
   assert.match(sidebar, /if \(collapsed\) clearSessionHover\(\)/);
-  assert.match(sidebar, /onScroll=\{clearSessionHover\}/);
+  // 列表滚动仍先清掉悬停卡片,再同步顶部分隔线(lib/sidebarListDivider.js)。
+  assert.match(sidebar, /onScroll=\{handleSidebarListScroll\}/);
+  assert.match(sidebar, /const handleSidebarListScroll = useCallback\(\(\) => \{\s*clearSessionHover\(\);/);
   assert.match(sidebar, /window\.addEventListener\('pointerdown', handlePointerDown, true\)/);
   assert.match(sidebar, /window\.addEventListener\('blur', clearSessionHover\)/);
   assert.match(sidebar, /document\.addEventListener\('visibilitychange', handleVisibilityChange\)/);
@@ -70,10 +72,10 @@ test('hover card lazily shares Git lookup and invalidates on Git state changes',
   // 每次切会话都重复打一次 /api/git/info(daemon 侧 5~7 个 git 子进程)。
   assert.match(sidebar, /import \{[^}]*gitInfoCache[^}]*\} from '\.\.\/lib\/gitInfoCache\.js'/);
   assert.doesNotMatch(sidebar, /createSessionHoverGitInfoCache\(/);
-  assert.match(card, /gitInfoCache\.peek\(api, cwd\)/);
-  assert.match(card, /gitInfoCache\.get\(api, cwd\)/);
+  assert.match(card, /gitInfoCache\.peek\(api, cwd, owner\)/);
+  assert.match(card, /gitInfoCache\.get\(api, cwd, owner\)/);
   assert.match(card, /window\.addEventListener\(GIT_STATE_CHANGED_EVENT, handleGitStateChanged\)/);
-  assert.match(card, /gitInfoCache\.invalidate\(api, changedCwd \|\| cwd\)/);
+  assert.match(card, /gitInfoCache\.invalidate\(api, changedCwd \|\| cwd, owner\)/);
   assert.match(card, /computeSessionHoverCardPosition/);
   assert.match(card, /role="tooltip"/);
   assert.match(card, /createPortal\([\s\S]*document\.body/);
@@ -83,8 +85,8 @@ test('hover card lazily shares Git lookup and invalidates on Git state changes',
 
 test('side panel shares Git lookup without losing its session API context', () => {
   const sidePanel = source('components/SidePanel.jsx');
-  assert.match(sidePanel, /gitInfoCache\.get\(api, cwd\)/);
-  assert.match(sidePanel, /gitInfoCache\.invalidate\(api, cwd\)/);
+  assert.match(sidePanel, /gitInfoCache\.get\(api, cwd, owner\)/);
+  assert.match(sidePanel, /gitInfoCache\.invalidate\(api, cwd, owner\)/);
   assert.doesNotMatch(sidePanel, /gitInfoCache\.get\(cwd\)/);
 });
 

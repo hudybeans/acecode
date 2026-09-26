@@ -20,6 +20,20 @@ function metricMapFrom(rowMetrics) {
   return map;
 }
 
+// 吸顶条只显示一两行,内容(连同 title / aria-label)最多取这么多字符。f300 那条
+// 2400 万字符的消息曾被整段塞进吸顶条的 title 与 aria-label。
+export const STICKY_USER_CONTEXT_MAX_CHARS = 600;
+
+function boundedStickyContent(value) {
+  const raw = String(value || '');
+  const start = raw.search(/\S/);
+  if (start < 0) return '';
+  let text = raw.slice(start, start + STICKY_USER_CONTEXT_MAX_CHARS);
+  const last = text.charCodeAt(text.length - 1);
+  if (text.length === STICKY_USER_CONTEXT_MAX_CHARS && last >= 0xD800 && last <= 0xDBFF) text = text.slice(0, -1);
+  return text.trimEnd();
+}
+
 export function sameStickyUserContext(a, b) {
   if (!a && !b) return true;
   if (!a || !b) return false;
@@ -80,7 +94,7 @@ export function findStickyUserContext({
   }
 
   if (!active) return null;
-  const content = String(active.item.content || '').trim();
+  const content = boundedStickyContent(active.item.content);
   if (!content) return null;
 
   const sourceVisibleLine = viewportTop + Math.max(0, finiteNumber(sourceVisibleOffset, DEFAULT_SOURCE_VISIBLE_OFFSET));

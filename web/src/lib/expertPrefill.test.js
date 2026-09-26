@@ -96,6 +96,7 @@ function fixture(workspaceHash = 'workspace-a') {
     navigateToRef: navigate, replaceActiveRef: navigate,
     rememberRecentExpert() {}, onRememberExpert() {},
     onHomeComposerDraftChange: changeDraft,
+    onHomeComposerDraftLoad: undefined,
     restoreChatInputFocusSoon() {}, setDraftReadyKey() {}, setComposerSubmitting() {},
     setComposerValue(text) {
       if (composer !== text) pendingRender = true;

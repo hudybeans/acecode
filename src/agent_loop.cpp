@@ -1,6 +1,8 @@
 #include "agent_loop.hpp"
 #include "agent_loop_doom_guard.hpp"
 #include "agent_loop_shell_guard.hpp"
+#include "computer_use/runtime.hpp"
+#include "desktop/workspace_registry.hpp"
 #include "sandbox/exec_permission.hpp"
 #include "prompt/context_usage_breakdown.hpp"
 #include "prompt/system_prompt.hpp"
@@ -10,10 +12,13 @@
 #include "utils/logger.hpp"
 #include "utils/stream_processing.hpp"
 #include "utils/text_file_buffer.hpp"
+#include "utils/tool_errors.hpp"
 #include "utils/uuid.hpp"
 #include "commands/compact.hpp"
+#include "commands/compact_prompt.hpp"
 #include "session/compact_checkpoint.hpp"
 #include "session/compact_notice.hpp"
+#include "session/system_notice.hpp"
 #include "session/session_history_recovery.hpp"
 #include "session/tool_metadata_codec.hpp"
 #include "session/tool_result_storage.hpp"
@@ -43,6 +48,7 @@
 #include "pa/pa_context_budget.hpp"
 #include "pa/pa_overflow_rescue.hpp"
 #include "pa/pa_quirks.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <set>
@@ -94,6 +100,9 @@ std::vector<ChatMessage> model_facing_provider_messages(
     const std::vector<ChatMessage>& messages,
     const char* boundary) {
     auto history = recovered_provider_messages(messages, boundary);
+    // 旧的纯文本工具调用 / 被污染的摘要换成固定说明(只由内容决定、逐字节
+    // 稳定),模型不再照着历史里的样本继续写文本调用。
+    sanitize_text_tool_call_history(history, get_compact_summary_prefix());
     rewrite_tool_calls_for_model(history);
     return history;
 }
@@ -215,6 +224,33 @@ nlohmann::json model_step_usage_to_json(const TokenUsage& usage) {
     return value;
 }
 
+void accumulate_turn_usage(TokenUsage& aggregate,
+                           bool& initialized,
+                           const TokenUsage& step) {
+    aggregate.prompt_tokens += step.prompt_tokens;
+    aggregate.completion_tokens += step.completion_tokens;
+    aggregate.total_tokens += step.total_tokens;
+    aggregate.cache_read_tokens += step.cache_read_tokens;
+    aggregate.cache_write_tokens += step.cache_write_tokens;
+    aggregate.reasoning_tokens += step.reasoning_tokens;
+
+    auto& total_context = aggregate.context_breakdown;
+    const auto& step_context = step.context_breakdown;
+    total_context.system_prompt += step_context.system_prompt;
+    total_context.project_rules += step_context.project_rules;
+    total_context.skills += step_context.skills;
+    total_context.builtin_tools += step_context.builtin_tools;
+    total_context.mcp_tools += step_context.mcp_tools;
+    total_context.conversation += step_context.conversation;
+    total_context.dynamic_context += step_context.dynamic_context;
+    total_context.has_data = total_context.has_data || step_context.has_data;
+
+    aggregate.has_data = initialized
+        ? aggregate.has_data && step.has_data
+        : step.has_data;
+    initialized = true;
+}
+
 std::string provider_error_summary_for_log(const ProviderErrorInfo& info) {
     std::string message = info.display_message;
     if (message.empty()) message = info.pretty_json;
@@ -251,6 +287,48 @@ std::string human_bytes(std::size_t bytes) {
 
 std::string format_bytes_detail(std::size_t bytes) {
     return "参数 " + human_bytes(bytes);
+}
+
+const char* text_tool_call_outcome_name(TextToolCallDiagnostic::Outcome outcome) {
+    switch (outcome) {
+    case TextToolCallDiagnostic::Outcome::Recovered: return "recovered";
+    case TextToolCallDiagnostic::Outcome::Rejected: return "rejected";
+    case TextToolCallDiagnostic::Outcome::IgnoredWithNative: return "ignored_with_native";
+    case TextToolCallDiagnostic::Outcome::None: break;
+    }
+    return "none";
+}
+
+// 文本工具调用诊断 → JSON(trajectory payload / 被拒消息 metadata 共用)。
+// raw_excerpt 只进这里(诊断用),绝不进发给模型的正文。
+nlohmann::json text_tool_call_diagnostic_to_json(const TextToolCallDiagnostic& diag) {
+    nlohmann::json out{
+        {"outcome", text_tool_call_outcome_name(diag.outcome)},
+        {"format", diag.format},
+        {"reason", diag.reason},
+        {"error", diag.error},
+        {"tools", diag.attempted_tools},
+        {"raw_excerpt", diag.raw_excerpt},
+    };
+    if (!diag.unexecuted_detail.empty()) out["unexecuted"] = diag.unexecuted_detail;
+    if (diag.recovered_count > 0) out["count"] = diag.recovered_count;
+    return out;
+}
+
+// 被拒文本工具调用的落盘正文:provider 已去掉的标记不再出现;可疑级(标记
+// 已经流出)截到 visible_cut;去掉末尾空白,只剩空白时清成空串 —— 切断
+// 「历史里越多文本调用样本、模型越模仿」的循环,headless 也不会把 "\n\n\n"
+// 当成最终回复。
+std::string text_tool_call_rejected_persisted_content(
+    const std::string& content, const TextToolCallDiagnostic& diag) {
+    std::string persisted = content;
+    if (diag.visible_cut != std::string::npos && diag.visible_cut < persisted.size()) {
+        persisted.resize(diag.visible_cut);
+    }
+    const auto last = persisted.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos) return {};
+    persisted.resize(last + 1);
+    return persisted;
 }
 
 std::string ascii_lower(std::string value) {
@@ -353,6 +431,25 @@ void append_todo_context_for_api(std::vector<ChatMessage>& messages,
 bool is_hidden_goal_context_message(const ChatMessage& msg) {
     return msg.metadata.is_object() &&
            msg.metadata.value("hidden_goal_context", false);
+}
+
+bool is_transcript_bookkeeping(const ChatMessage& message) {
+    return message.is_meta || is_file_checkpoint_message(message) ||
+           is_compact_checkpoint_message(message) ||
+           is_turn_timing_message(message) || is_turn_net_diff_message(message) ||
+           web::is_hidden_goal_context_message(message);
+}
+
+const ChatMessage* trailing_transcript_message(
+    const std::vector<ChatMessage>& messages, bool user_only = false) {
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        // Match the transcript's invisible bookkeeping records. Never skip a
+        // visible non-user unless an explicit user-abort marker allows retry.
+        if (is_transcript_bookkeeping(*it)) continue;
+        if (user_only && it->role != "user") continue;
+        return &*it;
+    }
+    return nullptr;
 }
 
 std::string escape_xml_text(const std::string& input) {
@@ -477,7 +574,41 @@ void AgentLoop::set_session_manager(SessionManager* sm) {
         events_.set_observer({});
         return;
     }
-    events_.set_observer([sm](const SessionEvent& event) {
+    events_.set_observer([this, sm](const SessionEvent& event) {
+        switch (event.kind) {
+        case SessionEventKind::Message: {
+            const auto& payload = event.payload;
+            const auto metadata = payload.value("metadata", nlohmann::json::object());
+            if (!payload.value("is_meta", false) &&
+                !(metadata.is_object() && metadata.value("hidden_goal_context", false))) {
+                const auto role = payload.value("role", std::string{});
+                const bool user_abort = role == "system" && metadata.is_object() &&
+                    metadata.value("transcript_only", false) &&
+                    metadata.value("user_aborted", false);
+                live_transcript_tail_blocked_ = role != "user" && !user_abort;
+            }
+            break;
+        }
+        case SessionEventKind::Token:
+        case SessionEventKind::Reasoning:
+            if (!event.payload.value("text", std::string{}).empty()) {
+                live_transcript_tail_blocked_ = true;
+            }
+            break;
+        case SessionEventKind::ToolStart:
+        case SessionEventKind::ToolUpdate:
+        case SessionEventKind::ToolEnd:
+        case SessionEventKind::Error:
+            live_transcript_tail_blocked_ = true;
+            break;
+        case SessionEventKind::TranscriptReplace:
+            // A full replacement discards transient output. The canonical
+            // histories are still checked before any retry is accepted.
+            live_transcript_tail_blocked_ = false;
+            break;
+        default:
+            break;
+        }
         if (!should_persist_trajectory_event(event)) return;
         sm->record_trajectory_event(
             to_string(event.kind), event.payload, event.timestamp_ms);
@@ -505,6 +636,76 @@ void AgentLoop::set_cwd(const std::string& new_cwd) {
     sandbox_runtime_.clear_session_grants();
     last_sandbox_violation_.reset();
     reload_exec_rules();
+    // 进出 worktree 会改变写边界,可写附加文件夹随之重算。
+    sandbox_runtime_.set_workspace_writable_roots(writable_workspace_folders());
+}
+
+void AgentLoop::refresh_workspace_folders() {
+    // workspace.json 与会话文件同在 <projects>/<hash>/ 下。worktree 会话的 cwd_
+    // 是 worktree 路径,但会话存储目录不动,所以优先用 SessionManager 的 project dir。
+    std::string project_dir =
+        session_manager_ ? session_manager_->current_project_dir() : std::string{};
+    if (project_dir.empty()) project_dir = SessionStorage::get_project_dir(cwd_);
+    auto folders = desktop::load_workspace_folders(project_dir);
+    {
+        std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+        workspace_main_folder_ = std::move(folders.main_folder);
+        workspace_extra_folders_ = std::move(folders.extra_folders);
+    }
+    sandbox_runtime_.set_workspace_writable_roots(writable_workspace_folders());
+}
+
+std::vector<std::string> AgentLoop::workspace_extra_folders() const {
+    std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+    return workspace_extra_folders_;
+}
+
+std::vector<std::string> AgentLoop::writable_workspace_folders() const {
+    std::string main_folder;
+    std::vector<std::string> extras;
+    {
+        std::lock_guard<std::mutex> lk(workspace_folders_mu_);
+        main_folder = workspace_main_folder_;
+        extras = workspace_extra_folders_;
+    }
+    if (extras.empty() || main_folder.empty() || write_root().empty()) return extras;
+    // 写边界存在的意义是护住主 checkout。与主文件夹互为包含的附加文件夹
+    // (主仓的上级目录,或主仓里的子目录)一旦放行,worktree 隔离就被绕开了。
+    const auto contains = [](const std::string& root, const std::string& path) {
+        return PathValidator(root, false).validate(path).empty();
+    };
+    std::vector<std::string> out;
+    for (const auto& folder : extras) {
+        if (contains(folder, main_folder) || contains(main_folder, folder)) continue;
+        out.push_back(folder);
+    }
+    return out;
+}
+
+bool AgentLoop::path_in_workspace_folders(const std::string& path) const {
+    if (path.empty()) return false;
+    const auto folders = writable_workspace_folders();
+    if (folders.empty()) return false;
+    std::filesystem::path target = path_from_utf8(path);
+    // 相对路径永远按会话 cwd 解析,不能拿附加文件夹当基准去"凑"出一个放行。
+    if (target.is_relative()) target = path_from_utf8(cwd_) / target;
+    const std::string absolute = path_to_utf8(target);
+    for (const auto& folder : folders) {
+        if (PathValidator(folder, false).validate(absolute).empty()) return true;
+    }
+    return false;
+}
+
+SystemPromptWorkspaceFolders AgentLoop::system_prompt_workspace_folders() const {
+    SystemPromptWorkspaceFolders result;
+    result.additional = writable_workspace_folders();
+    for (const auto& folder : workspace_extra_folders()) {
+        if (std::find(result.additional.begin(), result.additional.end(), folder) ==
+            result.additional.end()) {
+            result.read_only.push_back(folder);
+        }
+    }
+    return result;
 }
 
 std::string AgentLoop::global_exec_rules_dir() const {
@@ -827,7 +1028,8 @@ HookCommonPayloadFields AgentLoop::build_hook_common_fields(
 void AgentLoop::apply_hook_side_effects(const HookAggregateOutcome& outcome,
                                         bool include_additional_context) {
     for (const auto& message : outcome.system_messages) {
-        if (!message.empty()) dispatch_message("system", "[Hook] " + message, false);
+        if (!message.empty()) dispatch_message("system", "[Hook] " + message, false,
+            make_system_notice_metadata("hook_message", {{"text", message}}));
     }
     if (include_additional_context) {
         for (const auto& context : outcome.additional_context) {
@@ -889,6 +1091,7 @@ void AgentLoop::dispatch_session_title_changed_hook(
 
 void AgentLoop::abort() {
     abort_requested_ = true;
+    if (session_manager_) computer_use::release_session(session_manager_->current_session_id());
     wake_active_provider_retry();
 }
 
@@ -972,9 +1175,28 @@ void AgentLoop::worker_main() {
             worker_task_active_ = true;
             worker_task_kind_ = task.kind;
         }
+        if (task.kind == WorkerTask::Kind::Chat) {
+            active_turn_usage_ = TokenUsage{};
+            active_turn_usage_initialized_ = false;
+        }
         try {
             switch (task.kind) {
             case WorkerTask::Kind::Chat:
+                if (!task.retry_user_message_id.empty()) {
+                    const auto message = retryable_user_message(task.retry_user_message_id);
+                    if (!message) {
+                        throw std::runtime_error("user message is no longer eligible for retry");
+                    }
+                    UserInput input;
+                    input.text = message->content;
+                    input.content_parts = message->content_parts;
+                    input.metadata = message->metadata;
+                    if (message->metadata.is_object()) {
+                        input.display_text = message->metadata.value("display_text", std::string{});
+                    }
+                    run_agent_with_input(input, false, &*message);
+                    break;
+                }
                 if (task.input.empty() && !task.payload.empty()) {
                     task.input.text = std::move(task.payload);
                     task.input.display_text = std::move(task.display_text);
@@ -1039,9 +1261,15 @@ void AgentLoop::recover_worker_task_error(const char* detail, bool chat_task) {
     attempt([&] {
         if (chat_task && callbacks_.on_turn_finished) callbacks_.on_turn_finished("error");
     });
-    const nlohmann::json idle = {
+    nlohmann::json idle = {
         {"busy", false}, {"outcome", "error"}, {"turn_id", turn_id}};
-    const nlohmann::json done = {{"outcome", "error"}};
+    nlohmann::json done = {{"outcome", "error"}};
+    if (chat_task) {
+        const auto usage = model_step_usage_to_json(active_turn_usage_);
+        idle["usage"] = usage;
+        done["turn_id"] = turn_id;
+        done["usage"] = usage;
+    }
     attempt([&] { record_terminal_trajectory_events(idle, done); });
     attempt([&] {
         if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
@@ -1189,7 +1417,8 @@ bool AgentLoop::complete_task_handoff(
     if (paused_goal) emit_goal_updated(*paused_goal);
     emit_transcript_system_message(
         "Continued in session " + target_session_id + ".",
-        {{"task_handoff", true}, {"target_session_id", target_session_id}});
+        make_system_notice_metadata("session_continued", {{"session", target_session_id}},
+            {{"task_handoff", true}, {"target_session_id", target_session_id}}));
     return true;
 }
 
@@ -1215,6 +1444,54 @@ void AgentLoop::submit(const UserInput& input) {
         task_queue_.push(std::move(task));
     }
     queue_cv_.notify_one();
+}
+
+std::optional<ChatMessage> AgentLoop::retryable_user_message(
+    const std::string& expected_user_message_id) const {
+    if (expected_user_message_id.empty() || live_transcript_tail_blocked_.load()) return std::nullopt;
+    const auto* model_tail = trailing_transcript_message(messages_);
+    if (!model_tail || (model_tail->role != "user" &&
+        model_tail->role != "assistant" && model_tail->role != "tool")) return std::nullopt;
+    bool user_aborted = false;
+    if (session_manager_) {
+        const auto persisted = session_manager_->load_active_messages();
+        const auto* tail = trailing_transcript_message(persisted);
+        user_aborted = tail && tail->role == "system" && tail->metadata.is_object() &&
+            tail->metadata.value("transcript_only", false) &&
+            tail->metadata.value("user_aborted", false) &&
+            tail->metadata.value("retry_user_message_id", std::string{}) == expected_user_message_id;
+        if (user_aborted) tail = trailing_transcript_message(persisted, true);
+        if (!tail || tail->role != "user" ||
+            tail->uuid != expected_user_message_id) return std::nullopt;
+    }
+    const auto* message = trailing_transcript_message(messages_, user_aborted);
+    if (!message || message->role != "user" ||
+        message->uuid != expected_user_message_id) return std::nullopt;
+    return *message;
+}
+
+bool AgentLoop::retry_last_user_message(
+    const std::string& expected_user_message_id, std::string& error) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mu_);
+        if (shutdown_requested_ || worker_task_active_ || busy_.load() ||
+            !priority_task_queue_.empty() || !task_queue_.empty()) {
+            error = "session has active or queued work";
+            return false;
+        }
+        if (!retryable_user_message(expected_user_message_id)) {
+            error = "user message is not eligible for retry";
+            return false;
+        }
+        WorkerTask task;
+        task.kind = WorkerTask::Kind::Chat;
+        task.retry_user_message_id = expected_user_message_id;
+        task_queue_.push(std::move(task));
+        abort_requested_ = false;
+    }
+    error.clear();
+    queue_cv_.notify_one();
+    return true;
 }
 
 ControlEnqueueReceipt AgentLoop::enqueue_control(
@@ -1545,8 +1822,8 @@ void AgentLoop::submit_compact() {
     queue_cv_.notify_one();
 }
 
-void AgentLoop::emit_system_message(const std::string& content) {
-    dispatch_message("system", content, false);
+void AgentLoop::emit_system_message(const std::string& content, nlohmann::json metadata) {
+    dispatch_message("system", content, false, std::move(metadata));
 }
 
 void AgentLoop::emit_transcript_system_message(const std::string& content,
@@ -1643,7 +1920,8 @@ void AgentLoop::note_pa_context_rejection(int request_tokens) {
         "[智能压缩] 服务端在约 " + std::to_string(request_tokens) +
         " tokens (最大 " + std::to_string(declared) +
         " tokens) 处拒收了请求，压缩阈值下调至 " + std::to_string(after) +
-        " tokens");
+        " tokens", make_system_notice_metadata("context_threshold_lowered",
+            {{"tokens", request_tokens}, {"declared", declared}, {"threshold", after}}));
 }
 
 void AgentLoop::note_pa_context_accepted(
@@ -1689,13 +1967,15 @@ std::vector<ChatMessage> AgentLoop::build_compaction_initial_context() const {
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     const SystemPromptModelState model_state = system_prompt_model_state();
+    const SystemPromptWorkspaceFolders workspace_folders_state = system_prompt_workspace_folders();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state, &model_state);
+        &prompt_environment, &sandbox_state, &model_state,
+        &workspace_folders_state);
     if (loop_execution_policy_.active &&
         !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
@@ -1836,7 +2116,7 @@ void AgentLoop::apply_compact_result(
         make_compact_notice_metadata(notice_id, "checkpoint"));
     emit_transcript_system_message(
         "[Conversation summary]\n" + result.summary_text,
-        make_compact_notice_metadata(notice_id, "summary", true));
+        make_compact_notice_metadata(notice_id, "summary", true, {{"summary", result.summary_text}}));
     if (checkpoint_persisted) {
         const auto project_dir = session_manager_->current_project_dir();
         const auto source_id = session_manager_->current_session_id();
@@ -1905,7 +2185,9 @@ bool AgentLoop::run_mechanical_compact_fallback(
         "),已改为丢弃最旧的 " + std::to_string(repair.pruned_groups) +
         " 组历史、清除 " + std::to_string(repair.cleared_tool_outputs) +
         " 条旧工具输出腾出空间,会话继续。",
-        make_compact_notice_metadata(compact_notice_id, "warning"));
+        make_compact_notice_metadata(compact_notice_id, "warning", false,
+            {{"error", summarization_error}, {"groups", repair.pruned_groups},
+             {"outputs", repair.cleared_tool_outputs}}));
     return true;
 }
 
@@ -1932,7 +2214,8 @@ bool AgentLoop::maybe_run_auto_compact() {
         auto outcome = dispatch_codex_hook(kCodexHookEventPreCompact, "auto", payload);
         apply_hook_side_effects(outcome);
         if (outcome.continue_false || outcome.blocked || outcome.denied) {
-            emit_transcript_system_message("[Auto-compact] Stopped by hook.");
+            emit_transcript_system_message("[Auto-compact] Stopped by hook.",
+                make_system_notice_metadata("context_compact_stopped"));
             return false;
         }
     }
@@ -1953,7 +2236,7 @@ bool AgentLoop::maybe_run_auto_compact() {
         LOG_WARN("Auto-compact failed; provider unavailable");
         emit_transcript_system_message(
             "[Auto-compact] provider unavailable for compaction",
-            make_compact_notice_metadata(compact_notice_id, "error"));
+            make_compact_notice_metadata(compact_notice_id, "error", false, {{"provider_unavailable", true}}));
         return false;
     }
 
@@ -1988,7 +2271,7 @@ bool AgentLoop::maybe_run_auto_compact() {
         }
         emit_transcript_system_message(
             "[Auto-compact] " + result.error,
-            make_compact_notice_metadata(compact_notice_id, "error"));
+            make_compact_notice_metadata(compact_notice_id, "error", false, {{"error", result.error}}));
         return false;
     }
 
@@ -2145,7 +2428,8 @@ void AgentLoop::account_goal_usage(std::int64_t token_delta, bool allow_complete
         emit_goal_updated(*result.goal);
         if (budget_notice_goal_id_ != result.goal->goal_id) {
             budget_notice_goal_id_ = result.goal->goal_id;
-            dispatch_message("system", "[Goal] Token budget reached; automatic continuation stopped.", false);
+            dispatch_message("system", "[Goal] Token budget reached; automatic continuation stopped.", false,
+                make_system_notice_metadata("goal_budget_reached", {{"goal", thread_goal_to_json(*result.goal)}}));
             // 让运行中的回合在下一次模型请求前收到 wrap-up 提示(对齐 Codex
             // budget_limit steering):总结进展、指出剩余工作,不再开新活。
             pending_goal_budget_limit_steering_.store(true);
@@ -2415,7 +2699,7 @@ void AgentLoop::stop_active_goal_after_turn_error(const ProviderErrorInfo& info)
         usage_limited
             ? "[Goal] Provider usage limit hit; goal marked usage_limited and automatic continuation stopped. Use /goal resume to continue later."
             : "[Goal] Turn ended with an error; goal marked blocked and automatic continuation stopped. Use /goal resume to retry.",
-        false);
+        false, make_system_notice_metadata(usage_limited ? "goal_usage_limited" : "goal_blocked"));
     LOG_WARN("[goal] stopped active goal after turn error: status=" +
              to_string(next) + " provider_status_code=" +
              std::to_string(info.status_code));
@@ -2457,17 +2741,6 @@ void AgentLoop::begin_active_turn(const std::string& turn_id) {
     pending_turn_inputs_.clear();
     active_turn_id_ = turn_id;
     active_turn_accepting_ = !turn_id.empty();
-}
-
-std::string AgentLoop::abort_notice_text() const {
-    return turn_interrupt_requested_.load() ? "[Interjected]" : "[Interrupted]";
-}
-
-nlohmann::json AgentLoop::abort_notice_metadata() const {
-    if (!turn_interrupt_requested_.load()) return nlohmann::json{};
-    return nlohmann::json{
-        {"turn_interrupt", true},
-    };
 }
 
 void AgentLoop::append_interrupted_turn_context(const std::string& turn_id) {
@@ -2512,6 +2785,7 @@ void AgentLoop::commit_turn_steering_input(
     if (session_manager_) {
         session_manager_->on_message(message);
     }
+    emit_session_summary_updated();
 
     const std::string display = message.metadata.value(
         "display_text", message.content);
@@ -2674,6 +2948,21 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         if (!user_msg.metadata.is_object()) user_msg.metadata = nlohmann::json::object();
         user_msg.metadata["hidden_goal_context"] = true;
     }
+    append_user_turn_message(info, hidden_goal_context);
+    start_user_turn(info);
+    return info;
+}
+
+void AgentLoop::emit_session_summary_updated() {
+    if (!session_manager_) return;
+    const std::string summary = session_manager_->current_summary();
+    if (summary.empty()) return;
+    events_.emit(SessionEventKind::SessionUpdated,
+                 nlohmann::json{{"summary", summary}});
+}
+
+void AgentLoop::append_user_turn_message(UserTurnInfo& info, bool hidden_goal_context) {
+    auto& user_msg = info.user_msg;
     ensure_user_message_identity(user_msg);
     info.active_turn_id = user_msg.uuid;
     info.visible_timed_turn =
@@ -2684,21 +2973,14 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
     messages_.push_back(user_msg);
     if (session_manager_) {
         session_manager_->on_message(user_msg);
-        if (info.visible_timed_turn) {
-            session_manager_->record_trajectory_event(
-                "turn_start",
-                {{"turn_id", info.active_turn_id},
-                 {"user_message_id", user_msg.uuid},
-                 {"started_at_ms", info.turn_started_at_ms}},
-                info.turn_started_at_ms);
-        }
         if (!hidden_goal_context) {
             session_manager_->begin_user_turn_checkpoint(user_msg.uuid);
         }
     }
     if (!hidden_goal_context) {
+        emit_session_summary_updated();
         nlohmann::json msg_event = {
-            {"role", "user"}, {"content", model_user_message},
+            {"role", "user"}, {"content", user_msg.content},
             {"is_tool", false}, {"id", user_msg.uuid},
         };
         if (!user_msg.content_parts.is_null() && user_msg.content_parts.is_array() &&
@@ -2710,8 +2992,48 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         }
         events_.emit(SessionEventKind::Message, msg_event);
     }
+}
 
+AgentLoop::UserTurnInfo AgentLoop::prepare_retry_user_turn(const ChatMessage& message) {
+    UserTurnInfo info;
+    info.user_msg = message;
+    info.turn_started_at_ms = now_epoch_ms();
+    const auto* tail = trailing_transcript_message(messages_);
+    if (tail && tail->role != "user") {
+        // An aborted turn may already contain assistant/tool output. Preserve
+        // it and append the original input with a fresh identity, without
+        // expanding skills or attachments for a second time.
+        info.user_msg.uuid.clear();
+        info.user_msg.timestamp.clear();
+        if (info.user_msg.metadata.is_object()) {
+            for (const auto* key : {"client_message_id", "turn_steer", "turn_id",
+                                    "turn_interrupt", "interrupted_turn_id"}) {
+                info.user_msg.metadata.erase(key);
+            }
+        }
+        append_user_turn_message(info, false);
+        start_user_turn(info);
+        return info;
+    }
+    info.active_turn_id = message.uuid;
+    info.visible_timed_turn = true;
+    info.turn_user_uuid = message.uuid;
+    // Preserve the original checkpoint and message. Re-expansion or a second
+    // on_message call would change the input or create adjacent user records.
+    start_user_turn(info);
+    return info;
+}
+
+void AgentLoop::start_user_turn(const UserTurnInfo& info) {
     if (session_manager_) {
+        if (info.visible_timed_turn) {
+            session_manager_->record_trajectory_event(
+                "turn_start",
+                {{"turn_id", info.active_turn_id},
+                 {"user_message_id", info.turn_user_uuid},
+                 {"started_at_ms", info.turn_started_at_ms}},
+                info.turn_started_at_ms);
+        }
         session_manager_->record_trajectory_event(
             "busy_changed",
             {{"busy", true}, {"turn_id", info.active_turn_id}});
@@ -2724,8 +3046,6 @@ AgentLoop::UserTurnInfo AgentLoop::prepare_user_turn(const UserInput& input,
         {"busy", true},
         {"turn_id", info.active_turn_id},
     });
-
-    return info;
 }
 
 AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
@@ -2748,13 +3068,15 @@ AgentLoop::ApiRequestBundle AgentLoop::build_api_request_messages(
         acecode::environment::prompt_environment();
     const SystemPromptSandboxState sandbox_state{sandbox_prompt_description()};
     const SystemPromptModelState model_state = system_prompt_model_state();
+    const SystemPromptWorkspaceFolders workspace_folders_state = system_prompt_workspace_folders();
     std::string system_prompt = build_system_prompt(
         tools_, cwd_, skill_registry_, memory_registry_,
         memory_cfg_, project_instructions_cfg_,
         &tool_capability_policy_,
         &worktree_state,
         active_model_can_read_images(),
-        &prompt_environment, &sandbox_state, &model_state);
+        &prompt_environment, &sandbox_state, &model_state,
+        &workspace_folders_state);
     if (loop_execution_policy_.active && !loop_execution_policy_.system_context.empty()) {
         system_prompt += "\n\n<loop-execution>\n";
         system_prompt += loop_execution_policy_.system_context;
@@ -3101,6 +3423,139 @@ void AgentLoop::emit_retry_lifecycle(
         opts);
 }
 
+// ---------------------------------------------------------------------------
+// 工具前言(openspec add-tool-preamble)
+// ---------------------------------------------------------------------------
+
+void AgentLoop::set_tool_preamble_config(const ToolPreambleConfig& cfg) {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    tool_preamble_cfg_ = cfg;
+}
+
+ToolPreambleConfig AgentLoop::tool_preamble_config() const {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    return tool_preamble_cfg_;
+}
+
+bool AgentLoop::concrete_activity_enabled() const {
+    return tool_preamble_config().enabled;
+}
+
+void AgentLoop::set_phase_preamble(const ToolPreambleTitle& preamble) {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = preamble;
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::phase_preamble() const {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    return phase_preamble_;
+}
+
+void AgentLoop::publish_phase_preamble(const ToolPreambleTitle& preamble,
+                                       const ProgressEmitter& emit_progress) {
+    if (preamble.title.empty()) return;
+    set_phase_preamble(preamble);
+    // 独立的 phase 键 + force,绕开进度节流:标题一出现 loading 就换文案,
+    // 不用等下一条 reasoning / tool_planning。
+    emit_progress("preamble", preamble.title, std::string{},
+                  std::string{}, std::string{}, -1, true);
+}
+
+void AgentLoop::note_planned_tool(int tool_index, const std::string& native_name) {
+    if (tool_index < 0 || native_name.empty()) return;
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    const auto index = static_cast<std::size_t>(tool_index);
+    if (step_planned_tools_.size() <= index) step_planned_tools_.resize(index + 1);
+    step_planned_tools_[index] = native_name;
+}
+
+void AgentLoop::reset_activity_for_step() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+}
+
+void AgentLoop::reset_activity_for_turn() {
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    phase_preamble_ = {};
+    step_planned_tools_.clear();
+    current_batch_activity_ = {};
+    last_batch_tools_.clear();
+    last_announced_activity_.clear();
+}
+
+void AgentLoop::announce_activity(const std::string& label) {
+    if (label.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+        if (label == last_announced_activity_) return;
+        last_announced_activity_ = label;
+    }
+    if (callbacks_.on_thinking_title) callbacks_.on_thinking_title(label);
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::concrete_activity_for_phase(
+    const std::string& phase) const {
+    if (!concrete_activity_enabled()) return {};
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    if (phase == "responding") {
+        return {tool_preamble::kRespondingActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    const bool tool_phase = phase == "tool_running" || phase == "tool_planning";
+    const bool waiting_phase =
+        phase == "model_waiting" || phase == "reasoning" || phase == "preamble";
+    if (!tool_phase && !waiting_phase) return {};
+    if (phase == "tool_running" && !current_batch_activity_.title.empty()) {
+        return current_batch_activity_;
+    }
+    if (tool_phase) {
+        std::vector<std::string> planned;
+        for (const auto& name : step_planned_tools_) {
+            if (!name.empty()) planned.push_back(name);
+        }
+        if (!phase_preamble_.title.empty()) {
+            ToolPreambleTitle out = phase_preamble_;
+            out.kind = tool_preamble::batch_activity_kind(planned);
+            return out;
+        }
+        if (!planned.empty()) {
+            return {tool_preamble::batch_activity_label(planned),
+                    tool_preamble::kSourceTemplate,
+                    tool_preamble::batch_activity_kind(planned)};
+        }
+    }
+    if (!phase_preamble_.title.empty()) return phase_preamble_;
+    if (last_batch_tools_.empty()) {
+        return {tool_preamble::kInitialActivityLabel, tool_preamble::kSourceContext, ""};
+    }
+    return {tool_preamble::after_batch_activity_label(last_batch_tools_),
+            tool_preamble::kSourceContext, ""};
+}
+
+AgentLoop::ToolPreambleTitle AgentLoop::resolve_tool_preamble_for_step(
+    ProviderCallResult& result) {
+    const ChatResponse& accumulated = result.accumulated;
+    if (!concrete_activity_enabled() || accumulated.tool_calls.empty()) return {};
+    std::vector<std::string> names;
+    names.reserve(accumulated.tool_calls.size());
+    for (const auto& tc : accumulated.tool_calls) names.push_back(tc.function_name);
+    ToolPreambleTitle out;
+    out.kind = tool_preamble::batch_activity_kind(names);
+    const ToolPreambleTitle title = phase_preamble();
+    if (!title.title.empty()) {
+        out.title = title.title;
+        out.source = tool_preamble::kSourceReasoning;
+    } else {
+        out.title = tool_preamble::batch_activity_label(names);
+        out.source = tool_preamble::kSourceTemplate;
+    }
+    std::lock_guard<std::mutex> lk(tool_preamble_mu_);
+    last_batch_tools_ = std::move(names);
+    current_batch_activity_ = out;
+    return out;
+}
+
 AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     const std::shared_ptr<LlmProvider>& provider,
     const ApiRequestBundle& bundle,
@@ -3116,10 +3571,40 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     int provider_attempt = 1;
     bool first_output_recorded = false;
 
+    // 具体进度提示(add-tool-preamble):本次调用期间的开关快照。开启时在推理流
+    // 里抠第一对加粗标题作本步文案;正文开始流出时 loading 换成「正在撰写回复」。
+    // 每次调用(含重试)都从干净的本步状态开始。
+    const bool concrete = concrete_activity_enabled();
+    bool reasoning_title_found = false;
+    bool step_text_started = false;
+    reset_activity_for_step();
+    text_preamble_scanner_.reset();
+    // 正文增量的统一出口:可见文本给 TUI / Web。
+    auto publish_visible_text = [&](const std::string& text) {
+        if (text.empty()) return;
+        if (concrete && !step_text_started &&
+            text.find_first_not_of(" \t\r\n") != std::string::npos) {
+            step_text_started = true;
+            emit_progress("responding", tool_preamble::kRespondingActivityLabel,
+                          std::string{}, std::string{}, std::string{}, -1, true);
+        }
+        if (callbacks_.on_delta) {
+            callbacks_.on_delta(text);
+        }
+        events_.emit(SessionEventKind::Token, nlohmann::json{{"text", text}});
+    };
+    // 历史里残留的 <text_preamble> 标签(前一版要求模型打标签)总是从可见正文里
+    // 剥掉,不再当 loading 文案。
+    auto publish_scanned = [&](tool_preamble::TextPreambleScanner::Output out) {
+        publish_visible_text(out.visible);
+    };
+
     auto stream_callback = [&result, &resp_mu, &emit_progress, &bundle,
                             &reasoning_bytes, &reasoning_fragments,
                             &provider_attempt, &first_output_recorded,
-                            model_step_index,
+                            &reasoning_title_found, &step_text_started,
+                            &publish_scanned,
+                            model_step_index, concrete,
                             this](const StreamEvent& evt) {
         switch (evt.type) {
         case StreamEventType::Delta:
@@ -3135,12 +3620,11 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             {
                 std::lock_guard<std::mutex> lk(resp_mu);
+                // 落盘正文保留标签原文(模型会模仿自己的历史输出,剥掉历史
+                // 反而让它几轮后忘记格式);只有下发给界面的 token 流是剥过的。
                 result.accumulated.content += evt.content;
             }
-            if (callbacks_.on_delta) {
-                callbacks_.on_delta(evt.content);
-            }
-            events_.emit(SessionEventKind::Token, nlohmann::json{{"text", evt.content}});
+            publish_scanned(text_preamble_scanner_.feed(evt.content));
             break;
         case StreamEventType::ReasoningDelta:
             if (!evt.content.empty() && !first_output_recorded) {
@@ -3159,6 +3643,27 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             }
             reasoning_bytes += evt.content.size();
             reasoning_fragments++;
+            if (concrete && !reasoning_title_found) {
+                std::string reasoning_so_far;
+                {
+                    std::lock_guard<std::mutex> lk(resp_mu);
+                    reasoning_so_far = result.accumulated.reasoning_content;
+                }
+                const std::string bold =
+                    tool_preamble::extract_first_bold_span(reasoning_so_far);
+                if (!bold.empty()) {
+                    const std::string title = tool_preamble::normalize_title_line(
+                        bold, tool_preamble::kReasoningTitleMaxCodePoints);
+                    if (!title.empty()) {
+                        reasoning_title_found = true;
+                        ToolPreambleTitle found;
+                        found.title = title;
+                        found.source = tool_preamble::kSourceReasoning;
+                        publish_phase_preamble(found, emit_progress);
+                    }
+                }
+            }
+            // 开启具体进度提示时,发射口会把这条换成本步标题或场景文案。
             emit_progress("reasoning", "正在推理",
                 "片段 " + std::to_string(reasoning_fragments) + ", " +
                 human_bytes(reasoning_bytes),
@@ -3166,6 +3671,16 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             events_.emit(SessionEventKind::Reasoning, nlohmann::json{{"text", evt.content}});
             break;
         case StreamEventType::ToolCallDelta:
+            if (evt.text_tool_call_hold) {
+                // provider 正在扣住一段疑似文本工具调用:只是进度提示,不代表
+                // 模型已经开始输出原生调用,所以不记 model_first_output 的
+                // channel(等真正的正文或调用出现时再记),也不走工具名解析 /
+                // 前言抽取(tool_index=-1、工具名为空)。
+                emit_progress("tool_planning", "正在准备工具调用",
+                    human_bytes(evt.tool_call_argument_bytes),
+                    std::string{}, std::string{}, -1, false);
+                break;
+            }
             if (!first_output_recorded) {
                 first_output_recorded = true;
                 if (session_manager_) {
@@ -3183,6 +3698,8 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 const std::string label = tool_name.empty()
                     ? "正在准备工具调用"
                     : "正在准备调用 " + tool_name;
+                // 具体进度提示:记下本步流出来的工具,发射口据此拼「正在读取 2 个文件」。
+                note_planned_tool(evt.tool_index, tool_name);
                 emit_progress("tool_planning", label,
                     format_bytes_detail(evt.tool_call_argument_bytes),
                     tool_name, evt.tool_call.id, evt.tool_index, false);
@@ -3204,8 +3721,10 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
                 native_call.function_name =
                     tools_.resolve_model_tool_name_to_native(
                         native_call.function_name);
-                std::lock_guard<std::mutex> lk(resp_mu);
-                result.accumulated.tool_calls.push_back(std::move(native_call));
+                {
+                    std::lock_guard<std::mutex> lk(resp_mu);
+                    result.accumulated.tool_calls.push_back(std::move(native_call));
+                }
             }
             break;
         case StreamEventType::Done: {
@@ -3218,6 +3737,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             if (evt.content_parts.is_array() && !evt.content_parts.empty()) {
                 result.accumulated.content_parts = evt.content_parts;
             }
+            // 文本形式工具调用的诊断(fix-feedback-0924 第 3 条):主循环据此
+            // 决定是否注入纠正提示重试,而不是把被拒的回复当纯文本静默结束。
+            result.accumulated.text_tool_calls = evt.text_tool_calls;
             break;
         }
         case StreamEventType::Usage: {
@@ -3248,6 +3770,10 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
             reasoning_fragments = 0;
             ++provider_attempt;
             first_output_recorded = false;
+            reasoning_title_found = false;
+            step_text_started = false;
+            reset_activity_for_step();
+            text_preamble_scanner_.reset();
             if (callbacks_.on_stream_retry_reset) {
                 callbacks_.on_stream_retry_reset();
             }
@@ -3297,6 +3823,9 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
         provider->chat_stream(bundle.messages_with_system, bundle.tool_defs,
                               stream_callback, &abort_requested_);
         clear_active_provider_for_retry(provider);
+        // 流结束:把扫描器扣住的字节结清(半截开标签按正文放行,没闭合的标签
+        // 正文仍算前言)。
+        publish_scanned(text_preamble_scanner_.flush());
         LOG_INFO("chat_stream returned. content_len=" +
                  std::to_string(result.accumulated.content.size()) +
                  " tool_calls=" + std::to_string(result.accumulated.tool_calls.size()));
@@ -3324,6 +3853,10 @@ AgentLoop::ProviderCallResult AgentLoop::call_provider_and_collect(
     if (!result.provider_error_seen &&
         !abort_requested_.load() &&
         final_usage.has_data) {
+        // Record at the same boundary as live accounting, before consumers
+        // can throw and transfer control to worker recovery.
+        accumulate_turn_usage(
+            active_turn_usage_, active_turn_usage_initialized_, final_usage);
         last_api_total_tokens_.store(
             final_usage.total_tokens > 0
                 ? final_usage.total_tokens
@@ -3583,19 +4116,19 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                 if (!waiting_for_recovery && state.same_request_retries == 1) {
                     emit_transcript_system_message(
                         "[智能压缩] 服务端报「请求上下文过大」，先原样重发确认"
-                        "是否为瞬时故障；确认拒收后才会收缩历史。");
+                        "是否为瞬时故障；确认拒收后才会收缩历史。",
+                        make_system_notice_metadata("context_retrying"));
                 } else if (waiting_for_recovery && state.wait_retries == 1) {
                     emit_transcript_system_message(
                         "[智能压缩] 请求已缩到最小仍被服务端拒收；将按 5 秒起、"
                         "最长 60 秒的间隔反复重试（最多 " +
                         std::to_string(pa::PA_RESCUE_MAX_WAIT_RETRIES) +
-                        " 次），可随时停止。");
+                        " 次），可随时停止。", make_system_notice_metadata("context_waiting",
+                            {{"attempts", pa::PA_RESCUE_MAX_WAIT_RETRIES}}));
                 }
                 emit_pa_rescue_wait_progress(
                     error, plan, attempt, max_attempts, true);
                 if (!wait_for_pa_rescue_delay(plan.wait_ms)) {
-                    dispatch_message("system", abort_notice_text(), false,
-                                     abort_notice_metadata());
                     return HandleErrorResult::Break;
                 }
                 emit_pa_rescue_wait_progress(
@@ -3645,7 +4178,9 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                     " 次收缩）：已丢弃最旧的 " +
                     std::to_string(repair.pruned_groups) + " 组历史、清除 " +
                     std::to_string(repair.cleared_tool_outputs) +
-                    " 条旧工具输出后重试。");
+                    " 条旧工具输出后重试。", make_system_notice_metadata("context_history_pruned",
+                        {{"round", state.shrink_rounds}, {"groups", repair.pruned_groups},
+                         {"outputs", repair.cleared_tool_outputs}}));
                 skip_auto_compact_once_ = true;
                 return HandleErrorResult::Continue;
             }
@@ -3659,7 +4194,8 @@ AgentLoop::HandleErrorResult AgentLoop::run_pa_overflow_rescue(
                     {"label", plan.label},
                     {"detail", "去掉工具定义与注入上下文，仅保留核心工具"},
                 });
-                emit_transcript_system_message("[智能压缩] " + plan.label + "。");
+                emit_transcript_system_message("[智能压缩] " + plan.label + "。",
+                    make_system_notice_metadata("context_emergency"));
                 skip_auto_compact_once_ = true;
                 return HandleErrorResult::Continue;
             }
@@ -3793,6 +4329,37 @@ bool AgentLoop::execute_tool_calls(
     std::string& turn_timing_status) {
     // Record the assistant message with tool_calls in the history
     auto tc_msg = ToolExecutor::format_assistant_tool_calls(accumulated);
+    // 文本工具调用恢复成功:消息本体与原生调用字节级同形(不会发给模型的
+    // metadata 只多一个诊断字段),让后续历史里出现原生调用可供模仿。
+    if (accumulated.text_tool_calls.outcome ==
+        TextToolCallDiagnostic::Outcome::Recovered) {
+        if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
+        tc_msg.metadata["text_tool_call_recovery"] = {
+            {"format", accumulated.text_tool_calls.format},
+            {"count", accumulated.text_tool_calls.recovered_count > 0
+                          ? accumulated.text_tool_calls.recovered_count
+                          : static_cast<int>(accumulated.tool_calls.size())},
+        };
+    }
+    // 工具前言(add-tool-preamble):本批次沿用的阶段前言挂在这条
+    // assistant(tool_calls) 消息的 metadata 上落盘(只为记录,不还原任何显示行),
+    // 实时界面经每个调用的 tool_start.preamble 拿到它。
+    const ToolPreambleTitle step_preamble = std::move(current_step_preamble_);
+    current_step_preamble_ = {};
+    nlohmann::json preamble_metadata;
+    if (!step_preamble.title.empty()) {
+        preamble_metadata = {
+            {"source", step_preamble.source},
+            {"title", step_preamble.title},
+            {"kind", step_preamble.kind},
+        };
+        if (!tc_msg.metadata.is_object()) tc_msg.metadata = nlohmann::json::object();
+        tc_msg.metadata[tool_preamble::kMetadataKey] = preamble_metadata;
+    }
+    // 单个调用的前言 = 本批次的阶段前言。
+    auto preamble_for_call = [&step_preamble](const ToolCall&, std::size_t) {
+        return step_preamble.title;
+    };
     messages_.push_back(tc_msg);
     if (session_manager_) session_manager_->on_message(tc_msg);
     dispatch_assistant_completed_hook(tc_msg, provider_snapshot);
@@ -3804,18 +4371,28 @@ bool AgentLoop::execute_tool_calls(
     // 自愈(磁盘已落全量,所以切会话重载才恢复)。这里补发一条 assistant 文本的
     // Message 事件让前端用完整文本整体替换草稿。仅走 web 的 events_,不经
     // dispatch_message 的 on_message 回调,避免改变 TUI 的流式渲染行为。
-    if (!accumulated.content.empty()) {
+    // 工具前言:正文里的 <text_preamble> 标签不进界面(id 仍按落盘原文算,与
+    // GET /messages 重读一致);整段都是标签时不发这条帧。
+    const std::string visible_content =
+        tool_preamble::strip_text_preamble_tags(accumulated.content);
+    const bool has_content_parts =
+        accumulated.content_parts.is_array() && !accumulated.content_parts.empty();
+    if (!visible_content.empty() || has_content_parts) {
         ChatMessage id_basis;
         id_basis.role = "assistant";
         id_basis.content = accumulated.content;
         nlohmann::json assistant_event = {
             {"role", "assistant"},
-            {"content", accumulated.content},
+            {"content", visible_content},
             {"is_tool", false},
             {"id", web::compute_message_id(id_basis)},
         };
-        if (accumulated.content_parts.is_array() && !accumulated.content_parts.empty()) {
+        if (has_content_parts) {
             assistant_event["content_parts"] = accumulated.content_parts;
+        }
+        if (preamble_metadata.is_object()) {
+            assistant_event["metadata"] = {
+                {tool_preamble::kMetadataKey, preamble_metadata}};
         }
         events_.emit(SessionEventKind::Message, std::move(assistant_event));
     }
@@ -3834,7 +4411,7 @@ bool AgentLoop::execute_tool_calls(
         const auto& tc = accumulated.tool_calls[i];
         bool ro = tools_.is_read_only(tc.function_name);
         ToolCallEntry entry{i, &tc, ro};
-        if (ro) {
+        if (tools_.can_execute_in_parallel(tc.function_name)) {
             read_entries.push_back(entry);
         } else {
             write_entries.push_back(entry);
@@ -3911,16 +4488,18 @@ bool AgentLoop::execute_tool_calls(
             tool_name != "create_workspace") {
             const std::string boundary_error =
                 PathValidator(boundary_root, false).validate(path);
-            if (!boundary_error.empty()) {
+            if (!boundary_error.empty() && !path_in_workspace_folders(path)) {
                 return "Write boundary blocked: " + path +
                        " is outside the session write root " + boundary_root +
                        ". Reads may go anywhere, but every write must stay inside "
                        "the worktree / execution root.";
             }
         }
-        return is_cwd_validation_exempt(tool_name, path, boundary_root)
-            ? std::string{}
-            : path_validator_.validate(path);
+        if (is_cwd_validation_exempt(tool_name, path, boundary_root)) return {};
+        std::string cwd_error = path_validator_.validate(path);
+        // 「编辑项目」的附加文件夹与工作目录同等对待。
+        if (!cwd_error.empty() && path_in_workspace_folders(path)) return {};
+        return cwd_error;
     };
 
     // Helper: execute a single tool (for both parallel and serial use).
@@ -3949,7 +4528,10 @@ bool AgentLoop::execute_tool_calls(
             }
         } else {
             LOG_WARN("Unknown tool: " + tool_name);
-            return ToolResult{"Unknown tool: " + tool_name, false};
+            return ToolResult{
+                ToolErrors::unknown_tool(tool_name,
+                                         current_request_model_tool_names_),
+                false};
         }
     };
 
@@ -3983,7 +4565,9 @@ bool AgentLoop::execute_tool_calls(
             project_dir,
             session_id,
             [this](const std::string& path) {
-                return path_validator_.validate(path);
+                std::string error = path_validator_.validate(path);
+                if (!error.empty() && path_in_workspace_folders(path)) error.clear();
+                return error;
             },
             cwd_);
         result.attachments = std::move(materialized.attachments);
@@ -4068,6 +4652,7 @@ bool AgentLoop::execute_tool_calls(
         auto tool_start_tp = std::chrono::steady_clock::now();
         const std::int64_t tool_started_at_ms = now_epoch_ms();
         const int tool_index_int = static_cast<int>(tool_index);
+        const std::string call_preamble = preamble_for_call(tc, tool_index);
 
         {
             nlohmann::json args_payload;
@@ -4078,10 +4663,17 @@ bool AgentLoop::execute_tool_calls(
                 cmd_preview, display_override,
                 is_task_complete, tc.id, tool_index_int);
             start_payload["started_at_ms"] = tool_started_at_ms;
+            // 工具前言:这次调用的前言随 tool_start 下发,工具行 / loading 直接用。
+            if (!call_preamble.empty()) {
+                start_payload["preamble"] = call_preamble;
+                start_payload["preamble_source"] = step_preamble.source;
+                start_payload["preamble_kind"] = step_preamble.kind;
+            }
             events_.emit(
                 SessionEventKind::ToolStart, std::move(start_payload));
         }
 
+        // 开启具体进度提示时,发射口把这条换成本批次文案、清掉命令预览。
         emit_progress("tool_running", "正在调用工具 " + tc.function_name,
             cmd_preview, tc.function_name, tc.id, tool_index_int, true);
 
@@ -4227,7 +4819,7 @@ bool AgentLoop::execute_tool_calls(
         };
         ProgressGuard guard;
         if (emit_tui_progress && callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview);
+            callbacks_.on_tool_progress_start(tc.function_name, cmd_preview, std::string{});
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 
@@ -4636,12 +5228,14 @@ bool AgentLoop::execute_tool_calls(
                 bool auto_allow = true;
                 for (const auto& rule_path : rule_paths) {
                     if (!permissions_.should_auto_allow(
-                            effective_tc.function_name, false, rule_path, ctx_command)) {
+                            effective_tc.function_name,
+                            tools_.is_read_only(effective_tc.function_name), rule_path, ctx_command)) {
                         auto_allow = false;
                     }
                 }
                 if (permissions_.mode() == PermissionMode::Plan) {
-                    auto_allow = targets_active_plan_file || effective_tc.function_name == "TodoWrite";
+                    auto_allow = tools_.is_read_only(effective_tc.function_name) ||
+                        targets_active_plan_file || effective_tc.function_name == "TodoWrite";
                 }
                 if (effective_tc.function_name == "ExitPlanMode" &&
                     permissions_.mode() != PermissionMode::Plan) {
@@ -4665,7 +5259,8 @@ bool AgentLoop::execute_tool_calls(
                         permissions_.mode() == PermissionMode::Yolo &&
                         !permissions_.is_dangerous()) {
                         const std::string boundary_rejection =
-                            loop_shell_write_escape_reason(ctx_command, boundary_root);
+                            loop_shell_write_escape_reason(ctx_command, boundary_root,
+                                                           writable_workspace_folders());
                         if (!boundary_rejection.empty()) {
                             audit_gate(security::kAuditDecisionForbidden, security::kAuditSourceRule, "write_boundary");
                             return ToolResult{"[Error] " + boundary_rejection, false};
@@ -4887,7 +5482,8 @@ bool AgentLoop::execute_tool_calls(
                                                                   : security::kAuditDecisionAllow,
                         security::kAuditSourceUser,
                         exec_permission ? exec_permission->decision.reason : "confirmation");
-                    emit_progress("tool_running", "正在调用工具 " + effective_tc.function_name,
+                    emit_progress("tool_running",
+                        "正在调用工具 " + effective_tc.function_name,
                         effective_tc.function_name, effective_tc.function_name, effective_tc.id,
                         static_cast<int>(entry.original_index), true);
                     if (perm == PermissionResult::AllowScoped) {
@@ -5211,11 +5807,21 @@ bool AgentLoop::execute_tool_calls(
 }
 
 void AgentLoop::run_agent_with_input(const UserInput& input,
-                                      bool hidden_goal_context) {
+                                      bool hidden_goal_context,
+                                      const ChatMessage* retry_message) {
+    // Capture the owner before callbacks can switch/delete the active session.
+    // RAII also releases on exceptions and early hook returns.
+    struct DesktopTurnLease {
+        std::string owner;
+        ~DesktopTurnLease() { computer_use::release_session(owner); }
+    } desktop_turn_lease{session_manager_ ? session_manager_->current_session_id() : std::string{}};
     {
         std::lock_guard<std::mutex> lock(sandbox_prompt_mutex_);
         sandbox_prompt_snapshot_.reset();
     }
+    // 「编辑项目」保存的附加文件夹:每回合开头重读,放在沙盒描述快照之前,
+    // 本回合的系统提示与可写根一致且回合内不变(prompt cache 前缀稳定)。
+    refresh_workspace_folders();
     abort_requested_ = false;
     turn_interrupt_requested_ = false;
     busy_ = true;
@@ -5248,16 +5854,25 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             if (callbacks_.on_turn_finished) {
                 callbacks_.on_turn_finished("error");
             }
-            record_terminal_trajectory_events(
-                {{"busy", false}, {"outcome", "error"}},
-                {{"outcome", "error"}});
+            const std::string turn_id = generate_uuid();
+            const auto usage = model_step_usage_to_json(active_turn_usage_);
+            const nlohmann::json idle = {
+                {"busy", false},
+                {"outcome", "error"},
+                {"turn_id", turn_id},
+                {"usage", usage},
+            };
+            const nlohmann::json done = {
+                {"outcome", "error"},
+                {"turn_id", turn_id},
+                {"usage", usage},
+            };
+            record_terminal_trajectory_events(idle, done);
             if (callbacks_.on_busy_changed) callbacks_.on_busy_changed(false);
             record_turn_outcome("error");
             busy_ = false;
-            events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
-                {"busy", false}, {"outcome", "error"}});
-            events_.emit(SessionEventKind::Done, nlohmann::json{
-                {"outcome", "error"}});
+            events_.emit(SessionEventKind::BusyChanged, idle);
+            events_.emit(SessionEventKind::Done, done);
             maybe_continue_goal();
             return;
         }
@@ -5277,12 +5892,15 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     // already-recorded history. Persisting first would put the new request into
     // the summary and append the checkpoint after the input, breaking replay.
     bool preturn_compaction_failed = false;
-    if (active_estimate_exceeds_auto_threshold(&input)) {
+    if (!retry_message && active_estimate_exceeds_auto_threshold(&input)) {
         preturn_compaction_failed = !maybe_run_auto_compact();
     }
 
     // Phase 1: Build and persist user message after the pre-turn compact attempt.
-    auto turn_info = prepare_user_turn(input, hidden_goal_context);
+    auto turn_info = retry_message
+        ? prepare_retry_user_turn(*retry_message)
+        : prepare_user_turn(input, hidden_goal_context);
+    if (session_manager_) desktop_turn_lease.owner = session_manager_->current_session_id();
     std::string turn_timing_status = "completed";
     if (preturn_compaction_failed) {
         turn_timing_status = "error";
@@ -5297,6 +5915,7 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     bool emergency_request_profile = false;
     pa_rescue_state_ = pa::RescueState{};
     skip_auto_compact_once_ = false;
+    reset_activity_for_turn();
 
     const int max_iter = loop_cfg_.max_iterations;
     const bool has_max_iterations = max_iter > 0;
@@ -5308,6 +5927,14 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     // 一旦某轮产出有效输出(文本或工具调用)即清零。
     constexpr int kMaxEmptyResponseRetries = 2;
     int empty_response_retries = 0;
+    // 文本形式工具调用纠正(fix-feedback-0924 第 3 条):模型把调用写进正文、
+    // provider 认出了意图却无法执行(非法名 / 参数 / 截断 / 块前有正文 / 可疑
+    // 标记)时,注入隐藏纠正提示重试。按连续次数计,某一步产出工具调用即清零;
+    // XML / JSON 形态上限 2 次(与空回复一致,每次都是带全量工具表的整段请求),
+    // DSML 只 1 次(那是网关把 DeepSeek 原生协议漏进了正文,纠正文本作用有限)。
+    constexpr int kMaxTextToolCallCorrections = 2;
+    constexpr int kMaxDsmlToolCallCorrections = 1;
+    int text_tool_call_corrections = 0;
     AgentLoopDoomGuard doom_guard;
     std::mutex doom_guard_mu;
     int observed_compact_generation = compact_generation_.load(std::memory_order_relaxed);
@@ -5337,6 +5964,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                    bool force = false) {
         const auto now = std::chrono::steady_clock::now();
         const std::string key = phase + "\0" + tool + "\0" + tool_call_id + "\0" + std::to_string(tool_index);
+        // 具体进度提示(add-tool-preamble,「适合日常工作」):开启时 loading 只说正在
+        // 做什么、不带参数 —— 等待 / 推理 / 准备调用 / 执行 / 撰写回复这几类 phase 的
+        // 文案在这里统一换成 推理加粗标题 > 工具模板 > 场景文案,detail(命令预览、
+        // 字节数、片段计数)一律清空;权限 / 提问 / 压缩 / 重试这些必须被看见的状态
+        // 不换。批次之间的 model_waiting 也换(「正在分析文件内容」),否则 Web 实时行
+        // 会在具体文案与「正在等待模型响应」之间闪动。
+        const ToolPreambleTitle preamble = concrete_activity_for_phase(phase);
+        const bool concrete_label = !preamble.title.empty();
+        const std::string effective_label = concrete_label ? preamble.title : label;
+        const std::string effective_detail = concrete_label ? std::string{} : detail;
+        if (concrete_label) announce_activity(preamble.title);
         nlohmann::json payload;
         {
             std::lock_guard<std::mutex> lk(progress_mu);
@@ -5351,8 +5989,17 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             }
             last_progress_emit_at = now;
             payload = build_agent_progress_payload(
-                phase, label, detail, tool, tool_call_id, tool_index,
+                phase, effective_label, effective_detail, tool, tool_call_id, tool_index,
                 active_progress_started_at_ms);
+        }
+        // 具体文案随进度帧透传,界面据此区分它与普通阶段文案;kind 给以后的
+        // 读 / 写效果留位。
+        if (concrete_label) {
+            payload["preamble"] = {
+                {"title", preamble.title},
+                {"source", preamble.source},
+                {"kind", preamble.kind},
+            };
         }
         EventDispatcher::EmitOptions opts;
         opts.buffered = true;
@@ -5489,6 +6136,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             payload["error"] = provider_error_to_json(
                 result.provider_error_info);
         }
+        if (result.accumulated.text_tool_calls.outcome !=
+            TextToolCallDiagnostic::Outcome::None) {
+            payload["text_tool_calls"] = text_tool_call_diagnostic_to_json(
+                result.accumulated.text_tool_calls);
+        }
         if (!result.accumulated.content.empty()) {
             ChatMessage id_basis;
             id_basis.role = "assistant";
@@ -5513,8 +6165,6 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
 
         if (abort_requested_) {
             LOG_WARN("Abort requested, breaking loop");
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
             break;
         }
 
@@ -5544,6 +6194,11 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         // Phase 2: Build API request messages
         auto bundle = build_api_request_messages(emergency_request_profile);
         publish_side_question_context(bundle.messages_with_system);
+        current_request_model_tool_names_.clear();
+        current_request_model_tool_names_.reserve(bundle.tool_defs.size());
+        for (const auto& def : bundle.tool_defs) {
+            current_request_model_tool_names_.push_back(def.name);
+        }
 
         // Get provider snapshot
         std::shared_ptr<LlmProvider> provider_snapshot;
@@ -5575,8 +6230,22 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
         TokenUsage step_usage = provider_result.accumulated.usage;
 
         if (abort_requested_) {
-            dispatch_message(
-                "system", abort_notice_text(), false, abort_notice_metadata());
+            const auto& output = provider_result.accumulated;
+            if (!output.content.empty() ||
+                (output.content_parts.is_array() && !output.content_parts.empty())) {
+                // Keep already displayed output across history reloads. An
+                // interrupted response (especially partial tool calls) is not
+                // a completed provider message, so it remains transcript-only.
+                ChatMessage partial;
+                partial.role = "assistant";
+                partial.content = output.content;
+                partial.content_parts = output.content_parts;
+                partial.reasoning_content = output.reasoning_content;
+                partial.metadata = {{"transcript_only", true}, {"interrupted_output", true}};
+                if (session_manager_) session_manager_->on_message(partial);
+                dispatch_message(partial.role, partial.content, false,
+                                 partial.metadata, partial.content_parts);
+            }
             record_model_response(
                 current_model_step, provider_result, step_usage, "aborted");
             emit_model_step_finish(current_model_step, "aborted", step_usage);
@@ -5623,17 +6292,111 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             estimated_usage.completion_tokens = estimate_message_tokens({estimated_response});
             estimated_usage.total_tokens = estimated_usage.prompt_tokens + estimated_usage.completion_tokens;
             estimated_usage.has_data = false;
+            estimated_usage.context_breakdown = reconcile_context_usage_breakdown(
+                bundle.context_usage_estimate,
+                estimated_usage.prompt_tokens);
             step_usage = estimated_usage;
+            accumulate_turn_usage(
+                active_turn_usage_, active_turn_usage_initialized_, estimated_usage);
             account_goal_usage(estimated_usage.total_tokens, false);
             if (callbacks_.on_usage) callbacks_.on_usage(estimated_usage);
             if (session_manager_) session_manager_->record_token_usage(estimated_usage);
         }
-
         record_model_response(
             current_model_step, provider_result, step_usage, "completed");
 
         // Text-only response (no tool calls) → end the loop
         if (!provider_result.accumulated.has_tool_calls()) {
+            // 文本工具调用被拒:必须放在 response_is_blank 判断之前 —— provider
+            // 藏起标记后内容往往只剩空白,会被误判成空回复(错误的纠正文案)。
+            const TextToolCallDiagnostic& text_diag =
+                provider_result.accumulated.text_tool_calls;
+            if (text_diag.outcome == TextToolCallDiagnostic::Outcome::Rejected) {
+                TextToolCallDiagnostic diag = text_diag;
+                if (diag.reason == "truncated" &&
+                    provider_result.accumulated.finish_reason == "length") {
+                    diag.reason = "truncated_by_length";
+                }
+                const int limit = diag.format == "dsml"
+                    ? kMaxDsmlToolCallCorrections
+                    : kMaxTextToolCallCorrections;
+
+                // 被拒的 assistant 消息去掉标记后落盘(原始标记只进 metadata /
+                // 日志 / trajectory);只剩空白时清成空串。
+                ChatMessage rejected_msg;
+                rejected_msg.role = "assistant";
+                rejected_msg.content = text_tool_call_rejected_persisted_content(
+                    provider_result.accumulated.content, diag);
+                rejected_msg.reasoning_content =
+                    provider_result.accumulated.reasoning_content;
+                rejected_msg.metadata = nlohmann::json{
+                    {"text_tool_call_rejected", text_tool_call_diagnostic_to_json(diag)},
+                };
+                messages_.push_back(rejected_msg);
+                if (session_manager_) session_manager_->on_message(rejected_msg);
+                if (!rejected_msg.content.empty()) {
+                    // 定稿消息替换流式草稿:可疑级已经流出的标记在界面上随之消失。
+                    dispatch_message("assistant", rejected_msg.content, false);
+                }
+
+                if (text_tool_call_corrections < limit) {
+                    ++text_tool_call_corrections;
+                    LOG_WARN("Text-form tool call rejected (format=" + diag.format +
+                             " reason=" + diag.reason + "); correction " +
+                             std::to_string(text_tool_call_corrections) + "/" +
+                             std::to_string(limit) + ": " + diag.error +
+                             " excerpt=" + log_truncate(diag.raw_excerpt, 300));
+
+                    // 与空回复重试同款注入:role=user + hidden_goal_context,
+                    // 进 API、持久化,TUI / Web 不显示。工具名取本次请求实际
+                    // 发给模型的模型侧名。
+                    ChatMessage correction;
+                    correction.role = "user";
+                    correction.content = build_text_tool_call_correction_prompt(
+                        diag, current_request_model_tool_names_);
+                    correction.metadata = nlohmann::json{
+                        {"hidden_goal_context", true},
+                        {"text_tool_call_correction", true},
+                    };
+                    ensure_user_message_identity(correction);
+                    messages_.push_back(correction);
+                    if (session_manager_) session_manager_->on_message(correction);
+
+                    emit_transcript_system_message(
+                        std::string(u8"[文本工具调用] 模型把工具调用写成了正文文本,未执行(") +
+                            diag.error + u8"),已要求其改用原生工具调用重发 " +
+                            std::to_string(text_tool_call_corrections) + "/" +
+                            std::to_string(limit) + u8"…",
+                        make_system_notice_metadata("response_text_tool_call_retry",
+                            {{"attempt", text_tool_call_corrections},
+                             {"attempts", limit},
+                             {"error", diag.error}}));
+
+                    if (total_iterations > 0) {
+                        --total_iterations; // 纠正轮不计入 max_iterations
+                    }
+                    emit_model_step_finish(
+                        current_model_step, "text_tool_call_retry", step_usage);
+                    continue;
+                }
+
+                LOG_ERROR("Text-form tool call still rejected after " +
+                          std::to_string(limit) + " correction(s); ending turn "
+                          "with error (format=" + diag.format + " reason=" +
+                          diag.reason + "): " + diag.error);
+                turn_timing_status = "error";
+                dispatch_message(
+                    "error",
+                    std::string(u8"[Error] 模型连续 ") + std::to_string(limit + 1) +
+                        u8" 次把工具调用写成正文文本,无法执行(最后一次:" +
+                        diag.error +
+                        u8")。任务未完成,请重试或换用支持原生工具调用的模型。",
+                    false);
+                stop_active_goal_after_turn_error(ProviderErrorInfo{});
+                emit_model_step_finish(current_model_step, "error", step_usage);
+                break;
+            }
+
             const bool has_content_parts =
                 provider_result.accumulated.content_parts.is_array() &&
                 !provider_result.accumulated.content_parts.empty();
@@ -5697,7 +6460,10 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                              : u8"无正文也无工具调用") +
                         u8"),自动重试 " +
                         std::to_string(empty_response_retries) + "/" +
-                        std::to_string(kMaxEmptyResponseRetries) + u8"…");
+                        std::to_string(kMaxEmptyResponseRetries) + u8"…",
+                        make_system_notice_metadata("response_empty_retry",
+                            {{"attempt", empty_response_retries}, {"attempts", kMaxEmptyResponseRetries},
+                             {"truncated", truncated_by_length}}));
 
                     if (total_iterations > 0) {
                         --total_iterations; // 空轮不计入 max_iterations
@@ -5739,15 +6505,28 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             auto completed_context = bundle.messages_with_system;
             completed_context.push_back(assistant_msg);
             publish_side_question_context(completed_context);
-            dispatch_message("assistant", provider_result.accumulated.content, false,
-                             nlohmann::json::object(),
-                             provider_result.accumulated.content_parts);
+            {
+                // 工具前言:模型若违规给最终回答也打了 <text_preamble> 标签,界面
+                // 照样剥掉;落盘正文保留原文。
+                const std::string visible_content =
+                    tool_preamble::strip_text_preamble_tags(
+                        provider_result.accumulated.content);
+                const bool has_parts =
+                    provider_result.accumulated.content_parts.is_array() &&
+                    !provider_result.accumulated.content_parts.empty();
+                if (!visible_content.empty() || has_parts) {
+                    dispatch_message("assistant", visible_content, false,
+                                     nlohmann::json::object(),
+                                     provider_result.accumulated.content_parts);
+                }
+            }
             emit_model_step_finish(
                 current_model_step, provider_result.accumulated.finish_reason,
                 step_usage);
             if (truncated_by_length) {
                 emit_transcript_system_message(
-                    u8"[输出截断] 本回复因输出 token 上限被截断,内容可能不完整。");
+                    u8"[输出截断] 本回复因输出 token 上限被截断,内容可能不完整。",
+                    make_system_notice_metadata("response_truncated"));
             }
             dispatch_assistant_completed_hook(assistant_msg, provider_snapshot);
             if (maybe_continue_from_stop_hook(provider_result.accumulated.content)) {
@@ -5759,14 +6538,42 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             break;
         }
 
-        // 本轮产出了有效输出(工具调用),连续空回复计数清零。
+        // 本轮产出了有效输出(工具调用),连续空回复 / 文本调用纠正计数清零。
         empty_response_retries = 0;
+        text_tool_call_corrections = 0;
+
+        // 工具前言(add-tool-preamble):在 assistant(tool_calls) 消息落盘之前把
+        // 本步沿用的阶段前言定下来,execute_tool_calls 开头把它挂进 metadata
+        // 并随 tool_start 下发。
+        current_step_preamble_ = resolve_tool_preamble_for_step(provider_result);
 
         // Phase 5: Execute tool calls
         terminator_fired = execute_tool_calls(
             provider_result.accumulated, provider_snapshot,
             emit_agent_progress, doom_guard, doom_guard_mu,
             turn_timing_status);
+        // 混合形态:同一回复里既有原生调用,又有与之不一致的文本调用(回显在
+        // provider 那边已剔除,记为 None 不会走到这里)。只执行了原生调用,
+        // 批次跑完后追加隐藏说明,免得模型以为文本里那几个也执行了。不消耗
+        // 纠正预算,不发界面通知。
+        if (provider_result.accumulated.text_tool_calls.outcome ==
+                TextToolCallDiagnostic::Outcome::IgnoredWithNative &&
+            !terminator_fired && !abort_requested_) {
+            const std::string note = build_text_tool_call_ignored_note(
+                provider_result.accumulated.text_tool_calls);
+            if (!note.empty()) {
+                ChatMessage ignored;
+                ignored.role = "user";
+                ignored.content = note;
+                ignored.metadata = nlohmann::json{
+                    {"hidden_goal_context", true},
+                    {"text_tool_call_ignored", true},
+                };
+                ensure_user_message_identity(ignored);
+                messages_.push_back(ignored);
+                if (session_manager_) session_manager_->on_message(ignored);
+            }
+        }
         emit_model_step_finish(
             current_model_step, provider_result.accumulated.finish_reason,
             step_usage);
@@ -5789,7 +6596,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
                                std::to_string(max_iter) + ")";
         LOG_WARN(stop_msg);
         turn_timing_status = "error";
-        dispatch_message("system", stop_msg, false);
+        dispatch_message("system", stop_msg, false,
+            make_system_notice_metadata("iteration_limit", {{"limit", max_iter}}));
         {
             // 走的是 system 角色,dispatch_message 的 error 收集点抓不到;
             // 子会话被 cap 截断时父会话同样要拿到原因。
@@ -5835,14 +6643,40 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
             turn_timing_status);
     }
 
+    if (abort_requested_) {
+        if (interrupted_for_new_turn) {
+            dispatch_message("system", "[Interjected]", false,
+                make_system_notice_metadata("turn_interjected", {}, {{"turn_interrupt", true}}));
+        } else {
+            const auto* user = trailing_transcript_message(messages_, true);
+            // Persist the completed stop, including its exact retry target.
+            // This notice stays out of the provider's message history.
+            emit_transcript_system_message("[Interrupted]", make_system_notice_metadata("turn_interrupted", {}, {
+                {"user_aborted", true},
+                {"retry_user_message_id", user ? user->uuid : std::string{}},
+            }));
+        }
+    }
+
+    // 回合结束:阶段前言不留到下一回合。
+    reset_activity_for_turn();
+    computer_use::release_session(desktop_turn_lease.owner);
     if (callbacks_.on_turn_finished) {
         callbacks_.on_turn_finished(turn_timing_status);
     }
-    record_terminal_trajectory_events(
-        {{"busy", false},
-         {"outcome", turn_timing_status},
-         {"turn_id", turn_info.active_turn_id}},
-        {{"outcome", turn_timing_status}});
+    const auto usage = model_step_usage_to_json(active_turn_usage_);
+    const nlohmann::json idle = {
+        {"busy", false},
+        {"outcome", turn_timing_status},
+        {"turn_id", turn_info.active_turn_id},
+        {"usage", usage},
+    };
+    const nlohmann::json done = {
+        {"outcome", turn_timing_status},
+        {"turn_id", turn_info.active_turn_id},
+        {"usage", usage},
+    };
+    record_terminal_trajectory_events(idle, done);
     if (callbacks_.on_busy_changed) {
         callbacks_.on_busy_changed(false);
     }
@@ -5854,13 +6688,8 @@ void AgentLoop::run_agent_with_input(const UserInput& input,
     }
     record_turn_outcome(turn_timing_status);
     busy_ = false;
-    events_.emit(SessionEventKind::BusyChanged, nlohmann::json{
-        {"busy", false},
-        {"outcome", turn_timing_status},
-        {"turn_id", turn_info.active_turn_id},
-    });
-    events_.emit(SessionEventKind::Done, nlohmann::json{
-        {"outcome", turn_timing_status}});
+    events_.emit(SessionEventKind::BusyChanged, idle);
+    events_.emit(SessionEventKind::Done, done);
     if (terminate_session_after_turn_) {
         // There must be no provider-visible state left for a deleted session.
         // The post-turn action owns writer teardown and persistent cleanup.
@@ -5923,7 +6752,8 @@ void AgentLoop::run_compact() {
         auto outcome = dispatch_codex_hook(kCodexHookEventPreCompact, "manual", payload);
         apply_hook_side_effects(outcome);
         if (outcome.continue_false || outcome.blocked || outcome.denied) {
-            emit_transcript_system_message("[Compact] Stopped by hook.");
+            emit_transcript_system_message("[Compact] Stopped by hook.",
+                make_system_notice_metadata("context_compact_stopped"));
             finish();
             return;
         }
@@ -6047,7 +6877,7 @@ void AgentLoop::run_shell(std::string command) {
         };
         ProgressGuard guard;
         if (callbacks_.on_tool_progress_start) {
-            callbacks_.on_tool_progress_start("bash", cmd_preview);
+            callbacks_.on_tool_progress_start("bash", cmd_preview, std::string{});
             guard.end_cb = callbacks_.on_tool_progress_end;
         }
 

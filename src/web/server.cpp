@@ -73,8 +73,9 @@ void route_exception_handler(crow::response& res) {
 } // namespace
 
 WebServer::Impl::~Impl() {
-    if (global_session_search) global_session_search->stop();
     const bool already_stopping = shutdown_requested.exchange(true);
+    if (model_reasoning_sync) model_reasoning_sync->stop();
+    if (global_session_search) global_session_search->stop();
     stop_side_chat_workers();
     if (!already_stopping) {
         std::lock_guard<std::mutex> stop_lock(listener_stop_mu);
@@ -119,8 +120,10 @@ void WebServer::Impl::register_routes() {
     register_task_suggestions();
     register_models();
     register_image_generation();
+    register_computer_use();
     register_summary_generation();
     register_tool_rewrites();
+    register_tool_preamble();
     register_security();
     register_experts();
     register_loops();
@@ -156,6 +159,7 @@ WebServer::WebServer(WebServerDeps deps)
     install_crow_log_bridge();
     impl_->app.exception_handler(&route_exception_handler);
     impl_->register_routes();
+    impl_->initialize_model_reasoning_sync();
 }
 
 WebServer::~WebServer() = default;
@@ -188,6 +192,7 @@ int WebServer::run() {
     }
     LOG_INFO(
         "[web] Web UI: " + format_http_address(cfg.bind, cfg.port));
+    impl_->request_model_reasoning_sync();
     try {
         impl_->app
             .bindaddr(cfg.bind)
@@ -207,6 +212,7 @@ int WebServer::run() {
 void WebServer::stop() {
     if (!impl_) return;
     if (impl_->shutdown_requested.exchange(true)) return;
+    if (impl_->model_reasoning_sync) impl_->model_reasoning_sync->stop();
     impl_->stop_side_chat_workers();
     std::lock_guard<std::mutex> stop_lock(impl_->listener_stop_mu);
     impl_->app.stop();

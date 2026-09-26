@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { createApi } from './api.js';
 import { connection } from './connection.js';
 import { attachmentsFromContentParts, normalizeAttachmentList } from './messageAttachments.js';
-import { sessionDisplayTitle, titleFromMessages } from './sessionTitle.js';
+import { sessionDisplayTitle } from './sessionTitle.js';
 import { transcriptTimestampMs } from './timestamps.js';
 import { fallbackToolSummary } from './toolSummaryFallback.js';
 import { normalizeToolInvocationItems } from './transcriptProjection.js';
 import { createSingleWriterStore } from './singleWriterStore.js';
 import { composerContentFromMessage } from './composerContent.js';
+import { preambleFromProgress, preambleFromToolStart, stripTextPreambleTags } from './toolPreamble.js';
 
 function composerContentFields(message, fallback = null) {
   const content = composerContentFromMessage(message) || composerContentFromMessage(fallback);
@@ -22,6 +23,97 @@ function messageEventUsesOccurrenceIdentity(payload) {
   return (payload?.role || 'system') === 'error';
 }
 
+// 回放(REST since=N 补拉 / WS 带游标订阅)时 token / reasoning 先攒着,直到看见
+// 能决定它们归属的事件再 flush。旧写法是「遇到任何非流式事件就 flush」,但 daemon
+// 在最后一个 token 与 assistant message 事件之间恒有一条 usage(chat_stream 一返回
+// 就 emit,message 要到 execute_tool_calls / 文本回合收尾才发;工具回合还会夹着
+// tool_planning 的 agent_progress):usage 把 token 提前 flush 成一条新草稿,随后
+// 那条 REST 历史里已有的 message 事件再把草稿「定稿」成第二份 —— 切进正在运行的
+// 会话(busy → since=1 全量回放)时,上一轮的 assistant 正文就在用户消息后面又
+// 出现一次。只有会往 transcript 追加 / 收尾条目的事件才需要先 flush;下面这些
+// 只改 usage / activity / goal / todo 等旁路状态,与草稿的先后无关。
+const STREAM_NEUTRAL_EVENT_TYPES = new Set([
+  'usage',
+  'agent_progress',
+  'model_step_start',
+  'model_step_finish',
+  'goal_updated',
+  'goal_cleared',
+  'todo_updated',
+  'session_updated',
+  'permission_request',
+  'permission_closed',
+  'question_request',
+  'question_closed',
+]);
+
+function eventFlushesPendingStream(ev) {
+  return !STREAM_NEUTRAL_EVENT_TYPES.has(ev?.type || '');
+}
+
+// 攒着的 token 入队时已经过了水位检查;推迟到 flush 时,水位可能已被中间的旁路
+// 事件(usage 等)推高,不能再把它们当过期帧丢掉 —— 否则被中断的回合(没有
+// assistant message 收尾)已流出的正文会整段消失。应用后水位仍取较大值。
+function reduceDeferredStreamEvent(state, ev) {
+  const watermark = Number(state?.lastSeq) || 0;
+  const seq = eventSeq(ev);
+  if (seq === null || seq > watermark) return reduceTranscriptEvent(state, ev);
+  const reduced = reduceTranscriptEvent({ ...state, lastSeq: seq - 1 }, ev);
+  reduced.state.lastSeq = Math.max(watermark, Number(reduced.state.lastSeq) || 0);
+  return reduced;
+}
+
+// message 事件命中已有条目时的原位更新:事件可能带更完整的 content_parts / metadata。
+function mergeMessageEventIntoItem(item, payload, msg) {
+  const incomingContent = payload.content || '';
+  return {
+    ...item,
+    role: payload.role || 'system',
+    content: incomingContent || item.content || '',
+    contentParts: Array.isArray(payload.content_parts) ? payload.content_parts : item.contentParts,
+    metadata: payload.metadata ?? item.metadata,
+    ...composerContentFields(payload, item),
+    ts: eventTs(msg),
+  };
+}
+
+// 回放帧里的 assistant message 若已在 transcript 里(REST 历史已含这条消息),
+// 说明此前回放出来的流式草稿只是它的副本:草稿必须丢弃,而不是被「定稿」成第二份。
+// 只对 replayed 帧生效 —— assistant 消息 id 是内容哈希,实时回合里模型说了一句
+// 与旧消息一字不差的话时 id 也相同,那是真的新回复,必须照常展示。
+function replayedDuplicateMessageIndex(items, payload, msg, isDraft) {
+  if (msg?.replayed !== true) return -1;
+  const incomingId = payload?.id || '';
+  if (!incomingId || messageEventUsesOccurrenceIdentity(payload)) return -1;
+  return items.findIndex((item, index) => (
+    !isDraft(item, index) && item.kind === 'msg' && item.messageId === incomingId
+  ));
+}
+
+function dropDraftAndMergeReplayedMessage(items, duplicateIndex, isDraft, payload, msg) {
+  return items
+    .map((item, index) => (index === duplicateIndex
+      ? mergeMessageEventIntoItem(item, payload, msg)
+      : item))
+    .filter((item, index) => !isDraft(item, index));
+}
+
+// 同一根因的工具版:REST 历史里已有这次调用落盘的结果条目(本回合里已经跑完的
+// 工具,含答完的 AskUserQuestion 卡片)时,回放的 tool_start 不能再追加一条,
+// 而是把后续 tool_update / tool_end 绑到已有条目上。从尾部找最近一条未被
+// 绑定的同 call id 条目 —— 有的 provider 会跨回合复用 call id。同样只对
+// replayed 帧生效:实时回合里复用的 call id 是真的新调用。
+function replayedPersistedToolIndex(state, toolCallId, msg) {
+  if (msg?.replayed !== true || !toolCallId) return -1;
+  const bound = new Set(state.toolMap.values());
+  for (let index = state.items.length - 1; index >= 0; index -= 1) {
+    const item = state.items[index];
+    if (item?.kind !== 'tool' || item.tool?.isDone !== true || bound.has(item.id)) continue;
+    if (String(item.tool?.toolCallId || '') === String(toolCallId)) return index;
+  }
+  return -1;
+}
+
 function normalizeSessionRef(sessionRef) {
   if (!sessionRef) return null;
   if (typeof sessionRef === 'string') return { sessionId: sessionRef };
@@ -32,6 +124,30 @@ function normalizeSessionRef(sessionRef) {
     sessionId,
     workspaceHash: sessionRef.workspaceHash || sessionRef.workspace_hash || '',
   };
+}
+
+// 从侧栏 / 跳转目标的会话对象里抄出显示标题的三个服务端字段,作为 store 的初值;
+// 之后由 session_updated 与 messages 快照刷新。
+function sessionTitleFieldsFromRef(ref) {
+  const s = ref && typeof ref === 'object' ? ref : {};
+  return {
+    title: typeof s.title === 'string' ? s.title : '',
+    titleSource: String(s.title_source ?? s.titleSource ?? ''),
+    summary: typeof s.summary === 'string' ? s.summary : '',
+  };
+}
+
+// 顶部标题 = 侧栏同一条规则(sessionDisplayTitle):title > summary > 计数兜底。
+// ref 仍提供 message_count / displayTitle(「新会话N」)等兜底字段。
+export function transcriptDisplayTitle(state, ref) {
+  const base = ref && typeof ref === 'object' ? ref : {};
+  if (!state) return sessionDisplayTitle(base);
+  return sessionDisplayTitle({
+    ...base,
+    title: state.title || '',
+    title_source: state.titleSource || '',
+    summary: state.summary || '',
+  });
 }
 
 function cloneToolMap(toolMap) {
@@ -277,11 +393,23 @@ function isAbortLikeReason(reason) {
   return /abort|cancel|interrupt|terminat|用户.*终止|已终止|取消|中断/i.test(String(reason || ''));
 }
 
+function isUserAbortMessage(message) {
+  return message?.role === 'system' && message.metadata?.transcript_only === true &&
+    message.metadata?.user_aborted === true;
+}
+
 function appendTerminationNotice(next, msg, payload = {}) {
   const text = terminationNoticeText(payload);
   const last = next.items[next.items.length - 1];
   if (last?.kind === 'termination_notice') {
-    if (last.content === text) return;
+    if (last.content === text) {
+      if (payload.metadata?.user_aborted === true) {
+        next.items = [...next.items.slice(0, -1), {
+          ...last, messageId: payload.id || '', metadata: payload.metadata,
+        }];
+      }
+      return;
+    }
     if (last.source === 'user' && payload.source !== 'user' && isAbortLikeReason(payload.reason || payload.message)) {
       return;
     }
@@ -292,6 +420,7 @@ function appendTerminationNotice(next, msg, payload = {}) {
       kind: 'termination_notice',
       id: allocateItemId(next),
       source: payload.source || 'server',
+      ...(payload.metadata ? { metadata: payload.metadata, messageId: payload.id || '' } : {}),
       content: text,
       ts: eventTs(msg),
     },
@@ -599,6 +728,13 @@ function genericHistoryMessageItem(next, m, extra = {}) {
 function historyItemFromMessage(next, m, messageOrdinal = null) {
   const metadata = m?.metadata && typeof m.metadata === 'object' ? m.metadata : null;
   const ts = transcriptTimestampMs(m) || Date.now();
+  if (isUserAbortMessage(m)) {
+    return {
+      kind: 'termination_notice', id: allocateItemId(next),
+      source: 'user', content: terminationNoticeText({ source: 'user' }),
+      metadata, messageId: m.id || '', ts,
+    };
+  }
   if ((m?.role || '') === 'tool' && metadata) {
     const summary = normalizePersistedToolSummary(metadata);
     const hunks = normalizePersistedToolHunks(metadata);
@@ -711,13 +847,25 @@ function historyItemsFromMessage(next, m, messageIndex) {
   return items;
 }
 
+// 工具前言(add-tool-preamble):assistant 正文里的 <text_preamble> 标签只在实时
+// 期间进 loading,落盘正文保留原文(模型会模仿自己的历史输出),所以历史加载与
+// message 事件都要在这里剥掉;token 流由 daemon 剥过。
+function withVisibleAssistantContent(message) {
+  if (message?.role !== 'assistant' || typeof message.content !== 'string') return message;
+  const visible = stripTextPreambleTags(message.content);
+  return visible === message.content ? message : { ...message, content: visible };
+}
+
 function historyItemsFromMessages(next, messages) {
   const items = [];
   const toolNamesByCallId = new Map();
   for (let i = 0; i < messages.length; i += 1) {
     const rawMessage = messages[i];
-    if (rawMessage?.role === 'user') toolNamesByCallId.clear();
-    const message = withPersistedToolName(rawMessage, toolNamesByCallId);
+    if (rawMessage?.role === 'user') {
+      toolNamesByCallId.clear();
+    }
+    const message = withVisibleAssistantContent(
+      withPersistedToolName(rawMessage, toolNamesByCallId));
     items.push(...historyItemsFromMessage(next, message, i));
     if (message?.role === 'tool') {
       const toolCallId = String((message.tool_call_id ?? message.toolCallId ?? '') || '').trim();
@@ -936,6 +1084,9 @@ export function preserveLiveAssistantTailOnLoad(loadedState, liveState) {
       ...loadedState,
       items,
       nextItemId: nextId + 1,
+      // 实时还在流式时,推入的草稿要接管 streamingId:后续 token 续在它后面,
+      // 而不是另起一条草稿,把同一段正文拆成「前半截 + 完整版」两个气泡。
+      streamingId: liveState?.streamingId != null ? nextId : (loadedState.streamingId ?? null),
       lastSeq: Math.max(loadedSeq, liveSeq),
     };
   }
@@ -1003,7 +1154,7 @@ export function applyTranscriptReplayEvents(state, events = []) {
   let pendingStreamEvents = [];
   const flushPendingStreamEvents = () => {
     for (const ev of pendingStreamEvents) {
-      const reduced = reduceTranscriptEvent(next, ev);
+      const reduced = reduceDeferredStreamEvent(next, ev);
       next = reduced.state;
       effects.push(...reduced.effects);
     }
@@ -1038,7 +1189,7 @@ export function applyTranscriptReplayEvents(state, events = []) {
         seenMessages.add(key);
       }
     }
-    flushPendingStreamEvents();
+    if (eventFlushesPendingStream(ev)) flushPendingStreamEvents();
     const reduced = reduceTranscriptEvent(next, ev);
     next = reduced.state;
     effects.push(...reduced.effects);
@@ -1052,9 +1203,15 @@ export function createTranscriptState(overrides = {}) {
   return {
     items: [],
     busy: false,
+    abortPending: false,
     activeTurnId: '',
     turns: 0,
+    // 会话显示标题的三个服务端字段(与侧栏会话列表同源):title 是用户改名 /
+    // 大模型生成的标题,summary 是无标题时的兜底(最近一条用户消息显示文本的
+    // 80 字节截断)。对外暴露的 title 由 sessionDisplayTitle 从这三者派生。
     title: '',
+    titleSource: '',
+    summary: '',
     status: 'idle',
     lastSeq: 0,
     isLive: false,
@@ -1077,6 +1234,11 @@ export function createTranscriptState(overrides = {}) {
     // openspec/changes/add-windows-wintoast-completion-notifications。
     turnHadAssistantText: false,
     lastAssistantText: '',
+    // 最近一个回合的收尾方式:'' (尚无 / 新回合已开始) | 'completed' | 'error' | 'aborted'。
+    // 供 ChatView 的排队 drain effect 判断「这次 busy→false 是不是中断收尾」:
+    // 中断收尾时排队消息要暂停而不是自动发出。本端点停止(turn_aborted)与
+    // 远端中断(busy_changed / done 携带 outcome=aborted)都会置成 'aborted'。
+    lastTurnOutcome: '',
     ...overrides,
     toolMap: cloneToolMap(overrides.toolMap),
     turnTimings: cloneTurnTimings(overrides.turnTimings),
@@ -1119,8 +1281,8 @@ export function reduceTranscriptEvent(state, msg) {
       next.turnNetDiffs = turnNetDiffs;
       next.items = applyTurnMetadataToItems(
         historyItemsFromMessages(next, messages), turnTimings, turnNetDiffs);
-      const restoredTitle = titleFromMessages(messages);
-      if (restoredTitle) next.title = restoredTitle;
+      // 标题不从消息正文现推:title / summary 只认服务端(session_updated 与
+      // messages 快照),否则顶部标题会变成最后一条 user 消息的全文,与侧栏不一致。
       next.tokenUsage = null;
       next.error = '';
       break;
@@ -1144,6 +1306,9 @@ export function reduceTranscriptEvent(state, msg) {
         phase,
         label: label || phase,
         detail: p.detail || '',
+        // 工具前言(add-tool-preamble):当前阶段前言随进度帧透传,kind(read /
+        // write)给以后的读放大镜 / 写笔触效果留位。
+        preamble: preambleFromProgress(p),
         tool: p.tool || '',
         toolCallId: p.tool_call_id || p.call_id || p.id || '',
         toolIndex: p.tool_index ?? null,
@@ -1196,7 +1361,38 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     }
     case 'message': {
+      // 工具前言:assistant 正文里的 <text_preamble> 标签不进 transcript。
+      const p = withVisibleAssistantContent(msg?.payload || {});
       const role = p.role || 'system';
+      if (role === 'assistant' && p.metadata?.transcript_only === true &&
+          p.metadata?.interrupted_output === true) {
+        // A local stop can split one stream into drafts on both sides of its
+        // optimistic notice. Replace that trailing span with the persisted
+        // partial response; the confirmed stop notice follows it.
+        let keep = next.items.length;
+        while (keep > 0) {
+          const item = next.items[keep - 1];
+          const draft = item.kind === 'msg' && item.role === 'assistant' &&
+            item.streamDraft && !item.messageId;
+          const localStop = item.kind === 'termination_notice' && item.source === 'user' &&
+            item.metadata?.user_aborted !== true;
+          if (!draft && !localStop) break;
+          keep -= 1;
+        }
+        if (keep < next.items.length) {
+          next.items = next.items.slice(0, keep);
+          next.streamingId = null;
+        }
+      }
+      if (isUserAbortMessage(p)) {
+        if (msg.replayed && p.id && next.items.some((item) => (
+          item.kind === 'termination_notice' && item.messageId === p.id &&
+          item.metadata?.retry_user_message_id === p.metadata.retry_user_message_id
+        ))) break;
+        finalizeStreaming(next);
+        appendTerminationNotice(next, msg, { ...p, source: 'user' });
+        break;
+      }
       const turnNetDiff = normalizeTurnNetDiffRecord(p);
       if (turnNetDiff) {
         next.turnNetDiffs.set(turnNetDiff.userMessageUuid, turnNetDiff);
@@ -1224,14 +1420,30 @@ export function reduceTranscriptEvent(state, msg) {
           next.turnHadAssistantText = true;
           next.lastAssistantText = finalContent;
         }
-        next.items = next.items.map((item) => item.id === currentStreamingId
+        const isStreamingDraft = (item) => item.id === currentStreamingId;
+        // WS 带旧游标订阅时,REST 已加载的 assistant 会被回放的 token 重新
+        // 流成草稿,再由这条 replayed message 定稿 —— 那就是同一条消息的第二份。
+        const duplicateIndex = replayedDuplicateMessageIndex(next.items, p, msg, isStreamingDraft);
+        if (duplicateIndex >= 0) {
+          next.items = dropDraftAndMergeReplayedMessage(
+            next.items, duplicateIndex, isStreamingDraft, p, msg);
+          break;
+        }
+        next.items = next.items.map((item) => (isStreamingDraft(item)
           ? replaceAssistantItemWithFinal(item, p, msg)
-          : item);
+          : item));
         break;
       }
       if (role === 'assistant' && (p.content || '').trim()) {
         const draftIndex = trailingAssistantDraftIndex(next.items);
         if (draftIndex >= 0) {
+          const isTrailingDraft = (item, index) => index === draftIndex;
+          const duplicateIndex = replayedDuplicateMessageIndex(next.items, p, msg, isTrailingDraft);
+          if (duplicateIndex >= 0) {
+            next.items = dropDraftAndMergeReplayedMessage(
+              next.items, duplicateIndex, isTrailingDraft, p, msg);
+            break;
+          }
           next.items = next.items.map((item, index) => (index === draftIndex
             ? replaceAssistantItemWithFinal(item, p, msg)
             : item));
@@ -1259,15 +1471,7 @@ export function reduceTranscriptEvent(state, msg) {
         : -1;
       if (existingIndex >= 0) {
         next.items = next.items.map((item, index) => (index === existingIndex
-          ? {
-              ...item,
-              role,
-              content: incomingContent || item.content || '',
-              contentParts: Array.isArray(p.content_parts) ? p.content_parts : item.contentParts,
-              metadata: p.metadata ?? item.metadata,
-              ...composerContentFields(p, item),
-              ts: eventTs(msg),
-            }
+          ? mergeMessageEventIntoItem(item, p, msg)
           : item));
         break;
       }
@@ -1358,6 +1562,12 @@ export function reduceTranscriptEvent(state, msg) {
     case 'tool_start': {
       markTranscriptRunning(next);
       finalizeStreaming(next);
+      const persistedIndex = replayedPersistedToolIndex(
+        next, p.tool_call_id || p.call_id || p.id || '', msg);
+      if (persistedIndex >= 0) {
+        next.toolMap.set(toolKey(p), next.items[persistedIndex].id);
+        break;
+      }
       const id = allocateItemId(next);
       next.toolMap.set(toolKey(p), id);
       const tool = {
@@ -1383,6 +1593,10 @@ export function reduceTranscriptEvent(state, msg) {
         metadata: null,
         askUserQuestionResult: null,
       };
+      // 工具前言(add-tool-preamble):tool_start 直接带这次调用沿用的阶段前言,
+      // 运行中的工具行与实时活动行用它当标题;落定后不再显示。
+      const startPreamble = preambleFromToolStart(p);
+      if (startPreamble) tool.preamble = startPreamble;
       next.items = [...next.items, { kind: 'tool', id, tool, ts: eventTs(msg) }];
       break;
     }
@@ -1466,8 +1680,14 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     }
     case 'session_updated': {
+      // 显示标题的唯一来源:title(用户改名 / 大模型生成)与 summary(无标题时
+      // 的兜底,服务端已截到 80 字节)。侧栏 Sidebar 对同一事件做同样的合并。
       if (Object.prototype.hasOwnProperty.call(p, 'title')) {
         next.title = p.title || '';
+        next.titleSource = String(p.title_source || '');
+      }
+      if (Object.prototype.hasOwnProperty.call(p, 'summary')) {
+        next.summary = typeof p.summary === 'string' ? p.summary : '';
       }
       break;
     }
@@ -1476,6 +1696,7 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = !!p.busy;
+      next.abortPending = false;
       next.activeTurnId = next.busy ? String(p.turn_id || '') : '';
       next.status = next.busy ? 'running' : 'idle';
       if (next.busy && !wasBusy) {
@@ -1483,12 +1704,16 @@ export function reduceTranscriptEvent(state, msg) {
         next.turnHadAssistantText = false;
         next.lastAssistantText = '';
         next.trajectoryPartial = null;
+        next.lastTurnOutcome = '';
       }
       if (!next.busy) {
         next.activity = null;
         next.trajectoryPartial = null;
         finalizeStreaming(next);
         if (wasBusy) next.turns = (next.turns || 0) + 1;
+        // 只在真正的 busy→false 转换上记收尾方式;本端点停止后服务端补发的
+        // busy_changed(false) 到达时 wasBusy 已是 false,不覆盖 turn_aborted 记下的 aborted。
+        if (wasBusy) next.lastTurnOutcome = outcome || 'completed';
         if (wasBusy && completedOutcome && next.turnHadAssistantText) {
           effects.push({
             type: 'turn_completed',
@@ -1509,11 +1734,13 @@ export function reduceTranscriptEvent(state, msg) {
       const outcome = typeof p.outcome === 'string' ? p.outcome : '';
       const completedOutcome = !outcome || outcome === 'completed';
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      if (wasBusy) next.lastTurnOutcome = outcome || 'completed';
       if (wasBusy && completedOutcome && next.turnHadAssistantText) {
         effects.push({
           type: 'turn_completed',
@@ -1526,12 +1753,14 @@ export function reduceTranscriptEvent(state, msg) {
     }
     case 'error':
       next.busy = false;
+      next.abortPending = false;
       next.activeTurnId = '';
       next.status = 'error';
       next.error = p.reason || '';
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      next.lastTurnOutcome = 'error';
       next.turnHadAssistantText = false;
       next.lastAssistantText = '';
       appendTerminationNotice(next, msg, { ...p, source: p.source || 'server' });
@@ -1539,11 +1768,13 @@ export function reduceTranscriptEvent(state, msg) {
       break;
     case 'turn_aborted':
       next.busy = false;
+      next.abortPending = true;
       next.activeTurnId = '';
       next.status = 'idle';
       next.activity = null;
       next.trajectoryPartial = null;
       finalizeStreaming(next);
+      next.lastTurnOutcome = 'aborted';
       next.turnHadAssistantText = false;
       next.lastAssistantText = '';
       appendTerminationNotice(next, msg, { ...p, source: 'user' });
@@ -1565,6 +1796,8 @@ export function loadTranscriptHistory(state, data = {}) {
   const current = state || createTranscriptState();
   let next = createTranscriptState({
     title: current.title || '',
+    titleSource: current.titleSource || '',
+    summary: current.summary || '',
     status: current.status || 'idle',
     isLive: !!current.isLive,
     lastSeq: 0,
@@ -1578,14 +1811,19 @@ export function loadTranscriptHistory(state, data = {}) {
   next.items = applyTurnMetadataToItems(
     historyItemsFromMessages(next, msgs), turnTimings, turnNetDiffs);
 
-  const restoredTitle = titleFromMessages(msgs);
-  if (restoredTitle) next.title = restoredTitle;
+  // messages 快照(GET /messages?since=0)随历史一并带回服务端的标题三件套;
+  // 深链 / 刷新打开的会话没有侧栏对象可抄,顶部标题靠它对齐侧栏。
+  if (typeof data.title === 'string') {
+    next.title = data.title;
+    next.titleSource = typeof data.title_source === 'string' ? data.title_source : '';
+  }
+  if (typeof data.summary === 'string') next.summary = data.summary;
 
   const seenMessages = new Set(msgs.map((m) => messageKey(m.role || 'system', m.content || '')));
   let pendingStreamEvents = [];
   const flushPendingStreamEvents = () => {
     for (const ev of pendingStreamEvents) {
-      const reduced = reduceTranscriptEvent(next, ev);
+      const reduced = reduceDeferredStreamEvent(next, ev);
       next = reduced.state;
       effects.push(...reduced.effects);
     }
@@ -1609,7 +1847,7 @@ export function loadTranscriptHistory(state, data = {}) {
       }
       if (!occurrenceIdentity) seenMessages.add(key);
     }
-    flushPendingStreamEvents();
+    if (eventFlushesPendingStream(ev)) flushPendingStreamEvents();
     const reduced = reduceTranscriptEvent(next, ev);
     next = reduced.state;
     effects.push(...reduced.effects);
@@ -1694,14 +1932,17 @@ export function useSessionTranscript(sessionRef, options = {}) {
     0,
     Number(options.refreshIntervalMs) || 0,
   );
-  const initialTitle = sid ? sessionDisplayTitle(ref) : '';
   // 实时状态归 store 所有,React 只订阅。历史上这里是 useState + 一个可变
   // 引用的双写:被动 effect 把渲染快照写回引用,吞掉这之后已到达的 token,
   // 表现为长会话流式出字时正文中间随机缺字(见 singleWriterStore.js 顶部注释)。
   const storeRef = useRef(null);
   if (storeRef.current === null) {
     storeRef.current = createSingleWriterStore(
-      createTranscriptState({ title: initialTitle, isLive, loadState: sid ? 'loading' : 'idle' }),
+      createTranscriptState({
+        ...sessionTitleFieldsFromRef(ref),
+        isLive,
+        loadState: sid ? 'loading' : 'idle',
+      }),
     );
   }
   const store = storeRef.current;
@@ -1736,10 +1977,6 @@ export function useSessionTranscript(sessionRef, options = {}) {
     return nextState;
   }, [sid, store]);
 
-  const setTitle = useCallback((title) => {
-    store.commit((prevState) => ({ ...prevState, title: title || '' }));
-  }, [store]);
-
   const getState = useCallback(() => store.getState(), [store]);
 
   // 只接受 producer:值形式允许调用方传入一份过期快照,正是本次修复要根除的
@@ -1748,7 +1985,7 @@ export function useSessionTranscript(sessionRef, options = {}) {
 
   useEffect(() => {
     stateSessionIdRef.current = sid;
-    const baseTitle = sid ? sessionDisplayTitle(sessionRefRef.current) : '';
+    const baseTitleFields = sessionTitleFieldsFromRef(sessionRefRef.current);
     const sameHistory = historyScopeRef.current?.sid === sid
       && historyScopeRef.current?.api === api;
     historyScopeRef.current = { sid, api };
@@ -1758,7 +1995,7 @@ export function useSessionTranscript(sessionRef, options = {}) {
       store.commit((previous) => ({ ...previous, isLive }));
     } else {
       store.commit(() => createTranscriptState({
-        title: baseTitle,
+        ...baseTitleFields,
         isLive,
         loadState: sid ? 'loading' : 'idle',
       }));
@@ -1912,7 +2149,9 @@ export function useSessionTranscript(sessionRef, options = {}) {
   const activelyRunning = isTranscriptActivelyRunning(state);
   return {
     ...state,
-    title: state.title || initialTitle,
+    // 顶部标题栏显示的就是它:与侧栏同一份 sessionDisplayTitle 派生规则,
+    // 只是 title / summary 取 store 里被 session_updated 实时刷新过的值。
+    title: transcriptDisplayTitle(state, sessionRefRef.current),
     isLive,
     busy: activelyRunning,
     status: activelyRunning ? 'running' : state.status,
@@ -1920,7 +2159,6 @@ export function useSessionTranscript(sessionRef, options = {}) {
       ? state.loadState
       : (sid ? 'loading' : 'idle'),
     applyEvent,
-    setTitle,
     getState,
     updateState,
   };

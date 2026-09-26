@@ -5,6 +5,8 @@ import {
   applyStatusSnapshot,
   applyStatusUpdate,
   mergeSessionStatus,
+  optimisticReadStatus,
+  optimisticUnreadStatus,
   sessionAttentionState,
   workspaceHasUnread,
 } from './sessionStatus.js';
@@ -75,4 +77,34 @@ run('旧增量不会覆盖较新的状态', () => {
 run('项目未读只由 child unread 聚合', () => {
   assert.equal(workspaceHasUnread([{ id: 's1', attention_state: 'read' }, { id: 's2', attention_state: 'in_progress' }]), false);
   assert.equal(workspaceHasUnread([{ id: 's1', attention_state: 'unread' }]), true);
+});
+
+// 场景:会话右键「标记为未读」,本地先乐观更新再等 daemon 回执。期望:与 daemon
+// mark_session_attention_unread 同一口径 —— 已读游标退到最新输出之前,状态变 unread;
+// 从没有输出(游标 0)的会话也能标成未读;乐观状态带当前时间戳,不会被更旧的广播盖掉。
+run('标记为未读的乐观状态与 daemon 游标口径一致', () => {
+  const read = mergeSessionStatus({ id: 's1', attention_state: 'read', update_cursor: 50, read_cursor: 50, status_cursor: 50 }, new Map());
+  const unread = optimisticUnreadStatus(read);
+  assert.equal(unread.attention_state, 'unread');
+  assert.equal(unread.update_cursor, 50);
+  assert.equal(unread.read_cursor, 49);
+  assert.ok(unread.timestamp_ms > 0);
+
+  const fresh = optimisticUnreadStatus({ id: 's2' });
+  assert.equal(fresh.attention_state, 'unread');
+  assert.equal(fresh.update_cursor, 1);
+  assert.equal(fresh.read_cursor, 0);
+
+  // 再标记已读又回到 read。
+  const map = applyStatusUpdate(new Map(), unread);
+  const back = optimisticReadStatus(mergeSessionStatus({ id: 's1' }, map));
+  assert.equal(back.attention_state, 'read');
+});
+
+// 场景:运行中的会话被标记为未读。期望:显示仍是运行中(in_progress 优先),
+// 不会把运行中的转圈图标换成未读圆点。
+run('运行中的会话标记为未读仍显示运行中', () => {
+  const unread = optimisticUnreadStatus({ id: 's1', busy: true, update_cursor: 9, read_cursor: 9 });
+  assert.equal(unread.attention_state, 'in_progress');
+  assert.equal(unread.read_cursor, 8);
 });

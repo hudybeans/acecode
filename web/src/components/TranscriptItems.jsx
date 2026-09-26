@@ -72,12 +72,17 @@ export function ActivitySummaryBlock({ item, expanded, onToggle, activity = null
   }
 
   const parallelCount = Number(item?.runningToolCount) || 0;
-  const label = live && parallelCount > 1
-    ? `正在运行 ${parallelCount} 个工具`
-    : (live ? (activity?.label || item?.title || '正在处理请求') : (item?.title || '已处理'));
+  // 具体进度提示(add-tool-preamble,「适合日常工作」):正在运行的工具带着 daemon
+  // 生成的文案(「正在读取 3 个文件」,已含数量、不带参数)时,它优先于实时阶段文案与
+  // 并行计数;没有时保持原有文案。
+  const preambleTitle = String(item?.preamble?.title || '').trim();
+  const label = preambleTitle
+    || (live && parallelCount > 1
+      ? `正在运行 ${parallelCount} 个工具`
+      : (live ? (activity?.label || item?.title || '正在处理请求') : (item?.title || '已处理')));
   const detail = live
     ? [
-        activity?.detail || '',
+        preambleTitle ? '' : (activity?.detail || ''),
         activityKind !== CONVERSATION_ACTIVITY_KIND.BACKGROUND
           && activity?.backgroundCount > 0
           ? activity.backgroundLabel
@@ -102,7 +107,7 @@ export function ActivitySummaryBlock({ item, expanded, onToggle, activity = null
   );
 }
 
-export function MediaGroupBlock({ item, collapsed, onToggle }) {
+export function MediaGroupBlock({ item, collapsed, onToggle, messageAutoCollapse = true }) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : EMPTY_ITEMS;
   if (attachments.length === 0) return null;
   const label = item?.title || `已查看 ${attachments.length} 张图像`;
@@ -112,11 +117,11 @@ export function MediaGroupBlock({ item, collapsed, onToggle }) {
       <ActivityLine
         icon={<VsIcon name="eye" size={13} className="opacity-80" />}
         label={label}
-        expandable
+        expandable={messageAutoCollapse}
         expanded={!collapsed}
-        onToggle={onToggle}
-        title={toggleHint}
-        ariaLabel={toggleHint}
+        onToggle={messageAutoCollapse ? onToggle : undefined}
+        title={messageAutoCollapse ? toggleHint : label}
+        ariaLabel={messageAutoCollapse ? toggleHint : undefined}
       />
       {!collapsed && (
         <div className="mt-1 max-w-[88%]">
@@ -230,6 +235,7 @@ function TranscriptItem({
   onOpenFilePreview,
   onLocateInFileTree,
   showAceCodeAvatar,
+  messageAutoCollapse,
   annotationPresentations,
 }) {
   const renderKind = transcriptRenderKind(item);
@@ -282,7 +288,8 @@ function TranscriptItem({
       >
         <MediaGroupBlock
           item={item}
-          collapsed={collapsedMediaKeys.has(item.id)}
+          collapsed={messageAutoCollapse && collapsedMediaKeys.has(item.id)}
+          messageAutoCollapse={messageAutoCollapse}
           onToggle={(event) => onToggleMedia?.(item.id, event?.currentTarget)}
         />
       </div>
@@ -297,6 +304,7 @@ function TranscriptItem({
       >
         <SubagentGroupBlock
           agents={item.agents}
+          messageAutoCollapse={messageAutoCollapse}
           tasksById={subagentTasksById}
           onOpen={capabilities.openSubagentTranscripts ? onOpenSubagent : undefined}
         />
@@ -338,6 +346,7 @@ function TranscriptItem({
               onOpenFilePreview={onOpenFilePreview}
               onLocateInFileTree={onLocateInFileTree}
               showAceCodeAvatar={showAceCodeAvatar}
+              messageAutoCollapse={messageAutoCollapse}
               annotationPresentations={annotationPresentations}
             />
           </ActivityDetailsReveal>
@@ -394,6 +403,7 @@ function TranscriptItem({
           continuation={continuation}
           showFooter={showFooter}
           showAceCodeAvatar={showAceCodeAvatar}
+          messageAutoCollapse={messageAutoCollapse}
           annotationPresentations={capabilities.showSelectionAnnotations
             ? annotationPresentations
             : undefined}
@@ -423,6 +433,7 @@ export function TranscriptItems({
   onOpenFilePreview,
   onLocateInFileTree,
   showAceCodeAvatar = false,
+  messageAutoCollapse = true,
   annotationPresentations,
   renderBeforeItem,
 }) {
@@ -465,6 +476,7 @@ export function TranscriptItems({
           onOpenFilePreview={onOpenFilePreview}
           onLocateInFileTree={onLocateInFileTree}
           showAceCodeAvatar={showAceCodeAvatar}
+          messageAutoCollapse={messageAutoCollapse}
           annotationPresentations={annotationPresentations}
         />
       </Fragment>

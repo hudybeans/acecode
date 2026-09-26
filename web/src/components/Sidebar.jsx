@@ -20,9 +20,11 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { SidebarQuickMenu } from './SidebarQuickMenu.jsx';
+import { SidebarExtensions } from './SidebarExtensions.jsx';
 import { Modal } from './Modal.jsx';
 import BrandLogo from './BrandLogo.jsx';
 import { api } from '../lib/api.js';
+import { sessionWorktreeFromSources } from '../lib/sessionJump.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
 import {
@@ -52,6 +54,9 @@ import { sessionDisplayTitle, withNewSessionDisplayTitles } from '../lib/session
 import { pushTrayMenu } from '../lib/desktopTrayMenu.js';
 import { desktopTaskbarBadge, desktopTaskbarBadgeAvailable } from '../lib/desktopTaskbarBadge.js';
 import { usePreference } from '../lib/usePreference.js';
+import { createWorkspaceFolderOrderController } from '../lib/workspaceFolderOrder.js';
+import { useWorkspaceFolderReorder } from '../lib/useWorkspaceFolderReorder.js';
+import '../styles/workspaceFolderReorder.css';
 import {
   SESSION_LIST_CHANGED_EVENT,
   normalizeSessionListChangedDetail,
@@ -65,6 +70,7 @@ import {
   mergeSessionStatus,
   mergeSessionsWithStatus,
   optimisticReadStatus,
+  optimisticUnreadStatus,
   statusCursor,
   workspaceHasUnread,
 } from '../lib/sessionStatus.js';
@@ -81,30 +87,30 @@ import {
   remoteControlSurgeTargetKey,
   sessionListNeedsRevealExpansion,
   sessionMatchesRevealTarget,
+  SIDEBAR_SESSION_COLLAPSE_LIMIT,
   shouldRunRemoteControlForcedSurge,
   shouldStartRemoteControlSurge,
   sidebarSessionMarker,
   sidebarRevealTarget,
   sidebarRevealTargetKey,
   sidebarSessionProjection,
+  sidebarSessionRevealLimit,
   sidebarWorkspaceListKeys,
   upsertSidebarSession,
 } from '../lib/sidebarSessions.js';
 import {
   normalizeWorkspaceSessionListResponse,
   retainUnrefreshedSidebarSessions,
+  settleSidebarWorkspacePage,
+  sidebarWorkspacePageIsCurrent,
   sidebarWorkspaceSessionListQuery,
   workspaceHasCachedSidebarSessions,
+  workspaceNeedsInitialSidebarLoad,
 } from '../lib/sidebarWorkspaceSessions.js';
 import {
   opencodePreviewTargets,
   pinnedRefreshTargets,
 } from '../lib/sidebarAuxiliaryFetch.js';
-import {
-  loadSidebarFullTitle,
-  sidebarFullTitleRequestKey,
-  sidebarTitleHydrationState,
-} from '../lib/sidebarFullTitle.js';
 import {
   createSidebarSessionLoadPool,
   sidebarSessionLoadKey,
@@ -121,14 +127,12 @@ import {
 } from '../lib/sessionHoverDetails.js';
 // hover 卡片与 GitSessionPill 共用同一份 git info 缓存(见 gitInfoCache.js)。
 import { gitInfoCache } from '../lib/gitInfoCache.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
 import {
-  DEFAULT_SIDEBAR_CUSTOM_EXPANDED,
   DEFAULT_SIDEBAR_SECTION_EXPANSION,
-  SIDEBAR_CUSTOM_ITEMS,
   SIDEBAR_DISCLOSURE_ICON,
   SIDEBAR_NAV_ITEMS,
   SIDEBAR_SECTION_IDS,
-  sidebarCustomTotalCount,
   sidebarSectionCounts,
   sidebarSectionIsVisible,
   sidebarSectionTitle,
@@ -146,9 +150,12 @@ import {
 } from '../lib/opencodeImport.js';
 import { toast } from './Toast.jsx';
 import { VsIcon } from './Icon.jsx';
+import { EditWorkspaceModal } from './EditWorkspaceModal.jsx';
+import { WorkspaceIcon } from './WorkspaceIcon.jsx';
+import { resolveWorkspaceIcon } from '../lib/workspaceIcons.js';
+import { syncSidebarListDivider } from '../lib/sidebarListDivider.js';
 
 const SIDEBAR_SECTIONS_STORAGE_KEY = 'acecode.sidebarSectionsExpanded.v1';
-const SIDEBAR_CUSTOM_STORAGE_KEY = 'acecode.sidebarCustomSectionExpanded.v2';
 const SESSION_DRAG_START_PX = 5;
 const SESSION_DRAG_EDGE_SCROLL_PX = 34;
 const SESSION_DRAG_EDGE_SCROLL_STEP = 16;
@@ -242,6 +249,7 @@ function sidebarSessionTarget(workspace = {}, session = {}, resumeResult = {}) {
       || session.working_cwd
       || session.workingCwd
       || (noWorkspace ? '' : (resumeResult.cwd || session.cwd || workspace.cwd || '')),
+    worktree: sessionWorktreeFromSources(resumeResult, session) || null,
     sessionPath: session.sessionPath
       || session.session_path
       || resumeResult.sessionPath
@@ -481,6 +489,14 @@ function attentionMeta(state) {
   return { label: '已读', dot: 'border border-fg-mute/55' };
 }
 
+// 项目行图标:「编辑项目」里选过图标就用它,否则是默认文件夹;两者都随展开 / 折叠换两态。
+function SidebarWorkspaceGlyph({ icon, expanded }) {
+  const customIcon = resolveWorkspaceIcon(icon);
+  return customIcon
+    ? <WorkspaceIcon id={customIcon.id} color={customIcon.color} open={expanded} size={16} className="shrink-0" />
+    : <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} className="shrink-0" />;
+}
+
 function SidebarDisclosure({ expanded, className = '' }) {
   const icon = SIDEBAR_DISCLOSURE_ICON;
   return (
@@ -505,7 +521,7 @@ function SidebarNavItem({ item, onClick }) {
       data-tour-target={item.id === 'new-task' ? 'sidebar-new-task' : undefined}
       onPointerDown={item.id === 'new-task' ? preserveHomeComposerFocus : undefined}
       onClick={onClick}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
+      className="ace-sidebar-primary-text w-full flex items-center gap-[7px] pl-[9px] pr-[13px] py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition text-left"
     >
       <span className="w-6 h-6 flex items-center justify-center shrink-0">
         <VsIcon name={item.icon} size={18} />
@@ -515,138 +531,31 @@ function SidebarNavItem({ item, onClick }) {
   );
 }
 
-function validateBooleanPreference(value) {
-  return typeof value === 'boolean';
-}
-
-function countObjectKeys(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
-  return Object.keys(value).length;
-}
-
-function CustomSidebarIcon({ icon }) {
-  return <VsIcon name={icon} size={18} className="ace-sidebar-custom-icon" />;
-}
-
-function CustomSidebarItem({ item, count, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-sidebar-custom-item={item.id}
-      className="ace-sidebar-primary-text w-full flex items-center gap-[5px] px-3 py-[3px] text-[14px] text-fg hover:bg-surface-hi transition text-left"
-    >
-      <span className="w-6 h-6 flex items-center justify-center shrink-0">
-        <CustomSidebarIcon icon={item.icon} />
-      </span>
-      <span className="flex-1 min-w-0 truncate">{item.label}</span>
-      {Number.isFinite(count) && (
-        <span className="text-[11px] text-fg-mute shrink-0 tabular-nums">{count}</span>
-      )}
-    </button>
-  );
-}
-
-function CustomSidebarSection({ workspaceHash = '', onOpenSettingsSection, onOpenExpertComponents }) {
-  const listId = useId();
-  const [expanded, setExpanded] = usePreference(
-    SIDEBAR_CUSTOM_STORAGE_KEY,
-    DEFAULT_SIDEBAR_CUSTOM_EXPANDED,
-    validateBooleanPreference,
-  );
-  const [counts, setCounts] = useState({ models: null, skills: null, mcp: null, experts: null });
-
-  const refreshCounts = useCallback(async () => {
-    const [models, skills, mcp, experts] = await Promise.allSettled([
-      api.listModels(),
-      api.listSkills(),
-      api.getMcp(),
-      api.listExperts(workspaceHash || '__local__'),
-    ]);
-    setCounts((previous) => ({
-      models: models.status === 'fulfilled' && Array.isArray(models.value)
-        ? models.value.length
-        : previous.models,
-      skills: skills.status === 'fulfilled' && Array.isArray(skills.value)
-        ? skills.value.length
-        : previous.skills,
-      mcp: mcp.status === 'fulfilled' ? countObjectKeys(mcp.value) : previous.mcp,
-      experts: experts.status === 'fulfilled'
-        ? (Array.isArray(experts.value?.experts) ? experts.value.experts.length : 0)
-        : previous.experts,
-    }));
-  }, [workspaceHash]);
-
-  useEffect(() => {
-    refreshCounts().catch(() => {});
-    const timer = window.setInterval(() => refreshCounts().catch(() => {}), 15000);
-    return () => window.clearInterval(timer);
-  }, [refreshCounts]);
-
-  const totalCount = sidebarCustomTotalCount(counts);
-  return (
-    <div className="ace-sidebar-custom-section">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        data-sidebar-custom-section="true"
-        className="ace-sidebar-extensions-trigger ace-sidebar-primary-text w-full flex items-center gap-[7px] px-3 py-[3px] rounded-md text-[14px] text-fg hover:bg-surface-hi transition"
-        aria-expanded={expanded}
-        aria-controls={listId}
-      >
-        <span className="relative w-6 h-6 flex items-center justify-center shrink-0">
-          <span className="ace-sidebar-extensions-icon flex"><VsIcon name="extension" size={18} /></span>
-          <span className="ace-sidebar-extensions-arrow absolute inset-0 flex items-center justify-center"><SidebarDisclosure expanded /></span>
-        </span>
-        <span className="flex-1 min-w-0 text-left truncate">扩展</span>
-        {totalCount != null && (
-          <span className="mr-2 shrink-0 tabular-nums text-fg-mute">{totalCount}</span>
-        )}
-      </button>
-      {expanded && (
-        <div id={listId} className="ace-sidebar-custom-list ml-6 my-1 border-l border-border pl-1">
-          {SIDEBAR_CUSTOM_ITEMS.map((item) => (
-            <CustomSidebarItem
-              key={item.id}
-              item={item}
-              count={counts[item.id]}
-              onClick={() => (item.action === 'experts'
-                ? onOpenExpertComponents?.()
-                : onOpenSettingsSection?.(item.settingsSection))}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SidebarSectionHeader({ sectionId, count, expanded, onToggle, actions = null }) {
   if (!sidebarSectionIsVisible(count)) return null;
   const title = sidebarSectionTitle(sectionId, count);
   return (
     <div
       data-sidebar-section={sectionId}
-      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center gap-0.5 px-3 pt-3 pb-1 text-[13px] font-medium text-fg-mute"
+      className="ace-sidebar-section-header ace-sidebar-section-text flex items-center px-0 pt-[6px] pb-1 text-[13px] font-medium text-fg-mute"
     >
       <button
         type="button"
         onClick={onToggle}
-        className="min-w-0 text-left hover:text-fg transition"
-        aria-expanded={expanded}
-      >
-        <span className="block truncate">{title}</span>
-      </button>
-      <button
-        type="button"
-        onClick={onToggle}
-        data-sidebar-section-disclosure={sectionId}
-        className="w-5 h-6 rounded flex items-center justify-center shrink-0 hover:text-fg hover:bg-surface-hi transition"
+        className="flex min-w-0 flex-1 items-center mx-1.5 pl-[7px] pr-[6px] py-[3px] rounded-md text-left hover:text-fg hover:bg-surface-hi transition"
         title={expanded ? `折叠${title}` : `展开${title}`}
-        aria-label={expanded ? `折叠${title}` : `展开${title}`}
         aria-expanded={expanded}
       >
-        <SidebarDisclosure expanded={expanded} />
+        <span className="inline-flex min-w-0 items-center gap-0.5">
+          <span className="min-w-0 truncate">{title}</span>
+          <span
+            data-sidebar-section-disclosure={sectionId}
+            className="inline-flex w-5 h-6 items-center justify-center shrink-0"
+            aria-hidden="true"
+          >
+            <SidebarDisclosure expanded={expanded} />
+          </span>
+        </span>
       </button>
       {actions && (
         <span data-sidebar-section-actions={sectionId} className="ace-sidebar-section-actions ml-auto flex items-center shrink-0">
@@ -661,19 +570,13 @@ function SessionAttentionIndicator({ attention, meta }) {
   if (attention !== 'in_progress' && attention !== 'unread') return null;
 
   return attention === 'in_progress' ? (
+    // 与对话流 ActivityLine 的运行中图标共用 ace-spinner,两处状态视觉保持一致。
     <span
-      className="ace-session-loading shrink-0"
+      className="ace-spinner h-3 w-3 shrink-0"
       title={meta.label}
       role="status"
       aria-label={meta.label}
-    >
-      <span className="ace-session-loading-orbit" aria-hidden="true">
-        <span className="ace-session-loading-dot is-top" />
-        <span className="ace-session-loading-dot is-right" />
-        <span className="ace-session-loading-dot is-bottom" />
-        <span className="ace-session-loading-dot is-left" />
-      </span>
-    </span>
+    />
   ) : (
     <span className={clsx('w-2 h-2 rounded-full shrink-0 box-border', meta.dot)} title={meta.label} />
   );
@@ -687,9 +590,10 @@ function SessionHoverCard({
 }) {
   const cardRef = useRef(null);
   const baseDetails = sessionHoverDetails(session);
+  const owner = sessionWorkbench.ownerFor(session);
   const cwd = baseDetails?.cwd || '';
   const [gitInfo, setGitInfo] = useState(
-    () => gitInfoCache.peek(api, cwd) ?? null,
+    () => gitInfoCache.peek(api, cwd, owner) ?? null,
   );
   const [position, setPosition] = useState(null);
   const details = sessionHoverDetails(session, gitInfo);
@@ -701,7 +605,7 @@ function SessionHoverCard({
     let requestVersion = 0;
     const load = () => {
       const version = ++requestVersion;
-      gitInfoCache.get(api, cwd)
+      gitInfoCache.get(api, cwd, owner)
         .then((info) => {
           if (!cancelled && version === requestVersion) setGitInfo(info);
         })
@@ -709,11 +613,11 @@ function SessionHoverCard({
           if (!cancelled && version === requestVersion) setGitInfo(null);
         });
     };
-    setGitInfo(gitInfoCache.peek(api, cwd) ?? null);
+    setGitInfo(gitInfoCache.peek(api, cwd, owner) ?? null);
     const handleGitStateChanged = (event) => {
       const changedCwd = String(event?.detail?.cwd || '');
       if (changedCwd && changedCwd !== cwd) return;
-      gitInfoCache.invalidate(api, changedCwd || cwd);
+      gitInfoCache.invalidate(api, changedCwd || cwd, owner);
       setGitInfo(null);
       load();
     };
@@ -725,7 +629,7 @@ function SessionHoverCard({
       requestVersion += 1;
       window.removeEventListener(GIT_STATE_CHANGED_EVENT, handleGitStateChanged);
     };
-  }, [cwd]);
+  }, [cwd, owner]);
 
   useLayoutEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return undefined;
@@ -797,7 +701,7 @@ function SessionHoverCard({
   );
 }
 
-function SidebarSessionTitle({ title, marqueeReady = true }) {
+function SidebarSessionTitle({ title }) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const [metrics, setMetrics] = useState(() => sidebarTitleMarqueeMetrics(0, 0));
@@ -850,10 +754,9 @@ function SidebarSessionTitle({ title, marqueeReady = true }) {
         'ace-sidebar-session-title-viewport',
         'min-w-0 flex-1',
         metrics.overflowing && 'is-overflowing',
-        metrics.overflowing && marqueeReady && 'is-marquee-ready',
+        metrics.overflowing && 'is-marquee-ready',
       )}
       data-sidebar-session-title-overflow={metrics.overflowing ? 'true' : 'false'}
-      data-sidebar-session-title-complete={marqueeReady ? 'true' : 'false'}
       style={marqueeStyle}
     >
       <span ref={contentRef} className="ace-sidebar-session-title-content">
@@ -892,22 +795,10 @@ function SessionRow({
   const rowKey = (pinned || workspaceReorderable)
     ? sidebarSessionDragKey(pinScope, s.id)
     : '';
+  // 侧栏与顶部标题栏显示同一个字段:服务端 title(用户改名 / 大模型生成),
+  // 没有就用 summary(最近一条用户消息显示文本的 80 字节截断)。这里不再另拉
+  // 消息全文做跑马灯 —— 那会让侧栏 hover 时滚出一段与顶部不一致、且长度不受限的文本。
   const title = sessionDisplayTitle(s, s.name || '');
-  const titleHydration = useMemo(
-    () => sidebarTitleHydrationState(s, title),
-    [s.summary, s.title, s.title_source, s.titleSource, title],
-  );
-  const fullTitleRequestKey = sidebarFullTitleRequestKey(s);
-  const [resolvedFullTitle, setResolvedFullTitle] = useState({ key: '', title: '' });
-  const [fullTitleLoadingKey, setFullTitleLoadingKey] = useState('');
-  const latestFullTitleRequestKeyRef = useRef(fullTitleRequestKey);
-  latestFullTitleRequestKeyRef.current = fullTitleRequestKey;
-  const hydratedTitle = titleHydration.needsFullTitle
-    && resolvedFullTitle.key === fullTitleRequestKey
-    ? resolvedFullTitle.title
-    : '';
-  const marqueeTitle = hydratedTitle || titleHydration.displayTitle;
-  const marqueeReady = !titleHydration.needsFullTitle || Boolean(hydratedTitle);
   const sessionMarker = sidebarSessionMarker(s);
   const remoteControlBound = Boolean(s.remote_control_bound ?? s.remoteControlBound);
   const hoverDetails = sessionHoverDetails(s);
@@ -934,33 +825,6 @@ function SessionRow({
   const latestRemoteControlSurgeSequenceRef = useRef(remoteControlSurgeSequence);
   latestRemoteControlBoundRef.current = remoteControlBound;
   latestRemoteControlSurgeSequenceRef.current = remoteControlSurgeSequence;
-
-  const ensureCompleteMarqueeTitle = useCallback(() => {
-    if (!titleHydration.needsFullTitle
-        || hydratedTitle
-        || !fullTitleRequestKey
-        || fullTitleLoadingKey === fullTitleRequestKey) {
-      return;
-    }
-
-    const requestedKey = fullTitleRequestKey;
-    setFullTitleLoadingKey(requestedKey);
-    loadSidebarFullTitle(api, s)
-      .then((fullTitle) => {
-        if (!fullTitle || latestFullTitleRequestKeyRef.current !== requestedKey) return;
-        setResolvedFullTitle({ key: requestedKey, title: fullTitle });
-      })
-      .catch(() => {})
-      .finally(() => {
-        setFullTitleLoadingKey((current) => current === requestedKey ? '' : current);
-      });
-  }, [
-    fullTitleLoadingKey,
-    fullTitleRequestKey,
-    hydratedTitle,
-    s,
-    titleHydration.needsFullTitle,
-  ]);
 
   const finishRemoteControlSurge = useCallback((requestedSequence = 0) => {
     const sequence = Number(requestedSequence) || 0;
@@ -1114,6 +978,7 @@ function SessionRow({
       data-desktop-session-no-workspace={noWorkspace ? 'true' : undefined}
       data-desktop-session-path={sessionPath || undefined}
       data-desktop-session-pinned={pinned ? 'true' : 'false'}
+      data-desktop-session-unread={attention === 'unread' ? 'true' : 'false'}
       data-desktop-session-title={title || undefined}
       data-desktop-session-archive="true"
       data-remote-control-bound={remoteControlBound ? 'true' : undefined}
@@ -1125,7 +990,7 @@ function SessionRow({
       data-sidebar-workspace-session-workspace={workspaceReorderable ? workspaceHash || undefined : undefined}
       aria-describedby={hoverCardVisible ? hoverCardId : undefined}
       className={clsx(
-        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 my-px px-2 rounded-md text-[14px] transition',
+        'ace-sidebar-session-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] ml-1.5 mr-0 my-px pl-[3px] pr-[1px] rounded-md text-[14px] transition',
         pinned && 'ace-sidebar-pinned-session-row',
         workspaceReorderable && 'ace-sidebar-workspace-session-row',
         dragging && 'is-dragging',
@@ -1145,7 +1010,6 @@ function SessionRow({
             owner: hoverCardId,
           });
         }
-        ensureCompleteMarqueeTitle();
       }}
       onMouseLeave={hoverDetails ? () => {
         sessionHoverLifecycle.dispatch({
@@ -1176,7 +1040,6 @@ function SessionRow({
             owner: hoverCardId,
           });
         }
-        ensureCompleteMarqueeTitle();
       }}
       onBlurCapture={hoverDetails ? (event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -1233,9 +1096,9 @@ function SessionRow({
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(s); }}
           aria-describedby={hoverCardVisible ? hoverCardId : undefined}
           aria-label={remoteControlBound
-            ? tr('remoteControl.connectedSessionAria', { title: marqueeTitle || title })
-            : (marqueeTitle || title)}
-          className="ace-sidebar-session-title-button flex min-w-0 w-full items-center gap-1.5 py-[4.5px] bg-transparent text-left cursor-pointer"
+            ? tr('remoteControl.connectedSessionAria', { title })
+            : title}
+          className="ace-sidebar-session-title-button ace-sidebar-tree-content flex min-w-0 w-full items-center gap-1.5 px-0 py-[4.5px] bg-transparent text-left cursor-pointer"
         >
           {remoteControlBound && (
             <VsIcon
@@ -1245,10 +1108,10 @@ function SessionRow({
               data-remote-control-session-icon="true"
             />
           )}
-          <SidebarSessionTitle title={marqueeTitle} marqueeReady={marqueeReady} />
+          <SidebarSessionTitle title={title} />
         </button>
       )}
-      <span className="flex min-w-0 items-center justify-end gap-1">
+      <span className="flex w-full min-w-0 items-center justify-end gap-2">
         {!editing && pendingPermission ? (
           <span
             data-sidebar-permission-prompt="true"
@@ -1267,7 +1130,7 @@ function SessionRow({
           </span>
         ) : null}
         {showSessionTime && !editing && !pendingPermission && !pendingQuestion && (
-          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text text-[13px] text-fg-mute shrink-0">
+          <span className="ace-sidebar-row-idle-slot ace-sidebar-meta-text whitespace-nowrap text-right text-[13px] text-fg-mute shrink-0 tabular-nums">
             {relativeTime(s.updated_at || s.created_at)}
           </span>
         )}
@@ -1281,7 +1144,7 @@ function SessionRow({
               onTogglePin?.(s, !pinned);
             }}
             className={clsx(
-              'ace-session-pin-btn ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 transition',
+              'ace-session-pin-btn ace-sidebar-row-hover-action w-[18px] h-7 rounded items-center justify-center shrink-0 transition',
               pinned
                 ? 'flex text-accent'
                 : 'hidden group-hover:flex group-focus-within:flex text-fg-mute hover:text-fg hover:bg-surface-hi',
@@ -1301,7 +1164,7 @@ function SessionRow({
             onArchive?.(s);
           }}
           className={clsx(
-            'ace-sidebar-row-hover-action w-5 h-7 rounded items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
+            'ace-sidebar-row-hover-action w-[18px] h-7 rounded items-center justify-center shrink-0 text-fg-mute hover:text-fg hover:bg-surface-hi transition',
             sessionMarker
               ? 'flex'
               : 'hidden group-hover:flex group-focus-within:flex',
@@ -1336,7 +1199,7 @@ function SessionRow({
           anchorRef={rowRef}
           cardId={hoverCardId}
           session={s}
-          title={marqueeTitle}
+          title={title}
         />
       )}
     </div>
@@ -1512,7 +1375,7 @@ function WorkspaceGroup({
   expanded,
   onToggle,
   sessions,
-  sessionListExpanded,
+  sessionListVisibleLimit,
   sessionListTotal = null,
   onToggleSessionList,
   activeId,
@@ -1523,11 +1386,16 @@ function WorkspaceGroup({
   onNewSession,
   onImportOpencode,
   onRemove,
+  onEdit,
   onTogglePin,
   onArchive,
   onRenameSession,
   onWorkspacePointerDown,
   workspaceDragState = null,
+  folderReorderable = false,
+  folderDragState = null,
+  onFolderPointerDown,
+  onFolderKeyDown,
   pendingPermissionSessionIds,
   pendingQuestionSessionIds,
   sessionsLoading = false,
@@ -1541,7 +1409,7 @@ function WorkspaceGroup({
   const hasUnread = workspaceHasUnread(sessions);
   const projectedSessions = sidebarSessionProjection(
     sessions,
-    sessionListExpanded,
+    sessionListVisibleLimit,
     undefined,
     sessionListTotal,
   );
@@ -1576,6 +1444,10 @@ function WorkspaceGroup({
           detail.handled = true;
           onImportOpencode?.(ws);
           break;
+        case DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE:
+          detail.handled = true;
+          onEdit?.(ws);
+          break;
         case DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE:
           detail.handled = true;
           setEditing(true);
@@ -1590,7 +1462,7 @@ function WorkspaceGroup({
     };
     window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
     return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
-  }, [expanded, onActivate, onImportOpencode, onNewSession, onRemove, onToggle, ws]);
+  }, [expanded, onActivate, onEdit, onImportOpencode, onNewSession, onRemove, onToggle, ws]);
 
   const openWorkspaceContextMenu = useCallback((event) => {
     event.preventDefault();
@@ -1620,7 +1492,18 @@ function WorkspaceGroup({
   };
 
   return (
-    <div className={clsx('my-px', ws.active && 'rounded-md')}>
+    <div
+      data-sidebar-workspace-folder-hash={ws.hash}
+      className={clsx('ace-sidebar-workspace-folder-group my-px',
+        folderDragState?.source === ws.hash && 'is-folder-dragging')}
+    >
+      {folderDragState?.target === ws.hash && (
+        <div
+          className="ace-sidebar-workspace-folder-insertion"
+          data-placement={folderDragState.placement}
+          aria-hidden="true"
+        />
+      )}
       <div
         data-desktop-open-in-explorer-kind="workspace"
         data-desktop-open-in-explorer-path={ws.cwd || undefined}
@@ -1631,15 +1514,29 @@ function WorkspaceGroup({
         data-desktop-workspace-expanded={expanded ? 'true' : 'false'}
         data-desktop-workspace-rename="true"
         data-desktop-workspace-remove={onRemove ? 'true' : undefined}
+        data-desktop-workspace-edit={onEdit ? 'true' : undefined}
         data-desktop-workspace-opencode-import-count={opencodeImportCount > 0 ? String(opencodeImportCount) : undefined}
-        className={clsx(
-          'ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[3px] rounded-md text-[14px] cursor-pointer transition',
-          ws.active ? 'bg-accent-bg text-fg' : 'text-fg hover:bg-surface-hi',
-        )}
-        onClick={() => (ws.active ? onToggle(ws.hash) : onActivate(ws))}
+        data-folder-reorderable={folderReorderable && !editing ? 'true' : undefined}
+        className="ace-sidebar-workspace-row ace-sidebar-tree-row-grid ace-sidebar-primary-text group grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[3px] rounded-md text-[14px] cursor-pointer transition text-fg hover:bg-surface-hi"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-keyshortcuts={folderReorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+        title={folderReorderable && !editing ? tr('拖动排序，也可按 Alt+上/下方向键') : undefined}
+        onPointerDown={editing ? undefined : (event) => onFolderPointerDown?.(event, ws)}
+        onClick={() => onToggle(ws.hash)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          onFolderKeyDown?.(event, ws);
+          if (event.defaultPrevented) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle(ws.hash);
+          }
+        }}
       >
         <span className="w-6 h-6 flex items-center justify-center shrink-0">
-          <VsIcon name={expanded ? 'folderOpen' : 'folder'} size={18} />
+          <SidebarWorkspaceGlyph icon={ws.icon} expanded={expanded} />
         </span>
         {editing ? (
           <input
@@ -1655,7 +1552,7 @@ function WorkspaceGroup({
             className="ace-sidebar-primary-text min-w-0 h-7 px-1 py-0 text-[14px] bg-surface border border-accent rounded outline-none"
           />
         ) : (
-          <span className={clsx('min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
+          <span data-sidebar-workspace-folder-label className={clsx('ace-sidebar-tree-content min-w-0 truncate', hasUnread ? 'font-semibold' : 'font-normal')}>
             {ws.name || ws.hash}
           </span>
         )}
@@ -1665,7 +1562,7 @@ function WorkspaceGroup({
             data-sidebar-workspace-menu="true"
             type="button"
             onClick={openWorkspaceContextMenu}
-            className="ace-sidebar-workspace-action w-6 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
+            className="ace-sidebar-workspace-action w-5 h-6 rounded hover:bg-surface-hi flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition"
             title="工作区菜单"
             aria-label="工作区菜单"
           ><VsIcon name="workspaceMenu" size={18} /></button>
@@ -1683,7 +1580,7 @@ function WorkspaceGroup({
       {expanded && (
         <div className="mt-px mb-[10px]">
           {sessions.length === 0 ? (
-            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+            <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
               <span aria-hidden="true" />
               <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
             </div>
@@ -1713,12 +1610,12 @@ function WorkspaceGroup({
                 );
               })}
               {projectedSessions.collapsible && (
-                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+                <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px]">
                   <span aria-hidden="true" />
                   <button
                     type="button"
-                    onClick={() => onToggleSessionList?.(ws.hash)}
-                    className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+                    onClick={() => onToggleSessionList?.(ws.hash, projectedSessions.action)}
+                    className="ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
                   >
                     {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
                   </button>
@@ -1735,7 +1632,7 @@ function WorkspaceGroup({
 function NoWorkspaceSessionGroup({
   sessions,
   sessionsLoading = false,
-  sessionListExpanded,
+  sessionListVisibleLimit,
   onToggleSessionList,
   activeId,
   activeTarget,
@@ -1748,12 +1645,12 @@ function NoWorkspaceSessionGroup({
   remoteControlSurgeRequest = null,
   onRemoteControlSurgeCompleted,
 }) {
-  const projectedSessions = sidebarSessionProjection(sessions, sessionListExpanded);
+  const projectedSessions = sidebarSessionProjection(sessions, sessionListVisibleLimit);
 
   return (
     <div className="mt-px mb-[10px]">
       {sessions.length === 0 ? (
-        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2 py-[4px] text-[13px] text-fg-mute italic">
+        <div className="ace-sidebar-tree-row-grid ace-sidebar-meta-text grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px] py-[4px] text-[13px] text-fg-mute italic">
           <span aria-hidden="true" />
           <span>{sessionsLoading ? '加载中...' : '暂无任务'}</span>
         </div>
@@ -1775,12 +1672,12 @@ function NoWorkspaceSessionGroup({
             />
           ))}
           {projectedSessions.collapsible && (
-            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[5px] mx-1.5 px-2">
+            <div className="ace-sidebar-tree-row-grid grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-x-[7px] mx-1.5 pl-[3px] pr-[14px]">
               <span aria-hidden="true" />
               <button
                 type="button"
-                onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY)}
-                className="ace-sidebar-meta-text py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg hover:bg-surface-hi transition"
+                onClick={() => onToggleSessionList?.(NO_WORKSPACE_SESSION_LIST_KEY, projectedSessions.action)}
+                className="ace-sidebar-tree-content ace-sidebar-meta-text px-0 py-[5px] rounded-md text-left text-[13px] text-fg-mute hover:text-fg transition-colors"
               >
                 {projectedSessions.action === 'expand' ? '展开显示' : '折叠显示'}
               </button>
@@ -1796,6 +1693,7 @@ export function Sidebar({
   activeId,
   activeRef,
   onSelect,
+  onBeforeNavigate,
   onActiveRemoteControlBoundChange,
   onSessionLoadStateChange,
   sessionLoadResetSequence = 0,
@@ -1828,6 +1726,27 @@ export function Sidebar({
     dispatch: dispatchSessionHover,
   }), [sessionHoverState]);
   const [workspaces,  setWorkspaces]  = useState([]);
+  const workspacesRef = useRef(workspaces);
+  workspacesRef.current = workspaces;
+  const [workspaceOrderSaving, setWorkspaceOrderSaving] = useState(false);
+  const workspaceOrderRefreshRef = useRef(null);
+  const workspaceOrderControllerRef = useRef(null);
+  if (!workspaceOrderControllerRef.current) {
+    workspaceOrderControllerRef.current = createWorkspaceFolderOrderController({
+      getWorkspaces: () => workspacesRef.current,
+      setWorkspaces: (next) => {
+        workspacesRef.current = next;
+        setWorkspaces(next);
+      },
+      save: (hashes) => api.setWorkspaceOrder(hashes),
+      onSavingChange: setWorkspaceOrderSaving,
+      onError: (error) => {
+        toast({ kind: 'err', text: error?.code === 'WORKSPACE_ORDER_CONFLICT'
+          ? tr('工作区列表已变化，请重新拖动排序') : tr('保存工作区顺序失败，请重试') });
+        workspaceOrderRefreshRef.current?.().catch(() => {});
+      },
+    });
+  }
   const [sessions,    setSessions]    = useState([]);
   const [statusBySession, setStatusBySession] = useState(() => new Map());
   const [pinnedByWorkspace, setPinnedByWorkspace] = useState(() => new Map());
@@ -1837,7 +1756,7 @@ export function Sidebar({
   const [sessionFullyLoadedWorkspaces, setSessionFullyLoadedWorkspaces] = useState(() => new Set());
   const [sessionListTotals, setSessionListTotals] = useState(() => new Map());
   const [expanded,    setExpanded]    = useState(new Set());
-  const [expandedSessionLists, setExpandedSessionLists] = useState(new Set());
+  const [expandedSessionLists, setExpandedSessionLists] = useState(new Map());
   const [sectionExpansion, setSectionExpansion] = usePreference(
     SIDEBAR_SECTIONS_STORAGE_KEY,
     DEFAULT_SIDEBAR_SECTION_EXPANSION,
@@ -1849,12 +1768,15 @@ export function Sidebar({
   const expandedRef = useRef(new Set());
   const sessionLoadedWorkspacesRef = useRef(new Set());
   const sessionFullyLoadedWorkspacesRef = useRef(new Set());
+  const sessionsRef = useRef([]);
   const workspaceSessionLoadSeqRef = useRef(new Map());
+  const pendingFullWorkspaceLoadsRef = useRef(new Map());
   // 已经探过 opencode 导入预览的 workspace。探测结果近乎静态,没必要每轮
   // 对全部 workspace 重问一遍(见 lib/sidebarAuxiliaryFetch.js)。
   const opencodePreviewProbedRef = useRef(new Set());
   sessionLoadedWorkspacesRef.current = sessionLoadedWorkspaces;
   sessionFullyLoadedWorkspacesRef.current = sessionFullyLoadedWorkspaces;
+  sessionsRef.current = sessions;
   const workspaceCollapseAllRef = useRef(false);
   const userCollapsedWorkspacesRef = useRef(new Set());
   const sessionListDisclosureCompactRef = useRef(new Set());
@@ -1862,15 +1784,25 @@ export function Sidebar({
   const pinnedOrderItemsRef = useRef([]);
   const retainedSessionIdsRef = useRef(new Set());
   const sidebarScrollRef = useRef(null);
+  const sidebarFixedNavRef = useRef(null);
   const pinnedDragRef = useRef(null);
   const workspaceDragRef = useRef(null);
   const suppressSessionClickRef = useRef(false);
   const [pinnedDragState, setPinnedDragState] = useState(null);
   const [workspaceDragState, setWorkspaceDragState] = useState(null);
   const [sessionDragGhost, setSessionDragGhost] = useState(null);
+  const folderReorder = useWorkspaceFolderReorder({
+    workspaces,
+    scrollRef: sidebarScrollRef,
+    disabled: collapsed || !sectionExpansion.workspaces || workspaceOrderSaving,
+    onReorder: (next) => workspaceOrderControllerRef.current.reorder(next),
+    conflictingDragRefs: [pinnedDragRef, workspaceDragRef],
+  });
+  const folderGestureRef = folderReorder.gestureRef;
   const [opencodeImportPreviews, setOpencodeImportPreviews] = useState(() => new Map());
   const opencodeImportPreviewsRef = useRef(new Map());
   const [opencodeImportDialog, setOpencodeImportDialog] = useState(null);
+  const [editingWorkspace, setEditingWorkspace] = useState(null);
   const opencodeImportPollRef = useRef(0);
   const [opencodeImportedHighlightKeys, setOpencodeImportedHighlightKeys] = useState(() => new Set());
   const opencodeImportedHighlightTimersRef = useRef(new Map());
@@ -1918,6 +1850,16 @@ export function Sidebar({
   const clearSessionHover = useCallback(() => {
     dispatchSessionHover({ type: SESSION_HOVER_LIFECYCLE_ACTIONS.CLEAR_ALL });
   }, []);
+
+  // 任务列表滚离顶部时,固定导航下方显出分隔线;回到顶部隐去(lib/sidebarListDivider.js)。
+  const handleSidebarListScroll = useCallback(() => {
+    clearSessionHover();
+    syncSidebarListDivider(sidebarFixedNavRef.current, sidebarScrollRef.current);
+  }, [clearSessionHover]);
+
+  useLayoutEffect(() => {
+    syncSidebarListDivider(sidebarFixedNavRef.current, sidebarScrollRef.current);
+  }, [collapsed]);
 
   useEffect(() => {
     if (collapsed) clearSessionHover();
@@ -2182,6 +2124,7 @@ export function Sidebar({
   }, [applyPinnedReorder]);
 
   const handlePinnedPointerDown = useCallback((event, session, title) => {
+    if (folderGestureRef.current) return;
     startSidebarSessionPointerDrag({
       showSessionTime,
       event,
@@ -2195,7 +2138,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updatePinnedDragTarget,
     });
-  }, [finishPinnedDrag, showSessionTime, updatePinnedDragTarget, updateSessionDragScroll]);
+  }, [finishPinnedDrag, folderGestureRef, showSessionTime, updatePinnedDragTarget, updateSessionDragScroll]);
 
   const updateWorkspaceDragTarget = useCallback((clientY) => {
     const drag = workspaceDragRef.current;
@@ -2239,6 +2182,7 @@ export function Sidebar({
   }, []);
 
   const handleWorkspacePointerDown = useCallback((event, session, title) => {
+    if (folderGestureRef.current) return;
     startSidebarSessionPointerDrag({
       showSessionTime,
       event,
@@ -2252,7 +2196,7 @@ export function Sidebar({
       updateDragScroll: updateSessionDragScroll,
       updateDragTarget: updateWorkspaceDragTarget,
     });
-  }, [finishWorkspaceDrag, showSessionTime, updateSessionDragScroll, updateWorkspaceDragTarget]);
+  }, [finishWorkspaceDrag, folderGestureRef, showSessionTime, updateSessionDragScroll, updateWorkspaceDragTarget]);
 
   useEffect(() => () => {
     pinnedDragRef.current?.cleanup?.();
@@ -2337,7 +2281,7 @@ export function Sidebar({
     });
   }, []);
 
-  const applyWorkspaceSessionList = useCallback((workspace, page) => {
+  const applyWorkspaceSessionList = useCallback((workspace, page, { appendNewSessions = false } = {}) => {
     const hash = workspace?.hash || '';
     if (!hash) return;
     const list = page?.sessions;
@@ -2357,6 +2301,7 @@ export function Sidebar({
       refreshedWorkspaceHashes: [hash],
       pinnedByWorkspace: pinnedByWorkspaceRef.current,
       refreshNoWorkspace: false,
+      appendNewSessions,
     }));
     setStatusBySession((prev) => incoming.reduce((map, session) => applyStatusUpdate(map, {
       ...session,
@@ -2376,58 +2321,73 @@ export function Sidebar({
     const workspace = workspaces.find((item) => item.hash === workspaceHash)
       || { hash: workspaceHash };
     const wantFull = full || sessionFullyLoadedWorkspacesRef.current.has(workspaceHash);
+    const appendNewSessions = wantFull && !sessionFullyLoadedWorkspacesRef.current.has(workspaceHash);
     const cached = silent || sessionLoadedWorkspacesRef.current.has(workspaceHash);
-    if (!cached) setSessionWorkspaceLoading([workspaceHash], true);
+    if (workspaceNeedsInitialSidebarLoad({
+      hasCachedSessions: workspaceHasCachedSidebarSessions(sessionsRef.current, workspaceHash),
+      hasLoaded: cached,
+    })) {
+      setSessionWorkspaceLoading([workspaceHash], true);
+    }
 
     const sequence = (workspaceSessionLoadSeqRef.current.get(workspaceHash) || 0) + 1;
     workspaceSessionLoadSeqRef.current.set(workspaceHash, sequence);
-    try {
-      let payload;
+    const pagePromise = (async () => {
       if (workspaceHash === '__local__') {
         const list = await api.listSessions();
-        payload = normalizeWorkspaceSessionListResponse(
+        return normalizeWorkspaceSessionListResponse(
           (Array.isArray(list) ? list : []).filter((session) => !isNoWorkspaceSession(session)),
         );
-      } else {
-        payload = normalizeWorkspaceSessionListResponse(
-          await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
-        );
       }
+      return normalizeWorkspaceSessionListResponse(
+        await api.listWorkspaceSessions(workspaceHash, sidebarWorkspaceSessionListQuery({
+          full: wantFull,
+          pinnedIds: pinnedByWorkspaceRef.current.get(workspaceHash),
+        })),
+      );
+    })();
+    if (wantFull) {
+      pendingFullWorkspaceLoadsRef.current.set(workspaceHash, { sequence, promise: pagePromise });
+    }
+    try {
+      const payload = await pagePromise;
       if (workspaceSessionLoadSeqRef.current.get(workspaceHash) !== sequence) return;
-      applyWorkspaceSessionList(workspace, payload);
+      applyWorkspaceSessionList(workspace, payload, { appendNewSessions });
     } catch {
       /* 鉴权失败不致命 */
     } finally {
+      if (pendingFullWorkspaceLoadsRef.current.get(workspaceHash)?.sequence === sequence) {
+        pendingFullWorkspaceLoadsRef.current.delete(workspaceHash);
+      }
       if (workspaceSessionLoadSeqRef.current.get(workspaceHash) === sequence) {
         setSessionWorkspaceLoading([workspaceHash], false);
       }
     }
   }, [applyWorkspaceSessionList, setSessionWorkspaceLoading, workspaces]);
 
-  const toggleSessionListExpanded = useCallback((hash) => {
+  const toggleSessionListExpanded = useCallback((hash, action) => {
     if (!hash) return;
-    const collapsing = expandedSessionLists.has(hash);
+    const collapsing = action === 'collapse';
+    // 手动选择批次优先于当前会话的自动揭示，直到发生新的会话导航。
+    sessionListDisclosureCompactRef.current.add(hash);
     if (collapsing) {
-      sessionListDisclosureCompactRef.current.add(hash);
       setExpandedSessionLists((prev) => {
-        const next = new Set(prev);
+        const next = new Map(prev);
         next.delete(hash);
         return next;
       });
       return;
     }
-    sessionListDisclosureCompactRef.current.delete(hash);
-    if (hash === NO_WORKSPACE_SESSION_LIST_KEY || sessionFullyLoadedWorkspaces.has(hash)) {
-      setExpandedSessionLists((prev) => new Set(prev).add(hash));
-      return;
-    }
+    setExpandedSessionLists((prev) => new Map(prev).set(
+      hash,
+      (prev.get(hash) ?? SIDEBAR_SESSION_COLLAPSE_LIMIT) + SIDEBAR_SESSION_COLLAPSE_LIMIT,
+    ));
+    if (hash === NO_WORKSPACE_SESSION_LIST_KEY || sessionFullyLoadedWorkspaces.has(hash)) return;
     loadWorkspaceSessions(hash, {
       full: true,
       silent: sessionLoadedWorkspaces.has(hash),
-    }).then(() => {
-      setExpandedSessionLists((prev) => new Set(prev).add(hash));
     }).catch(() => {});
-  }, [expandedSessionLists, loadWorkspaceSessions, sessionFullyLoadedWorkspaces, sessionLoadedWorkspaces]);
+  }, [loadWorkspaceSessions, sessionFullyLoadedWorkspaces, sessionLoadedWorkspaces]);
 
   useEffect(() => {
     const handler = (event) => {
@@ -2452,6 +2412,7 @@ export function Sidebar({
       return;
     }
     refreshingRef.current = true;
+    const workspaceOrderRefresh = workspaceOrderControllerRef.current.captureRefresh();
     try {
       const activeNoWorkspace = !!revealTarget.noWorkspace && !requestedHash;
       let workspaceArr = [];
@@ -2495,7 +2456,7 @@ export function Sidebar({
         expandedHashes.add(revealWorkspaceHash);
       }
       setActiveWorkspaceHash(chosen);
-      setWorkspaces(withActive);
+      workspaceOrderControllerRef.current.acceptRefresh(withActive, workspaceOrderRefresh);
       const earlyVisibleWorkspaceHashes = withActive
         .filter((w) => w.active || w.hash === '__local__' || expandedHashes.has(w.hash) || w.hash === revealWorkspaceHash)
         .map((w) => w.hash)
@@ -2512,7 +2473,59 @@ export function Sidebar({
           opencodePreviewProbedRef.current.add(w.hash);
           refreshOpencodeImportPreview(w).catch(() => {});
         });
-      setSessionWorkspaceLoading(earlyVisibleWorkspaceHashes, true);
+      const loadWorkspacePage = async (workspace, query) => {
+        if (workspace.hash === '__local__') {
+          const list = await api.listSessions();
+          return {
+            workspace,
+            ...normalizeWorkspaceSessionListResponse(
+              (Array.isArray(list) ? list : []).filter((session) => !isNoWorkspaceSession(session)),
+            ),
+          };
+        }
+        return {
+          workspace,
+          ...normalizeWorkspaceSessionListResponse(
+            await api.listWorkspaceSessions(
+              workspace.hash,
+              query,
+            ),
+          ),
+        };
+      };
+      // 会话行是侧边栏的主体，不能等待置顶等辅助数据后才开始请求。
+      const startWorkspacePageLoad = (workspace) => {
+        const pendingFull = pendingFullWorkspaceLoadsRef.current.get(workspace.hash);
+        if (pendingFull && sidebarWorkspacePageIsCurrent(
+          workspaceSessionLoadSeqRef.current.get(workspace.hash), pendingFull.sequence,
+        )) {
+          // 用户的全量请求尚未完成时，后台摘要不能推进代次使它失效。
+          return {
+            sequence: pendingFull.sequence,
+            query: {},
+            result: settleSidebarWorkspacePage(pendingFull.promise.then((page) => ({ workspace, ...page }))),
+          };
+        }
+        const sequence = (workspaceSessionLoadSeqRef.current.get(workspace.hash) || 0) + 1;
+        workspaceSessionLoadSeqRef.current.set(workspace.hash, sequence);
+        const query = sidebarWorkspaceSessionListQuery({
+          full: sessionFullyLoadedWorkspacesRef.current.has(workspace.hash),
+          pinnedIds: pinnedByWorkspaceRef.current.get(workspace.hash),
+        });
+        return {
+          sequence,
+          query,
+          result: settleSidebarWorkspacePage(loadWorkspacePage(workspace, query)),
+        };
+      };
+      const earlyVisibleWorkspaces = withActive.filter((workspace) => (
+        earlyVisibleWorkspaceHashes.includes(workspace.hash)
+      ));
+      const earlyWorkspacePages = new Map(earlyVisibleWorkspaces.map((workspace) => [
+        workspace.hash,
+        startWorkspacePageLoad(workspace),
+      ]));
+      const noWorkspaceListPromise = api.listSessions().catch(() => null);
 
       const pinnedTargets = new Set(pinnedRefreshTargets(withActive, earlyVisibleWorkspaceHashes));
       const [pinnedPairs, noWorkspacePinnedIds] = await Promise.all([
@@ -2576,24 +2589,46 @@ export function Sidebar({
         .map((w) => w.hash)
         .filter((hash) => hash && !visibleWorkspaceHashSet.has(hash));
       setSessionWorkspaceLoading(hiddenWorkspaceHashes, false);
-      setSessionWorkspaceLoading(visibleWorkspaceHashes, true);
+      const initiallyLoadingWorkspaceHashes = visibleWorkspaceHashes.filter((hash) => (
+        workspaceNeedsInitialSidebarLoad({
+          hasCachedSessions: workspaceHasCachedSidebarSessions(sessionsRef.current, hash),
+          hasLoaded: sessionLoadedWorkspacesRef.current.has(hash),
+        })
+      ));
+      setSessionWorkspaceLoading(initiallyLoadingWorkspaceHashes, true);
+      let refreshedWorkspaceHashes = [];
+      let settledPages = [];
       try {
-        const noWorkspaceListPromise = api.listSessions().catch(() => null);
-        const perWorkspace = await Promise.all(visibleWorkspaces.map(async (w) => {
-          if (w.hash === '__local__') {
-            const list = await api.listSessions();
-            const payload = normalizeWorkspaceSessionListResponse(
-              (Array.isArray(list) ? list : []).filter((session) => !isNoWorkspaceSession(session)),
-            );
-            return { workspace: w, ...payload };
+        settledPages = await Promise.all(visibleWorkspaces.map(async (workspace) => {
+          let request = earlyWorkspacePages.get(workspace.hash)
+            || startWorkspacePageLoad(workspace);
+          let result = await request.result;
+          const neededQuery = sidebarWorkspaceSessionListQuery({
+            pinnedIds: nextPinnedMap.get(workspace.hash),
+          });
+          // 先用缓存置顶数启动请求；本轮发现更多置顶项时补足普通五条。
+          // 补请求也必须尊重较新的用户全量请求，不能重新抢走它的代次。
+          if (result.ok && result.page.hasMore && request.query.limit !== undefined
+            && neededQuery.limit > request.query.limit && sidebarWorkspacePageIsCurrent(
+              workspaceSessionLoadSeqRef.current.get(workspace.hash), request.sequence,
+            )) {
+            request = startWorkspacePageLoad(workspace);
+            result = await request.result;
           }
-          const wantFull = sessionFullyLoadedWorkspacesRef.current.has(w.hash);
-          const payload = normalizeWorkspaceSessionListResponse(
-            await api.listWorkspaceSessions(w.hash, sidebarWorkspaceSessionListQuery({ full: wantFull })),
-          );
-          return { workspace: w, ...payload };
+          return { workspace, sequence: request.sequence, result };
         }));
+        // 所有等待结束后再检查代次，不能让这里较慢的请求造成旧摘要回写。
         const noWorkspaceRaw = await noWorkspaceListPromise;
+        const perWorkspace = settledPages.flatMap(({ workspace, sequence, result }) => {
+          if (!result.ok) return [];
+          if (sequence !== undefined && !sidebarWorkspacePageIsCurrent(
+            workspaceSessionLoadSeqRef.current.get(workspace.hash), sequence,
+          )) return [];
+          return [result.page];
+        });
+        refreshedWorkspaceHashes = perWorkspace
+          .map((item) => item.workspace?.hash)
+          .filter(Boolean);
         const noWorkspaceIncoming = (Array.isArray(noWorkspaceRaw) ? noWorkspaceRaw : [])
           .filter(isNoWorkspaceSession)
           .map(normalizeNoWorkspaceSession);
@@ -2618,7 +2653,7 @@ export function Sidebar({
           ...noWorkspaceIncoming,
         ];
         setSessions((prev) => retainUnrefreshedSidebarSessions(prev, incoming, {
-          refreshedWorkspaceHashes: visibleWorkspaceHashes,
+          refreshedWorkspaceHashes,
           pinnedByWorkspace: pinnedByWorkspaceRef.current,
           refreshNoWorkspace: true,
         }));
@@ -2632,8 +2667,14 @@ export function Sidebar({
       }
       catch { /* 鉴权失败不致命 */ }
       finally {
-        setSessionWorkspacesLoaded(visibleWorkspaceHashes, true);
-        setSessionWorkspaceLoading(visibleWorkspaceHashes, false);
+        setSessionWorkspacesLoaded(refreshedWorkspaceHashes, true);
+        // 激活已加载空工作区也会设置 loading；只按本轮当前请求清理，
+        // 既不能遗漏已有标记，也不能清掉较新全量请求正在使用的标记。
+        setSessionWorkspaceLoading(settledPages
+          .filter(({ workspace, sequence }) => sidebarWorkspacePageIsCurrent(
+            workspaceSessionLoadSeqRef.current.get(workspace.hash), sequence,
+          ))
+          .map(({ workspace }) => workspace.hash), false);
       }
     } finally {
       refreshingRef.current = false;
@@ -2642,6 +2683,7 @@ export function Sidebar({
       if (pendingHash) setTimeout(() => refresh(pendingHash).catch(() => {}), 0);
     }
   }, [activeWorkspaceHash, markWorkspaceSessionsFullyLoaded, refreshOpencodeImportPreview, revealTarget, setPinnedMap, setPinnedOrder, setSessionWorkspaceLoading, setSessionWorkspacesLoaded, syncRetainedSessionIds, updateExpanded]);
+  workspaceOrderRefreshRef.current = refresh;
 
   const archiveSession = useCallback(async (session) => {
     const id = session?.id || session?.sessionId || session?.session_id || '';
@@ -2879,12 +2921,12 @@ export function Sidebar({
         prev[targetSection] ? prev : { ...prev, [targetSection]: true }
       ));
     }
-    const sourceSessions = selectedRevealTarget.noWorkspace
+    const sourceSessions = filterPinnedSessions(selectedRevealTarget.noWorkspace
       ? noWorkspaceSessions
       : workspaceSessions.filter((session) => (
         !selectedRevealTarget.workspaceHash ||
         (session.workspace_hash || session.workspaceHash || '') === selectedRevealTarget.workspaceHash
-      ));
+      )), pinnedByWorkspace);
 
     if (
       allowSidebarWorkspaceAutoExpand(selectedRevealTarget.workspaceHash, {
@@ -2909,12 +2951,13 @@ export function Sidebar({
       && sessionListNeedsRevealExpansion(
         sourceSessions,
         selectedRevealTarget,
-        expandedSessionLists.has(listKey),
+        expandedSessionLists.get(listKey),
       )
     ) {
       setExpandedSessionLists((prev) => {
-        if (prev.has(listKey)) return prev;
-        return new Set(prev).add(listKey);
+        const visibleLimit = sidebarSessionRevealLimit(sourceSessions, selectedRevealTarget);
+        if ((prev.get(listKey) ?? SIDEBAR_SESSION_COLLAPSE_LIMIT) >= visibleLimit) return prev;
+        return new Map(prev).set(listKey, visibleLimit);
       });
     }
 
@@ -2938,7 +2981,7 @@ export function Sidebar({
       row.scrollIntoView?.({ block: 'nearest' });
     });
     return () => window.cancelAnimationFrame?.(frame);
-  }, [expandedSessionLists, noWorkspaceSessions, pinnedSessions, selectedRevealTarget, setSectionExpansion, updateExpanded, workspaceSessions]);
+  }, [expandedSessionLists, noWorkspaceSessions, pinnedByWorkspace, pinnedSessions, selectedRevealTarget, setSectionExpansion, updateExpanded, workspaceSessions]);
 
   // 把已加载的跨 workspace sessions / pinned order / workspaceName 推到桌面 tray 菜单。
   // pushTrayMenu 内部 100ms debounce + 无 bridge 时 no-op。
@@ -2959,7 +3002,8 @@ export function Sidebar({
       const msg = e.detail || {};
       if (msg.type === 'session_status_snapshot') {
         setStatusBySession((prev) => applyStatusSnapshot(prev, msg.payload || {}));
-      } else if (msg.type === 'session_status' || msg.type === 'mark_session_read_ack') {
+      } else if (msg.type === 'session_status' || msg.type === 'mark_session_read_ack'
+        || msg.type === 'mark_session_unread_ack') {
         setStatusBySession((prev) => applyStatusUpdate(prev, msg.payload || {}));
       } else if (msg.type === 'session_updated') {
         const payload = msg.payload || {};
@@ -2967,12 +3011,19 @@ export function Sidebar({
         if (!sid) return;
         setSessions((prev) => prev.map((session) => {
           if ((session.id || session.session_id || session.sessionId) !== sid) return session;
+          const hasTitle = Object.prototype.hasOwnProperty.call(payload, 'title');
+          // summary 与 title 同为显示标题的来源(无标题时显示 summary),daemon 在
+          // 用户消息落盘后单独推 {summary};ChatView 的 transcript 对同一事件做同样合并。
+          const hasSummary = Object.prototype.hasOwnProperty.call(payload, 'summary');
           return {
             ...session,
-            title: Object.prototype.hasOwnProperty.call(payload, 'title')
-              ? (payload.title || '')
-              : session.title,
-            title_source: payload.title_source || session.title_source || '',
+            title: hasTitle ? (payload.title || '') : session.title,
+            title_source: hasTitle
+              ? String(payload.title_source || '')
+              : (session.title_source || ''),
+            summary: hasSummary
+              ? (typeof payload.summary === 'string' ? payload.summary : '')
+              : session.summary,
             workspace_hash: payload.workspace_hash || session.workspace_hash,
             cwd: payload.cwd || session.cwd,
           };
@@ -2987,8 +3038,19 @@ export function Sidebar({
     };
   }, []);
 
+  // 用户对当前打开的会话点了「标记为未读」:切到别的会话之前,不要被下面「打开即已读」
+  // 的 effect 立刻改回已读(否则菜单点了等于没点)。切走再回来照常自动已读。
+  // 这个 effect 必须声明在自动已读的 effect 之前,切换会话的同一次提交里先清掉标记。
+  const manualUnreadActiveRef = useRef('');
+  useEffect(() => {
+    if (manualUnreadActiveRef.current && manualUnreadActiveRef.current !== activeId) {
+      manualUnreadActiveRef.current = '';
+    }
+  }, [activeId]);
+
   const markSessionRead = useCallback((session) => {
     if (!session?.id) return;
+    if (manualUnreadActiveRef.current === session.id) manualUnreadActiveRef.current = '';
     const merged = mergeSessionStatus(session, statusBySession);
     const cursor = statusCursor(merged);
     connection.markSessionRead({
@@ -3001,13 +3063,51 @@ export function Sidebar({
     if (optimistic) setStatusBySession((prev) => applyStatusUpdate(prev, optimistic));
   }, [statusBySession]);
 
+  const markSessionUnread = useCallback((session) => {
+    if (!session?.id) return;
+    const merged = mergeSessionStatus(session, statusBySession);
+    if (merged.id === activeId) manualUnreadActiveRef.current = merged.id;
+    connection.markSessionUnread({
+      sessionId: merged.id,
+      workspaceHash: merged.workspace_hash || '',
+    });
+    const optimistic = optimisticUnreadStatus(merged);
+    if (optimistic) desktopTaskbarBadge.updateStatus(optimistic);
+    if (optimistic) setStatusBySession((prev) => applyStatusUpdate(prev, optimistic));
+  }, [activeId, statusBySession]);
+
   useEffect(() => {
     if (!activeId) return;
+    if (manualUnreadActiveRef.current === activeId) return;
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const merged = mergeSessionStatus(session, statusBySession);
     if (merged.attention_state === 'unread') markSessionRead(merged);
   }, [activeId, sessions, statusBySession, markSessionRead]);
+
+  // 会话右键菜单(侧栏行 / 会话菜单按钮 / 顶栏右键)里的「标记为已读 / 未读」。
+  // 置顶、隐藏在折叠项目里的会话也可能不在当前列表里,缺的字段用菜单目标补齐;
+  // 标记已读时游标为 0 表示「读到最新」,由 daemon 取当前最新游标。
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event.detail || {};
+      const { action, target } = detail;
+      if (action !== DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ
+        && action !== DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD) return;
+      if (target?.type !== 'session' || !target.sessionId) return;
+      detail.handled = true;
+      const known = sessions.find((s) => s.id === target.sessionId) || {};
+      const session = {
+        ...known,
+        id: target.sessionId,
+        workspace_hash: target.workspaceHash || known.workspace_hash || '',
+      };
+      if (action === DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ) markSessionRead(session);
+      else markSessionUnread(session);
+    };
+    window.addEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+    return () => window.removeEventListener(DESKTOP_CONTEXT_ACTION_EVENT, handler);
+  }, [sessions, markSessionRead, markSessionUnread]);
 
   const onToggle = (hash) => {
     if (!hash) return;
@@ -3034,6 +3134,7 @@ export function Sidebar({
   };
 
   const onActivate = useCallback(async (ws) => {
+    if (onBeforeNavigate && !await onBeforeNavigate({ home: true, workspaceHash: ws.hash || '', cwd: ws.cwd || '' })) return;
     cancelSessionSelection();
     workspaceCollapseAllRef.current = false;
     const workspaceHash = ws.hash || '';
@@ -3067,7 +3168,7 @@ export function Sidebar({
         refresh(ws.hash).catch(() => {});
       }
     } catch (e) { toast({ kind: 'err', text: '切换异常:' + (e.message || '') }); }
-  }, [cancelSessionSelection, onOpenHome, refresh, setSessionWorkspaceLoading, updateExpanded]);
+  }, [cancelSessionSelection, onBeforeNavigate, onOpenHome, refresh, setSessionWorkspaceLoading, updateExpanded]);
 
   useEffect(() => {
     const requestId = Number(workspaceActivationRequest?.requestId || 0);
@@ -3289,6 +3390,7 @@ export function Sidebar({
     const loadKey = sidebarSessionLoadKey(target);
     const revealKey = sidebarRevealTargetKey(target);
     if (!loadKey || !revealKey) return;
+    if (onBeforeNavigate && !await onBeforeNavigate(target)) return;
 
     const sequence = ++sessionSelectionSequenceRef.current;
     const intent = {
@@ -3374,20 +3476,23 @@ export function Sidebar({
   };
 
   const removeWorkspace = async (ws) => {
-    if (!ws?.hash) return;
+    if (!ws?.hash) return false;
     if (sessionSelectionIntentRef.current?.target?.workspaceHash === ws.hash) {
       cancelSessionSelection();
     }
-    if (!hasDesktopRemoveWorkspace()) {
-      toast({ kind: 'info', text: '需在 desktop shell 中使用' });
-      return;
-    }
     try {
-      const r = parseDesktopResult(await window.aceDesktop_removeWorkspace(ws.hash));
-      if (!r?.ok) throw new Error(r?.error || 'remove failed');
+      // Desktop 壳顺带维护活动项目;没有桥接的网页模式(「编辑项目」里的移除)走 REST。
+      let bridgeActiveHash = '';
+      if (hasDesktopRemoveWorkspace()) {
+        const r = parseDesktopResult(await window.aceDesktop_removeWorkspace(ws.hash));
+        if (!r?.ok) throw new Error(r?.error || 'remove failed');
+        bridgeActiveHash = r.active_workspace_hash || '';
+      } else {
+        await api.removeWorkspace(ws.hash);
+      }
 
       const remaining = workspaces.filter((w) => w.hash !== ws.hash);
-      const nextHash = r.active_workspace_hash
+      const nextHash = bridgeActiveHash
         || ((ws.active || activeWorkspaceHash === ws.hash) ? (remaining[0]?.hash || '') : activeWorkspaceHash);
 
       setWorkspaces(remaining.map((w) => ({ ...w, active: w.hash === nextHash })));
@@ -3406,15 +3511,26 @@ export function Sidebar({
       setActiveWorkspaceHash(nextHash);
       toast({ kind: 'ok', text: '已从桌面工作区列表移除' });
       await refresh(nextHash);
+      return true;
     } catch (e) {
       toast({ kind: 'err', text: '移除工作区失败:' + (e.message || '') });
+      return false;
     }
   };
 
-  const openNewTaskInWorkspace = useCallback((ws) => {
-    cancelSessionSelection();
+  const saveEditedWorkspace = async (saved) => {
+    if (!saved?.hash) return;
+    setWorkspaces((prev) => prev.map((w) => (w.hash === saved.hash
+      ? { ...w, name: saved.name, icon: saved.icon ?? null, extra_folders: saved.extra_folders || [] }
+      : w)));
+    await refresh();
+  };
+
+  const openNewTaskInWorkspace = useCallback(async (ws) => {
     const workspaceHash = ws?.hash || '';
     if (!workspaceHash) return;
+    if (onBeforeNavigate && !await onBeforeNavigate({ home: true, workspaceHash, cwd: ws.cwd || '' })) return;
+    cancelSessionSelection();
     workspaceCollapseAllRef.current = false;
     const wasCollapsed = !expandedRef.current.has(workspaceHash);
     userCollapsedWorkspacesRef.current.delete(workspaceHash);
@@ -3431,7 +3547,7 @@ export function Sidebar({
       active: item.hash === workspaceHash,
     })));
     onOpenHome?.(ws, { composerFeedback: true });
-  }, [cancelSessionSelection, onOpenHome, updateExpanded]);
+  }, [cancelSessionSelection, onBeforeNavigate, onOpenHome, updateExpanded]);
 
   const onAddWorkspace = async () => {
     try {
@@ -3493,7 +3609,7 @@ export function Sidebar({
         style={collapsed ? undefined : { width, minWidth: width }}
       >
       <div className="ace-sidebar-content flex-1 flex flex-col min-h-0">
-        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-1.5 px-[18px] py-3 select-none">
+        <div data-sidebar-brand="true" className="flex shrink-0 items-center gap-[7px] pl-[13px] pr-[18px] py-3 select-none">
           <BrandLogo width="20" height="20" className="ace-brand-logo block shrink-0" />
           <span className="text-[15px] font-bold tracking-tight">ACECode</span>
           {appVersionLabel && (
@@ -3503,10 +3619,10 @@ export function Sidebar({
           )}
         </div>
         <div className="ace-sidebar-main flex-1 flex flex-col min-h-0">
-          <div className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto px-1.5 pb-2">
+          <div ref={sidebarFixedNavRef} className="ace-sidebar-fixed-nav shrink-0 overflow-y-auto pb-2">
             {SIDEBAR_NAV_ITEMS.map((item) => (
               item.action === 'extensions' ? (
-                <CustomSidebarSection
+                <SidebarExtensions
                   key={item.id}
                   workspaceHash={activeRef?.workspaceHash || activeRef?.workspace_hash || ''}
                   onOpenSettingsSection={(section) => {
@@ -3530,7 +3646,7 @@ export function Sidebar({
           <div
             ref={sidebarScrollRef}
             className="ace-sidebar-scroll flex-1 overflow-y-auto pb-2"
-            onScroll={clearSessionHover}
+            onScroll={handleSidebarListScroll}
           >
             <SidebarSectionHeader
               sectionId={SIDEBAR_SECTION_IDS.PINNED}
@@ -3578,7 +3694,7 @@ export function Sidebar({
               <NoWorkspaceSessionGroup
                 sessions={unpinnedNoWorkspaceSessions}
                 sessionsLoading={false}
-                sessionListExpanded={expandedSessionLists.has(NO_WORKSPACE_SESSION_LIST_KEY)}
+                sessionListVisibleLimit={expandedSessionLists.get(NO_WORKSPACE_SESSION_LIST_KEY)}
                 onToggleSessionList={toggleSessionListExpanded}
                 activeId={activeId}
                 activeTarget={selectedRevealTarget}
@@ -3623,7 +3739,13 @@ export function Sidebar({
               )}
             />
             {sidebarSectionIsVisible(sectionCounts.workspaces) && sectionExpansion.workspaces && (
-              <div className="my-1">
+              <div
+                className="my-1"
+                ref={folderReorder.listRef}
+                data-sidebar-workspace-folder-list
+                aria-busy={workspaceOrderSaving}
+                onClickCapture={folderReorder.onClickCapture}
+              >
                 {workspaces.map((ws) => {
                   const items = filterPinnedSessions(
                     workspaceSessions.filter((s) => s.workspace_hash ? s.workspace_hash === ws.hash : !!ws.active),
@@ -3636,8 +3758,8 @@ export function Sidebar({
                       expanded={expanded.has(ws.hash)}
                       onToggle={onToggle}
                       sessions={items}
-                      sessionListExpanded={expandedSessionLists.has(ws.hash)}
-                      sessionListTotal={sessionListTotals.get(ws.hash)}
+                      sessionListVisibleLimit={expandedSessionLists.get(ws.hash)}
+                      sessionListTotal={sessionFullyLoadedWorkspaces.has(ws.hash) ? items.length : sessionListTotals.get(ws.hash)}
                       onToggleSessionList={toggleSessionListExpanded}
                       activeId={activeId}
                       activeTarget={selectedRevealTarget}
@@ -3650,11 +3772,16 @@ export function Sidebar({
                       onNewSession={openNewTaskInWorkspace}
                       onImportOpencode={openOpencodeImportDialog}
                       onRemove={hasDesktopRemoveWorkspace() ? removeWorkspace : undefined}
+                      onEdit={ws.hash && ws.hash !== '__local__' ? setEditingWorkspace : undefined}
                       onTogglePin={togglePinnedSession}
                       onArchive={archiveSession}
                       onRenameSession={renameSession}
                       onWorkspacePointerDown={handleWorkspacePointerDown}
                       workspaceDragState={workspaceDragState}
+                      folderReorderable={workspaces.length > 1 && !workspaceOrderSaving && ws.hash !== '__local__'}
+                      folderDragState={folderReorder.drag}
+                      onFolderPointerDown={folderReorder.onPointerDown}
+                      onFolderKeyDown={folderReorder.onKeyDown}
                       pendingPermissionSessionIds={pendingPermissionSessionIds}
                       pendingQuestionSessionIds={pendingQuestionSessionIds}
                       sessionsLoading={sessionLoadingWorkspaces.has(ws.hash) || !sessionLoadedWorkspaces.has(ws.hash)}
@@ -3684,7 +3811,7 @@ export function Sidebar({
             </div>
           )}
         </div>
-        <div className="ace-sidebar-footer shrink-0 px-1.5 py-2 flex items-center gap-1">
+        <div className="ace-sidebar-footer shrink-0 pl-[9px] pr-1.5 py-2 flex items-center gap-1">
           {!collapsed && (
             <SidebarQuickMenu
               data-tour-target="sidebar-settings"
@@ -3719,6 +3846,26 @@ export function Sidebar({
       </aside>
       </SidebarSessionTimeContext.Provider>
       </SessionHoverLifecycleContext.Provider>
+      {folderReorder.drag && createPortal(
+        <div
+          data-sidebar-workspace-folder-drag-preview
+          data-ace-native-overlay="overlap"
+          className="ace-sidebar-workspace-folder-preview ace-sidebar-primary-text text-[13px]"
+          aria-hidden="true"
+          inert=""
+          style={{
+            width: folderReorder.drag.width,
+            height: folderReorder.drag.height,
+            transform: `translate3d(${folderReorder.drag.left}px, ${folderReorder.drag.top}px, 0)`,
+          }}
+        >
+          <SidebarWorkspaceGlyph
+            icon={workspaces.find((w) => w.hash === folderReorder.drag.source)?.icon}
+            expanded={expanded.has(folderReorder.drag.source)}
+          />
+          <span className="min-w-0 truncate">{folderReorder.drag.name}</span>
+        </div>, document.body,
+      )}
       <OpencodeImportDialog
         dialog={opencodeImportDialog}
         onCancel={closeOpencodeImportDialog}
@@ -3727,6 +3874,16 @@ export function Sidebar({
         onToggleSession={toggleOpencodeImportSession}
         onToggleAll={toggleAllOpencodeImportSessions}
       />
+      {editingWorkspace && (
+        <EditWorkspaceModal
+          key={editingWorkspace.hash}
+          api={api}
+          workspace={editingWorkspace}
+          onClose={() => setEditingWorkspace(null)}
+          onSaved={saveEditedWorkspace}
+          onRemove={removeWorkspace}
+        />
+      )}
     </>
   );
 }

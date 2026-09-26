@@ -70,6 +70,8 @@ struct WebServerDeps {
     // daemon worker 启动时填入实际路径;测试 fixture 必须填入临时文件,
     // 否则 PUT /api/mcp 会污染真实用户配置(历史 bug,见 web_server_smoke_test)。
     std::string                config_path;
+    // Embedders/tests can disable automatic network discovery.
+    bool                       sync_model_reasoning = true;
     std::string                cwd;
     std::string                projects_dir;
     std::string                no_workspace_cache_root;

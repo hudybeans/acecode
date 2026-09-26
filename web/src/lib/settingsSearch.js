@@ -1,11 +1,12 @@
-import { SETTINGS_NAV_ITEMS } from './settingsNavigation.js';
+import { getSettingsNavItems } from './settingsNavigation.js';
 import { sourceCatalogs } from '../i18n/sourceCatalog.generated.js';
 
 // Labels are also the destination anchors. Both catalog languages remain searchable.
-export function settingsSearchEntries() {
+export function settingsSearchEntries(developerModeUnlocked = false) {
+  const navItems = getSettingsNavItems(developerModeUnlocked);
   const fields = [
     ['general', '界面语言', 'language locale english chinese'],
-    ['general', '工作模式', 'work mode coding daily'],
+    ['general', '工作模式', 'work mode coding daily 日常工作 用于编程 进度提示 工具前言 loading'],
     ['general', '打开任务完成通知', 'notification completion sound'],
     ['general', '新手指引', 'onboarding getting started tour'],
     ['general', '权限模式', 'permission approval sandbox'],
@@ -18,6 +19,7 @@ export function settingsSearchEntries() {
     ['appearance', '暗黑模式', 'dark light mode'],
     ['appearance', '字体大小', 'font size'],
     ['appearance', '显示任务时间', 'sidebar task time timestamp'],
+    ['appearance', '消息自动折叠', '会话 conversation messages auto collapse fold expand tools'],
     ['config', '升级服务 URL', 'upgrade update service url'],
     ['config', 'Python 工具', 'python uv ruff mypy path directory'],
     ['config', 'Node.js 工具', 'node nodejs npm pnpm tsx path directory'],
@@ -30,6 +32,7 @@ export function settingsSearchEntries() {
     ['mcp', '服务器配置', 'mcp server config json'],
     ['tools', '内置工具', 'builtin tools'],
     ['tools', 'Agent 浏览器', 'agent browser'],
+    ['tools', '电脑操控（实验性）', 'computer use experimental windows macos accessibility screen recording desktop mouse keyboard screenshot pointer cursor style theme color ace plain 指针 样式 主题色'],
     ['tools', '图像生成', 'image generation drawing'],
     ['tools', '摘要生成', 'summary title generation local model 摘要模型 会话标题'],
     ['tools', '工具重写', 'tool rewrite rename alias audit'],
@@ -45,15 +48,18 @@ export function settingsSearchEntries() {
     ['about', '当前版本', 'version upgrade'],
     ['about', 'Web 核心', 'webview browser engine'],
   ];
+  if (developerModeUnlocked) {
+    fields.push(['developer', '允许多进程启动', 'developer multiple desktop instances processes']);
+  }
   const all = [
     ...fields.map(([section, label, aliases], index) => ({ id: `setting-${index}`, section, label, aliases })),
-    ...SETTINGS_NAV_ITEMS.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
+    ...navItems.map((item) => ({ id: `section-${item.key}`, section: item.key, label: item.label, aliases: item.key })),
   ];
   const catalogs = Object.entries(sourceCatalogs['zh-CN']);
   return all.map((item) => {
     const source = catalogs.find(([key, zh]) => zh === item.label || sourceCatalogs['en-US'][key] === item.label);
     return { ...item, translations: source ? [source[1], sourceCatalogs['en-US'][source[0]]] : [],
-      sectionLabel: SETTINGS_NAV_ITEMS.find((nav) => nav.key === item.section)?.label || item.section };
+      sectionLabel: navItems.find((nav) => nav.key === item.section)?.label || item.section };
   });
 }
 
@@ -74,6 +80,17 @@ export function searchSettings(entries, query) {
       : words.every((word) => text.includes(word)) ? 20 : 0;
     return { item, score };
   }).filter((entry) => entry.score).sort((a, b) => b.score - a.score).map((entry) => entry.item);
+}
+
+// 全局搜索面板选中某条设置后,设置窗口要把同一条结果选成当前项。
+// 先按 id 对齐(两边用同一份 settingsSearchEntries 生成,id 稳定),
+// 开发者模式解锁状态不一致时 id 可能错位,退回 section+label 匹配;都找不到取 0。
+export function settingsSearchResultIndex(results, target) {
+  if (!Array.isArray(results) || results.length === 0 || !target) return 0;
+  const byId = target.id ? results.findIndex((item) => item.id === target.id) : -1;
+  if (byId >= 0) return byId;
+  const byLabel = results.findIndex((item) => item.section === target.section && item.label === target.label);
+  return byLabel >= 0 ? byLabel : 0;
 }
 
 export function locateSetting(root, result) {

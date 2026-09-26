@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("dev_web", ROOT / "scripts/dev_web.py")
 dev_web = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev_web)
@@ -22,9 +23,11 @@ class DevWebTest(unittest.TestCase):
             executable = root / "Release" / name
             executable.parent.mkdir()
             executable.touch()
+            executable.chmod(0o755)
             self.assertEqual(dev_web.find_executable(root), executable)
             direct = root / name
             direct.touch()
+            direct.chmod(0o755)
             self.assertEqual(dev_web.find_executable(root), direct)
 
     def run_launcher(self, exit_code, port):
@@ -41,11 +44,11 @@ class DevWebTest(unittest.TestCase):
                 result = dev_web.main()
                 return result, wait.call_count, open_ui.call_args
 
-    def test_startup_failure_ignores_stale_port(self):
+    def test_worker_timeout_opens_a_fresh_port(self):
         result, reads, opened = self.run_launcher(3, 12345)
-        self.assertEqual(result, 3)
-        self.assertEqual(reads, 0)
-        self.assertIsNone(opened)
+        self.assertEqual(result, 0)
+        self.assertEqual(reads, 1)
+        self.assertEqual(opened.kwargs, {"already_running": False})
 
     def test_verified_running_daemon_can_be_opened(self):
         result, reads, opened = self.run_launcher(6, 12345)
@@ -57,6 +60,30 @@ class DevWebTest(unittest.TestCase):
         result, _, opened = self.run_launcher(0, None)
         self.assertEqual(result, 1)
         self.assertIsNone(opened)
+
+    def test_embedded_assets_do_not_require_web_dist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dev_web, "find_project_root", return_value=root), \
+                 patch.object(dev_web, "find_executable", return_value=root / "acecode.exe"), \
+                 patch.object(sys, "argv", ["dev_web.py", "--use-embedded-assets", "--no-browser"]), \
+                 patch.object(dev_web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                 patch.object(dev_web, "_wait_for_port", return_value=12345), \
+                 patch.object(dev_web, "_open_web_ui"):
+                self.assertEqual(dev_web.main(), 0)
+        self.assertFalse(any(argument.startswith("--static-dir=") for argument in run.call_args.args[0]))
+
+    def test_port_zero_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "web/dist/index.html").write_text("test", encoding="utf-8")
+            with patch.object(dev_web, "find_project_root", return_value=root), \
+                 patch.object(dev_web, "find_executable", return_value=root / "acecode.exe"), \
+                 patch.object(sys, "argv", ["dev_web.py", "--port=0", "--no-browser"]), \
+                 patch.object(dev_web.subprocess, "run") as run:
+                self.assertEqual(dev_web.main(), 1)
+        run.assert_not_called()
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper")
     def test_batch_falls_back_to_py_and_preserves_exit_code(self):

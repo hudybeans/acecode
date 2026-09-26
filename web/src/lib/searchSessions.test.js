@@ -10,10 +10,12 @@
 
 import assert from 'node:assert/strict';
 import {
+  MAX_SETTING_RESULTS,
   buildSearchResultSequence,
   freshnessScore,
   mergeSessionContentMatches,
   rankSessions,
+  rankSettingsForPalette,
   rankWorkspaces,
   scoreSession,
   scoreWorkspace,
@@ -21,6 +23,7 @@ import {
   shouldSearchUserMessages,
   workspaceDisplayName,
 } from './searchSessions.js';
+import { settingsSearchEntries } from './settingsSearch.js';
 
 function run(name, fn) {
   try {
@@ -222,6 +225,46 @@ run('搜索结果序列保持任务在前、项目在后且类型明确', () => 
     'task:no-workspace::nw1',
     'project:w1',
   ]);
+});
+
+run('设置项排在序列最后,键盘下标与渲染顺序一致', () => {
+  // 触发场景:查询同时命中任务、项目和设置项。
+  // 期望:设置组永远在最后(任务 → 项目 → 设置),SearchPalette 用
+  // taskItems.length + projectItems.length + i 算出的下标正好落在对应设置项上;
+  // key 用设置索引里的稳定 id,缺 id 时退回 section+label,不会与其它组撞 key。
+  const sequence = buildSearchResultSequence(
+    [{ id: 's1', workspace_hash: 'w1' }],
+    [{ hash: 'w1', name: 'ACECode' }],
+    [{ id: 'setting-3', section: 'appearance', label: '字体大小' }, { section: 'general', label: '界面语言' }],
+  );
+  assert.deepEqual(sequence.map((item) => item.kind), ['task', 'project', 'setting', 'setting']);
+  assert.deepEqual(sequence.slice(2).map((item) => item.key), [
+    'setting:setting-3',
+    'setting:general:界面语言',
+  ]);
+  assert.equal(sequence[2].value.label, '字体大小');
+  // 省略第三个参数时行为与旧签名完全一致(只有任务与项目)。
+  assert.equal(buildSearchResultSequence([{ id: 's1' }], []).length, 1);
+});
+
+run('面板里的设置结果:空查询不列、超过上限截断、命中项来自设置索引', () => {
+  // 触发场景:用户在 Ctrl+K 面板里输入设置相关的词。
+  // 期望:空查询(面板首页)不出现任何设置项;命中数超过 MAX_SETTING_RESULTS(8)
+  // 时只保留前 8 条(排序沿用 searchSettings 的打分);limit<=0 表示不截断。
+  const entries = settingsSearchEntries();
+  assert.deepEqual(rankSettingsForPalette(entries, ''), []);
+  assert.deepEqual(rankSettingsForPalette(entries, '   '), []);
+  const fontSize = rankSettingsForPalette(entries, '字体大小');
+  assert.equal(fontSize[0].label, '字体大小');
+  assert.equal(fontSize[0].section, 'appearance');
+  // '工具' 在索引里命中 > 8 条(Python / Node.js / C# 工具、内置工具、工具重写、「工具」分区…),用它验证截断。
+  const all = rankSettingsForPalette(entries, '工具', 0);
+  assert.ok(all.length > MAX_SETTING_RESULTS, `expected more than ${MAX_SETTING_RESULTS} hits, got ${all.length}`);
+  const capped = rankSettingsForPalette(entries, '工具');
+  assert.equal(capped.length, MAX_SETTING_RESULTS);
+  assert.deepEqual(capped.map((item) => item.id), all.slice(0, MAX_SETTING_RESULTS).map((item) => item.id));
+  // entries 缺省时不抛错。
+  assert.deepEqual(rankSettingsForPalette(undefined, 'path'), []);
 });
 
 run('同档分数下按 updated_at 降序', () => {

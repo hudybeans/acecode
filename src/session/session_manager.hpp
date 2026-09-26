@@ -219,6 +219,9 @@ public:
     // Return the current in-memory title (empty when unset).
     std::string current_title() const;
     std::string current_title_source() const;
+    // 最近一条可见用户消息的摘要(显示文本截到 80 字节)。没有标题时它就是
+    // 会话在侧栏 / 顶部标题栏里显示的名字,与 meta.summary 同源。
+    std::string current_summary() const;
 
     // Persisted unsubmitted chat input draft for the active session.
     void set_input_draft(std::string draft, nlohmann::json composer_content = nullptr);
@@ -257,6 +260,11 @@ public:
 
 private:
     bool ensure_created();  // Lazy creation of session files on first message
+    // 追加一条不含可搜索用户文本的记录(检查点 / 净差异等),并同步推进用户消息
+    // 搜索索引记下的文件签名,避免下一条消息落盘时整份 JSONL 重读重建。调用方持有 mu_。
+    bool append_non_searchable_locked(const ChatMessage& msg);
+    // Metadata-only writes preserve persisted activity time. Pass the current
+    // timestamp explicitly after successfully changing conversation history.
     bool update_meta(
         std::optional<std::string> updated_at_override = std::nullopt);
     bool try_set_generated_session_title_locked(std::string title);
@@ -265,7 +273,7 @@ private:
     // before every meta write so the in-memory title never silently
     // overwrites a rename that landed on disk from elsewhere. An explicit
     // local title write is the only operation allowed to outrank the disk.
-    void adopt_foreign_user_title_locked();
+    void adopt_foreign_user_title_locked(const SessionMeta& persisted);
     void reset_auto_title_state_locked();
     std::string extract_summary(const std::string& content) const;
     bool acquire_writer_lease_locked();

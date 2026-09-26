@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <map>
 #include <optional>
 #include <string>
@@ -91,6 +92,17 @@ struct ParsedOpenAiModels {
     std::map<std::string, int> context_windows;
     std::map<std::string, std::optional<ModelReasoningOptions>> reasoning;
 };
+
+struct OpenAiModelsProbeResult {
+    std::optional<ParsedOpenAiModels> models;
+    std::string error_code;
+    std::string error;
+};
+
+// Shared network boundary for explicit discovery and background sync.
+OpenAiModelsProbeResult probe_openai_models(
+    const ModelProbeRequest& request,
+    const std::atomic<bool>* cancel = nullptr);
 
 ParsedOpenAiModels parse_openai_models(const nlohmann::json& body);
 std::vector<std::string> parse_openai_model_ids(const nlohmann::json& body);

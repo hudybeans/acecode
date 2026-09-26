@@ -6,6 +6,7 @@
 #include "session_storage.hpp"
 #include "session_auto_title.hpp"
 #include "thread_goal_store.hpp"
+#include "system_notice.hpp"
 #include "tool_result_storage.hpp"
 #include "turn_timing.hpp"
 #include "../commands/init_command.hpp"
@@ -19,6 +20,8 @@
 #include "../skills/skill_init.hpp"
 #include "../gitinfo/git_context_core.hpp"
 #include "../tool/mcp_manager.hpp"
+#include "../tool/mcp_scope.hpp"
+#include "../config/mcp_config.hpp"
 #include "../tool/question_policy.hpp"
 #include "../worktree/worktree_core.hpp"
 #include "../worktree/worktree_manager.hpp"
@@ -76,39 +79,15 @@ std::string trim_copy(const std::string& value) {
 }
 
 ToolCapabilityPolicy tool_policy_from_expert_scopes(
-    const ExpertCapabilityScopes& scopes,
-    const AppConfig* config) {
-    ToolCapabilityPolicy policy;
+    const ExpertCapabilityScopes& scopes, const AppConfig* config,
+    const std::string& cwd, const SessionRegistryDeps& deps) {
+    auto policy = mcp_scope_policy(config, deps.load_project_mcp ? cwd : "",
+                                   scopes.mcp_servers, deps.mcp_manager, deps.tools);
     if (scopes.tools) {
         policy.builtin_tools = std::unordered_set<std::string>(
             scopes.tools->begin(), scopes.tools->end());
     }
-    if (scopes.mcp_servers) {
-        policy.mcp_servers = std::unordered_set<std::string>(
-            scopes.mcp_servers->begin(), scopes.mcp_servers->end());
-    } else if (config) {
-        // A shared MCP runtime may contain servers started for another
-        // expert. Inheriting sessions only see daemon-global enabled servers.
-        std::unordered_set<std::string> globally_enabled;
-        for (const auto& [name, server] : config->mcp_servers) {
-            if (!server.disabled) globally_enabled.insert(name);
-        }
-        policy.mcp_servers = std::move(globally_enabled);
-    }
     return policy;
-}
-
-void ensure_expert_mcp_servers_available(
-    const ExpertCapabilityScopes& scopes,
-    McpManager* manager,
-    ToolExecutor* tools) {
-    if (!scopes.mcp_servers || !manager || !tools) return;
-    for (const auto& name : *scopes.mcp_servers) {
-        if (!manager->has_server(name)) continue;
-        // enable() is idempotent for Connected/Starting entries and does not
-        // mutate AppConfig, so the global default remains disabled.
-        (void)manager->enable(name, *tools);
-    }
 }
 
 ExpertCapabilityScopes fail_closed_expert_scopes() {
@@ -504,13 +483,15 @@ void emit_goal_audit_message(SessionEntry& entry,
                              const std::string& label) {
     if (!entry.loop) return;
     entry.loop->emit_transcript_system_message(
-        "[Goal] " + label + ": " + goal.objective,
-        nlohmann::json{
+        "[Goal] " + label + ": " + goal.objective + "\n\n" + format_registry_goal_summary(goal),
+        make_system_notice_metadata(
+            action == "create" ? "goal_started" : action == "resume" ? "goal_resumed" : "goal_continuing",
+            {{"goal", thread_goal_to_json(goal)}}, nlohmann::json{
             {"goal_audit", true},
             {"goal_action", action},
             {"goal_id", goal.goal_id},
             {"thread_id", goal.thread_id},
-        });
+        }));
 }
 
 std::optional<ThreadGoal> current_active_goal(SessionEntry& entry) {
@@ -529,9 +510,13 @@ std::optional<ThreadGoal> current_active_goal(SessionEntry& entry) {
 BuiltinCommandResult execute_goal_builtin(SessionEntry& entry,
                                           const BuiltinCommandRequest& request) {
     if (!entry.sm || !entry.loop) return {BuiltinCommandStatus::Failed, "session unavailable"};
+    auto notice = [&entry](const std::string& code, const std::string& text,
+                           nlohmann::json params = nlohmann::json::object()) {
+        entry.loop->emit_system_message(text, make_system_notice_metadata(code, std::move(params)));
+    };
     ThreadGoalStore* store = entry.sm->goal_store();
     if (!store) {
-        entry.loop->emit_system_message("Goal storage is not available.");
+        notice("goal_unavailable", "Goal storage is not available.");
         return {BuiltinCommandStatus::Failed, "goal storage unavailable"};
     }
 
@@ -553,17 +538,18 @@ BuiltinCommandResult execute_goal_builtin(SessionEntry& entry,
 
     if (args.empty() || lower == "view") {
         if (sid.empty()) {
-            entry.loop->emit_system_message("No goal set. Use /goal <objective> to create one.");
+            notice("goal_missing", "No goal set. Use /goal <objective> to create one.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         auto goal = store->get_thread_goal(sid, &error);
         if (!error.empty()) {
-            entry.loop->emit_system_message("Goal error: " + error);
+            notice("goal_error", "Goal error: " + error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
-        entry.loop->emit_system_message(goal.has_value()
+        notice(goal.has_value() ? "goal_overview" : "goal_missing", goal.has_value()
             ? format_registry_goal_summary(*goal)
-            : "No goal set. Use /goal <objective> to create one.");
+            : "No goal set. Use /goal <objective> to create one.",
+            goal.has_value() ? nlohmann::json{{"goal", thread_goal_to_json(*goal)}} : nlohmann::json::object());
         return {BuiltinCommandStatus::Accepted, "completed"};
     }
 
@@ -578,66 +564,67 @@ BuiltinCommandResult execute_goal_builtin(SessionEntry& entry,
     const bool state_only = sub == "clear" || sub == "pause" || sub == "resume" || sub == "edit";
     if (!state_only) sid = entry.sm->ensure_active_session_id();
     if (sid.empty()) {
-        entry.loop->emit_system_message("No active session is available for /goal.");
+        notice("goal_no_session", "No active session is available for /goal.");
         return {BuiltinCommandStatus::Failed, "no active session"};
     }
     auto current = store->get_thread_goal(sid, &error);
     if (!error.empty()) {
-        entry.loop->emit_system_message("Goal error: " + error);
+        notice("goal_error", "Goal error: " + error, {{"error", error}});
         return {BuiltinCommandStatus::Failed, error};
     }
 
     if (sub == "clear") {
         if (!current.has_value()) {
-            entry.loop->emit_system_message("No goal to clear.");
+            notice("goal_missing", "No goal to clear.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         if (!store->delete_thread_goal(sid, &error)) {
-            entry.loop->emit_system_message("Goal error: " + error);
+            notice("goal_error", "Goal error: " + error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
         emit_cleared(sid);
-        entry.loop->emit_system_message("Goal cleared.");
+        notice("goal_cleared", "Goal cleared.");
         return {BuiltinCommandStatus::Accepted, "completed"};
     }
 
     if (sub == "pause") {
         if (!current.has_value() || current->status != ThreadGoalStatus::Active) {
-            entry.loop->emit_system_message("Goal is not active.");
+            notice("goal_inactive", "Goal is not active.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         if (!store->update_thread_goal_status(sid, current->goal_id, ThreadGoalStatus::Paused, &error)) {
-            entry.loop->emit_system_message("Goal error: " + error);
+            notice("goal_error", "Goal error: " + error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
         auto goal = store->get_thread_goal(sid);
         if (goal.has_value()) emit_updated(*goal);
-        entry.loop->emit_system_message("Goal paused.");
+        notice("goal_paused", "Goal paused.");
         return {BuiltinCommandStatus::Accepted, "completed"};
     }
 
     if (sub == "resume") {
         if (!current.has_value()) {
-            entry.loop->emit_system_message("No goal to resume.");
+            notice("goal_missing", "No goal to resume.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         if (current->status == ThreadGoalStatus::Complete) {
-            entry.loop->emit_system_message("Goal is already complete.");
+            notice("goal_complete", "Goal is already complete.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         if (current->token_budget.has_value() && current->tokens_used >= *current->token_budget) {
-            entry.loop->emit_system_message("Goal is over its token budget. Create a replacement goal with a larger budget.");
+            notice("goal_budget_reached", "Goal is over its token budget. Create a replacement goal with a larger budget.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         if (!store->update_thread_goal_status(sid, current->goal_id, ThreadGoalStatus::Active, &error)) {
-            entry.loop->emit_system_message("Goal error: " + error);
+            notice("goal_error", "Goal error: " + error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
         auto goal = store->get_thread_goal(sid);
         if (goal.has_value()) emit_updated(*goal);
-        entry.loop->emit_system_message("Goal resumed.");
         if (goal.has_value()) {
             emit_goal_audit_message(entry, *goal, "resume", "Resumed");
+        } else {
+            notice("goal_resumed", "Goal resumed.");
         }
         entry.loop->clear_stale_abort_request();
         entry.loop->maybe_continue_goal();
@@ -646,27 +633,28 @@ BuiltinCommandResult execute_goal_builtin(SessionEntry& entry,
 
     if (sub == "edit") {
         if (!current.has_value()) {
-            entry.loop->emit_system_message("No goal to edit.");
+            notice("goal_missing", "No goal to edit.");
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
         auto parsed = parse_registry_goal_args(tail);
         if (!parsed.error.empty()) {
-            entry.loop->emit_system_message(parsed.error);
+            notice("goal_invalid_budget", parsed.error);
             return {BuiltinCommandStatus::Failed, parsed.error};
         }
         const std::string objective = trim_goal_objective(parsed.remainder);
         if (!validate_goal_objective(objective, &error)) {
-            entry.loop->emit_system_message(error);
+            notice("goal_invalid_objective", error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
         auto budget = parsed.token_budget.has_value() ? parsed.token_budget : current->token_budget;
         if (!store->update_thread_goal_objective(sid, current->goal_id, objective, budget, &error)) {
-            entry.loop->emit_system_message("Goal error: " + error);
+            notice("goal_error", "Goal error: " + error, {{"error", error}});
             return {BuiltinCommandStatus::Failed, error};
         }
         auto goal = store->get_thread_goal(sid);
         if (goal.has_value()) emit_updated(*goal);
-        entry.loop->emit_system_message(goal.has_value() ? format_registry_goal_summary(*goal) : "Goal updated.");
+        notice("goal_updated", goal.has_value() ? format_registry_goal_summary(*goal) : "Goal updated.",
+               goal.has_value() ? nlohmann::json{{"goal", thread_goal_to_json(*goal)}} : nlohmann::json::object());
         // 回合运行中时把新 objective 通知给正在跑的模型(objective_updated
         // steering);空闲时 no-op,下一次 continuation 自然携带新 objective。
         entry.loop->notify_goal_objective_updated();
@@ -675,23 +663,24 @@ BuiltinCommandResult execute_goal_builtin(SessionEntry& entry,
 
     auto parsed = parse_registry_goal_args(args);
     if (!parsed.error.empty()) {
-        entry.loop->emit_system_message(parsed.error);
+        notice("goal_invalid_budget", parsed.error);
         return {BuiltinCommandStatus::Failed, parsed.error};
     }
     const std::string objective = trim_goal_objective(parsed.remainder);
     if (!validate_goal_objective(objective, &error)) {
-        entry.loop->emit_system_message(error);
+        notice("goal_invalid_objective", error, {{"error", error}});
         return {BuiltinCommandStatus::Failed, error};
     }
     if (!store->replace_thread_goal(sid, objective, parsed.token_budget, ThreadGoalStatus::Active, &error)) {
-        entry.loop->emit_system_message("Goal error: " + error);
+        notice("goal_error", "Goal error: " + error, {{"error", error}});
         return {BuiltinCommandStatus::Failed, error};
     }
     auto goal = store->get_thread_goal(sid);
     if (goal.has_value()) emit_updated(*goal);
-    entry.loop->emit_system_message(goal.has_value() ? format_registry_goal_summary(*goal) : "Goal created.");
     if (goal.has_value()) {
         emit_goal_audit_message(entry, *goal, "create", "Started");
+    } else {
+        notice("goal_started", "Goal created.", {{"objective", objective}});
     }
     entry.loop->maybe_continue_goal();
     return {BuiltinCommandStatus::Accepted, "completed"};
@@ -717,7 +706,8 @@ BuiltinCommandResult execute_plan_builtin(SessionEntry& entry,
         oss << "\nPlan file: " << plan_file;
     }
     oss << "\nExplore and update only the plan file, then call ExitPlanMode for approval.";
-    entry.loop->emit_system_message(oss.str());
+    entry.loop->emit_system_message(oss.str(),
+        make_system_notice_metadata("plan_enabled", {{"path", plan_file}}));
 
     const std::string args = trim_ascii(request.args);
     if (!args.empty()) {
@@ -974,10 +964,9 @@ SessionRegistry::make_entry_locked(const std::string& id,
             ? entry->expert->selected_skill_roots(entry->expert_member_id)
             : std::vector<std::filesystem::path>{};
     entry->expert_skill_allowlist = expert_scopes.skills;
-    ensure_expert_mcp_servers_available(
-        expert_scopes, deps_.mcp_manager, deps_.tools);
     entry->tool_capability_policy =
-        tool_policy_from_expert_scopes(expert_scopes, entry_config);
+        tool_policy_from_expert_scopes(
+            expert_scopes, entry_config, entry->no_workspace ? "" : entry->cwd, deps_);
 
     if (entry_config) {
         entry->skill_registry = std::make_shared<SkillRegistry>();
@@ -1396,7 +1385,7 @@ BuiltinCommandResult SessionRegistry::execute_builtin_command(
         // system message 透出到 Web 聊天流。
         if (!entry->loop) return {BuiltinCommandStatus::Failed, "session unavailable"};
         entry->loop->emit_system_message(
-            dispatch_lsp_subcommand(trim_ascii(request.args)));
+            dispatch_lsp_subcommand(trim_ascii(request.args)), make_system_notice_metadata("lsp_status"));
         return {BuiltinCommandStatus::Accepted, "ok"};
     }
 
@@ -1404,7 +1393,7 @@ BuiltinCommandResult SessionRegistry::execute_builtin_command(
         // 与 TUI /sandbox 共用 AgentLoop 的会话状态与开关。
         if (!entry->loop) return {BuiltinCommandStatus::Failed, "session unavailable"};
         entry->loop->emit_system_message(
-            entry->loop->sandbox_command(trim_ascii(request.args)));
+            entry->loop->sandbox_command(trim_ascii(request.args)), make_system_notice_metadata("sandbox_status"));
         return {BuiltinCommandStatus::Accepted, "ok"};
     }
 
@@ -1420,26 +1409,30 @@ BuiltinCommandResult SessionRegistry::execute_builtin_command(
                 "AGENT.md already exists at " + path_to_utf8_generic(target) +
                 " - no model is configured, so /init cannot propose improvements. "
                 "Edit it by hand, or run /configure first and re-run /init to get "
-                "an LLM-driven improvement pass.");
+                "an LLM-driven improvement pass.",
+                make_system_notice_metadata("init_exists", {{"path", path_to_utf8_generic(target)}}));
             return {BuiltinCommandStatus::Accepted, "completed"};
         }
 
         std::ofstream ofs(target, std::ios::binary);
         if (!ofs.is_open()) {
             entry->loop->emit_system_message(
-                "Failed to open " + path_to_utf8_generic(target) + " for writing.");
+                "Failed to open " + path_to_utf8_generic(target) + " for writing.",
+                make_system_notice_metadata("init_failed", {{"path", path_to_utf8_generic(target)}}));
             return {BuiltinCommandStatus::Failed, "failed to open AGENT.md for writing"};
         }
         ofs << build_agent_md_skeleton(cwd);
         entry->loop->emit_system_message(
             "Created " + path_to_utf8_generic(target) +
             " (offline skeleton - no model is configured, run /configure to get "
-            "a filled-in version).");
+            "a filled-in version).",
+            make_system_notice_metadata("init_created", {{"path", path_to_utf8_generic(target)}}));
         return {BuiltinCommandStatus::Accepted, "completed"};
     }
 
     entry->loop->emit_system_message(
-        "[Invoking /init - analyzing codebase and authoring AGENT.md...]");
+        "[Invoking /init - analyzing codebase and authoring AGENT.md...]",
+        make_system_notice_metadata("init_started"));
     const std::string display = request.display_text.empty()
         ? std::string{"/init"}
         : request.display_text;
@@ -1681,6 +1674,22 @@ std::size_t SessionRegistry::refresh_sandbox_config(const SandboxConfig& sandbox
     return queued;
 }
 
+std::size_t SessionRegistry::refresh_tool_preamble_config(const ToolPreambleConfig& cfg) {
+    std::vector<std::shared_ptr<SessionEntry>> targets;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        targets.reserve(entries_.size());
+        for (const auto& [id, entry] : entries_) {
+            (void)id;
+            if (entry && entry->loop) targets.push_back(entry);
+        }
+    }
+    for (const auto& entry : targets) {
+        entry->loop->set_tool_preamble_config(cfg);
+    }
+    return targets.size();
+}
+
 std::size_t SessionRegistry::refresh_exec_rules() {
     std::vector<std::shared_ptr<SessionEntry>> targets;
     {
@@ -1735,7 +1744,7 @@ void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {
                 }
                 const auto refreshed =
                     tool_policy_from_expert_scopes(
-                        scopes, config_snapshot.get());
+                        scopes, config_snapshot.get(), active.no_workspace ? "" : active.cwd, deps_);
                 active.tool_capability_policy.mcp_servers =
                     refreshed.mcp_servers;
                 if (active.loop) {
@@ -1752,7 +1761,8 @@ void SessionRegistry::refresh_mcp_policy(const AppConfig& config) {
 }
 
 bool SessionRegistry::expert_requires_mcp_server(
-    const std::string& name) const {
+    const std::string& name, const std::string& scope) const {
+    const auto owner = scope.empty() ? name : mcp_project_server_id(scope, name);
     std::lock_guard<std::mutex> lk(mu_);
     for (const auto& [id, entry] : entries_) {
         (void)id;
@@ -1762,7 +1772,8 @@ bool SessionRegistry::expert_requires_mcp_server(
         }
         const auto scopes =
             entry->expert->selected_capabilities(entry->expert_member_id);
-        if (!scopes.mcp_servers) continue;
+        if (!scopes.mcp_servers || !entry->tool_capability_policy.mcp_servers ||
+            !entry->tool_capability_policy.mcp_servers->count(owner)) continue;
         if (std::find(scopes.mcp_servers->begin(),
                       scopes.mcp_servers->end(),
                       name) != scopes.mcp_servers->end()) {
@@ -1810,10 +1821,9 @@ ExpertSwitchResult SessionRegistry::switch_expert(
     auto expert = std::make_shared<ExpertDefinition>(std::move(*resolved));
     const ExpertCapabilityScopes expert_scopes =
         expert->selected_capabilities();
-    ensure_expert_mcp_servers_available(
-        expert_scopes, deps_.mcp_manager, deps_.tools);
     const ToolCapabilityPolicy tool_policy =
-        tool_policy_from_expert_scopes(expert_scopes, deps_.config);
+        tool_policy_from_expert_scopes(
+            expert_scopes, deps_.config, entry->no_workspace ? "" : entry->cwd, deps_);
     const auto expert_skill_roots = expert->selected_skill_roots();
     const auto expert_skill_allowlist = expert_scopes.skills;
     std::shared_ptr<SkillRegistry> skills;
@@ -2273,6 +2283,9 @@ std::vector<SessionInfo> SessionRegistry::list_active() const {
             // v1 不读磁盘(list_active 是热路径),只填 id + active + title。
             info.title = entry->sm->current_title();
             info.title_source = entry->sm->current_title_source();
+            // 摘要也是内存值(不读磁盘):它是无标题会话的显示名,列表必须与
+            // session_updated{summary} 事件、messages 快照同源。
+            info.summary = entry->sm->current_summary();
             info.turn_count = entry->sm->current_turn_count();
             info.last_token_usage = entry->sm->current_last_token_usage();
             info.session_token_usage = entry->sm->current_session_token_usage();
@@ -2339,6 +2352,19 @@ bool SessionRegistry::any_busy() const {
         if (entry->loop->has_pending_work()) return true;
     }
     return false;
+}
+
+std::vector<std::string> SessionRegistry::busy_session_ids() const {
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (const auto& [id, entry] : entries_) {
+            if (!entry || !entry->loop) continue;
+            if (entry->loop->has_pending_work()) ids.push_back(id);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
 }
 
 void SessionRegistry::invalidate_git_snapshots_in_cwd(const std::string& cwd) {

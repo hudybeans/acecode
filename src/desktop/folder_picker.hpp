@@ -1,15 +1,14 @@
 #pragma once
 
-// 跨平台目录选择器,用于"+ 添加项目" 入口。Windows 走 IFileOpenDialog,POSIX
-// 在 MVP 阶段返回 nullopt(后续 PR 接 GTK / Cocoa)。
+// 跨平台目录选择器,用于"+ 添加项目" 入口。
 
 #include <optional>
 #include <string>
 
 namespace acecode::desktop {
 
-// parent_hwnd: Windows 上传 HWND 当 dialog 的 owner 让 modal 关系正确;
-// nullptr 也合法,Windows 下会尝试使用当前前台窗口作为 owner。
+// parent_hwnd: Windows 上传 HWND,Linux Desktop 上传 GtkWindow,作为模态 owner。
+// nullptr 也合法;Windows 尝试当前前台窗口,Linux 使用外部选择器工具。
 // 返回:用户选定的绝对路径(正斜杠 normalize 由调用方做);取消 / 失败 → nullopt。
 std::optional<std::string> pick_folder(void* parent_hwnd);
 
@@ -22,6 +21,13 @@ struct FolderPickOutcome {
     // path 为空且 error 为空 = 用户取消
 };
 FolderPickOutcome pick_folder_outcome(void* parent_hwnd);
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+// Desktop installs its GTK implementation on the GUI thread. Headless users
+// retain the external-tool fallback without linking a GUI toolkit.
+using LinuxFolderPicker = FolderPickOutcome (*)(void* parent);
+void set_linux_folder_picker(LinuxFolderPicker picker);
+#endif
 
 // 原生“另存为”对话框。suggested_filename 只包含建议文件名(例如
 // "会话标题.md"),用户可在系统对话框里修改文件名和保存位置。

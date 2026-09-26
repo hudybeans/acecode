@@ -9,6 +9,8 @@ export const DESKTOP_CONTEXT_ACTIONS = Object.freeze({
   LOCATE_FILE: 'locate_file',
   PIN_SESSION: 'pin_session',
   UNPIN_SESSION: 'unpin_session',
+  MARK_SESSION_READ: 'mark_session_read',
+  MARK_SESSION_UNREAD: 'mark_session_unread',
   OPEN_SESSION: 'open_session',
   RENAME_SESSION: 'rename_session',
   COPY_SESSION_TITLE: 'copy_session_title',
@@ -20,6 +22,7 @@ export const DESKTOP_CONTEXT_ACTIONS = Object.freeze({
   COLLAPSE_WORKSPACE: 'collapse_workspace',
   NEW_WORKSPACE_SESSION: 'new_workspace_session',
   IMPORT_OPENCODE_SESSIONS: 'import_opencode_sessions',
+  EDIT_WORKSPACE: 'edit_workspace',
   RENAME_WORKSPACE: 'rename_workspace',
   COPY_WORKSPACE_PATH: 'copy_workspace_path',
   REMOVE_WORKSPACE: 'remove_workspace',
@@ -92,6 +95,9 @@ export const SESSION_PIN_TOGGLE_EVENT = 'acecode:session-pin-toggle';
 export const DESKTOP_CONTEXT_ACTION_EVENT = 'acecode:desktop-context-action';
 export const OPEN_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:open-desktop-context-menu';
 export const CLOSE_DESKTOP_CONTEXT_MENU_EVENT = 'acecode:close-desktop-context-menu';
+export const CONTEXT_MENU_DELEGATE_EVENT = 'acecode:context-menu-delegate';
+export const CONTEXT_MENU_DELEGATE_SELECTOR = '[data-desktop-context-menu-delegate]';
+export const SESSION_HEADER_CONTEXT_MENU_DELEGATE = 'session-header';
 
 // Explicit toolbar entry point; native right-click continues through contextmenu.
 export function openDesktopContextMenu(options) {
@@ -100,6 +106,35 @@ export function openDesktopContextMenu(options) {
 
 export function closeDesktopContextMenu() {
   document.dispatchEvent(new Event(CLOSE_DESKTOP_CONTEXT_MENU_EVENT));
+}
+
+// 右键委托:区域根节点标 data-desktop-context-menu-delegate="<name>",右键时
+// DesktopContextMenu 先把点位广播给认领方,认领了就不再走通用菜单。输入框内右键
+// 仍是复制 / 粘贴菜单,不委托。
+export function contextMenuDelegateFromElement(target) {
+  if (editableTargetFromElement(target)) return null;
+  const element = closest(target, CONTEXT_MENU_DELEGATE_SELECTOR);
+  const name = getAttr(element, 'data-desktop-context-menu-delegate', 'desktopContextMenuDelegate');
+  return name ? { name, element } : null;
+}
+
+export function dispatchContextMenuDelegate(delegate, { x = 0, y = 0, target = null } = {}, eventTarget = globalThis.window) {
+  if (!delegate?.name || !eventTarget || typeof eventTarget.dispatchEvent !== 'function') return false;
+  const detail = { name: delegate.name, element: delegate.element || null, x, y, target, handled: false };
+  eventTarget.dispatchEvent(new CustomEvent(CONTEXT_MENU_DELEGATE_EVENT, { detail }));
+  return !!detail.handled;
+}
+
+// 显式打开菜单的一方可以接管个别动作(例如顶栏的「重命名」就地编辑标题,
+// 而不是派发给侧栏行)。只替换 onSelect,文案 / 分组 / 可用态保持不变。
+export function applyContextMenuActionOverrides(items = [], overrides = null) {
+  if (!overrides || typeof overrides !== 'object') return items;
+  return items.map((item) => {
+    const id = typeof item === 'string' ? item : item?.id;
+    const onSelect = id ? overrides[id] : null;
+    if (typeof onSelect !== 'function') return item;
+    return typeof item === 'string' ? { id, onSelect } : { ...item, onSelect };
+  });
 }
 export const CONTEXT_MENU_REOPEN_DELAY_MS = 10;
 
@@ -274,6 +309,7 @@ export function buildDesktopContextMenuItems({
   if (!editable) {
     if (sessionTarget) {
       addAction(items, sessionTarget.pinned ? DESKTOP_CONTEXT_ACTIONS.UNPIN_SESSION : DESKTOP_CONTEXT_ACTIONS.PIN_SESSION, sessionTarget);
+      addAction(items, sessionTarget.unread ? DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_READ : DESKTOP_CONTEXT_ACTIONS.MARK_SESSION_UNREAD, sessionTarget);
       addAction(items, DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION, sessionTarget);
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_TITLE, sessionTarget, { enabled: !!sessionTarget.title });
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_SESSION_ID, sessionTarget);
@@ -300,6 +336,9 @@ export function buildDesktopContextMenuItems({
       addAction(items, DESKTOP_CONTEXT_ACTIONS.NEW_WORKSPACE_SESSION, workspaceTarget);
       if (workspaceTarget.opencodeImportCount > 0) {
         addAction(items, DESKTOP_CONTEXT_ACTIONS.IMPORT_OPENCODE_SESSIONS, workspaceTarget);
+      }
+      if (workspaceTarget.canEdit) {
+        addAction(items, DESKTOP_CONTEXT_ACTIONS.EDIT_WORKSPACE, workspaceTarget);
       }
       addAction(items, DESKTOP_CONTEXT_ACTIONS.RENAME_WORKSPACE, workspaceTarget, { enabled: workspaceTarget.canRename !== false });
       addAction(items, DESKTOP_CONTEXT_ACTIONS.COPY_WORKSPACE_PATH, workspaceTarget, { enabled: !!workspaceTarget.path });
@@ -484,6 +523,7 @@ export function sessionTargetFromElement(target) {
     title: getAttr(el, 'data-desktop-session-title', 'desktopSessionTitle'),
     sessionPath: getAttr(el, 'data-desktop-session-path', 'desktopSessionPath'),
     pinned: boolAttr(el, 'data-desktop-session-pinned', 'desktopSessionPinned'),
+    unread: boolAttr(el, 'data-desktop-session-unread', 'desktopSessionUnread'),
     canArchive: boolAttr(el, 'data-desktop-session-archive', 'desktopSessionArchive'),
   };
 }
@@ -502,6 +542,7 @@ export function workspaceTargetFromElement(target) {
     active: boolAttr(el, 'data-desktop-workspace-active', 'desktopWorkspaceActive'),
     expanded: boolAttr(el, 'data-desktop-workspace-expanded', 'desktopWorkspaceExpanded'),
     canRename: getAttr(el, 'data-desktop-workspace-rename', 'desktopWorkspaceRename') !== 'false',
+    canEdit: boolAttr(el, 'data-desktop-workspace-edit', 'desktopWorkspaceEdit'),
     canRemove: boolAttr(el, 'data-desktop-workspace-remove', 'desktopWorkspaceRemove'),
     opencodeImportCount: numberAttr(el, 'data-desktop-workspace-opencode-import-count', 'desktopWorkspaceOpencodeImportCount'),
   };

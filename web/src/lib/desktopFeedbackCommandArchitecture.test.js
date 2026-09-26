@@ -56,7 +56,9 @@ run('ChatView submits feedback directly without agent or session-command paths',
   assert.match(feedbackBlock, /buildCurrentSessionDesktopFeedbackPayload\(\{/);
   assert.match(feedbackBlock, /sessionId: sid/);
   assert.match(feedbackBlock, /api\.submitDesktopFeedback\(requestPayload\)/);
-  assert.match(feedbackBlock, /recordInputHistory\(route\.display_text\)/);
+  // cwd 历史只记编辑器文本(inputHistoryTextForPayload),不记拼上内联粘贴块正文的 display_text。
+  assert.match(feedbackBlock, /recordInputHistory\(historyText\)/);
+  assert.doesNotMatch(feedbackBlock, /recordInputHistory\(route\.display_text\)/);
   assert.match(feedbackBlock, /clearCurrentSessionDraft\(\)/);
   assert.match(feedbackBlock, /setComposerSubmitting\(true\)/);
   assert.match(feedbackBlock, /setComposerSubmitting\(false\)/);

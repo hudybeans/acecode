@@ -36,6 +36,9 @@ function(acecode_generate_embedded_assets web_dir out_file version)
         if(IS_DIRECTORY "${src_file}")
             continue()
         endif()
+        # GLOB CONFIGURE_DEPENDS notices added/removed names, not changes to
+        # existing files. Reconfigure when Vite rewrites an embedded asset.
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${src_file}")
 
         # index.html 走模板替换:把 ?v=__VERSION__ 替成 ?v=${version}
         # 其它文件原样读取。

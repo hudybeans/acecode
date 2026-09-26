@@ -2,6 +2,7 @@
 
 #include "desktop_close_behavior.hpp"
 #include "saved_models.hpp"
+#include "../computer_use/pointer_appearance.hpp"
 #include "../utils/constants.hpp"
 
 #include <cstddef>
@@ -184,6 +185,8 @@ struct WebUiPreferencesConfig {
     // Sidebar session rows show a relative timestamp. Product default is on;
     // turning it off leaves the time visible only in the row hover card.
     bool sidebar_session_time = true;
+    // Collapse conversation activity; false keeps only individual tools foldable.
+    bool message_auto_collapse = true;
 };
 
 struct ModelsDevConfig {
@@ -214,8 +217,24 @@ struct InputHistoryConfig {
 //
 // `AskUserQuestion` is NEVER a terminator (its tool_result feeds back to
 // the model and the loop continues, exactly like any other tool).
+
+// 具体进度提示(openspec add-tool-preamble;设置 > 常规 > 工作模式:「适合日常工作」
+// = 开启,「用于编程」= 关闭)。开启后 loading 行只说正在做什么、不带参数:推理
+// 加粗标题 > 工具现在进行时模板 > 场景文案,见 tool_preamble/tool_preamble.hpp。
+// 键名沿用 tool_preamble 以兼容旧配置;旧的 mode / sidecar_* 键加载时忽略。
+struct ToolPreambleConfig {
+    bool enabled = false;
+
+    bool operator==(const ToolPreambleConfig& other) const {
+        return enabled == other.enabled;
+    }
+    bool operator!=(const ToolPreambleConfig& other) const { return !(*this == other); }
+};
+
 struct AgentLoopConfig {
     int max_iterations = 0; // 0 = unlimited; positive values cap total LLM turns per run()
+
+    ToolPreambleConfig tool_preamble;
 
     // AskUserQuestion 应答策略(openspec/changes/add-ask-question-policy)。
     //   "ask"     = 默认。正常弹 UI 无限期等用户回答。
@@ -298,6 +317,13 @@ struct WebSearchConfig {
     std::string rss_base_url = "https://ge.bigjuan.xyz/rss-search";
     int max_results = 5;        // Tool limit cap(min(limit, max_results, 10)).
     int timeout_ms = 8000;      // Per-backend HTTP timeout.
+};
+
+struct ComputerUseConfig {
+    // Desktop control is opt-in, including after loading a legacy config.
+    bool enabled = false;
+    std::string pointer_style = computer_use::pointer_appearance::kDefaultStyle;
+    std::string pointer_color = computer_use::pointer_appearance::kDefaultColor;
 };
 
 // 图像生成工具配置(openspec add-image-generation-tool)。
@@ -431,6 +457,9 @@ struct DesktopNotificationsConfig {
 
 struct DesktopConfig {
     DesktopNotificationsConfig notifications;
+    // Developer preference, shared by all installations for the current user.
+    // Only new Desktop processes consult it; existing instances keep running.
+    bool allow_multiple_instances = false;
     // Windows 关窗(× / Alt+F4 / aceDesktop_closeWindow)默认隐藏到托盘。
     // false 时回到关窗即退出。macOS 始终将关窗与真正退出分开。
     bool close_to_tray = true;
@@ -531,6 +560,8 @@ struct AppConfig {
     // Canonical values: default | auto | plan | yolo (accept-edits is read as auto).
     std::string default_permission_mode = "default";
     SandboxConfig sandbox;                       // bash 沙盒(openspec add-auto-mode-sandbox)
+    // Fixed one-time startup migration; keep separate from editable sandbox settings.
+    bool sandbox_disable_migration_completed = false;
     std::map<std::string, McpServerConfig> mcp_servers; // MCP stdio servers (optional)
     SkillsConfig skills;                         // skill system configuration (optional)
     MemoryConfig memory;                         // persistent user memory settings
@@ -549,6 +580,7 @@ struct AppConfig {
     LspConfig lsp;                               // LSP 集成(参见 add-lsp-service)
     WorktreeConfig worktree;                     // worktree 隔离(enter_worktree / --worktree)
     ImageGenerationConfig image_generation;      // 图像生成工具(参见 add-image-generation-tool)
+    ComputerUseConfig computer_use;              // Native desktop control, explicitly enabled
     GitContextConfig git_context;                // git 感知(参见 add-git-context)
     RemoteControlConfig remote_control;          // TUI /remote-control channel 托管
     UpgradeConfig upgrade;                       // explicit self-upgrade command config

@@ -20,7 +20,8 @@ assert.match(inputBar, /fileItems=\{activePathDropdown\.fileItems \|\| \[\]\}/);
 assert.match(inputBar, /sessionItems=\{activePathDropdown\.sessionItems \|\| \[\]\}/);
 assert.match(chatView, /currentSessionId=\{sid\}/);
 assert.match(chatView, /extractSessionReferences\(String\(text \|\| ''\)\)/);
-assert.match(chatView, /text: sessionReferences\.displayText/);
+// 消息正文以会话引用转换后的编辑器文本为底,内联粘贴块拼在其后(粘贴材料不做引用转换)。
+assert.match(chatView, /text: appendPastedTextToSubmission\(sessionReferences\.displayText, content\)/);
 assert.match(chatView, /payload\.session_references = sessionReferences\.references/);
 assert.match(chatView, /Array\.isArray\(payload\?\.session_references\)/);
 

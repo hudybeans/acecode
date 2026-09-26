@@ -7,9 +7,16 @@ if(CMAKE_HOST_WIN32 AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MA
     set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet" FORCE)
 endif()
 
-project(acecode VERSION 0.9.20 LANGUAGES C CXX)
+project(acecode VERSION 0.9.27 LANGUAGES C CXX)
 
 option(ACECODE_TUI_INPUT_TRACE "Enable verbose TUI input event trace logging." OFF)
+option(ACECODE_DEEPIN "Build the dedicated UOS/Deepin Linux variant." OFF)
+if(ACECODE_DEEPIN AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "ACECODE_DEEPIN is supported only on Linux targets")
+endif()
+# The daemon needs the package identity, but must not acquire Qt/DTK linkage.
+set_property(SOURCE src/upgrade/manifest.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "$<$<BOOL:${ACECODE_DEEPIN}>:ACECODE_DEEPIN=1>")
 
 # CTest integration: defines BUILD_TESTING (default ON). Release packaging can
 # disable it with -DBUILD_TESTING=OFF to skip the test binary and the gtest
@@ -163,7 +170,9 @@ file(GLOB_RECURSE ACECODE_HEADER_FILES CONFIGURE_DEPENDS
 
 set(ACECODE_TESTABLE_SOURCES ${ACECODE_ALL_SOURCES})
 list(REMOVE_ITEM ACECODE_TESTABLE_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/main.cpp)
+    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/computer_use/helper_main.cpp
+    ${CMAKE_SOURCE_DIR}/src/computer_use/native_windows.cpp)
 list(FILTER ACECODE_TESTABLE_SOURCES EXCLUDE REGEX "/src/(tui|markdown)/")
 
 # winpty_agent_location.cpp 属于 winpty_static(需要 winpty 内部 include 路径),
@@ -175,7 +184,9 @@ list(FILTER ACECODE_TUI_SOURCES INCLUDE REGEX "/src/(tui|markdown)/")
 
 set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/config/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/config/config_mutation.cpp
     ${CMAKE_SOURCE_DIR}/src/config/config_recovery.cpp
+    ${CMAKE_SOURCE_DIR}/src/config/mcp_config.cpp
     ${CMAKE_SOURCE_DIR}/src/config/model_provider_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/config/request_headers.cpp
     ${CMAKE_SOURCE_DIR}/src/config/saved_models.cpp
@@ -198,6 +209,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/startup_progress.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/strings.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/workspace_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/append_file.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/clipboard.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/cwd_hash.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/encoding.cpp
@@ -208,6 +220,7 @@ set(ACECODE_NATIVE_BRIDGE_SUPPORT_SOURCES
 
 set(ACECODE_DESKTOP_SUPPORT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/desktop/application_icon.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/linux_webview_scale_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/daemon_supervisor.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/desktop_about.cpp
@@ -231,6 +244,8 @@ set(ACECODE_DESKTOP_SUPPORT_SOURCES
 # 里剔除。desktop/native helper 源文件改由 focused support target 拥有,
 # 这样 acecode-desktop 不需要链接 acecode_testable。
 set(ACECODE_DESKTOP_BINARY_ONLY_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/desktop/deepin_window_effects.cpp
+    ${CMAKE_SOURCE_DIR}/src/desktop/linux_desktop.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_host.cpp
     ${CMAKE_SOURCE_DIR}/src/desktop/agent_browser_host_mac.mm
     ${CMAKE_SOURCE_DIR}/src/desktop/main.cpp
@@ -447,6 +462,47 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
+if(WIN32)
+    # UI Automation lives outside the daemon: a hung application must remain
+    # cancellable without terminating a conversation or the desktop shell.
+    add_library(acecode_computer_use_native STATIC
+        src/computer_use/native_windows.cpp
+        src/computer_use/pointer_capture.cpp
+        src/computer_use/pointer_overlay.cpp)
+    target_include_directories(acecode_computer_use_native PUBLIC ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(acecode_computer_use_native PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_link_libraries(acecode_computer_use_native PUBLIC
+        nlohmann_json::nlohmann_json user32 gdi32 ole32 oleaut32
+        uiautomationcore d3d11 dxgi windowscodecs dwmapi shell32 propsys uuid)
+    if(MSVC)
+        target_link_libraries(acecode_computer_use_native PUBLIC windowsapp)
+    endif()
+    add_executable(acecode-computer-use src/computer_use/helper_main.cpp)
+    target_link_libraries(acecode-computer-use PRIVATE acecode_computer_use_native)
+    install(TARGETS acecode-computer-use RUNTIME DESTINATION . COMPONENT computer_use_runtime)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    add_library(acecode_computer_use_native STATIC
+        src/computer_use/native_macos.mm
+        src/computer_use/macos_windows.mm
+        src/computer_use/macos_accessibility.mm
+        src/computer_use/macos_capture.mm
+        src/computer_use/macos_input.mm
+        src/computer_use/macos_pointer.mm)
+    set_target_properties(acecode_computer_use_native PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
+    target_include_directories(acecode_computer_use_native PUBLIC ${CMAKE_SOURCE_DIR}/src)
+    target_compile_options(acecode_computer_use_native PRIVATE -fobjc-arc -mmacosx-version-min=14.0)
+    target_link_libraries(acecode_computer_use_native PUBLIC nlohmann_json::nlohmann_json
+        "-framework AppKit" "-framework ApplicationServices" "-framework ScreenCaptureKit"
+        "-framework ImageIO" "-framework Carbon")
+    add_executable(acecode-computer-use src/computer_use/helper_main.cpp src/computer_use/helper_main_macos.mm)
+    set_target_properties(acecode-computer-use PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
+    target_compile_options(acecode-computer-use PRIVATE -mmacosx-version-min=14.0 "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_link_options(acecode-computer-use PRIVATE -mmacosx-version-min=14.0)
+    target_link_libraries(acecode-computer-use PRIVATE acecode_computer_use_native)
+    install(TARGETS acecode-computer-use RUNTIME DESTINATION . COMPONENT computer_use_runtime)
+endif()
+
 add_executable(acecode
     ${CMAKE_SOURCE_DIR}/src/main.cpp
     ${ACECODE_TUI_SOURCES}
@@ -459,6 +515,9 @@ target_link_libraries(acecode PRIVATE
     ftxui::dom
     ftxui::component
 )
+if(WIN32 OR APPLE)
+    add_dependencies(acecode acecode-computer-use)
+endif()
 
 add_custom_command(TARGET acecode POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:acecode>/channels/whatsapp"
@@ -504,6 +563,9 @@ endif()
 # desktop shell 子目标(opt-in,默认 OFF)。include 后只有当 ACECODE_BUILD_DESKTOP=ON
 # 才会真添加 acecode-desktop 这个 target,否则文件本身做无操作 return。
 include(${CMAKE_SOURCE_DIR}/cmake/acecode_desktop.cmake)
+if((WIN32 OR APPLE) AND TARGET acecode-desktop)
+    add_dependencies(acecode-desktop acecode-computer-use)
+endif()
 
 # tuitest helloworld 子目标(opt-in,默认 OFF)。-DACECODE_BUILD_TUITEST=ON 开启。
 include(${CMAKE_SOURCE_DIR}/cmake/acecode_tuitest.cmake)

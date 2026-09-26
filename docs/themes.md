@@ -81,13 +81,10 @@ controls are preserved, including the original definition's `mode: dark`.
 Only the 86,886-byte preview is bundled; the full package is downloaded from
 the configured aupdate server. The original local AI theme remains unchanged.
 
-The next application's first authenticated entry attempts this theme once,
-including for users upgrading from an earlier release. A durable atomic marker
-beside the installed themes coordinates multiple windows and survives restarts.
-The current skin stays active until resources are ready. Discovery, download,
-validation, image-loading and preference-save failures are silent; an attempted
-startup is never automatically retried. Users can still download manually, and
-a later manual theme choice takes priority over an unfinished automatic download.
+从下个版本起，Web/Desktop 启动时不再自动下载或应用国庆节主题。新配置使用
+蓝色并跟随系统明暗模式；升级后沿用已保存的外观，包括此前保存的国庆节主题。
+国庆节主题仍可在「设置 → 外观」中手动下载和选择，沿用下载确认、进度与失败提示。
+旧版留下的首次尝试标记不影响新的启动行为，也无需清除。
 
 The approved definition is `assets/themes/national-day-2026/theme.json`. Repackage
 the matching artwork without modifying its PNG bytes:

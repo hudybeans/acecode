@@ -6,7 +6,7 @@
 //   - GET /api/sessions/<id>/messages 返回 events+messages
 //   - GET /api/skills 全量扫描 workspace 项目链 + 全局根,项目 skill 带 source
 //   - GET /api/mcp 返回当前 mcp_servers
-//   - POST /api/mcp/reload 返回 501
+//   - MCP 配置校验、项目范围与无运行时的 reload 返回 503
 //   - 远程 IP(非 loopback)模拟 → 这里用 cpr 走 127.0.0.1 不容易模拟,所以
 //     远程鉴权由 auth_test.cpp 单元覆盖,这里只验路由 wiring 通的部分
 //
@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include <httplib.h>
 #include <sqlite3.h>
+#include "computer_use/runtime.hpp"
 
 #include "provider/auth/github_auth.hpp"
 #include "provider/auth/xai_auth.hpp"
@@ -24,6 +25,7 @@
 #include "security/audit_log.hpp"
 #include "environment/data_dir_migration.hpp"
 #include "environment/terminal_runtime.hpp"
+#include "web/pty/pty_session_registry.hpp"
 #include "environment/toolchains.hpp"
 #include "config/config_recovery.hpp"
 #include "config/saved_models.hpp"
@@ -41,6 +43,7 @@
 #include "provider/models_dev_registry.hpp"
 #include "session/local_session_client.hpp"
 #include "session/attachment_store.hpp"
+#include "session/pasted_text_attachment.hpp"
 #include "session/session_manager.hpp"
 #include "session/session_pin_store.hpp"
 #include "session/session_registry.hpp"
@@ -60,6 +63,7 @@
 #include "tool/task_suggestion_tools.hpp"
 #include "upgrade/manifest.hpp"
 #include "../agent_loop/stub_provider.hpp"
+#include "utils/base64.hpp"
 #include "utils/encoding.hpp"
 #include "utils/cwd_hash.hpp"
 #include "utils/state_file.hpp"
@@ -448,6 +452,8 @@ struct WebServerFixture {
     struct SideQuestionProviderTag {};
     struct NoSessionRegistryTag {};
     struct TaskSuggestionsTag {};
+    struct PtyTag {};
+    struct ReasoningSyncTag {};
 
     acecode::ToolExecutor tools;
     acecode::PermissionManager template_perm;
@@ -466,6 +472,7 @@ struct WebServerFixture {
     std::unique_ptr<acecode::loop::LoopStore> loop_store;
     std::unique_ptr<FakeRemoteWebProxyController> remote_web_proxy;
     std::unique_ptr<acecode::web::WebServer> server;
+    std::unique_ptr<acecode::PtySessionRegistry> pty_registry;
 
     std::thread server_thread;
     int port = 0;
@@ -496,7 +503,9 @@ struct WebServerFixture {
         NativeSaveFilePicker native_save_file_picker = {},
         std::shared_ptr<acecode::LlmProvider> registry_provider = {},
         bool expose_session_registry = true,
-        bool enable_task_suggestions = false) {
+        bool enable_task_suggestions = false,
+        bool enable_pty = false,
+        std::function<void(acecode::AppConfig&)> initialize_reasoning_models = {}) {
         port = pick_test_port();
         web_cfg.bind = "127.0.0.1";
         web_cfg.port = port;
@@ -507,6 +516,7 @@ struct WebServerFixture {
         default_model.provider = "copilot";
         default_model.model = "gpt-4o";
         cfg.saved_models.push_back(default_model);
+        if (initialize_reasoning_models) initialize_reasoning_models(cfg);
 
         // PUT /api/mcp 走 save_config 落盘 — 必须指向临时目录,否则
         // 会覆盖真实的 ~/.acecode/config.json(历史 bug,曾把测试用的
@@ -571,6 +581,7 @@ struct WebServerFixture {
         wdeps.web_cfg = &cfg.web;
         wdeps.daemon_cfg = &cfg.daemon;
         wdeps.app_config = &cfg;
+        wdeps.sync_model_reasoning = static_cast<bool>(initialize_reasoning_models);
         wdeps.app_config_mutex = &app_config_mu;
         wdeps.config_path = (tmp_dir / "config.json").string();
         wdeps.cwd = cwd;
@@ -609,6 +620,16 @@ struct WebServerFixture {
         wdeps.dangerous = dangerous;
         wdeps.loop_store = loop_store.get();
         wdeps.desktop_managed = desktop_managed;
+        if (enable_pty) {
+            pty_registry = std::make_unique<acecode::PtySessionRegistry>(
+#ifdef _WIN32
+                acecode::PtyBackendKind::Pipe,
+#else
+                acecode::PtyBackendKind::PosixPty,
+#endif
+                cwd, "");
+            wdeps.pty_registry = pty_registry.get();
+        }
 
         server = std::make_unique<acecode::web::WebServer>(std::move(wdeps));
         server_thread = std::thread([this] { server->run(); });
@@ -673,9 +694,18 @@ struct WebServerFixture {
               std::shared_ptr<acecode::LlmProvider>{},
               false) {}
 
+    explicit WebServerFixture(
+        ReasoningSyncTag, std::function<void(acecode::AppConfig&)> initialize)
+        : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
+                           false, {}, {}, true, false, false, std::move(initialize)) {}
+
     explicit WebServerFixture(TaskSuggestionsTag)
         : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
                            false, {}, {}, true, true) {}
+
+    explicit WebServerFixture(PtyTag)
+        : WebServerFixture(true, false, {}, true, {}, {}, false, {}, {},
+                           false, {}, {}, true, false, true) {}
 
     explicit WebServerFixture(
         std::function<std::vector<std::string>()> remote_web_hosts,
@@ -917,6 +947,10 @@ TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurt
         std::this_thread::sleep_for(20ms);
     }
     ASSERT_EQ(progress["state"], "done") << progress;
+    // 进度 JSON 带 skipped_files(Agent Browser profile 尽力复制跳过的文件数);
+    // 这个数据目录里没有浏览器 profile,应为 0。前端据它决定是否提示需要重新登录。
+    ASSERT_TRUE(progress.contains("skipped_files")) << progress;
+    EXPECT_EQ(progress["skipped_files"].get<unsigned long long>(), 0u);
     EXPECT_EQ(read_text(target / "memory/MEMORY.md"), "keep this memory");
     EXPECT_TRUE(std::filesystem::exists(source / "memory/MEMORY.md"));
     auto blocked = cpr::Put(cpr::Url{fx.url("/api/config/toolchains")},
@@ -937,6 +971,8 @@ TEST(SettingsEnvironmentSmoke, MigratesInTempProfileAndRequiresRestartBeforeFurt
     EXPECT_FALSE(json::parse(keep.text)["cleanup_pending"].get<bool>());
 }
 
+// 场景:某个会话的 worker 上挂着一个还没执行完的 control,此时发起数据目录迁移。
+// 期望:409 SESSIONS_BUSY,并在 busy_sessions 里列出该会话 id。
 TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
     EnvironmentRuntimeRestore restore;
     WebServerFixture fx;
@@ -954,14 +990,55 @@ TEST(SettingsEnvironmentSmoke, RefusesMigrationWhileWorkerControlIsPending) {
         return true;
     });
     EXPECT_TRUE(fx.registry->any_busy());
+    // busy_session_ids 与 any_busy 同一判定:挂着未执行完的 control 的会话要被列出来。
+    const std::string sid = entry->id;
+    EXPECT_EQ(fx.registry->busy_session_ids(), std::vector<std::string>{sid});
     auto migration = cpr::Post(cpr::Url{fx.url("/api/config/data-dir/migrate")},
         cpr::Header{{"Content-Type", "application/json"}},
         cpr::Body{json{{"target", (fx.tmp_dir / "moved").string()}}.dump()});
     EXPECT_EQ(migration.status_code, 409) << migration.text;
+    // 409 响应附带 busy_sessions(附加字段,error / message 不变)。修复前只有一个
+    // 「有会话在运行」,用户与日志都无从知道是哪个会话占着。
+    const auto refused = json::parse(migration.text);
+    EXPECT_EQ(refused.value("error", ""), "SESSIONS_BUSY");
+    ASSERT_TRUE(refused.contains("busy_sessions")) << migration.text;
+    EXPECT_EQ(refused["busy_sessions"].get<std::vector<std::string>>(), std::vector<std::string>{sid});
     { std::lock_guard<std::mutex> lock(mu); released = true; }
     cv.notify_all();
     // Join the callback before destroying its synchronization state.
     entry->loop->shutdown();
+}
+
+// 场景:请求体里带非法 UTF-8 字节。nlohmann 的 parse_error 会把读到的原始字节原样放进
+// 「last read: '...'」,于是 BAD_JSON 的 message 本身就是非法 UTF-8。
+// 期望:环境路由的 json_response 用 error_handler_t::replace 序列化,响应仍是 400 + 合法
+// JSON,error=BAD_JSON,message 是合法 UTF-8(非法字节被换成 U+FFFD)。
+// bug 表现:修复前 body.dump() 抛 type_error.316,被全局异常处理收成 500;迁移失败时
+// GBK 的 OS 错误文本走的是同一条出口,/migration 与 /data-dir 因此每次轮询都 500。
+// 字节选择:GBK 的「一」= D2 BB 恰好是合法 UTF-8(解码为 U+04BB),不能拿来当反例;
+// 这里用 D2 后面紧跟引号(前导字节缺续字节)和单独的 FF(永远不是合法 UTF-8)。
+TEST(SettingsEnvironmentSmoke, InvalidUtf8InErrorTextStillReturnsJson) {
+    EnvironmentRuntimeRestore restore;
+    WebServerFixture fx;
+    const std::vector<std::string> bodies = {
+        std::string("{\"target\":\"") + "\xD2" + "\"}",
+        std::string("\xFF"),
+    };
+    for (const std::string route : {"/api/config/data-dir/migrate", "/api/config/toolchains"}) {
+        for (const auto& body : bodies) {
+            ASSERT_FALSE(acecode::is_valid_utf8(body));
+            const auto response = route == "/api/config/toolchains"
+                ? cpr::Put(cpr::Url{fx.url(route)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body})
+                : cpr::Post(cpr::Url{fx.url(route)}, cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+            EXPECT_EQ(response.status_code, 400) << route << " " << response.text;
+            json parsed;
+            ASSERT_NO_THROW(parsed = json::parse(response.text)) << route;
+            EXPECT_EQ(parsed.value("error", ""), "BAD_JSON") << route;
+            const auto message = parsed.value("message", "");
+            EXPECT_FALSE(message.empty()) << route;
+            EXPECT_TRUE(acecode::is_valid_utf8(message)) << route;
+        }
+    }
 }
 
 std::string lower_ascii(std::string s) {
@@ -1013,6 +1090,95 @@ TEST(WebServerHttp, HealthEndpointReturnsBasicMetadata) {
     ASSERT_TRUE(j.contains("features"));
     ASSERT_TRUE(j["features"].contains("completed_turn_self_heal"));
     EXPECT_EQ(j["features"]["completed_turn_self_heal"]["enabled"], true);
+}
+
+TEST(WebServerHttp, PtyOwnerProtocolFiltersAndTransfersWithoutRestart) {
+    WebServerFixture fx(WebServerFixture::PtyTag{});
+    const auto post = [&](const std::string& route, const json& body) {
+        return cpr::Post(cpr::Url{fx.url(route)},
+                         cpr::Header{{"Content-Type", "application/json"}},
+                         cpr::Body{body.dump()}, cpr::Timeout{10000});
+    };
+    auto created = post("/api/pty", {{"owner_id", "draft:http"}, {"title", "HTTP draft"}});
+    ASSERT_EQ(created.status_code, 201) << created.text;
+    const auto original = json::parse(created.text);
+    EXPECT_EQ(original.at("owner_id"), "draft:http");
+    auto other = cpr::Get(cpr::Url{fx.url("/api/pty?owner_id=session%3Aother")});
+    ASSERT_EQ(other.status_code, 200);
+    EXPECT_TRUE(json::parse(other.text).at("sessions").empty());
+    auto moved = post("/api/pty/transfer-owner", {{"from_owner", "draft:http"}, {"to_owner", "session:http"}});
+    ASSERT_EQ(moved.status_code, 204) << moved.text;
+    auto own = cpr::Get(cpr::Url{fx.url("/api/pty?owner_id=session%3Ahttp")});
+    ASSERT_EQ(own.status_code, 200) << own.text;
+    const auto sessions = json::parse(own.text).at("sessions");
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions[0].at("pid"), original.at("pid"));
+    EXPECT_EQ(sessions[0].at("id"), original.at("id"));
+    auto late = post("/api/pty", {{"owner_id", "draft:http"}});
+    ASSERT_EQ(late.status_code, 201) << late.text;
+    EXPECT_EQ(json::parse(late.text).at("owner_id"), "session:http");
+    EXPECT_EQ(post("/api/pty/transfer-owner", {{"from_owner", "session:http"}, {"to_owner", "session:other"}}).status_code, 409);
+    EXPECT_EQ(post("/api/pty/transfer-owner", json::object()).status_code, 400);
+}
+
+TEST(WebServerHttp, DesktopMultiInstancePersistsAndReadsOtherInstancesChanges) {
+    WebServerFixture fx;
+    const std::string route = "/api/config/desktop-multi-instance";
+    auto get = [&] { return cpr::Get(cpr::Url{fx.url(route)}); };
+    auto put = [&](bool enabled) {
+        return cpr::Put(cpr::Url{fx.url(route)},
+            cpr::Header{{"Content-Type", "application/json"}},
+            cpr::Body{json{{"enabled", enabled}}.dump()});
+    };
+    auto initial = get();
+    ASSERT_EQ(initial.status_code, 200) << initial.text;
+    EXPECT_EQ(json::parse(initial.text)["enabled"], false);
+    EXPECT_EQ(response_header(initial, "Cache-Control"), "no-store");
+    auto enabled = put(true);
+    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+    EXPECT_TRUE(fx.cfg.desktop.allow_multiple_instances);
+    const auto config_path = (fx.tmp_dir / "config.json").string();
+    auto from_other_instance = acecode::load_config_from_path(config_path, false);
+    EXPECT_TRUE(from_other_instance.desktop.allow_multiple_instances);
+    from_other_instance.desktop.allow_multiple_instances = false;
+    from_other_instance.web_ui.font_size = "large";
+    acecode::save_config(from_other_instance, config_path);
+    auto refreshed = get();
+    ASSERT_EQ(refreshed.status_code, 200) << refreshed.text;
+    EXPECT_EQ(json::parse(refreshed.text)["enabled"], false);
+    EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
+    ASSERT_EQ(put(true).status_code, 200);
+    EXPECT_EQ(acecode::load_config_from_path(config_path, false).web_ui.font_size, "large");
+    ASSERT_EQ(put(false).status_code, 200);
+    EXPECT_FALSE(acecode::load_config_from_path(config_path, false)
+                     .desktop.allow_multiple_instances);
+}
+
+TEST(WebServerHttp, DesktopMultiInstanceRejectsUnauthorizedAndInvalidRequests) {
+    WebServerFixture fx;
+    const std::string route = "/api/config/desktop-multi-instance";
+    const cpr::Header denied{{"Origin", "http://localhost:5173"}};
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(route)}, denied).status_code, 401);
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url(route)}, denied,
+        cpr::Body{R"({"enabled":true})"}).status_code, 401);
+    for (const auto* body : {"{", "{}", "null", R"({"enabled":"true"})",
+                             R"({"enabled":1})"}) {
+        auto result = cpr::Put(cpr::Url{fx.url(route)},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+        EXPECT_EQ(result.status_code, 400) << result.text;
+        EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
+    }
+}
+
+TEST(WebServerHttp, DesktopMultiInstancePersistenceFailureKeepsPreviousValue) {
+    WebServerFixture fx;
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    auto result = cpr::Put(cpr::Url{fx.url("/api/config/desktop-multi-instance")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"enabled":true})"});
+    EXPECT_EQ(result.status_code, 500) << result.text;
+    EXPECT_EQ(json::parse(result.text)["error"], "CONFIG_FAILED");
+    EXPECT_FALSE(fx.cfg.desktop.allow_multiple_instances);
 }
 
 TEST(WebServerHttp, DesktopNotificationSettingDefaultsOnAndPersistsChanges) {
@@ -3333,6 +3499,16 @@ TEST(WebServerHttp, CreateNoWorkspaceSessionIsListedOutsideWorkspaces) {
         return item.value("id", std::string{}) == sid;
     }));
 
+    // An active id must not make a wrong workspace-scoped resume look valid.
+    auto wrong_resume = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + default_hash + "/sessions/" + sid + "/resume")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({})"});
+    EXPECT_EQ(wrong_resume.status_code, 404) << wrong_resume.text;
+    auto* still_active = fx.registry->lookup(sid);
+    ASSERT_NE(still_active, nullptr);
+    EXPECT_TRUE(still_active->no_workspace);
+    EXPECT_EQ(still_active->cwd, expected_cwd);
+
     fx.client->destroy_session(sid);
     auto inactive_list = cpr::Get(cpr::Url{fx.url("/api/sessions")});
     ASSERT_EQ(inactive_list.status_code, 200) << inactive_list.text;
@@ -3526,6 +3702,132 @@ TEST(WebServerHttp, DefaultPermissionModeRejectsInvalidMode) {
     EXPECT_EQ(fx.registry->default_permission_mode(), acecode::PermissionMode::Yolo);
 }
 
+// Workspace ordering persists independently of the browser origin, and errors
+// expose stable codes through the API client's canonical `error` field.
+TEST(WebServerHttp, WorkspaceOrderPersistsAndRejectsInvalidOrStaleLists) {
+    WebServerFixture fx;
+    const auto first = acecode::compute_cwd_hash(fx.cwd);
+    const auto second = fx.workspace_registry->register_new(
+        fx.projects_dir.string(), (fx.tmp_dir / "other-order-workspace").string()).hash;
+    const std::vector<std::string> expected{second, first};
+    auto save = [&](const std::string& body) {
+        return cpr::Put(cpr::Url{fx.url("/api/workspaces/order")},
+                        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+    };
+    const auto saved = save(json{{"hashes", expected}}.dump());
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["hashes"], expected);
+
+    const auto listed = cpr::Get(cpr::Url{fx.url("/api/workspaces")});
+    ASSERT_EQ(listed.status_code, 200) << listed.text;
+    const auto workspaces = json::parse(listed.text);
+    ASSERT_EQ(workspaces.size(), 2u);
+    EXPECT_EQ(workspaces[0]["hash"], second);
+    EXPECT_EQ(workspaces[1]["hash"], first);
+
+    for (const std::string raw : {"{broken", "[]", "{}", "{\"hashes\":false}",
+                                 "{\"hashes\":[1]}", "{\"hashes\":[\"\"]}"}) {
+        const auto invalid = save(raw);
+        ASSERT_EQ(invalid.status_code, 400) << raw;
+        EXPECT_EQ(json::parse(invalid.text)["error"], "BAD_REQUEST");
+        EXPECT_TRUE(json::parse(invalid.text)["message"].is_string());
+    }
+    EXPECT_EQ(save(json{{"hashes", {first, first}}}.dump()).status_code, 400);
+    for (const auto& hashes : std::vector<std::vector<std::string>>{
+             {first}, {first, "unknown"}, {}}) {
+        const auto conflict = save(json{{"hashes", hashes}}.dump());
+        ASSERT_EQ(conflict.status_code, 409) << conflict.text;
+        EXPECT_EQ(json::parse(conflict.text)["error"], "WORKSPACE_ORDER_CONFLICT");
+        EXPECT_TRUE(json::parse(conflict.text)["message"].is_string());
+    }
+    acecode::desktop::WorkspaceRegistry restarted;
+    restarted.scan(fx.projects_dir.string());
+    ASSERT_EQ(restarted.list().size(), 2u);
+    EXPECT_EQ(restarted.list()[0].hash, second);
+    EXPECT_EQ(restarted.list()[1].hash, first);
+
+    ASSERT_TRUE(restarted.hide(fx.projects_dir.string(), second));
+    EXPECT_EQ(save(json{{"hashes", expected}}.dump()).status_code, 409);
+    const auto visible = save(json{{"hashes", {first}}}.dump());
+    EXPECT_EQ(visible.status_code, 200) << visible.text;
+    std::filesystem::create_directory(fx.projects_dir / "workspace_order.json.tmp");
+    const auto failed = save(json{{"hashes", {first}}}.dump());
+    ASSERT_EQ(failed.status_code, 500) << failed.text;
+    EXPECT_EQ(json::parse(failed.text)["error"], "PERSIST_FAILED");
+    EXPECT_TRUE(json::parse(failed.text)["message"].is_string());
+}
+
+// 场景:「编辑项目」对话框经 PUT /api/workspaces/:hash 保存名称 + 图标 + 附加文件夹。
+// 期望:200 返回新 workspace;GET /api/workspaces 带 icon / extra_folders;默认图标
+// (icon:null)时字段为 null;缺省 extra_folders 保持原值;非法附加文件夹 400 且不写盘;
+// 未知 hash 404。/api/workspaces/order 这条静态路由不被 <string> 路由抢走。
+TEST(WebServerHttp, WorkspaceProfileUpdateRoundTrips) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto extra = fx.tmp_dir / "extra-folder";
+    std::filesystem::create_directories(extra);
+    const std::string extra_path = acecode::path_to_utf8(extra);
+    auto put = [&](const std::string& target, const json& body) {
+        return cpr::Put(cpr::Url{fx.url("/api/workspaces/" + target)},
+                        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body.dump()});
+    };
+
+    const auto saved = put(hash, {{"name", "  renamed  "},
+                                  {"icon", {{"id", "music"}, {"color", "blue"}}},
+                                  {"extra_folders", {extra_path}}});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto body = json::parse(saved.text);
+    EXPECT_EQ(body["name"], "renamed");
+    EXPECT_EQ(body["icon"]["id"], "music");
+    EXPECT_EQ(body["extra_folders"], json::array({extra_path}));
+
+    const auto listed = json::parse(cpr::Get(cpr::Url{fx.url("/api/workspaces")}).text);
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed[0]["icon"]["color"], "blue");
+    EXPECT_EQ(listed[0]["extra_folders"], json::array({extra_path}));
+
+    // 只改名称与图标(恢复默认)时,附加文件夹保持原值。
+    const auto reset = put(hash, {{"name", "renamed"}, {"icon", nullptr}});
+    ASSERT_EQ(reset.status_code, 200) << reset.text;
+    EXPECT_TRUE(json::parse(reset.text)["icon"].is_null());
+    EXPECT_EQ(json::parse(reset.text)["extra_folders"], json::array({extra_path}));
+
+    const auto missing = put(hash, {{"name", "renamed"},
+        {"extra_folders", {acecode::path_to_utf8(fx.tmp_dir / "does-not-exist")}}});
+    ASSERT_EQ(missing.status_code, 400) << missing.text;
+    EXPECT_EQ(json::parse(missing.text)["error"], "BAD_REQUEST");
+    EXPECT_EQ(fx.workspace_registry->get(hash)->extra_folders,
+              (std::vector<std::string>{extra_path}));
+
+    EXPECT_EQ(put(hash, {{"name", ""}}).status_code, 400);
+    EXPECT_EQ(put(hash, {{"icon", {{"id", "music"}}}}).status_code, 400);
+    EXPECT_EQ(put("ffffffffffffffff", {{"name", "x"}}).status_code, 404);
+    EXPECT_EQ(put("..%2F..%2Fescape", {{"name", "x"}}).status_code, 404);
+
+    const auto order = cpr::Put(cpr::Url{fx.url("/api/workspaces/order")},
+                                cpr::Header{{"Content-Type", "application/json"}},
+                                cpr::Body{json{{"hashes", {hash}}}.dump()});
+    EXPECT_EQ(order.status_code, 200) << order.text;
+}
+
+// 场景:网页模式(无 Desktop 桥接)在「编辑项目」里点「移除本地项目」。
+// 期望:DELETE /api/workspaces/:hash 只把项目从列表隐藏(workspace.json 仍在,
+// 附加文件夹等字段保留);未知 hash → 404。
+TEST(WebServerHttp, WorkspaceRemoveHidesWithoutDeletingMarker) {
+    WebServerFixture fx;
+    const auto second = fx.workspace_registry->register_new(
+        fx.projects_dir.string(), (fx.tmp_dir / "removable-workspace").string()).hash;
+
+    const auto removed = cpr::Delete(cpr::Url{fx.url("/api/workspaces/" + second)});
+    ASSERT_EQ(removed.status_code, 200) << removed.text;
+    EXPECT_TRUE(json::parse(removed.text)["ok"].get<bool>());
+    const auto listed = json::parse(cpr::Get(cpr::Url{fx.url("/api/workspaces")}).text);
+    for (const auto& workspace : listed) EXPECT_NE(workspace["hash"], second);
+    EXPECT_TRUE(std::filesystem::exists(fx.projects_dir / second / "workspace.json"));
+
+    EXPECT_EQ(cpr::Delete(cpr::Url{fx.url("/api/workspaces/ffffffffffffffff")}).status_code, 404);
+}
+
 // 场景: 共享 daemon 暴露 workspace registry,每个 workspace 有独立 session
 // lifecycle endpoint。创建/列表响应必须携带 workspace_hash/cwd。
 TEST(WebServerHttp, WorkspaceScopedSessionLifecycle) {
@@ -3569,6 +3871,114 @@ TEST(WebServerHttp, WorkspaceScopedSessionLifecycle) {
     EXPECT_EQ(sessions[0]["id"], created["session_id"]);
     EXPECT_EQ(sessions[0]["workspace_hash"], other_hash);
     EXPECT_EQ(sessions[0]["cwd"], other_cwd);
+}
+
+TEST(WebServerHttp, WorktreeSessionPreviewUsesExecutionDirectoryAfterResume) {
+    WebServerFixture fx;
+    const std::string hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({})"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const std::string id = json::parse(create.text).at("session_id").get<std::string>();
+    const auto worktree_dir = fx.cwd_dir / ".acecode" / "worktrees" / ("ses-" + id);
+    std::filesystem::create_directories(worktree_dir);
+    write_text(worktree_dir / "pelican-bicycle.html", "worktree page");
+
+    auto entry = fx.registry->acquire(id);
+    ASSERT_TRUE(entry);
+    ASSERT_EQ(entry->sm->ensure_active_session_id(), id);
+    acecode::WorktreeSessionInfo worktree;
+    worktree.original_cwd = fx.cwd;
+    worktree.worktree_path = acecode::path_to_utf8(worktree_dir);
+    worktree.worktree_name = "ses-" + id;
+    worktree.worktree_branch = "worktree-" + worktree.worktree_name;
+    entry->sm->set_active_worktree(worktree);
+    entry->loop->set_cwd(worktree.worktree_path);
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.content = "create pelican bicycle page";
+    message.uuid = "worktree-user";
+    entry->sm->on_message(message);
+    entry.reset();
+
+    const auto list = cpr::Get(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")});
+    ASSERT_EQ(list.status_code, 200) << list.text;
+    const auto active = json::parse(list.text);
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0]["cwd"], fx.cwd);
+    EXPECT_EQ(active[0]["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(active[0]["worktree"]["path"], worktree.worktree_path);
+
+    cpr::Response catalog_response;
+    json catalog;
+    const auto catalog_deadline = std::chrono::steady_clock::now() + 3s;
+    do {
+        catalog_response = cpr::Get(
+            cpr::Url{fx.url("/api/session-search/sessions")},
+            cpr::Parameters{{"request_id", "worktree-preview-root"}});
+        ASSERT_EQ(catalog_response.status_code, 200) << catalog_response.text;
+        catalog = json::parse(catalog_response.text);
+        if (catalog["progress"].value("complete", false)) break;
+        std::this_thread::sleep_for(5ms);
+    } while (std::chrono::steady_clock::now() < catalog_deadline);
+    ASSERT_TRUE(catalog["progress"].value("complete", false)) << catalog_response.text;
+    const auto found = std::find_if(catalog["sessions"].begin(),
+                                    catalog["sessions"].end(),
+                                    [&](const auto& item) {
+                                        return item.value("id", std::string{}) == id;
+                                    });
+    ASSERT_NE(found, catalog["sessions"].end());
+    EXPECT_EQ((*found)["cwd"], fx.cwd);
+    EXPECT_EQ((*found)["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ((*found)["worktree"]["path"], worktree.worktree_path);
+
+    const auto active_resume = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(active_resume.status_code, 200) << active_resume.text;
+    const auto resumed_active = json::parse(active_resume.text);
+    EXPECT_EQ(resumed_active["cwd"], fx.cwd);
+    EXPECT_EQ(resumed_active["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(resumed_active["worktree"]["path"], worktree.worktree_path);
+
+    const auto content = cpr::Get(
+        cpr::Url{fx.url("/api/files/content")},
+        cpr::Parameters{{"cwd", resumed_active["working_cwd"].get<std::string>()},
+                        {"path", "pelican-bicycle.html"}});
+    ASSERT_EQ(content.status_code, 200) << content.text;
+    EXPECT_EQ(content.text, "worktree page");
+
+    fx.registry->destroy(id);
+    const auto inactive_list = cpr::Get(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions")});
+    ASSERT_EQ(inactive_list.status_code, 200) << inactive_list.text;
+    const auto inactive = json::parse(inactive_list.text);
+    ASSERT_EQ(inactive.size(), 1u);
+    EXPECT_EQ(inactive[0]["cwd"], fx.cwd);
+    EXPECT_EQ(inactive[0]["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(inactive[0]["worktree"]["path"], worktree.worktree_path);
+
+    const auto restored = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(restored.status_code, 200) << restored.text;
+    EXPECT_EQ(json::parse(restored.text)["working_cwd"], worktree.worktree_path);
+    EXPECT_EQ(json::parse(restored.text)["worktree"]["path"], worktree.worktree_path);
+
+    const auto global_resume = cpr::Post(cpr::Url{
+        fx.url("/api/sessions/" + id + "/resume")});
+    ASSERT_EQ(global_resume.status_code, 200) << global_resume.text;
+    EXPECT_EQ(json::parse(global_resume.text)["working_cwd"], worktree.worktree_path);
+
+    fx.registry->destroy(id);
+    ASSERT_TRUE(std::filesystem::remove(worktree_dir / "pelican-bicycle.html"));
+    ASSERT_TRUE(std::filesystem::remove(worktree_dir));
+    const auto missing_worktree = cpr::Post(cpr::Url{
+        fx.url("/api/workspaces/" + hash + "/sessions/" + id + "/resume")});
+    ASSERT_EQ(missing_worktree.status_code, 200) << missing_worktree.text;
+    const auto recovered = json::parse(missing_worktree.text);
+    EXPECT_EQ(recovered["working_cwd"], fx.cwd);
+    EXPECT_TRUE(recovered["worktree"].is_null());
 }
 
 // 回归(2026-09-11 用户反馈:「新建会话失败:HTTP 500: 500 Internal Server Error」):
@@ -3641,8 +4051,8 @@ TEST(WebServerHttp, SessionRoutesReportEscapedExceptionsAsJson500) {
     const std::vector<Case> cases = {
         {"/api/workspaces/" + hash + "/sessions", "SESSION_CREATE_FAILED", "boom: create"},
         {"/api/sessions", "SESSION_CREATE_FAILED", "boom: create"},
-        {"/api/workspaces/" + hash + "/sessions/20260911-000000-dead/resume",
-         "SESSION_RESUME_FAILED", "boom: resume"},
+        // 无 workspace 归属前置检查的 resume 直达 SessionClient,ThrowingSessionClient
+        // 抛异常应被转成带原因的 JSON 500。
         {"/api/sessions/20260911-000000-dead/resume",
          "SESSION_RESUME_FAILED", "boom: resume"},
     };
@@ -3658,6 +4068,18 @@ TEST(WebServerHttp, SessionRoutesReportEscapedExceptionsAsJson500) {
             << c.path << ": " << r.text;
         EXPECT_EQ(body.value("cwd", ""), fx.cwd) << c.path;
     }
+
+    // 带 workspace 的 resume 对磁盘上不存在的 session 先做归属校验,直接 404
+    // (引入自“无工作区会话恢复”改动),不会到达 SessionClient,因此不抛 500。
+    auto missing_resume = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions/20260911-000000-dead/resume")},
+        json_header, cpr::Body{R"({})"});
+    EXPECT_EQ(missing_resume.status_code, 404) << missing_resume.text;
+    EXPECT_NE(missing_resume.header["Content-Type"].find("application/json"), std::string::npos)
+        << missing_resume.header["Content-Type"];
+    json missing_body;
+    ASSERT_NO_THROW(missing_body = json::parse(missing_resume.text)) << missing_resume.text;
+    EXPECT_EQ(missing_body.value("error", ""), "session not found") << missing_resume.text;
 }
 
 // 场景:没有路由级 try/catch 的 handler(DELETE /api/sessions/:id 直接调
@@ -6011,6 +6433,53 @@ TEST(WebServerHttp, PostMessageExpandsValidatedSessionReferences) {
         << "valid reference should preserve display text and expand model context";
 }
 
+TEST(WebServerHttp, RetryLastUserMessageValidatesRequestAndPreservesInput) {
+    WebServerFixture fx;
+    const auto created = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{R"({})"});
+    ASSERT_EQ(created.status_code, 201) << created.text;
+    const auto sid = json::parse(created.text)["session_id"].get<std::string>();
+    auto post = [&](const std::string& body) {
+        return cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages/retry")},
+            cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{body});
+    };
+    for (const auto& body : {"{", "[]", "{}",
+         R"({"expected_user_message_id":1})", R"({"expected_user_message_id":""})",
+         R"({"expected_user_message_id":"user-1","text":"new input"})"}) {
+        EXPECT_EQ(post(body).status_code, 400) << body;
+    }
+    const auto request = R"({"expected_user_message_id":"retry-http-user"})";
+    EXPECT_EQ(post(request).status_code, 409);
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto provider = std::make_shared<acecode_test::StubLlmProvider>();
+    provider->push_text("retried");
+    provider->set_latency_ms(150);
+    install_test_provider(*entry, provider);
+    acecode::ChatMessage user;
+    user.role = "user";
+    user.uuid = "retry-http-user";
+    user.content = "original input";
+    entry->loop->push_message(user);
+    entry->sm->on_message(user);
+    EXPECT_EQ(post(R"({"expected_user_message_id":"stale"})").status_code, 409);
+    const auto accepted = post(request);
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    EXPECT_EQ(json::parse(accepted.text)["user_message_id"], user.uuid);
+    EXPECT_EQ(post(request).status_code, 409);
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (entry->loop->has_pending_work() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_FALSE(entry->loop->has_pending_work());
+    EXPECT_EQ(provider->turn_count(), 1);
+    const auto messages = entry->sm->load_active_messages();
+    EXPECT_EQ(std::count_if(messages.begin(), messages.end(), [](const auto& message) {
+        return message.role == "user";
+    }), 1);
+    EXPECT_EQ(post(request).status_code, 409);
+}
+
 TEST(WebServerHttp, TurnSteerValidatesIdentityAndCommitsAcceptedInput) {
     WebServerFixture fx;
     auto create = cpr::Post(
@@ -7466,11 +7935,111 @@ TEST(WebServerHttp, McpPutThenGetRoundtrip) {
     EXPECT_EQ(j["test-server"]["command"], "/usr/bin/python3");
 }
 
-// 场景: POST /api/mcp/reload 返回 501(v1 未实装,spec 9.9 文档化的限制)。
-TEST(WebServerHttp, McpReloadIsNotImplemented) {
+// A fixture without an MCP runtime cannot apply a reload.
+TEST(WebServerHttp, McpReloadReportsUnavailableWithoutRuntime) {
     WebServerFixture fx;
     auto r = cpr::Post(cpr::Url{fx.url("/api/mcp/reload")});
-    EXPECT_EQ(r.status_code, 501);
+    EXPECT_EQ(r.status_code, 503);
+}
+
+TEST(WebServerHttp, McpSchemaRejectionPreservesSavedAndRuntimeConfiguration) {
+    WebServerFixture fx;
+    const json valid = {{"secure", {{"transport", "http"}, {"url", "https://example.test"},
+                                    {"auth_token", "sensitive-token"}}}};
+    auto saved = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{valid.dump()});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto before = read_text(fx.tmp_dir / "config.json");
+    const auto backup = read_text(fx.tmp_dir / "config.json.mcp-last-good");
+    auto invalid = valid;
+    invalid["secure"]["timeout_seconds"] = "sensitive-invalid-value";
+    auto rejected = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{invalid.dump()});
+    ASSERT_EQ(rejected.status_code, 400) << rejected.text;
+    const auto error = json::parse(rejected.text);
+    EXPECT_EQ(error["error"], "MCP_CONFIG_INVALID");
+    EXPECT_EQ(error["errors"][0]["path"], "/secure/timeout_seconds");
+    EXPECT_TRUE(error["schema"].is_object());
+    EXPECT_EQ(rejected.text.find("sensitive-"), std::string::npos);
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json"), before);
+    EXPECT_EQ(read_text(fx.tmp_dir / "config.json.mcp-last-good"), backup);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("secure").auth_token, "sensitive-token");
+    const auto schema = cpr::Get(cpr::Url{fx.url("/api/mcp/schema")});
+    ASSERT_EQ(schema.status_code, 200);
+    EXPECT_EQ(json::parse(schema.text)["schema"], error["schema"]);
+    const auto read = cpr::Get(cpr::Url{fx.url("/api/mcp")});
+    ASSERT_EQ(read.status_code, 200);
+    EXPECT_EQ(read.text.find("sensitive-token"), std::string::npos);
+    const auto roundtrip = cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{read.text});
+    EXPECT_EQ(roundtrip.status_code, 200);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("secure").auth_token, "sensitive-token");
+}
+
+TEST(WebServerHttp, ProjectMcpEditsAreIndependentOfGlobalAndUnknownWorkspaceIsRejected) {
+    WebServerFixture fx;
+    const auto workspace = fx.workspace_registry->list().front();
+    std::filesystem::create_directories(acecode::path_from_utf8(workspace.cwd) / ".git");
+    const auto project_url = fx.url("/api/mcp?workspace=" + workspace.hash);
+    const json global = {{"same", {{"command", "global-command"}}}};
+    const json project = {{"same", {{"command", "project-command"}}}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{global.dump()}).status_code, 200);
+    ASSERT_EQ(cpr::Put(cpr::Url{project_url}, cpr::Body{project.dump()}).status_code, 200);
+    const auto found = cpr::Get(cpr::Url{project_url});
+    ASSERT_EQ(found.status_code, 200);
+    EXPECT_EQ(json::parse(found.text)["same"]["command"], "project-command");
+    EXPECT_EQ(fx.cfg.mcp_servers.at("same").command, "global-command");
+    auto invalid = cpr::Put(cpr::Url{project_url}, cpr::Body{R"({"same":{"args":5}})"});
+    EXPECT_EQ(invalid.status_code, 400);
+    EXPECT_TRUE(json::parse(invalid.text)["schema"].is_object());
+    auto toggle = cpr::Post(cpr::Url{fx.url("/api/mcp/toggle?workspace=" + workspace.hash)},
+                           cpr::Body{R"({"name":"same","enabled":false})"});
+    ASSERT_EQ(toggle.status_code, 200) << toggle.text;
+    EXPECT_FALSE(fx.cfg.mcp_servers.at("same").disabled);
+    EXPECT_TRUE(json::parse(cpr::Get(cpr::Url{project_url}).text)["same"]["disabled"]);
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp?workspace=missing")}, cpr::Body{project.dump()}).status_code, 404);
+}
+
+TEST(WebServerHttp, McpFailedPersistenceDoesNotPublishCandidateOrToggle) {
+    WebServerFixture fx;
+    const json initial = {{"x", {{"command", "original"}}}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")}, cpr::Body{initial.dump()}).status_code, 200);
+    std::filesystem::remove(fx.tmp_dir / "config.json");
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    EXPECT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")},
+        cpr::Body{R"({"x":{"command":"replacement"}})"}).status_code, 500);
+    EXPECT_EQ(fx.cfg.mcp_servers.at("x").command, "original");
+    EXPECT_EQ(cpr::Post(cpr::Url{fx.url("/api/mcp/toggle")},
+        cpr::Body{R"({"name":"x","enabled":false})"}).status_code, 500);
+    EXPECT_FALSE(fx.cfg.mcp_servers.at("x").disabled);
+}
+
+TEST(WebServerHttp, ProjectMcpReplacementRepairsInvalidDocumentAndCatalogUsesProjectOverride) {
+    WebServerFixture fx;
+    const auto workspace = fx.workspace_registry->list().front();
+    const auto root = acecode::path_from_utf8(workspace.cwd);
+    std::filesystem::create_directories(root / ".git");
+    std::filesystem::create_directories(root / ".acecode");
+    { std::ofstream out(root / ".acecode" / "mcp.json"); out << "{broken"; }
+    const auto url = fx.url("/api/mcp?workspace=" + workspace.hash);
+    auto invalid = cpr::Get(cpr::Url{url});
+    ASSERT_EQ(invalid.status_code, 400);
+    EXPECT_TRUE(json::parse(invalid.text)["schema"].is_object());
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url("/api/mcp")},
+        cpr::Body{R"({"same":{"command":"global"},"inherited":{"command":"shared"}})"}).status_code, 200);
+    ASSERT_EQ(cpr::Put(cpr::Url{url},
+        cpr::Body{R"({"same":{"transport":"http","url":"https://project.test","disabled":true}})"}).status_code, 200);
+    const auto catalog = cpr::Get(cpr::Url{fx.url("/api/experts/capabilities?workspace=" + workspace.hash)});
+    ASSERT_EQ(catalog.status_code, 200) << catalog.text;
+    const auto rows = json::parse(catalog.text)["mcp_servers"];
+    ASSERT_EQ(rows.size(), 2u);
+    for (const auto& row : rows) {
+        if (row["id"] == "same") {
+            EXPECT_EQ(row["source"], "project");
+            EXPECT_EQ(row["transport"], "http");
+            EXPECT_FALSE(row["default_enabled"].get<bool>());
+        } else {
+            EXPECT_EQ(row["id"], "inherited");
+            EXPECT_EQ(row["source"], "global");
+        }
+    }
 }
 
 // 场景: POST /api/mcp/toggle 翻转某 server 的启用态。fixture 未挂 McpManager,
@@ -7764,6 +8333,42 @@ TEST(WebServerHttp, UiPreferencesSidebarSessionTimeRejectsNonBoolean) {
                         cpr::Body{req.dump()});
     EXPECT_EQ(put.status_code, 400) << put.text;
     EXPECT_TRUE(fx.cfg.web_ui.sidebar_session_time);
+}
+
+// 消息折叠偏好独立更新，后续外观修改必须保留关闭值；无效值整笔拒绝。
+TEST(WebServerHttp, UiPreferencesMessageAutoCollapseRoundTrips) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/ui-preferences")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    EXPECT_EQ(json::parse(cpr::Get(url).text)["message_auto_collapse"], true);
+    auto disabled = cpr::Put(url, headers, cpr::Body{R"({"message_auto_collapse":false})"});
+    ASSERT_EQ(disabled.status_code, 200) << disabled.text;
+    EXPECT_EQ(json::parse(disabled.text)["message_auto_collapse"], false);
+    EXPECT_FALSE(fx.cfg.web_ui.message_auto_collapse);
+    auto other = cpr::Put(url, headers, cpr::Body{R"({"font_size":"large"})"});
+    ASSERT_EQ(other.status_code, 200) << other.text;
+    EXPECT_EQ(json::parse(other.text)["message_auto_collapse"], false);
+    const auto saved = acecode::load_config_from_path((fx.tmp_dir / "config.json").u8string());
+    EXPECT_FALSE(saved.web_ui.message_auto_collapse);
+    EXPECT_EQ(saved.web_ui.font_size, "large");
+    auto invalid = cpr::Put(url, headers,
+        cpr::Body{R"({"message_auto_collapse":"true","font_size":"small"})"});
+    EXPECT_EQ(invalid.status_code, 400) << invalid.text;
+    EXPECT_FALSE(fx.cfg.web_ui.message_auto_collapse);
+    EXPECT_EQ(fx.cfg.web_ui.font_size, "large");
+    auto enabled = cpr::Put(url, headers, cpr::Body{R"({"message_auto_collapse":true})"});
+    ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+    EXPECT_TRUE(fx.cfg.web_ui.message_auto_collapse);
+}
+
+TEST(WebServerHttp, UiPreferencesMessageAutoCollapseRollsBackOnSaveFailure) {
+    WebServerFixture fx;
+    std::filesystem::create_directories(fx.tmp_dir / "config.json");
+    auto response = cpr::Put(cpr::Url{fx.url("/api/config/ui-preferences")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"message_auto_collapse":false})"});
+    EXPECT_EQ(response.status_code, 500) << response.text;
+    EXPECT_TRUE(fx.cfg.web_ui.message_auto_collapse);
 }
 
 TEST(WebServerHttp, PutUiPreferencesPartialUpdatePreservesOtherAppearanceFields) {
@@ -8566,6 +9171,79 @@ TEST(WebServerHttp, DesktopFeedbackMaterializesEmptySelectedSession) {
     std::filesystem::remove(received_zip, ec);
 }
 
+// 触发场景:用户在反馈弹窗的「最近会话记录」里选中侧栏「任务」区的会话。
+// 这类会话是 no_workspace 会话:JSONL 落在 cache/no-workspace/<id>/ 推导出的
+// 项目目录下,不属于任何 workspace,列表接口给它下发的 workspace_hash 恒为空串。
+// 期望行为:列表能看到它(空 hash + no_workspace=true);用同样的空 hash 提交
+// 反馈返回 200,包里带 session/<sid>.jsonl,feedback.json 的 workspace_hash 为空串。
+// 回归:修复前 find_selected_session 只枚举 workspace 项目目录,这类会话一律
+// 404「session JSONL not found」,大量用户提交日志失败(线上会话
+// 20260923-170433-bd13 复现)。
+TEST(WebServerHttp, DesktopFeedbackUploadsNoWorkspaceSessionTranscript) {
+    const std::string sid = "20260923-170433-bd13";
+    std::filesystem::path received_zip;
+    LocalUpdateServer upload_server([&](httplib::Server& s) {
+        s.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
+            auto file = req.get_file_value("file");
+            received_zip = std::filesystem::temp_directory_path() /
+                           ("acecode_desktop_feedback_no_workspace_" +
+                            std::to_string(std::chrono::steady_clock::now()
+                                               .time_since_epoch()
+                                               .count()) + ".zip");
+            write_text(received_zip, file.content);
+            res.set_content(R"({"success":true})", "application/json");
+        });
+    });
+
+    WebServerFixture fx;
+    fx.cfg.upgrade.base_url = upload_server.base_url();
+    const std::string session_cwd =
+        acecode::no_workspace_session_cwd(sid, fx.no_workspace_cache_root.string());
+    std::filesystem::create_directories(path_from_utf8(session_cwd));
+    const std::string project_dir = acecode::SessionStorage::get_project_dir(session_cwd);
+    write_text(path_from_utf8(acecode::SessionStorage::session_path(project_dir, sid)),
+               "{\"role\":\"user\",\"content\":\"no workspace\"}\n");
+    acecode::SessionMeta meta;
+    meta.id = sid;
+    meta.cwd = session_cwd;
+    meta.no_workspace = true;
+    meta.title = "task session";
+    meta.created_at = "2026-09-23T17:04:33Z";
+    meta.updated_at = "2026-09-23T17:05:24Z";
+    acecode::SessionStorage::write_meta(
+        acecode::SessionStorage::meta_path(project_dir, sid), meta);
+    // 这类会话不在任何 workspace 的项目目录里 —— 修复前就是这一点让查找扑空。
+    ASSERT_FALSE(std::filesystem::exists(path_from_utf8(
+        acecode::SessionStorage::session_path(fx.project_dir, sid))));
+
+    auto listed = cpr::Get(cpr::Url{fx.url("/api/feedback/desktop/recent-sessions?limit=5")});
+    ASSERT_EQ(listed.status_code, 200) << listed.text;
+    auto sessions = json::parse(listed.text)["sessions"];
+    auto it = std::find_if(sessions.begin(), sessions.end(), [&](const json& item) {
+        return item.value("id", std::string{}) == sid;
+    });
+    ASSERT_NE(it, sessions.end()) << listed.text;
+    EXPECT_EQ((*it)["workspace_hash"], "");
+    EXPECT_EQ((*it)["no_workspace"], true);
+
+    auto r = cpr::Post(cpr::Url{fx.url("/api/feedback/desktop")},
+                       cpr::Header{{"Content-Type", "application/json"}},
+                       cpr::Body{json{{"feedback_text", "task session feedback"},
+                                      {"session_id", sid},
+                                      {"workspace_hash", ""}}.dump()});
+    ASSERT_EQ(r.status_code, 200) << r.text;
+    auto body = json::parse(r.text);
+    EXPECT_EQ(body["selected_session_id"], sid);
+    EXPECT_EQ(body["workspace_hash"], "");
+    EXPECT_EQ(read_zip_entry(received_zip, "session/" + sid + ".jsonl"),
+              "{\"role\":\"user\",\"content\":\"no workspace\"}\n");
+    auto metadata = json::parse(read_zip_entry(received_zip, "feedback.json"));
+    EXPECT_EQ(metadata["selected_session_id"], sid);
+    EXPECT_EQ(metadata["workspace_hash"], "");
+    std::error_code ec;
+    std::filesystem::remove(received_zip, ec);
+}
+
 TEST(WebServerHttp, DesktopFeedbackSucceedsWithoutDesktopLog) {
     std::filesystem::path received_zip;
     LocalUpdateServer upload_server([&](httplib::Server& s) {
@@ -8906,11 +9584,131 @@ TEST(WebServerHttp, FailedUpdateJobCanBeRetried) {
     EXPECT_NE(read_text(log_path).find(retry_id), std::string::npos);
 }
 
+TEST(WebServerHttp, ComputerUseSettingsPersistAndRevokeToolsLive) {
+    struct RevokeComputerUse {
+        ~RevokeComputerUse() { acecode::computer_use::set_enabled(false); }
+    } revoke;
+    acecode::computer_use::set_enabled(false);
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const auto initial = cpr::Get(url);
+    ASSERT_EQ(initial.status_code, 200);
+    const auto snapshot = json::parse(initial.text);
+    EXPECT_FALSE(snapshot["enabled"].get<bool>());
+    EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+    ASSERT_TRUE(snapshot["availability"].is_object());
+    EXPECT_EQ(snapshot["availability"]["supported"], snapshot["supported"]);
+    EXPECT_TRUE(snapshot["availability"]["ready"].is_boolean());
+    EXPECT_EQ(initial.header.at("Cache-Control"), "no-store");
+    const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);
+    EXPECT_EQ(cpr::Put(url, cpr::Header{{"Origin", origin}},
+        cpr::Body{R"({"enabled":true})"}).status_code, 401);
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin},
+        {"X-ACECode-Token", "smoke-token"}}).status_code, 200);
+
+    EXPECT_EQ(snapshot["pointer_style"], "ace");
+    EXPECT_EQ(snapshot["pointer_color"], "#2563eb");
+    const auto styled = cpr::Put(url, headers, cpr::Body{R"({"pointer_style":"plain"})"});
+    ASSERT_EQ(styled.status_code, 200) << styled.text;
+    EXPECT_EQ(json::parse(styled.text)["pointer_style"], "plain");
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    const auto recolored = cpr::Put(url, headers, cpr::Body{R"({"pointer_color":"#AbCdEF"})"});
+    ASSERT_EQ(recolored.status_code, 200) << recolored.text;
+    EXPECT_EQ(json::parse(recolored.text)["pointer_style"], "plain");
+    EXPECT_EQ(json::parse(recolored.text)["pointer_color"], "#abcdef");
+    EXPECT_FALSE(json::parse(recolored.text)["enabled"].get<bool>());
+    const auto configured = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    EXPECT_FALSE(configured.computer_use.enabled);
+    EXPECT_EQ(configured.computer_use.pointer_style, "plain");
+    EXPECT_EQ(configured.computer_use.pointer_color, "#abcdef");
+
+    const auto enabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":true})"});
+    if (acecode::computer_use::supported()) {
+        ASSERT_EQ(enabled.status_code, 200) << enabled.text;
+        EXPECT_TRUE(snapshot["supported"].get<bool>());
+        EXPECT_TRUE(fx.cfg.computer_use.enabled);
+        EXPECT_TRUE(acecode::computer_use::enabled());
+        EXPECT_TRUE(fx.tools.has_tool("computer_list_windows"));
+        EXPECT_TRUE(fx.tools.has_tool("computer_click"));
+        auto disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+        EXPECT_TRUE(disk.computer_use.enabled);
+        disk.ui.locale = "en-US";
+        acecode::save_config(disk, (fx.tmp_dir / "config.json").string());
+        const auto disabled = cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"});
+        ASSERT_EQ(disabled.status_code, 200) << disabled.text;
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(acecode::computer_use::enabled());
+        EXPECT_FALSE(fx.tools.has_tool("computer_list_windows"));
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+        disk = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+        EXPECT_FALSE(disk.computer_use.enabled);
+        EXPECT_EQ(disk.ui.locale, "en-US");
+        EXPECT_EQ(disk.computer_use.pointer_style, "plain");
+        EXPECT_EQ(disk.computer_use.pointer_color, "#abcdef");
+    } else {
+        EXPECT_EQ(enabled.status_code, 400);
+        EXPECT_EQ(json::parse(enabled.text)["error"], "COMPUTER_USE_PLATFORM_UNSUPPORTED");
+        EXPECT_FALSE(snapshot["supported"].get<bool>());
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+        EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 200);
+    }
+}
+
+TEST(WebServerHttp, ComputerUseRejectsInvalidAndFailedWritesWithoutEnablingTools) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    for (const auto* patch : {"{", "[]", R"({"enabled":"yes"})",
+        R"({"enabled":1})", R"({"enabled":false,"supported":true})",
+        R"({"pointer_style":"invalid"})", R"({"pointer_color":"red"})"}) {
+        EXPECT_EQ(cpr::Put(url, headers, cpr::Body{patch}).status_code, 400);
+        EXPECT_FALSE(fx.cfg.computer_use.enabled);
+        EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+    }
+    std::filesystem::create_directory(fx.tmp_dir / "config.json");
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"enabled":false})"}).status_code, 500);
+    EXPECT_EQ(cpr::Put(url, headers, cpr::Body{R"({"pointer_style":"plain","pointer_color":"#abcdef"})"}).status_code, 500);
+    EXPECT_EQ(fx.cfg.computer_use.pointer_style, "ace");
+    EXPECT_EQ(fx.cfg.computer_use.pointer_color, "#2563eb");
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+}
+
+TEST(WebServerHttp, ComputerUsePermissionRequestsRequireAuthenticationAndOneKnownPermission) {
+    WebServerFixture fx;
+    const auto url = cpr::Url{fx.url("/api/config/computer-use/permissions")};
+    const cpr::Header headers{{"Content-Type", "application/json"}};
+    const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
+    // This valid permission name must be rejected before reaching the native
+    // permission prompt. Automated tests never request real TCC authorization.
+    EXPECT_EQ(cpr::Post(url, cpr::Header{{"Origin", origin}},
+        cpr::Body{R"({"permission":"accessibility"})"}).status_code, 401);
+    for (const auto* body : {"{", "[]", "{}", R"({"permission":true})",
+        R"({"permission":"camera"})", R"({"permission":"accessibility","enabled":true})"}) {
+        const auto response = cpr::Post(url, headers, cpr::Body{body});
+        EXPECT_EQ(response.status_code, 400) << body;
+        EXPECT_EQ(json::parse(response.text)["error"], "COMPUTER_USE_INVALID_PERMISSION");
+    }
+    EXPECT_FALSE(fx.cfg.computer_use.enabled);
+    EXPECT_FALSE(fx.tools.has_tool("computer_click"));
+}
+
 TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     std::atomic<bool> requested_summary_model{false};
+    std::atomic<bool> requested_chinese_title{false};
+    std::atomic<bool> requested_english_title{false};
     LocalUpdateServer summary_upstream([&](httplib::Server& server) {
         server.Post("/v1/chat/completions", [&](const httplib::Request& request, httplib::Response& response) {
-            requested_summary_model = json::parse(request.body).value("model", "") == "small-local";
+            const auto body = json::parse(request.body);
+            requested_summary_model = body.value("model", "") == "small-local";
+            const auto prompt = body.at("messages").at(0).value("content", std::string{});
+            requested_chinese_title = prompt.find("Simplified Chinese (zh-CN)") != std::string::npos;
+            requested_english_title = prompt.find("English (en-US)") != std::string::npos;
             response.set_content(json{{"choices", json::array({
                 {{"message", {{"role", "assistant"}, {"content", "Local summary title"}}},
                  {"finish_reason", "stop"}}
@@ -8919,6 +9717,7 @@ TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     });
     WebServerFixture fx;
     const auto url = cpr::Url{fx.url("/api/config/summary-generation")};
+    const auto locale_url = cpr::Url{fx.url("/api/config/ui-locale")};
     const cpr::Header headers{{"Content-Type", "application/json"}};
     const auto initial = cpr::Get(url);
     ASSERT_EQ(initial.status_code, 200);
@@ -8940,9 +9739,19 @@ TEST(WebServerHttp, SummaryGenerationSettingsPersistAndControlTitleModelLive) {
     EXPECT_EQ(selected->model, "small-local");
     auto provider = acecode::create_auto_title_provider(*selected, fx.cfg);
     ASSERT_NE(provider, nullptr);
-    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "Summarize this session", fx.cfg),
+    ASSERT_EQ(cpr::Put(locale_url, headers, cpr::Body{R"({"locale":"zh-CN"})"}).status_code, 200);
+    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "你好", fx.cfg),
         "Local summary title");
     EXPECT_TRUE(requested_summary_model.load());
+    EXPECT_TRUE(requested_chinese_title.load());
+    EXPECT_FALSE(requested_english_title.load());
+
+    ASSERT_EQ(cpr::Put(locale_url, headers, cpr::Body{R"({"locale":"en-US"})"}).status_code, 200);
+    EXPECT_EQ(acecode::generate_auto_session_title(*provider, "你好", fx.cfg),
+        "Local summary title");
+    EXPECT_TRUE(requested_summary_model.load());
+    EXPECT_FALSE(requested_chinese_title.load());
+    EXPECT_TRUE(requested_english_title.load());
 
     const std::string origin = "http://127.0.0.1:" + std::to_string(fx.port + 1);
     EXPECT_EQ(cpr::Get(url, cpr::Header{{"Origin", origin}}).status_code, 401);
@@ -10391,6 +11200,112 @@ TEST(WebServerHttp, ToolRewritesRoundTripPersistsJsonAndAppliesToProcess) {
 }
 
 
+TEST(WebServerHttp, SavedModelReasoningSyncStartupSaveAndRefreshAreAsynchronous) {
+    std::atomic<int> requests{0};
+    std::atomic<bool> blocked{true};
+    std::atomic<bool> fail{false};
+    std::atomic<bool> extra_effort{false};
+    LocalUpdateServer upstream([&](httplib::Server& http) {
+        http.Get("/models", [&](const httplib::Request&, httplib::Response& res) {
+            ++requests;
+            const auto deadline = std::chrono::steady_clock::now() + 4s;
+            while (blocked.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(5ms);
+            if (fail.load()) { res.status = 503; return; }
+            json efforts = {"low", "high"};
+            if (extra_effort.load()) efforts.push_back("max");
+            res.set_content(json{{"data", {
+                {{"id", "moonlight"}, {"reasoning", {
+                    {"supported_efforts", efforts}, {"default_effort", "low"}}}},
+                {{"id", "starrylight"}, {"reasoning", {
+                    {"supported_efforts", efforts}, {"default_effort", "high"}}}}
+            }}}.dump(), "application/json");
+        });
+    });
+    WebServerFixture fx(WebServerFixture::ReasoningSyncTag{}, [&](acecode::AppConfig& cfg) {
+        for (const auto& id : {"moonlight", "starrylight"}) {
+            acecode::ModelProfile p;
+            p.name = id;
+            p.provider = "openai";
+            p.model = id;
+            p.base_url = upstream.base_url();
+            p.api_key = "local-test";
+            p.capabilities_source = "manual";
+            p.capabilities = {"vision"};
+            cfg.saved_models.push_back(p);
+        }
+    });
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto list = [&] {
+        return json::parse(cpr::Get(cpr::Url{fx.url("/api/models")}, cpr::Timeout{1000}).text);
+    };
+    const auto model = [&](const std::string& name) {
+        for (const auto& p : list()) if (p["name"] == name) return p;
+        return json::object();
+    };
+    const auto wait_efforts = [&](const std::string& name, std::size_t count) {
+        const auto deadline = std::chrono::steady_clock::now() + 4s;
+        do {
+            const auto p = model(name);
+            if (p.contains("reasoning") &&
+                p["reasoning"]["supported_efforts"].size() == count) return true;
+            std::this_thread::sleep_for(10ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    // HTTP startup completes while /models is still blocked.
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/health")}, cpr::Timeout{1000}).status_code, 200);
+    EXPECT_FALSE(model("moonlight").contains("reasoning"));
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("moonlight", 2));
+    ASSERT_TRUE(wait_efforts("starrylight", 2));
+    EXPECT_EQ(requests.load(), 1);
+    auto persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    const auto saved = std::find_if(persisted.saved_models.begin(), persisted.saved_models.end(),
+        [](const auto& p) { return p.name == "moonlight"; });
+    ASSERT_NE(saved, persisted.saved_models.end());
+    ASSERT_TRUE(saved->reasoning);
+    EXPECT_EQ(saved->reasoning->supported_efforts.size(), 2u);
+
+    // Saving returns before its new background request can finish.
+    blocked.store(true);
+    extra_effort.store(true);
+    auto edited = model("moonlight");
+    edited["context_window"] = 64000;
+    auto response = cpr::Put(cpr::Url{fx.url("/api/models/moonlight")}, headers,
+                            cpr::Body{edited.dump()}, cpr::Timeout{1000});
+    ASSERT_EQ(response.status_code, 200) << response.text;
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("moonlight", 3));
+    EXPECT_EQ(model("moonlight")["context_window"], 64000);
+    EXPECT_EQ(model("starrylight")["reasoning"]["supported_efforts"].size(), 2u);
+
+    // Manual refresh queues all profiles immediately and fills the remaining one.
+    blocked.store(true);
+    response = cpr::Post(cpr::Url{fx.url("/api/models/reasoning/refresh")}, headers,
+                         cpr::Body{"{}"}, cpr::Timeout{1000});
+    ASSERT_EQ(response.status_code, 202) << response.text;
+    blocked.store(false);
+    ASSERT_TRUE(wait_efforts("starrylight", 3));
+
+    const auto baseline = model("moonlight");
+    fail.store(true);
+    const int before_failed_request = requests.load();
+    response = cpr::Post(cpr::Url{fx.url("/api/models/reasoning/refresh")}, headers,
+                         cpr::Body{"{}"}, cpr::Timeout{1000});
+    EXPECT_EQ(response.status_code, 202);
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (requests.load() == before_failed_request && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(10ms);
+    fx.server->stop(); // joins the failed request before checking the preserved file
+    persisted = acecode::load_config_from_path((fx.tmp_dir / "config.json").string(), false);
+    const auto after = std::find_if(persisted.saved_models.begin(), persisted.saved_models.end(),
+        [](const auto& p) { return p.name == "moonlight"; });
+    ASSERT_NE(after, persisted.saved_models.end());
+    EXPECT_EQ(after->reasoning->supported_efforts.size(), 3u);
+    EXPECT_EQ(after->context_window, 64000);
+}
+
 TEST(WebServerHttp, ModelProbeReasoningSurvivesCacheAndRemovedDeclaration) {
     std::atomic<bool> declared{true};
     std::atomic<int> requests{0};
@@ -10538,6 +11453,98 @@ TEST(WebServerHttp, WorkspaceReasoningCreationAndBusyMutation) {
     EXPECT_EQ(json::parse(busy.text)["error"], "SESSION_BUSY");
     EXPECT_EQ(entry->model_binding->state_snapshot().reasoning_effort, "high");
     EXPECT_EQ(entry->model_binding->provider_snapshot(), blocker);
+}
+
+TEST(WebServerHttp, WorkspaceHomeDraftPersistsWithoutCreatingASession) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto get = [&] { return cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000}); };
+    const auto empty = get();
+    ASSERT_EQ(empty.status_code, 200) << empty.text;
+    EXPECT_EQ(json::parse(empty.text)["text"], "");
+
+    const json content{{"version", 1}, {"parts", json::array({
+        {{"type", "text"}, {"text", "draft\n"}},
+        {{"type", "path"}, {"path", "src/main.cpp"}, {"token", "@src/main.cpp"}}
+    })}};
+    const json body{{"text", "stale fallback"}, {"composer_content", content}};
+    auto saved = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{body.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["text"], "draft\n@src/main.cpp");
+    const auto path = fx.projects_dir / hash / "input_draft.json";
+    ASSERT_TRUE(std::filesystem::exists(path));
+    EXPECT_EQ(json::parse(read_text(path))["composer_content"], content);
+    EXPECT_EQ(json::parse(get().text)["composer_content"], content);
+
+    // Reading persisted state works without an in-memory draft or a session.
+    write_text(path, json{{"text", "restored from disk"}}.dump());
+    EXPECT_EQ(json::parse(get().text)["text"], "restored from disk");
+    EXPECT_TRUE(fx.registry->list_active().empty());
+    const auto sessions = cpr::Get(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Timeout{5000});
+    ASSERT_EQ(sessions.status_code, 200) << sessions.text;
+    EXPECT_TRUE(json::parse(sessions.text).empty());
+
+    const auto invalid = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{R"({"text":42})"}, cpr::Timeout{5000});
+    EXPECT_EQ(invalid.status_code, 400);
+    const auto invalid_content = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{R"({"text":"x","composer_content":{"version":1,"parts":[{"type":"unknown"}]}})"},
+        cpr::Timeout{5000});
+    EXPECT_EQ(invalid_content.status_code, 400);
+    EXPECT_EQ(json::parse(get().text)["text"], "restored from disk");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url("/api/workspaces/unknown/draft")},
+        cpr::Timeout{5000}).status_code, 404);
+}
+
+TEST(WebServerHttp, WorkspaceHomeDraftIsolatesScopesAndClearsOnlyMatchingSubmission) {
+    WebServerFixture fx;
+    const auto other_cwd = fx.tmp_dir / "other";
+    std::filesystem::create_directories(other_cwd);
+    const auto other = fx.workspace_registry->register_new(fx.projects_dir.string(), other_cwd.string());
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto path = [](const std::string& hash) { return "/api/workspaces/" + hash + "/draft"; };
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto put = [&](const std::string& scope, const std::string& text) {
+        return cpr::Put(cpr::Url{fx.url(path(scope))}, headers,
+            cpr::Body{json{{"text", text}}.dump()}, cpr::Timeout{5000});
+    };
+    ASSERT_EQ(put(hash, "newer draft").status_code, 200);
+    ASSERT_EQ(put(other.hash, "other workspace").status_code, 200);
+    ASSERT_EQ(put("__no_workspace__", "no workspace").status_code, 200);
+    const auto clear = [&](const std::string& text) {
+        return cpr::Delete(cpr::Url{fx.url(path(hash))}, headers,
+            cpr::Body{json{{"text", text}}.dump()}, cpr::Timeout{5000});
+    };
+    const auto stale = clear("submitted earlier");
+    ASSERT_EQ(stale.status_code, 200) << stale.text;
+    EXPECT_EQ(json::parse(stale.text)["cleared"], false);
+    EXPECT_EQ(json::parse(stale.text)["text"], "newer draft");
+    const auto accepted = clear("newer draft");
+    ASSERT_EQ(accepted.status_code, 200) << accepted.text;
+    EXPECT_EQ(json::parse(accepted.text)["cleared"], true);
+    EXPECT_EQ(json::parse(read_text(fx.projects_dir / hash / "input_draft.json"))["text"], "");
+    EXPECT_EQ(json::parse(read_text(fx.projects_dir / other.hash / "input_draft.json"))["text"], "other workspace");
+    EXPECT_EQ(json::parse(read_text(fx.no_workspace_cache_root / "input_draft.json"))["text"], "no workspace");
+    EXPECT_TRUE(fx.registry->list_active().empty());
+
+    const json structured{{"text", "@file"}, {"composer_content", {
+        {"version", 1}, {"parts", json::array({
+            {{"type", "path"}, {"path", "a.cpp"}, {"token", "@file"}}
+        })}
+    }}};
+    ASSERT_EQ(cpr::Put(cpr::Url{fx.url(path(hash))}, headers,
+        cpr::Body{structured.dump()}, cpr::Timeout{5000}).status_code, 200);
+    auto changed_reference = structured;
+    changed_reference["composer_content"]["parts"][0]["path"] = "b.cpp";
+    const auto same_text = cpr::Delete(cpr::Url{fx.url(path(hash))}, headers,
+        cpr::Body{changed_reference.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(same_text.status_code, 200) << same_text.text;
+    EXPECT_EQ(json::parse(same_text.text)["cleared"], false);
+    EXPECT_EQ(json::parse(same_text.text)["composer_content"], structured["composer_content"]);
 }
 
 TEST(WebServerHttp, ComposerContentDraftAndMessagePreserveOrderAndRejectMissingAttachments) {
@@ -10703,6 +11710,524 @@ TEST(WebServerHttp, ComposerContentForkRetainsEarlierUploadsAfterSourceAttachmen
         cpr::Body{json{{"text", "review  please"}, {"composer_content", content},
             {"attachments", json::array({json{{"id", copied_id}}})}}.dump()});
     EXPECT_EQ(sent.status_code, 202) << sent.text;
+}
+
+namespace {
+
+// 轮询会话里第 expected_count 条 user 消息(AgentLoop 内存历史),等回合结束。
+std::vector<acecode::ChatMessage> wait_for_user_messages(
+    acecode::SessionEntry& entry, std::size_t expected_count) {
+    std::vector<acecode::ChatMessage> users;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        users.clear();
+        for (const auto& message : entry.loop->messages()) {
+            if (message.role == "user") users.push_back(message);
+        }
+        if (users.size() >= expected_count && !entry.loop->is_busy()) break;
+        std::this_thread::sleep_for(10ms);
+    }
+    return users;
+}
+
+} // namespace
+
+// 触发场景:输入框里手打「分析」,再粘贴一段 200 KiB 的内联粘贴块;顶层 text
+// 故意给一个过期的兼容值 "stale"(旧客户端只会带编辑器文本)。
+// 期望:202;消息正文 = 编辑器文本 + "\n\n" + 粘贴原文(服务端按 composer_content
+// 重算 submission_text,不信顶层 text);metadata.composer_content 保留粘贴块;
+// 落盘的消息与内存一致。
+TEST(WebServerHttp, PastedTextPartBecomesMessageBody) {
+    WebServerFixture fx;
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const std::string block(200 * 1024, 'x');
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "分析"}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", block}},
+    })}};
+    const auto accepted = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "stale"}, {"composer_content", content},
+            {"client_message_id", "pasted-inline"}}.dump()});
+    ASSERT_EQ(accepted.status_code, 202) << accepted.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    EXPECT_EQ(users[0].content, "分析\n\n" + block);
+    EXPECT_FALSE(users[0].metadata.contains("display_text"));
+    ASSERT_TRUE(users[0].metadata.contains("composer_content"));
+    const auto& parts = users[0].metadata["composer_content"]["parts"];
+    ASSERT_EQ(parts.size(), 2u);
+    EXPECT_EQ(parts[1]["type"], "pasted_text");
+    EXPECT_EQ(parts[1]["key"], "paste-1");
+    EXPECT_EQ(parts[1]["text"], block);
+    const auto disk = entry->sm->load_active_messages();
+    ASSERT_FALSE(disk.empty());
+    EXPECT_EQ(disk.front().content, users[0].content);
+    EXPECT_EQ(disk.front().metadata["composer_content"], users[0].metadata["composer_content"]);
+}
+
+// 触发场景:编辑器为空,只粘贴了一段以「/<已注册 skill>」开头的材料(比如一段
+// 聊天记录或日志正好以斜杠命令开头)。
+// 期望:按普通消息发送 —— content 等于粘贴原文,没有 display_text。同一条命令
+// 手打在编辑器里则照常展开(对照组,证明 skill 确实已注册)。
+// 回归:粘贴材料被当成 skill 命令展开,模型收到的是 skill 提示而不是用户材料。
+TEST(WebServerHttp, LeadingPastedTextSkipsSkillExpansion) {
+    WebServerFixture fx;
+    fx.cfg.skills.reuse_opencode = false;
+    write_text(
+        fx.cwd_dir / ".acecode" / "skills" / "paste-probe" / "SKILL.md",
+        "---\nname: paste-probe\ndescription: Paste probe workflow\n---\n\n"
+        "Follow the paste probe workflow.\n");
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto skills = fx.registry->skill_registry_snapshot(sid);
+    ASSERT_NE(skills, nullptr);
+    ASSERT_TRUE(skills->find("paste-probe").has_value());
+
+    const std::string pasted = "/paste-probe 分析这段日志\nERROR at line 1";
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", ""}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", pasted}},
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", ""}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_GE(users.size(), 1u);
+    EXPECT_EQ(users[0].content, pasted);
+    EXPECT_FALSE(users[0].metadata.contains("display_text"));
+
+    const json typed{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "/paste-probe inspect"}},
+    })}};
+    const auto typed_sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "/paste-probe inspect"}, {"composer_content", typed}}.dump()});
+    ASSERT_EQ(typed_sent.status_code, 202) << typed_sent.text;
+    users = wait_for_user_messages(*entry, 2);
+    ASSERT_GE(users.size(), 2u);
+    EXPECT_NE(users[1].content, "/paste-probe inspect");
+    EXPECT_EQ(users[1].metadata.value("display_text", ""), "/paste-probe inspect");
+}
+
+// 触发场景:在一条「手打文字 + 内联粘贴块」的 user 消息上分叉(点提示词回填)。
+// 期望:响应的 restored_prompt 与新会话 meta 的 input_draft 都只是编辑器文本
+// 「请分析」,粘贴正文只在 restored_composer_content 里出现一次;前端据此把
+// 编辑器文本放回输入框、把粘贴块还原成卡片。
+// 回归:restored_prompt 取消息全文,粘贴正文被整段塞回编辑器(几百 KB 进 Slate
+// 就卡死),草稿 meta 里还重复存了一份。
+TEST(WebServerHttp, ForkFromPastedMessageRestoresEditorTextAsPrompt) {
+    WebServerFixture fx;
+    const auto sid = create_workspace_session(fx, fx.cwd_dir.string());
+    ASSERT_FALSE(sid.empty());
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const std::string body = "PASTED BODY LINE 1\nPASTED BODY LINE 2";
+    acecode::ChatMessage message;
+    message.role = "user";
+    message.uuid = "pasted-fork-user";
+    message.content = "请分析\n\n" + body;
+    message.metadata["composer_content"] = json{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "请分析"}},
+        json{{"type", "pasted_text"}, {"key", "paste-1"}, {"text", body}},
+    })}};
+    entry->sm->on_message(message);
+    const auto fork = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/fork")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"at_message_id":"pasted-fork-user"})"});
+    ASSERT_EQ(fork.status_code, 200) << fork.text;
+    const auto response = json::parse(fork.text);
+    EXPECT_EQ(response["restored_prompt"], "请分析");
+    ASSERT_TRUE(response.contains("restored_composer_content"));
+    EXPECT_EQ(response["restored_composer_content"]["parts"][1]["text"], body);
+    const auto target = response["session_id"].get<std::string>();
+    const auto project_dir = acecode::SessionStorage::get_project_dir(entry->cwd);
+    const auto meta = acecode::SessionStorage::read_meta(
+        acecode::SessionStorage::meta_path(project_dir, target));
+    EXPECT_EQ(meta.input_draft, "请分析");
+    EXPECT_EQ(meta.input_draft.find("PASTED BODY"), std::string::npos);
+    const auto draft = cpr::Get(cpr::Url{fx.url("/api/sessions/" + target + "/draft")});
+    ASSERT_EQ(draft.status_code, 200) << draft.text;
+    const auto draft_body = json::parse(draft.text);
+    EXPECT_EQ(draft_body["text"], "请分析");
+    EXPECT_EQ(draft_body["composer_content"], response["restored_composer_content"]);
+}
+
+// 触发场景:首页草稿文件 input_draft.json 含本版本不认识的部件类型(比如以后的
+// 版本写出、再降级回来)。
+// 期望:GET 仍报 500(如实暴露读不懂);PUT 不再先读旧草稿失败 → 记日志后当作空
+// 草稿覆盖写,200,之后 GET 恢复 200;DELETE 对读不懂的旧草稿返回 200 且
+// cleared=false,不动文件。
+// 回归:PUT 先读旧草稿就抛异常,首页输入框从此每次保存都 500、永远恢复不了。
+TEST(WebServerHttp, WorkspaceDraftPutOverwritesUnreadableOldDraft) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const auto path = fx.projects_dir / hash / "input_draft.json";
+    const auto unreadable = json{{"text", "future"}, {"composer_content", {
+        {"version", 1}, {"parts", json::array({json{{"type", "future_part"}, {"x", 1}}})}}}}.dump();
+    std::filesystem::create_directories(path.parent_path());
+    write_text(path, unreadable);
+
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000}).status_code, 500);
+    const auto cleared = cpr::Delete(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{json{{"text", "future"}}.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(cleared.status_code, 200) << cleared.text;
+    EXPECT_EQ(json::parse(cleared.text)["cleared"], false);
+    EXPECT_EQ(read_text(path), unreadable);
+
+    const auto saved = cpr::Put(cpr::Url{fx.url(endpoint)}, headers,
+        cpr::Body{json{{"text", "fresh draft"}}.dump()}, cpr::Timeout{5000});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    EXPECT_EQ(json::parse(saved.text)["text"], "fresh draft");
+    const auto read_back = cpr::Get(cpr::Url{fx.url(endpoint)}, cpr::Timeout{5000});
+    ASSERT_EQ(read_back.status_code, 200) << read_back.text;
+    EXPECT_EQ(json::parse(read_back.text)["text"], "fresh draft");
+}
+
+namespace {
+
+// 以 origin=pasted_text 上传一段粘贴文本;返回 201 响应里的 attachment(失败为 null)。
+json upload_pasted_text(WebServerFixture& fx, const std::string& endpoint,
+                        const std::string& text, const std::string& name = "pasted-text.txt") {
+    const auto response = cpr::Post(cpr::Url{fx.url(endpoint)},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"name", name}, {"mime_type", "text/plain"},
+            {"data_base64", acecode::base64_encode(text)}, {"origin", "pasted_text"},
+            {"paste", {{"chars", text.size()}, {"lines", 1}}}}.dump()},
+        cpr::Timeout{10000});
+    if (response.status_code != 201) {
+        ADD_FAILURE() << "upload " << endpoint << " -> " << response.status_code << " " << response.text;
+        return nullptr;
+    }
+    return json::parse(response.text)["attachment"];
+}
+
+json paste_attachment_part(const json& attachment, const std::string& key) {
+    return json{{"type", "attachment"}, {"key", key},
+        {"id", attachment["id"]}, {"name", attachment["name"]}, {"kind", "file"},
+        {"mime_type", "text/plain"}, {"paste", {{"title", "粘贴的日志"}, {"chars", 3}, {"lines", 1}}}};
+}
+
+std::vector<std::string> subdirectory_names(const std::filesystem::path& dir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (entry.is_directory()) names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+} // namespace
+
+// 触发场景:会话内粘贴 200 KiB 文本,前端以 origin=pasted_text 上传成附件,再发
+// 「看下这个」+ 该附件(composer 里是带 paste 描述的 attachment 部件)。
+// 期望:上传 201 且记录带 metadata.origin / pasted_text;blob 读回逐字节相等;发送
+// 202,消息正文只有编辑器文本(粘贴正文不进 content),content_parts 带 file 部件
+// 且附件元数据 origin=pasted_text,composer 部件保留 paste 描述。
+TEST(WebServerHttp, PastedTextUploadIsSentAsFileReference) {
+    WebServerFixture fx;
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    std::string pasted;
+    while (pasted.size() < 200 * 1024) pasted += "2026-09-24 ERROR 日志行\n";
+    const auto attachment = upload_pasted_text(fx, "/api/sessions/" + sid + "/attachments", pasted);
+    ASSERT_TRUE(attachment.is_object());
+    EXPECT_EQ(attachment["metadata"]["origin"], "pasted_text");
+    EXPECT_EQ(attachment["metadata"]["pasted_text"]["lines"], 1);
+    const auto blob = cpr::Get(cpr::Url{fx.url(attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(blob.status_code, 200);
+    EXPECT_EQ(blob.text, pasted);
+
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", "看下这个"}},
+        paste_attachment_part(attachment, "paste-1"),
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "看下这个"}, {"composer_content", content},
+            {"attachments", json::array({attachment["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    EXPECT_EQ(users[0].content, "看下这个");
+    bool has_file_part = false;
+    for (const auto& part : users[0].content_parts) {
+        if (part.value("type", "") != "file") continue;
+        has_file_part = true;
+        EXPECT_EQ(part["attachment"]["id"], attachment["id"]);
+        EXPECT_EQ(part["attachment"]["metadata"]["origin"], "pasted_text");
+    }
+    EXPECT_TRUE(has_file_part);
+    EXPECT_EQ(users[0].metadata["attachments"][0]["metadata"]["origin"], "pasted_text");
+    const auto& part = users[0].metadata["composer_content"]["parts"][1];
+    EXPECT_EQ(part["paste"]["title"], "粘贴的日志");
+    EXPECT_FALSE(part.contains("store"));
+}
+
+// 触发场景:首页(还没有会话)粘贴大段文本 → 上传到工作区草稿附件区 → 首页草稿引用
+// 它 → 新建会话 → 发送前用 from_workspace_draft 导入 → 以新 id 发送;之后草稿不再
+// 引用它,且它已超过 10 分钟年龄门。
+// 期望:草稿附件区只收 pasted_text 快照(没有 origin、带 source_path 都 400);响应
+// blob_url 是工作区路由且读回相等;草稿 GET 带回 store / store_scope;导入得到本会话
+// 的新 id,内容相等、来源元数据随行;发送 202 且消息里的部件不再带 store;再次保存
+// 不引用它的草稿后,旧草稿附件被回收,会话里的副本不受影响。
+TEST(WebServerHttp, WorkspaceDraftPasteSurvivesAndImportsIntoNewSession) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_endpoint = "/api/workspaces/" + hash + "/draft";
+    const auto headers = cpr::Header{{"Content-Type", "application/json"}};
+    const std::string pasted(150 * 1024, 'p');
+
+    const auto no_origin = cpr::Post(cpr::Url{fx.url(draft_endpoint + "/attachments")}, headers,
+        cpr::Body{json{{"name", "a.txt"}, {"mime_type", "text/plain"},
+            {"data_base64", acecode::base64_encode("abc")}}.dump()});
+    EXPECT_EQ(no_origin.status_code, 400) << no_origin.text;
+    const auto reference = cpr::Post(cpr::Url{fx.url(draft_endpoint + "/attachments")}, headers,
+        cpr::Body{json{{"name", "a.txt"}, {"mime_type", "text/plain"}, {"origin", "pasted_text"},
+            {"source_path", fx.cwd}, {"reference_only", true}}.dump()});
+    EXPECT_EQ(reference.status_code, 400) << reference.text;
+
+    const auto draft_attachment = upload_pasted_text(fx, draft_endpoint + "/attachments", pasted);
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto draft_id = draft_attachment["id"].get<std::string>();
+    EXPECT_EQ(draft_attachment["blob_url"],
+              "/api/workspaces/" + hash + "/draft/attachments/" + draft_id + "/blob");
+    const auto draft_blob = cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(draft_blob.status_code, 200);
+    EXPECT_EQ(draft_blob.text, pasted);
+    const auto draft_dir = fx.projects_dir / hash / "attachments" / acecode::kWorkspaceDraftAttachmentOwner;
+    ASSERT_TRUE(std::filesystem::exists(draft_dir / (draft_id + ".json")));
+
+    auto part = paste_attachment_part(draft_attachment, "paste-home");
+    part["store"] = "workspace_draft";
+    part["store_scope"] = hash;
+    const json content{{"version", 1}, {"parts", json::array({part})}};
+    const auto saved = cpr::Put(cpr::Url{fx.url(draft_endpoint)}, headers,
+        cpr::Body{json{{"text", ""}, {"composer_content", content}}.dump()});
+    ASSERT_EQ(saved.status_code, 200) << saved.text;
+    const auto restored = cpr::Get(cpr::Url{fx.url(draft_endpoint)});
+    ASSERT_EQ(restored.status_code, 200) << restored.text;
+    const auto restored_part = json::parse(restored.text)["composer_content"]["parts"][0];
+    EXPECT_EQ(restored_part["store"], "workspace_draft");
+    EXPECT_EQ(restored_part["store_scope"], hash);
+    EXPECT_EQ(restored_part["id"], draft_id);
+
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        headers, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto imported = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")}, headers,
+        cpr::Body{json{{"from_workspace_draft", {{"workspace", hash}, {"id", draft_id}}}}.dump()});
+    ASSERT_EQ(imported.status_code, 201) << imported.text;
+    const auto session_attachment = json::parse(imported.text)["attachment"];
+    EXPECT_NE(session_attachment["id"], draft_id);
+    EXPECT_EQ(session_attachment["session_id"], sid);
+    EXPECT_EQ(session_attachment["metadata"]["origin"], "pasted_text");
+    const auto session_blob = cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())});
+    ASSERT_EQ(session_blob.status_code, 200);
+    EXPECT_EQ(session_blob.text, pasted);
+
+    auto sent_part = part;
+    sent_part["id"] = session_attachment["id"];
+    const json sent_content{{"version", 1}, {"parts", json::array({sent_part})}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")}, headers,
+        cpr::Body{json{{"text", ""}, {"composer_content", sent_content},
+            {"attachments", json::array({session_attachment["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    const auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_EQ(users.size(), 1u);
+    const auto& message_part = users[0].metadata["composer_content"]["parts"][0];
+    EXPECT_EQ(message_part["id"], session_attachment["id"]);
+    EXPECT_FALSE(message_part.contains("store"));
+    EXPECT_FALSE(message_part.contains("store_scope"));
+
+    // 草稿已发送、不再引用该附件,且它早于 10 分钟年龄门 → 下一次保存时回收。
+    std::filesystem::last_write_time(draft_dir / (draft_id + ".json"),
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(1));
+    const auto cleared = cpr::Put(cpr::Url{fx.url(draft_endpoint)}, headers,
+        cpr::Body{json{{"text", ""}}.dump()});
+    ASSERT_EQ(cleared.status_code, 200) << cleared.text;
+    EXPECT_FALSE(std::filesystem::exists(draft_dir / (draft_id + ".json")));
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())}).status_code, 404);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())}).text, pasted);
+}
+
+// 触发场景:首页处于「无工作区」时粘贴(草稿 scope = __no_workspace__),随后把消息
+// 发到一个真实 workspace 的新会话。
+// 期望:按部件上的 scope(而不是会话所属 workspace)导入成功、内容相等;草稿附件落在
+// no-workspace 缓存根的 project dir 下,缓存根本身没有新增子目录。
+// 回归:附件目录若放在缓存根下,list_no_workspace_session_cwds 会把 attachments/
+// 当成一个无工作区会话的 cwd,侧栏凭空多出会话。
+TEST(WebServerHttp, NoWorkspaceDraftPasteImportsIntoRealWorkspaceSession) {
+    WebServerFixture fx;
+    const RemoveTreeOnExit no_workspace_project{path_from_utf8(
+        acecode::SessionStorage::get_project_dir(fx.no_workspace_cache_root.string()))};
+    const auto before = subdirectory_names(fx.no_workspace_cache_root);
+    const std::string pasted = "no workspace paste\nline 2\n";
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/__no_workspace__/draft/attachments", pasted);
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto draft_id = draft_attachment["id"].get<std::string>();
+    EXPECT_EQ(draft_attachment["blob_url"],
+              "/api/workspaces/__no_workspace__/draft/attachments/" + draft_id + "/blob");
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(draft_attachment["blob_url"].get<std::string>())}).text, pasted);
+    EXPECT_TRUE(std::filesystem::exists(no_workspace_project.path / "attachments" /
+        acecode::kWorkspaceDraftAttachmentOwner / (draft_id + ".json")));
+    EXPECT_EQ(subdirectory_names(fx.no_workspace_cache_root), before);
+
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto imported = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"from_workspace_draft",
+            {{"workspace", "__no_workspace__"}, {"id", draft_id}}}}.dump()});
+    ASSERT_EQ(imported.status_code, 201) << imported.text;
+    const auto session_attachment = json::parse(imported.text)["attachment"];
+    EXPECT_EQ(session_attachment["session_id"], sid);
+    EXPECT_EQ(cpr::Get(cpr::Url{fx.url(session_attachment["blob_url"].get<std::string>())}).text, pasted);
+    // 同一个 id 在会话所属 workspace 的草稿区里不存在:scope 不能靠会话推断。
+    const auto wrong_scope = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"from_workspace_draft", {{"workspace", hash}, {"id", draft_id}}}}.dump()});
+    EXPECT_EQ(wrong_scope.status_code, 404) << wrong_scope.text;
+    EXPECT_EQ(subdirectory_names(fx.no_workspace_cache_root), before);
+}
+
+// 触发场景:客户端没有先导入,直接拿首页草稿附件的 id 发消息。
+// 期望:404 —— 消息路由只认本会话的附件记录,草稿附件区不是会话附件。
+TEST(WebServerHttp, WorkspaceDraftAttachmentIdIsRejectedByMessageRoute) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/" + hash + "/draft/attachments", "draft only");
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "hi"}, {"attachments", json::array({draft_attachment["id"]})}}.dump()});
+    EXPECT_EQ(sent.status_code, 404) << sent.text;
+}
+
+// 触发场景:会话上传请求同时带 from_workspace_draft 与 data_base64(或导入参数形状
+// 不对、id 不存在)。
+// 期望:混用 400、形状错误 400、找不到 404,都不产生新附件。
+TEST(WebServerHttp, SessionUploadRejectsMixedImportAndData) {
+    WebServerFixture fx;
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto draft_attachment = upload_pasted_text(
+        fx, "/api/workspaces/" + hash + "/draft/attachments", "mixed");
+    ASSERT_TRUE(draft_attachment.is_object());
+    const auto create = cpr::Post(cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    const auto endpoint = fx.url("/api/sessions/" + sid + "/attachments");
+    const auto post = [&](const json& body) {
+        return cpr::Post(cpr::Url{endpoint}, cpr::Header{{"Content-Type", "application/json"}},
+                         cpr::Body{body.dump()});
+    };
+    const json import{{"workspace", hash}, {"id", draft_attachment["id"]}};
+    EXPECT_EQ(post(json{{"from_workspace_draft", import}, {"name", "a.txt"},
+        {"mime_type", "text/plain"}, {"data_base64", "YWJj"}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", import}, {"reference_only", true},
+        {"source_path", fx.cwd}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", "not-an-object"}}).status_code, 400);
+    EXPECT_EQ(post(json{{"from_workspace_draft", {{"workspace", hash}, {"id", "att_missing"}}}})
+        .status_code, 404);
+    const auto project_dir = acecode::SessionStorage::get_project_dir(fx.registry->acquire(sid)->cwd);
+    EXPECT_FALSE(std::filesystem::exists(path_from_utf8(project_dir) / "attachments" / sid));
+}
+
+// 触发场景:用户输入「/<已注册 skill> 分析」并附带一个大段粘贴落成的文件块;对照组
+// 是同样的命令附带一个普通文本附件。
+// 期望:粘贴来源的附件不挡 skill 展开 —— content 是 skill 提示、display_text 是原文、
+// content_parts 仍带 file 部件;普通附件保持原行为,命令按字面发送。
+// 回归:粘贴内容跨过 128 KiB 变成文件块后,同一条命令就从「展开 skill」翻成「字面
+// 发送 /xxx」,行为随一条看不见的大小线翻转。
+TEST(WebServerHttp, SkillCommandWithPastedFileBlockStillExpands) {
+    WebServerFixture fx;
+    fx.cfg.skills.reuse_opencode = false;
+    write_text(
+        fx.cwd_dir / ".acecode" / "skills" / "paste-probe" / "SKILL.md",
+        "---\nname: paste-probe\ndescription: Paste probe workflow\n---\n\n"
+        "Follow the paste probe workflow.\n");
+    const auto hash = acecode::compute_cwd_hash(fx.cwd);
+    const auto create = cpr::Post(
+        cpr::Url{fx.url("/api/workspaces/" + hash + "/sessions")},
+        cpr::Header{{"Content-Type", "application/json"}}, cpr::Body{"{}"});
+    ASSERT_EQ(create.status_code, 201) << create.text;
+    const auto sid = json::parse(create.text)["session_id"].get<std::string>();
+    auto entry = fx.registry->acquire(sid);
+    ASSERT_TRUE(entry);
+    auto skills = fx.registry->skill_registry_snapshot(sid);
+    ASSERT_NE(skills, nullptr);
+    ASSERT_TRUE(skills->find("paste-probe").has_value());
+
+    const auto pasted = upload_pasted_text(
+        fx, "/api/sessions/" + sid + "/attachments", "ERROR 1\nERROR 2\n");
+    ASSERT_TRUE(pasted.is_object());
+    const std::string command = "/paste-probe 分析";
+    const json content{{"version", 1}, {"parts", json::array({
+        json{{"type", "text"}, {"text", command}},
+        paste_attachment_part(pasted, "paste-1"),
+    })}};
+    const auto sent = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", command}, {"composer_content", content},
+            {"attachments", json::array({pasted["id"]})}}.dump()});
+    ASSERT_EQ(sent.status_code, 202) << sent.text;
+    auto users = wait_for_user_messages(*entry, 1);
+    ASSERT_GE(users.size(), 1u);
+    EXPECT_NE(users[0].content, command);
+    EXPECT_NE(users[0].content.find("paste-probe"), std::string::npos);
+    EXPECT_EQ(users[0].metadata.value("display_text", ""), command);
+    bool has_file_part = false;
+    for (const auto& part : users[0].content_parts) {
+        if (part.value("type", "") == "file") has_file_part = true;
+    }
+    EXPECT_TRUE(has_file_part);
+
+    const auto ordinary = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/attachments")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{R"({"name":"notes.txt","mime_type":"text/plain","data_base64":"YWJj"})"});
+    ASSERT_EQ(ordinary.status_code, 201) << ordinary.text;
+    const auto ordinary_id = json::parse(ordinary.text)["attachment"]["id"];
+    const auto literal = cpr::Post(cpr::Url{fx.url("/api/sessions/" + sid + "/messages")},
+        cpr::Header{{"Content-Type", "application/json"}},
+        cpr::Body{json{{"text", "/paste-probe inspect"},
+            {"attachments", json::array({ordinary_id})}}.dump()});
+    ASSERT_EQ(literal.status_code, 202) << literal.text;
+    users = wait_for_user_messages(*entry, 2);
+    ASSERT_GE(users.size(), 2u);
+    EXPECT_EQ(users[1].content, "/paste-probe inspect");
+    EXPECT_FALSE(users[1].metadata.contains("display_text"));
 }
 
 // 场景(openspec add-security-center):安全中心的沙盒配置路由。GET 默认快照 →

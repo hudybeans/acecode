@@ -6,6 +6,7 @@ import { parseSync } from '@babel/core';
 import { forkRestoredPrompt } from './sessionFork.js';
 import { normalizeComposerContent, reconcileComposerContentAttachments } from './composerContent.js';
 import { composerDraftFingerprint } from './composerDraft.js';
+import { legacyFoldUploadPending } from './pastedText.js';
 
 function run(name, fn) {
   try {
@@ -67,6 +68,8 @@ async function verifyForkDraftLifecycle(dirty, activateDestination = true) {
     setComposerValue(text) { composer = text; },
     restoreComposerDraft(draft) { composer = draft.text; },
     normalizeComposerContent, reconcileComposerContentAttachments, composerDraftFingerprint,
+    // 收尾保存在旧长文本折叠的文件块上传完成前跳过;这里没有折叠(guard 为空),照常保存。
+    legacyFoldUploadPending, legacyFoldGuardRef: { current: null },
     persistDraftValue: (sid, workspace, key, text) => saved.push({ sid, text }),
     forkRestoredPrompt, newSessionRefFrom: (ref, sid) => ({ ...ref, sessionId: sid }),
     onSessionPromoted() {}, notifySessionListChanged() {}, toast() {},

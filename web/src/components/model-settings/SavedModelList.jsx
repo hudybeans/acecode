@@ -62,10 +62,10 @@ function SavedModelRow({
       <ProviderIcon provider={model} />
       <div className="min-w-[180px] flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="truncate text-[12px] font-semibold text-fg">{model.name}</span>
+          <span className="truncate text-[12px] font-normal text-fg">{model.name}</span>
           <ModelCapabilityIcons capabilities={model.capabilities} />
           {isDefault && (
-            <span className="rounded border border-accent-soft bg-accent-bg px-1.5 py-0.5 text-[10px] font-medium text-accent">
+            <span className="rounded border border-accent-soft bg-accent-bg px-1.5 py-0.5 text-[10px] font-normal text-accent">
               默认
             </span>
           )}
@@ -183,7 +183,7 @@ export function SavedModelList({
             type="button"
             onClick={onAdd}
             disabled={!!busy}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-50"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[11px] font-normal text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-50"
           >
             <VsIcon name="add" size={13} />
             新增模型
@@ -216,7 +216,7 @@ export function SavedModelList({
         </div>
       ) : (
         <div className="rounded-md border border-dashed border-border bg-surface px-3.5 py-6 text-center">
-          <div className="text-[12px] font-medium text-fg-2">
+          <div className="text-[12px] font-normal text-fg-2">
             {query ? '没有匹配的已保存模型' : '还没有保存模型'}
           </div>
           <div className="mt-1 text-[11px] text-fg-mute">

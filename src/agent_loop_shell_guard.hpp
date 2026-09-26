@@ -210,8 +210,13 @@ inline bool windows_absolute_is_inside(const std::string& target,
 // common redirection/cmdlet/copy destinations that command_looks_like_file_write
 // recognizes. Empty result means the command is allowed; otherwise it is a
 // fail-closed reason returned before process execution.
+//
+// extra_roots:「编辑项目」里放行写入的附加文件夹(AgentLoop::
+// writable_workspace_folders)。只接受绝对路径目标落在其中;相对路径仍只按
+// working_dir 解析。
 inline std::string loop_shell_write_escape_reason(const std::string& command,
-                                                  const std::string& working_dir) {
+                                                  const std::string& working_dir,
+                                                  const std::vector<std::string>& extra_roots = {}) {
     if (!command_looks_like_file_write(command)) return {};
     const auto tokens = tokenize_shell_command(command);
     std::vector<std::string> targets;
@@ -230,7 +235,7 @@ inline std::string loop_shell_write_escape_reason(const std::string& command,
             const std::string& nested = tokens[i + 1];
             if (nested != command && command_looks_like_file_write(nested)) {
                 const std::string nested_reason =
-                    loop_shell_write_escape_reason(nested, working_dir);
+                    loop_shell_write_escape_reason(nested, working_dir, extra_roots);
                 if (!nested_reason.empty()) return nested_reason;
             }
         }
@@ -319,11 +324,25 @@ inline std::string loop_shell_write_escape_reason(const std::string& command,
     }
 
     PathValidator validator(working_dir, false);
+    const auto inside_extra_root = [&](const std::string& target) {
+        for (const auto& root : extra_roots) {
+            if (shell_target_is_windows_absolute(target)) {
+                if (windows_absolute_is_inside(target, root)) return true;
+                continue;
+            }
+            if (path_from_utf8(target).is_absolute() &&
+                PathValidator(root, false).validate(target).empty()) {
+                return true;
+            }
+        }
+        return false;
+    };
     for (auto target : targets) {
         target = trim_shell_target(std::move(target));
         if (shell_target_is_dynamic(target)) {
             return "Write boundary blocked a dynamic shell write destination: " + target;
         }
+        if (inside_extra_root(target)) continue;
         // std::filesystem follows the host OS. On Linux, a Windows absolute
         // path such as C:/outside is otherwise treated as relative and may be
         // incorrectly joined under the work root. Compare Windows paths

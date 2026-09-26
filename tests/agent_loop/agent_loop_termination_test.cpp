@@ -25,9 +25,11 @@
 #include "stub_provider.hpp"
 #include "tool/task_complete_tool.hpp"
 #include "tool/tool_executor.hpp"
+#include "tool/tool_protocol_names.hpp"
 #include "permissions.hpp"
 #include "provider/llm_provider.hpp"
 #include "provider/retry_policy.hpp"
+#include "provider/text_tool_call_recovery.hpp"
 #include "session/session_manager.hpp"
 #include "session/tool_result_storage.hpp"
 #include "session/turn_net_diff.hpp"
@@ -42,6 +44,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -177,12 +180,14 @@ ToolImpl create_counting_write_tool(
 // Fixture:封装 AgentLoop + stub + 消息收集器 + 完成同步。
 class AgentLoopHarness {
 public:
-    explicit AgentLoopHarness(std::string cwd = ".")
+    explicit AgentLoopHarness(std::string cwd = ".",
+        std::function<void(const acecode::TokenUsage&)> on_usage = {})
         : cwd_(std::move(cwd)) {
         tools_.register_tool(create_noop_tool());
         tools_.register_tool(acecode::create_task_complete_tool());
 
         AgentCallbacks cb;
+        cb.on_usage = std::move(on_usage);
         cb.on_message = [this](const std::string& role,
                                const std::string& content, bool is_tool) {
             std::lock_guard<std::mutex> lk(msg_mu_);
@@ -836,6 +841,165 @@ TEST(AgentLoopTermination, TransientRetryResetsProvisionalStateAndReportsProgres
     }
 }
 
+TEST(AgentLoopTermination, RecoveryPreservesAccountedUsageWhenConsumerThrows) {
+    for (bool reported : {true, false}) {
+        SCOPED_TRACE(reported);
+        acecode::TokenUsage accounted;
+        AgentLoopHarness h(".", [&](const acecode::TokenUsage& usage) {
+            accounted = usage;
+            throw std::runtime_error("usage consumer failed");
+        });
+        acecode::StreamEvent delta;
+        delta.type = acecode::StreamEventType::Delta;
+        delta.content = "completed provider response";
+        acecode::StreamEvent usage;
+        usage.type = acecode::StreamEventType::Usage;
+        usage.usage.prompt_tokens = 100;
+        usage.usage.completion_tokens = 20;
+        usage.usage.total_tokens = 120;
+        usage.usage.has_data = reported;
+        acecode::StreamEvent done;
+        done.type = acecode::StreamEventType::Done;
+        h.push_events({delta, usage, done});
+        ASSERT_TRUE(h.submit_and_wait("account before notifying consumers"));
+        ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+        ASSERT_GT(accounted.total_tokens, 0);
+        int terminal_events = 0;
+        for (const auto& event : h.snapshot_events()) {
+            if (event.kind != acecode::SessionEventKind::Done &&
+                !(event.kind == acecode::SessionEventKind::BusyChanged &&
+                  !event.payload.value("busy", true))) continue;
+            ++terminal_events;
+            EXPECT_EQ(event.payload.value("outcome", ""), "error");
+            const auto& total = event.payload.at("usage");
+            EXPECT_EQ(total.at("prompt_tokens"), accounted.prompt_tokens);
+            EXPECT_EQ(total.at("completion_tokens"), accounted.completion_tokens);
+            EXPECT_EQ(total.at("total_tokens"), accounted.total_tokens);
+            EXPECT_EQ(total.at("has_data"), reported);
+        }
+        EXPECT_EQ(terminal_events, 2);
+    }
+}
+
+TEST(AgentLoopTermination, TerminalEventsExposeAggregateTurnUsage) {
+    AgentLoopHarness h;
+
+    acecode::StreamEvent tool_call;
+    tool_call.type = acecode::StreamEventType::ToolCall;
+    tool_call.tool_call = {"usage-call", "noop", "{}"};
+    acecode::StreamEvent first_usage;
+    first_usage.type = acecode::StreamEventType::Usage;
+    first_usage.usage.prompt_tokens = 100;
+    first_usage.usage.completion_tokens = 20;
+    first_usage.usage.total_tokens = 120;
+    first_usage.usage.cache_read_tokens = 60;
+    first_usage.usage.reasoning_tokens = 5;
+    first_usage.usage.has_data = true;
+    acecode::StreamEvent first_done;
+    first_done.type = acecode::StreamEventType::Done;
+    first_done.finish_reason = "tool_calls";
+    h.push_events({tool_call, first_usage, first_done});
+
+    acecode::StreamEvent final_delta;
+    final_delta.type = acecode::StreamEventType::Delta;
+    final_delta.content = "finished";
+    acecode::StreamEvent second_usage;
+    second_usage.type = acecode::StreamEventType::Usage;
+    second_usage.usage.prompt_tokens = 150;
+    second_usage.usage.completion_tokens = 30;
+    second_usage.usage.total_tokens = 180;
+    second_usage.usage.cache_read_tokens = 90;
+    second_usage.usage.cache_write_tokens = 4;
+    second_usage.usage.reasoning_tokens = 7;
+    second_usage.usage.has_data = true;
+    acecode::StreamEvent second_done;
+    second_done.type = acecode::StreamEventType::Done;
+    second_done.finish_reason = "stop";
+    h.push_events({final_delta, second_usage, second_done});
+
+    ASSERT_TRUE(h.submit_and_wait("run two model steps"));
+    ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+
+    int step_usage_events = 0;
+    nlohmann::json terminal_busy;
+    nlohmann::json terminal_done;
+    for (const auto& event : h.snapshot_events()) {
+        if (event.kind == acecode::SessionEventKind::Usage) {
+            ++step_usage_events;
+        } else if (event.kind == acecode::SessionEventKind::BusyChanged &&
+                   event.payload.is_object() &&
+                   !event.payload.value("busy", true)) {
+            terminal_busy = event.payload;
+        } else if (event.kind == acecode::SessionEventKind::Done) {
+            terminal_done = event.payload;
+        }
+    }
+
+    EXPECT_EQ(step_usage_events, 2);
+    ASSERT_TRUE(terminal_busy.is_object());
+    ASSERT_TRUE(terminal_done.is_object());
+    ASSERT_TRUE(terminal_busy.contains("usage"));
+    ASSERT_TRUE(terminal_done.contains("usage"));
+    EXPECT_FALSE(terminal_busy.value("turn_id", std::string{}).empty());
+    EXPECT_EQ(terminal_busy["turn_id"], terminal_done["turn_id"]);
+    EXPECT_EQ(terminal_busy["usage"], terminal_done["usage"]);
+
+    const auto& usage = terminal_done["usage"];
+    EXPECT_EQ(usage.value("prompt_tokens", 0), 250);
+    EXPECT_EQ(usage.value("completion_tokens", 0), 50);
+    EXPECT_EQ(usage.value("total_tokens", 0), 300);
+    EXPECT_EQ(usage.value("cache_read_tokens", 0), 150);
+    EXPECT_EQ(usage.value("cache_write_tokens", 0), 4);
+    EXPECT_EQ(usage.value("reasoning_tokens", 0), 12);
+    EXPECT_TRUE(usage.value("has_data", false));
+}
+
+TEST(AgentLoopTermination, EstimatedStepMarksAggregateTurnUsageAsEstimated) {
+    AgentLoopHarness h;
+
+    acecode::StreamEvent tool_call;
+    tool_call.type = acecode::StreamEventType::ToolCall;
+    tool_call.tool_call = {"estimated-usage-call", "noop", "{}"};
+    acecode::StreamEvent reported_usage;
+    reported_usage.type = acecode::StreamEventType::Usage;
+    reported_usage.usage.prompt_tokens = 10;
+    reported_usage.usage.completion_tokens = 5;
+    reported_usage.usage.total_tokens = 15;
+    reported_usage.usage.has_data = true;
+    acecode::StreamEvent tool_done;
+    tool_done.type = acecode::StreamEventType::Done;
+    tool_done.finish_reason = "tool_calls";
+    h.push_events({tool_call, reported_usage, tool_done});
+    h.push_text("finished without provider usage");
+
+    ASSERT_TRUE(h.submit_and_wait("run estimated model step"));
+    ASSERT_TRUE(h.wait_for_event(acecode::SessionEventKind::Done));
+
+    nlohmann::json terminal_done;
+    for (const auto& event : h.snapshot_events()) {
+        if (event.kind == acecode::SessionEventKind::Done) {
+            terminal_done = event.payload;
+        }
+    }
+    ASSERT_TRUE(terminal_done.contains("usage"));
+    const auto& usage = terminal_done["usage"];
+    EXPECT_GT(usage.value("prompt_tokens", 0), 10);
+    EXPECT_GT(usage.value("completion_tokens", 0), 5);
+    EXPECT_GT(usage.value("total_tokens", 0), 15);
+    EXPECT_FALSE(usage.value("has_data", true));
+    ASSERT_TRUE(usage.contains("context_breakdown"));
+    const auto& context = usage["context_breakdown"];
+    const int categorized_prompt =
+        context.value("system_prompt", 0) +
+        context.value("project_rules", 0) +
+        context.value("skills", 0) +
+        context.value("builtin_tools", 0) +
+        context.value("mcp_tools", 0) +
+        context.value("conversation", 0) +
+        context.value("dynamic_context", 0);
+    EXPECT_EQ(categorized_prompt, usage.value("prompt_tokens", 0));
+}
+
 // 场景:任务已进入 20 分钟封顶等待时,stop 必须通知 active provider 的
 // condition variable,立即结束,而不是等到下一次定时唤醒。
 TEST(AgentLoopTermination, AbortWakesTwentyMinuteRetryWaitPromptly) {
@@ -1209,6 +1373,77 @@ TEST(AgentLoopTermination, AskUserQuestionDoesNotTerminate) {
     EXPECT_EQ(h.count_nudges(), 0);
 }
 
+namespace {
+
+std::string first_tool_result_content(const std::vector<ChatMessage>& messages) {
+    for (const auto& m : messages) {
+        if (m.role == "tool") return m.content;
+    }
+    return {};
+}
+
+} // namespace
+
+// 场景:模型调了一个不存在的工具 `nope`(yubo2 现场是 `exec`)。
+// 期望:工具结果除了 Unknown tool 外,还列出**本次请求**发给模型的模型侧工具名
+// (noop / task_complete),让模型照抄;「工具重写」生效时列表里是模型侧名
+// do_nothing,不出现它不认识的原生名 noop。
+// 回归:旧文案只有 "Unknown tool: nope",模型只能继续瞎猜工具名。
+TEST(AgentLoopTermination, UnknownToolErrorListsModelFacingNames) {
+    {
+        acecode::ScopedModelToolNameMappings none(acecode::ToolProtocolNameMappings{});
+        AgentLoopHarness h;
+        h.push_tool_call("nope", "{}", "c-unknown");
+        h.push_text("done");
+        ASSERT_TRUE(h.submit_and_wait("do it"));
+
+        const std::string result = first_tool_result_content(h.persisted_messages());
+        EXPECT_NE(result.find("Unknown tool: nope"), std::string::npos) << result;
+        EXPECT_NE(result.find("Available tools:"), std::string::npos) << result;
+        EXPECT_NE(result.find("noop"), std::string::npos) << result;
+        EXPECT_NE(result.find("task_complete"), std::string::npos) << result;
+    }
+    {
+        acecode::ScopedModelToolNameMappings mapped{{"noop", "do_nothing"}};
+        AgentLoopHarness h;
+        h.push_tool_call("nope", "{}", "c-unknown");
+        h.push_text("done");
+        ASSERT_TRUE(h.submit_and_wait("do it"));
+
+        const std::string result = first_tool_result_content(h.persisted_messages());
+        EXPECT_NE(result.find("Available tools:"), std::string::npos) << result;
+        EXPECT_NE(result.find("do_nothing"), std::string::npos) << result;
+        EXPECT_EQ(result.find("noop"), std::string::npos) << result;
+    }
+}
+
+// 场景:模型把工具名写成 `NOOP`(只大小写不同,且只有一个候选)。
+// 期望:大小写容错解析到原生 noop 并成功执行,结果里没有 Unknown tool。
+// 回归:旧实现原样透传 `NOOP`,工具不执行、报 Unknown tool。
+TEST(AgentLoopTermination, MixedCaseToolCallExecutesRegisteredTool) {
+    acecode::ScopedModelToolNameMappings none(acecode::ToolProtocolNameMappings{});
+    AgentLoopHarness h;
+    h.push_tool_call("NOOP", "{}", "c-mixed");
+    h.push_text("done");
+    ASSERT_TRUE(h.submit_and_wait("do it"));
+
+    const auto messages = h.persisted_messages();
+    const std::string result = first_tool_result_content(messages);
+    EXPECT_EQ(result.find("Unknown tool"), std::string::npos) << result;
+    EXPECT_NE(result.find("ok"), std::string::npos) << result;
+    bool saw_native_call = false;
+    for (const auto& m : messages) {
+        if (m.role != "assistant" || !m.tool_calls.is_array()) continue;
+        for (const auto& tc : m.tool_calls) {
+            if (tc.value("function", nlohmann::json::object())
+                    .value("name", std::string()) == "noop") {
+                saw_native_call = true;
+            }
+        }
+    }
+    EXPECT_TRUE(saw_native_call);
+}
+
 // 场景 (e):用户 abort 立刻生效。让 stub 的 chat_stream 阻塞 ~200ms 轮询
 // abort_flag,给主线程一个确定性窗口下 abort。
 TEST(AgentLoopTermination, UserAbortShortCircuits) {
@@ -1508,4 +1743,491 @@ TEST(AgentLoopTermination, LengthTruncatedNonEmptyTextEndsTurnWithNotice) {
         }
     }
     EXPECT_TRUE(saw_truncation_notice);
+}
+
+// ---- 文本形式工具调用的纠正重试(fix-feedback-0924 第 3 条)----
+//
+// provider(OpenAiCompatProvider)认出模型把调用写进了正文、却无法执行时,
+// 在 Done 事件上报 Outcome::Rejected。这里用 StubLlmProvider 直接脚本化
+// 「provider 已经藏起标记后的可见正文 + Done 上的诊断」,只测 AgentLoop 侧。
+
+namespace {
+
+acecode::TextToolCallDiagnostic make_rejected_text_tool_call(
+    std::string format = "invoke",
+    std::string reason = "unknown_tool",
+    std::string error = "tool \"exec\" is not available",
+    std::vector<std::string> tools = {"exec"}) {
+    acecode::TextToolCallDiagnostic diag;
+    diag.outcome = acecode::TextToolCallDiagnostic::Outcome::Rejected;
+    diag.format = std::move(format);
+    diag.reason = std::move(reason);
+    diag.error = std::move(error);
+    diag.attempted_tools = std::move(tools);
+    diag.raw_excerpt =
+        "<invoke name=\"exec\">\n<parameter name=\"command\">\nls\n</parameter>\n</invoke>";
+    return diag;
+}
+
+std::vector<acecode::StreamEvent> make_text_tool_call_response(
+    const std::string& visible,
+    acecode::TextToolCallDiagnostic diag,
+    const std::string& finish_reason = "stop") {
+    std::vector<acecode::StreamEvent> events;
+    if (!visible.empty()) {
+        acecode::StreamEvent delta;
+        delta.type = acecode::StreamEventType::Delta;
+        delta.content = visible;
+        events.push_back(std::move(delta));
+    }
+    acecode::StreamEvent done;
+    done.type = acecode::StreamEventType::Done;
+    done.finish_reason = finish_reason;
+    done.text_tool_calls = std::move(diag);
+    events.push_back(std::move(done));
+    return events;
+}
+
+int count_user_messages_flagged(const std::vector<ChatMessage>& messages,
+                                const std::string& flag) {
+    int n = 0;
+    for (const auto& msg : messages) {
+        if (msg.role == "user" && msg.metadata.is_object() &&
+            msg.metadata.value(flag, false)) {
+            EXPECT_TRUE(msg.metadata.value("hidden_goal_context", false));
+            ++n;
+        }
+    }
+    return n;
+}
+
+std::vector<nlohmann::json> notice_params_for(
+    const std::vector<acecode::SessionEvent>& events, const std::string& code) {
+    std::vector<nlohmann::json> out;
+    for (const auto& event : events) {
+        if (event.kind != acecode::SessionEventKind::Message ||
+            !event.payload.is_object()) {
+            continue;
+        }
+        const auto metadata = event.payload.value("metadata", nlohmann::json::object());
+        if (!metadata.is_object() || !metadata.contains("system_notice")) continue;
+        const auto& notice = metadata["system_notice"];
+        if (notice.value("code", std::string{}) == code) {
+            out.push_back(notice.value("params", nlohmann::json::object()));
+        }
+    }
+    return out;
+}
+
+const ChatMessage* find_rejected_assistant(const std::vector<ChatMessage>& messages) {
+    for (const auto& msg : messages) {
+        if (msg.role == "assistant" && msg.metadata.is_object() &&
+            msg.metadata.contains("text_tool_call_rejected")) {
+            return &msg;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// 场景:yubo2 现场形态 —— 模型把 `<invoke name="exec">` 写进正文,provider 认出
+// 意图但工具不存在(Rejected/unknown_tool),藏起标记后可见正文只剩 "\n\n\n"。
+// 期望:注入隐藏纠正提示(列出本次请求的模型侧工具名)并重试,第 2 轮正常回复;
+// 发 response_text_tool_call_retry 通知;被拒 assistant 落盘为空串且带诊断
+// metadata;任何落盘 / 发给模型的正文都不含 `<invoke`。
+// 回归:旧实现第 1 步就走 `Text-only response; ending loop`,回合静默结束,
+// 模型以为调用执行了,用户什么结果也拿不到。
+TEST(AgentLoopTermination, RejectedTextToolCallInjectsCorrectionAndRecovers) {
+    AgentLoopHarness h;
+    h.push_events(make_text_tool_call_response("\n\n\n", make_rejected_text_tool_call()));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("list files"));
+    EXPECT_EQ(h.turn_count(), 2);
+    EXPECT_EQ(h.count_by_role("error"), 0);
+    // 被拒回复内容为空,不 dispatch(不出空气泡);只有第 2 轮的回复。
+    EXPECT_EQ(h.count_by_role("assistant"), 1);
+
+    const auto persisted = h.persisted_messages();
+    const ChatMessage* rejected = find_rejected_assistant(persisted);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->content, "");
+    const auto& diag_json = rejected->metadata["text_tool_call_rejected"];
+    EXPECT_EQ(diag_json.value("format", std::string{}), "invoke");
+    EXPECT_EQ(diag_json.value("reason", std::string{}), "unknown_tool");
+    EXPECT_EQ(count_user_messages_flagged(persisted, "text_tool_call_correction"), 1);
+    for (const auto& msg : persisted) {
+        EXPECT_EQ(msg.content.find("<invoke"), std::string::npos) << msg.content;
+    }
+
+    const auto second_request = h.request_messages_for_turn(1);
+    bool prompt_in_request = false;
+    for (const auto& msg : second_request) {
+        EXPECT_EQ(msg.content.find("<invoke"), std::string::npos) << msg.content;
+        if (msg.role == "user" &&
+            msg.content.find("native tool-calling") != std::string::npos) {
+            prompt_in_request = true;
+            EXPECT_NE(msg.content.find("Available tools:"), std::string::npos);
+            EXPECT_NE(msg.content.find("noop"), std::string::npos);
+            EXPECT_NE(msg.content.find("tool \"exec\" is not available"),
+                      std::string::npos);
+        }
+    }
+    EXPECT_TRUE(prompt_in_request);
+
+    const auto notices = notice_params_for(h.snapshot_events(),
+                                           "response_text_tool_call_retry");
+    ASSERT_EQ(notices.size(), 1u);
+    EXPECT_EQ(notices[0].value("attempt", 0), 1);
+    EXPECT_EQ(notices[0].value("attempts", 0), 2);
+    EXPECT_EQ(notices[0].value("error", std::string{}), "tool \"exec\" is not available");
+}
+
+// 场景:被拒回复藏起标记后只剩空白,与「成功但空」的回复在内容上无法区分。
+// 期望:走文本调用纠正(Rejected 处理在 response_is_blank 之前),不发
+// [空回复] 通知、不注入空回复提示。
+// 回归:若把 Rejected 处理放在空回复判断之后,模型会收到「你的回复是空的」
+// 这种错误的纠正文案,永远不知道问题是调用格式。
+TEST(AgentLoopTermination, RejectedTextToolCallIsNotMistakenForEmptyResponse) {
+    AgentLoopHarness h;
+    h.push_events(make_text_tool_call_response("\n\n\n\n", make_rejected_text_tool_call()));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 2);
+    const auto persisted = h.persisted_messages();
+    EXPECT_EQ(count_user_messages_flagged(persisted, "empty_response_retry"), 0);
+    EXPECT_EQ(count_user_messages_flagged(persisted, "text_tool_call_correction"), 1);
+    EXPECT_TRUE(notice_params_for(h.snapshot_events(), "response_empty_retry").empty());
+    for (const auto& m : h.snapshot_messages()) {
+        EXPECT_EQ(m.content.find(u8"[空回复]"), std::string::npos) << m.content;
+    }
+}
+
+// 场景:模型连续 3 次(首轮 + 2 次纠正)都把调用写成无法执行的正文。
+// 期望:纠正上限 2 次耗尽后发可见 error(说明原因与最后一次错误),回合以
+// error 结束(turn timing = error),不再无限重试烧 token。
+TEST(AgentLoopTermination, RejectedTextToolCallExhaustsCorrectionsEndsWithError) {
+    AgentLoopHarness h;
+    for (int i = 0; i < 3; ++i) {
+        h.push_events(make_text_tool_call_response("\n\n\n", make_rejected_text_tool_call()));
+    }
+    h.push_text("never reached");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 3);
+    EXPECT_EQ(h.count_by_role("error"), 1);
+    bool saw_error = false;
+    for (const auto& m : h.snapshot_messages()) {
+        if (m.role == "error" &&
+            m.content.find(u8"连续 3 次把工具调用写成正文文本") != std::string::npos &&
+            m.content.find("tool \"exec\" is not available") != std::string::npos) {
+            saw_error = true;
+        }
+    }
+    EXPECT_TRUE(saw_error);
+
+    const auto persisted = h.persisted_messages();
+    EXPECT_EQ(count_user_messages_flagged(persisted, "text_tool_call_correction"), 2);
+    EXPECT_EQ(notice_params_for(h.snapshot_events(), "response_text_tool_call_retry").size(), 2u);
+    auto timings = turn_timings_from(persisted);
+    ASSERT_EQ(timings.size(), 1u);
+    EXPECT_EQ(timings[0].status, "error");
+}
+
+// 场景:被拒、被拒、原生调用、被拒、被拒、正文。
+// 期望:纠正按「连续」次数计,中间那次原生调用把计数清零,所以 4 次被拒都能
+// 纠正,回合正常完成、没有 error。
+TEST(AgentLoopTermination, TextToolCallCorrectionCounterIsConsecutive) {
+    AgentLoopHarness h;
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_tool_call("noop", "{}", "c-native");
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 6);
+    EXPECT_EQ(h.count_by_role("error"), 0);
+    EXPECT_EQ(count_user_messages_flagged(h.persisted_messages(),
+                                          "text_tool_call_correction"), 4);
+}
+
+// 场景:DSML 调用解析失败(网关把 DeepSeek 原生协议漏进了正文且格式坏了),
+// 纠正 1 次后模型恢复。
+// 期望:纠正上限只有 1 次(通知里 attempts=1),第 2 轮恢复后无 error。
+// DSML 只纠正 1 次的理由:那不是模型「写错了格式」,纠正文本作用有限,多试
+// 只是白烧整段上下文。
+TEST(AgentLoopTermination, DsmlRejectedGetsSingleCorrectionThenRecovers) {
+    AgentLoopHarness h;
+    h.push_events(make_text_tool_call_response(
+        "", make_rejected_text_tool_call("dsml", "parse_error", "unterminated DSML invoke", {})));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 2);
+    EXPECT_EQ(h.count_by_role("error"), 0);
+    const auto notices = notice_params_for(h.snapshot_events(),
+                                           "response_text_tool_call_retry");
+    ASSERT_EQ(notices.size(), 1u);
+    EXPECT_EQ(notices[0].value("attempts", 0), 1);
+}
+
+// 场景:DSML 连续 2 次解析失败。
+// 期望:1 次纠正后即耗尽,回合以 error 结束(文案为「连续 2 次」)。
+TEST(AgentLoopTermination, DsmlRejectedTwiceEndsWithError) {
+    AgentLoopHarness h;
+    for (int i = 0; i < 2; ++i) {
+        h.push_events(make_text_tool_call_response(
+            "", make_rejected_text_tool_call("dsml", "parse_error", "unterminated DSML invoke", {})));
+    }
+    h.push_text("never reached");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 2);
+    EXPECT_EQ(h.count_by_role("error"), 1);
+    bool saw_error = false;
+    for (const auto& m : h.snapshot_messages()) {
+        if (m.role == "error" &&
+            m.content.find(u8"连续 2 次") != std::string::npos) {
+            saw_error = true;
+        }
+    }
+    EXPECT_TRUE(saw_error);
+}
+
+// 场景:文本调用写到一半被输出长度上限截断(provider 报 truncated,Done 的
+// finish_reason=length)。
+// 期望:AgentLoop 把原因细分成 truncated_by_length,纠正提示专门说明「撞上
+// 输出长度上限、把大内容拆成多次小调用」,否则模型重发同样大的调用还会被截。
+TEST(AgentLoopTermination, TruncatedByLengthCorrectionMentionsOutputLimit) {
+    AgentLoopHarness h;
+    h.push_events(make_text_tool_call_response(
+        "",
+        make_rejected_text_tool_call(
+            "invoke", "truncated",
+            "response ended inside a text tool call (missing </parameter>)", {"file_write"}),
+        "length"));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("write a big file"));
+    EXPECT_EQ(h.turn_count(), 2);
+    const auto persisted = h.persisted_messages();
+    const ChatMessage* rejected = find_rejected_assistant(persisted);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->metadata["text_tool_call_rejected"].value("reason", std::string{}),
+              "truncated_by_length");
+
+    bool mentions_limit = false;
+    for (const auto& msg : h.request_messages_for_turn(1)) {
+        if (msg.role == "user" &&
+            msg.content.find("output length limit") != std::string::npos) {
+            mentions_limit = true;
+        }
+    }
+    EXPECT_TRUE(mentions_limit);
+}
+
+// 场景:可疑级 —— 调用标记写在正文行中(`Let me run <invoke name="bash">…`),
+// 执行级认不出,标记已经流到界面;provider 报 Rejected/malformed,visible_cut
+// 指向该行行首。
+// 期望:落盘内容截到 visible_cut 并去掉末尾空白 = "好的,我来看看。";这条定稿
+// 消息经 dispatch 替换流式草稿(界面上的标记随之消失);照常纠正重试。
+TEST(AgentLoopTermination, SuspiciousTextToolCallTruncatesPersistedContent) {
+    AgentLoopHarness h;
+    const std::string prose = u8"好的,我来看看。\n";
+    const std::string visible =
+        prose + "Let me run <invoke name=\"bash\">\n<parameter name=\"command\">ls";
+    auto diag = make_rejected_text_tool_call(
+        "invoke", "malformed",
+        "the reply contains tool-call markup that could not be parsed as a complete call",
+        {});
+    diag.visible_cut = prose.size();
+    h.push_events(make_text_tool_call_response(visible, diag));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 2);
+    const auto persisted = h.persisted_messages();
+    const ChatMessage* rejected = find_rejected_assistant(persisted);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(rejected->content, u8"好的,我来看看。");
+
+    bool dispatched_truncated = false;
+    for (const auto& m : h.snapshot_messages()) {
+        if (m.role == "assistant") {
+            EXPECT_EQ(m.content.find("<invoke"), std::string::npos) << m.content;
+            if (m.content == u8"好的,我来看看。") dispatched_truncated = true;
+        }
+    }
+    EXPECT_TRUE(dispatched_truncated);
+    EXPECT_EQ(count_user_messages_flagged(h.persisted_messages(),
+                                          "text_tool_call_correction"), 1);
+}
+
+// 场景:同一回复里既有原生调用 noop,又有与之不一致的文本调用 bash(yubo2 现场
+// 第 1758 行形态),provider 报 IgnoredWithNative。
+// 期望:只执行原生调用;批次跑完后追加一条隐藏说明,列出未执行的 bash(command),
+// 并进入下一次请求;不消耗纠正预算、不发界面通知。
+// 回归:旧实现只执行原生调用,Bash 没执行,模型却以为执行了。
+TEST(AgentLoopTermination, IgnoredTextToolCallAppendsHiddenNoteAfterBatch) {
+    AgentLoopHarness h;
+    acecode::StreamEvent call;
+    call.type = acecode::StreamEventType::ToolCall;
+    call.tool_call.id = "c-native";
+    call.tool_call.function_name = "noop";
+    call.tool_call.function_arguments = "{}";
+    call.tool_index = 0;
+    acecode::StreamEvent done;
+    done.type = acecode::StreamEventType::Done;
+    done.finish_reason = "tool_calls";
+    done.text_tool_calls.outcome =
+        acecode::TextToolCallDiagnostic::Outcome::IgnoredWithNative;
+    done.text_tool_calls.format = "invoke";
+    done.text_tool_calls.attempted_tools = {"Bash"};
+    done.text_tool_calls.unexecuted_detail = {"bash(command)"};
+    h.push_events({call, done});
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 2);
+    EXPECT_EQ(h.count_by_role("error"), 0);
+
+    const auto persisted = h.persisted_messages();
+    std::size_t tool_result_index = persisted.size();
+    std::size_t note_index = persisted.size();
+    for (std::size_t i = 0; i < persisted.size(); ++i) {
+        if (persisted[i].role == "tool" && persisted[i].tool_call_id == "c-native") {
+            tool_result_index = i;
+        }
+        if (persisted[i].role == "user" && persisted[i].metadata.is_object() &&
+            persisted[i].metadata.value("text_tool_call_ignored", false)) {
+            note_index = i;
+            EXPECT_TRUE(persisted[i].metadata.value("hidden_goal_context", false));
+            EXPECT_NE(persisted[i].content.find("bash(command)"), std::string::npos);
+            EXPECT_NE(persisted[i].content.find("NOT executed"), std::string::npos);
+        }
+    }
+    ASSERT_LT(tool_result_index, persisted.size());
+    ASSERT_LT(note_index, persisted.size());
+    EXPECT_LT(tool_result_index, note_index);
+
+    bool note_in_request = false;
+    for (const auto& msg : h.request_messages_for_turn(1)) {
+        if (msg.role == "user" && msg.content.find("bash(command)") != std::string::npos) {
+            note_in_request = true;
+        }
+    }
+    EXPECT_TRUE(note_in_request);
+    EXPECT_EQ(count_user_messages_flagged(persisted, "text_tool_call_correction"), 0);
+    EXPECT_TRUE(notice_params_for(h.snapshot_events(),
+                                  "response_text_tool_call_retry").empty());
+}
+
+// 场景:provider 扣住疑似文本调用期间发进度 delta(text_tool_call_hold=true,
+// tool_index=-1,工具名为空),随后扣住的内容被释放成正文。
+// 期望:进度 delta 不记 model_first_output;首次输出按真正的正文记为 content。
+// 回归:若按普通 ToolCallDelta 处理,首次输出会被误记成 tool_call,trajectory
+// 的首 token 统计与实际不符。
+TEST(AgentLoopTermination, TextToolCallHoldDeltaDoesNotRecordFirstOutputChannel) {
+    TempHomeGuard temp_home("acecode-text-tool-call-hold");
+    AgentLoopHarness h(temp_home.root().string());
+    h.enable_session_manager();
+    acecode::StreamEvent hold;
+    hold.type = acecode::StreamEventType::ToolCallDelta;
+    hold.tool_index = -1;
+    hold.text_tool_call_hold = true;
+    hold.tool_call_argument_bytes = 2048;
+    acecode::StreamEvent delta;
+    delta.type = acecode::StreamEventType::Delta;
+    delta.content = "<invoke is just prose here";
+    acecode::StreamEvent done;
+    done.type = acecode::StreamEventType::Done;
+    h.push_events({hold, delta, done});
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    int first_outputs = 0;
+    for (const auto& record : h.persisted_trajectory()) {
+        if (record.type != "model_first_output") continue;
+        ++first_outputs;
+        EXPECT_EQ(record.payload.value("channel", std::string{}), "content");
+    }
+    EXPECT_EQ(first_outputs, 1);
+
+    bool saw_hold_progress = false;
+    for (const auto& event : h.snapshot_events()) {
+        if (event.kind == acecode::SessionEventKind::AgentProgress &&
+            event.payload.value("label", std::string{}) == u8"正在准备工具调用") {
+            saw_hold_progress = true;
+        }
+    }
+    EXPECT_TRUE(saw_hold_progress);
+}
+
+// 场景:max_iterations=2,前两轮都被拒、纠正后第 3 轮正常回复。
+// 期望:纠正轮不计入 max_iterations(与空回复重试一致),3 次请求都发出,回合
+// 正常完成,不触发 iteration_limit;计数回退有 >0 保护,不会下溢。
+// 阈值取 2 而不是 1:现有收尾检查在 total_iterations >= max_iterations 时就报
+// iteration_limit,max_iterations=1 时连一次普通文本回复都会报,测不出区别;
+// 取 2 时若纠正轮被计数,第 2 次被拒后循环即停、只发 2 次请求。
+TEST(AgentLoopTermination, CorrectionDoesNotUnderflowIterationCounter) {
+    AgentLoopHarness h;
+    acecode::AgentLoopConfig cfg;
+    cfg.max_iterations = 2;
+    h.set_config(cfg);
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_events(make_text_tool_call_response("", make_rejected_text_tool_call()));
+    h.push_text("done");
+
+    ASSERT_TRUE(h.submit_and_wait("go"));
+    EXPECT_EQ(h.turn_count(), 3);
+    EXPECT_EQ(h.count_by_role("error"), 0);
+    EXPECT_TRUE(notice_params_for(h.snapshot_events(), "iteration_limit").empty());
+    EXPECT_EQ(h.last_system_message().find("max_iterations"), std::string::npos);
+}
+
+// 场景:修复上线前落盘的老会话里有一条 assistant 消息整条是文本工具调用(测试
+// stub 不经过 provider 的文本调用恢复,原样返回,等价于旧版本落盘的消息)。
+// 期望:下一回合发给模型的历史里它被换成固定说明,不再出现 <invoke;同一回合
+// 相邻两次请求的公共前缀逐字节相同(清洗只由内容决定);落盘的历史保持原样。
+// 回归表现:yubo2 的活跃会话在下一次压缩前,模型一直照着历史里的样本写文本调用。
+TEST(AgentLoopTermination, LegacyTextToolCallHistoryIsScrubbedInRequest) {
+    AgentLoopHarness h;
+    h.push_text("\n\n<invoke name=\"Bash\">\n<parameter name=\"command\">\nls\n"
+                "</parameter>\n</invoke>");
+    ASSERT_TRUE(h.submit_and_wait("look around"));
+
+    h.push_tool_call("noop", "{}", "c1");
+    h.push_text("done");
+    ASSERT_TRUE(h.submit_and_wait("continue"));
+    ASSERT_EQ(h.turn_count(), 3);
+
+    const auto second = h.request_messages_for_turn(1);
+    const auto third = h.request_messages_for_turn(2);
+    bool found_placeholder = false;
+    for (const auto& m : second) {
+        EXPECT_EQ(m.content.find("<invoke"), std::string::npos)
+            << "legacy text tool call leaked into the request";
+        if (m.role == "assistant" &&
+            m.content == acecode::kTextToolCallHistoryPlaceholder) {
+            found_placeholder = true;
+        }
+    }
+    EXPECT_TRUE(found_placeholder);
+
+    ASSERT_GT(third.size(), second.size());
+    for (std::size_t i = 0; i < second.size(); ++i) {
+        EXPECT_EQ(second[i].content, third[i].content)
+            << "prompt prefix changed at message " << i;
+    }
+
+    bool raw_persisted = false;
+    for (const auto& m : h.persisted_messages()) {
+        if (m.role == "assistant" && m.content.find("<invoke") != std::string::npos) {
+            raw_persisted = true;
+        }
+    }
+    EXPECT_TRUE(raw_persisted) << "sanitizing must not rewrite persisted history";
 }

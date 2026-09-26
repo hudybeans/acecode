@@ -5,7 +5,8 @@ param(
     [string]$Version = "",
     [string]$Iscc = "",
     [string]$DesktopExe = "",
-    [string]$CliExe = ""
+    [string]$CliExe = "",
+    [string]$ComputerUseExe = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,10 +65,16 @@ $desktop = Find-ExistingFile @(
 )
 if (-not $cli) { throw "Missing acecode.exe. Build the Release desktop/CLI binaries first." }
 if (-not $desktop) { throw "Missing acecode-desktop.exe. Build the Release desktop binary first." }
+$computerUse = Find-ExistingFile @(
+    $ComputerUseExe,
+    (Join-Path (Split-Path -Parent $cli) "acecode-computer-use.exe")
+)
+if (-not $computerUse) { throw "Missing acecode-computer-use.exe beside the CLI. Build the matching Computer Use runtime first." }
 
 Write-Host "Staging installer payload from:"
 Write-Host "  CLI     $cli"
 Write-Host "  Desktop $desktop"
+Write-Host "  Computer Use $computerUse"
 
 if (Test-Path -LiteralPath $stagingDir) {
     Remove-Item -LiteralPath $stagingDir -Recurse -Force
@@ -75,6 +82,7 @@ if (Test-Path -LiteralPath $stagingDir) {
 New-Item -ItemType Directory -Path $stagingDir | Out-Null
 Copy-Item -LiteralPath $cli -Destination (Join-Path $stagingDir "acecode.exe")
 Copy-Item -LiteralPath $desktop -Destination (Join-Path $stagingDir "acecode-desktop.exe")
+Copy-Item -LiteralPath $computerUse -Destination (Join-Path $stagingDir "acecode-computer-use.exe")
 foreach ($name in @("README.md", "README_CN.md")) {
     $source = Join-Path $RepoRoot $name
     if (Test-Path -LiteralPath $source) {

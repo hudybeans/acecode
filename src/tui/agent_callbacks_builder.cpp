@@ -8,6 +8,7 @@
 #include <chrono>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -164,13 +165,16 @@ void setup_agent_callbacks(TuiContext& ctx) {
         screen.PostEvent(ftxui::Event::Custom);
     };
 
-    callbacks.on_tool_progress_start = [&state, &screen](const std::string& tool_name, const std::string& cmd_preview) {
+    callbacks.on_tool_progress_start = [&state, &screen](const std::string& tool_name,
+                                                          const std::string& cmd_preview,
+                                                          const std::string& preamble) {
         {
             std::lock_guard<std::mutex> lk(state.mu);
             state.tool_running = true;
             state.tool_progress = {};
             state.tool_progress.tool_name = tool_name;
             state.tool_progress.command_preview = cmd_preview;
+            state.tool_progress.preamble = preamble;
             state.tool_progress.start_time = std::chrono::steady_clock::now();
             state.last_tool_post_event_time = std::chrono::steady_clock::now();
         }

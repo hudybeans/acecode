@@ -12,6 +12,7 @@
 #include "turn_timing.hpp"
 #include "../tool/ask_user_question_tool.hpp"
 #include "../tool/tool_executor.hpp"
+#include "../tool_preamble/tool_preamble.hpp"
 #include "../tui/compact_notice_row.hpp"
 
 #include <nlohmann/json.hpp>
@@ -102,8 +103,13 @@ std::vector<TuiState::Message> replay_session_messages(
         if (msg.role == "assistant") {
             // 文本前奏(若有)先 push,顺序与运行时 on_delta+on_message 累积一致。
             flush_pending_calls();
-            if (!msg.content.empty()) {
-                out.push_back({"assistant", msg.content, /*is_tool=*/false});
+            // 工具前言(add-tool-preamble):正文里的 <text_preamble> 标签只在
+            // 实时期间进 loading,回放时剥掉;整段都是标签就不推正文行。
+            // metadata.tool_preamble 落盘只为记录,不还原任何显示行。
+            const std::string visible =
+                tool_preamble::strip_text_preamble_tags(msg.content);
+            if (!visible.empty()) {
+                out.push_back({"assistant", visible, /*is_tool=*/false});
             }
             // 每个 tool_call 单独成一行,先攒进 pending 等结果配对。
             // display_override 用 build_tool_call_preview 现算,失败

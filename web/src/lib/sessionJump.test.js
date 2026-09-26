@@ -2,18 +2,30 @@ import assert from 'node:assert/strict';
 import {
   desktopOpenSessionUrl,
   openSessionTargetFromSearch,
+  resumeSessionFromTarget,
   sessionJumpMessageOrdinal,
   sessionJumpReadOnly,
   sessionJumpWorkspaceVisible,
   sessionRefFromJumpTarget,
+  sessionWorktreeFromSources,
   stripOpenSessionParams,
 } from './sessionJump.js';
 import { navigationHistoryFromHash } from './navigationHistory.js';
-import { sessionWorkingCwd } from './previewTabs.js';
+import { previewFileLocation, sessionWorkingCwd } from './previewTabs.js';
 
 function test(name, fn) {
   try {
     fn();
+    console.log(`[pass] ${name}`);
+  } catch (error) {
+    console.error(`[fail] ${name}`);
+    throw error;
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     console.log(`[pass] ${name}`);
   } catch (error) {
     console.error(`[fail] ${name}`);
@@ -210,6 +222,46 @@ test('workspace session ref keeps cwd and workingCwd consistent', () => {
   assert.equal(ref.workingCwd, 'N:/proj');
 });
 
+test('worktree session opens relative turn files from its worktree after navigation', () => {
+  const workspaceCwd = 'N:/repo';
+  const worktreePath = 'N:/repo/.acecode/worktrees/ses-123';
+  const worktree = { name: 'ses-123', branch: 'worktree-ses-123', path: worktreePath };
+  assert.equal(sessionWorktreeFromSources({}, { worktree }), worktree);
+  for (const resumeResult of [
+    {},
+    { session_id: 's3', cwd: workspaceCwd, working_cwd: worktreePath, worktree },
+  ]) {
+    const ref = sessionRefFromJumpTarget(
+      { sessionId: 's3', workspaceHash: 'w1', cwd: workspaceCwd, worktree },
+      resumeResult,
+    );
+    const root = sessionWorkingCwd({
+      worktree: ref.worktree,
+      cwd: ref.workingCwd || ref.cwd || '',
+      fallbackCwd: workspaceCwd,
+    });
+    assert.equal(ref.cwd, workspaceCwd);
+    assert.equal(root, worktreePath);
+    assert.deepEqual(previewFileLocation({ cwd: root, path: 'pelican-bicycle.html' }), {
+      cwd: worktreePath,
+      path: 'pelican-bicycle.html',
+    });
+  }
+});
+
+test('resume clears a stale worktree before relative file preview', () => {
+  assert.equal(sessionWorktreeFromSources({ worktree: null }, {
+    worktree: { path: 'N:/repo/.acecode/worktrees/deleted' },
+  }), null);
+  const ref = sessionRefFromJumpTarget(
+    { sessionId: 's4', workspaceHash: 'w1', cwd: 'N:/repo',
+      worktree: { path: 'N:/repo/.acecode/worktrees/deleted' } },
+    { session_id: 's4', cwd: 'N:/repo', working_cwd: 'N:/repo', worktree: null },
+  );
+  assert.equal(ref.worktree, null);
+  assert.equal(sessionWorkingCwd({ worktree: ref.worktree, cwd: ref.workingCwd }), 'N:/repo');
+});
+
 // 触发场景：no-workspace 会话里模型生成了文件，用户点链接预览。
 // 期望行为：预览根目录取会话自己的工作目录，而不是 daemon 进程的 cwd。
 // 回归背景：ref.cwd 对 no-workspace 会话恒为空，旧逻辑会回退到 health.cwd
@@ -249,4 +301,65 @@ test('no-workspace session without working_cwd yields no preview root at all', (
   });
 
   assert.equal(previewRoot, '');
+});
+
+await testAsync('stale workspace target recovers a no-workspace file preview root', async () => {
+  const sessionId = '20260924-072030-b1fe';
+  const actualCwd = `C:/Users/shao/.acecode/cache/no-workspace/${sessionId}`;
+  const calls = [];
+  const client = {
+    resumeWorkspaceSession: async (hash, id) => {
+      calls.push(`workspace:${hash}:${id}`);
+      throw { status: 404 };
+    },
+    resumeSession: async (id) => {
+      calls.push(`session:${id}`);
+      return { session_id: id, no_workspace: true, cwd: '', working_cwd: actualCwd };
+    },
+  };
+  const resumed = await resumeSessionFromTarget(client, sessionId, {
+    workspaceHash: 'stale-workspace',
+  });
+  const ref = sessionRefFromJumpTarget(
+    { sessionId, workspaceHash: 'stale-workspace' }, resumed,
+  );
+  const root = sessionWorkingCwd({
+    cwd: ref.workingCwd || ref.cwd || '',
+    fallbackCwd: ref.noWorkspace ? '' : 'N:/wrong-worktree',
+  });
+  assert.deepEqual(calls, [
+    `workspace:stale-workspace:${sessionId}`,
+    `session:${sessionId}`,
+  ]);
+  assert.equal(ref.noWorkspace, true);
+  assert.equal(ref.workspaceHash, '');
+  assert.deepEqual(previewFileLocation({ cwd: root, path: 'pelican-bicycle.html' }), {
+    cwd: actualCwd,
+    path: 'pelican-bicycle.html',
+  });
+  assert.equal(new URL(desktopOpenSessionUrl({
+    port: 4567, sessionId, workspaceHash: ref.workspaceHash,
+    noWorkspace: ref.noWorkspace,
+  })).searchParams.get('no_workspace'), '1');
+});
+
+await testAsync('workspace resume does not fall back unless a no-workspace session is confirmed', async () => {
+  let compatibilityCalls = 0;
+  const client = {
+    resumeWorkspaceSession: async () => { throw { status: 404 }; },
+    resumeSession: async () => {
+      compatibilityCalls += 1;
+      return { session_id: 's1', no_workspace: false, cwd: 'N:/other' };
+    },
+  };
+  await assert.rejects(resumeSessionFromTarget(client, 's1', {
+    workspaceHash: 'wrong-workspace',
+  }), (error) => error?.status === 404);
+  assert.equal(compatibilityCalls, 1);
+
+  client.resumeWorkspaceSession = async () => ({ session_id: 's1', cwd: 'N:/repo' });
+  assert.equal((await resumeSessionFromTarget(client, 's1', {
+    workspaceHash: 'right-workspace',
+  })).cwd, 'N:/repo');
+  assert.equal(compatibilityCalls, 1);
 });

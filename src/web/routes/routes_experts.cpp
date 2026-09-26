@@ -1,3 +1,4 @@
+#include "../../config/mcp_config.hpp"
 // routes_experts.cpp — local expert component discovery and managed CRUD.
 #include "../server_impl.hpp"
 #include "../../tool/mcp_manager.hpp"
@@ -223,64 +224,37 @@ void WebServer::Impl::register_experts() {
         }
 
         json mcp_servers = json::array();
-        if (deps.mcp_manager) {
-            for (const auto& server : deps.mcp_manager->list_servers()) {
-                const auto config_it = config_snapshot
-                    ? config_snapshot->mcp_servers.find(server.name)
-                    : std::map<std::string, McpServerConfig>::const_iterator{};
-                const bool configured = !config_snapshot ||
-                    config_it != config_snapshot->mcp_servers.end();
-                const bool globally_enabled = configured &&
-                    (!config_snapshot || !config_it->second.disabled);
-                const bool runtime_available =
-                    server.state == McpServerState::Connected;
+        try {
+            const auto project = load_project_mcp_config(workspace->cwd);
+            const auto effective = effective_mcp_config(
+                config_snapshot ? config_snapshot->mcp_servers : McpServerMap{}, project);
+            const auto runtime = deps.mcp_manager ? deps.mcp_manager->list_servers()
+                                                  : std::vector<McpServerInfo>{};
+            for (const auto& [id, config] : effective) {
+                const auto owner = project.count(id) ? mcp_project_server_id(workspace->cwd, id) : id;
+                const auto running = std::find_if(runtime.begin(), runtime.end(),
+                    [&](const McpServerInfo& server) { return server.name == owner; });
+                const bool present = running != runtime.end();
+                const bool available = present && running->state == McpServerState::Connected;
                 mcp_servers.push_back({
-                    {"id", server.name},
-                    {"description", std::string{}},
-                    {"transport", server.transport},
-                    {"available",
-                     globally_enabled && runtime_available},
-                    {"globally_enabled", globally_enabled},
-                    {"default_enabled", globally_enabled},
-                    {"expert_selectable", configured},
-                    {"configurable", configured},
-                    {"runtime_available", runtime_available},
-                    {"status",
-                     globally_enabled
-                         ? mcp_status_name(server.state)
-                         : "disabled"},
-                    {"disabled_reason",
-                     globally_enabled
-                         ? mcp_disabled_reason(server.state)
-                         : "globally_disabled"},
-                    {"tool_count", server.tool_count},
+                    {"id", id}, {"description", std::string{}},
+                    {"source", project.count(id) ? "project" : "global"},
+                    {"transport", mcp_transport_name(config.transport)},
+                    {"available", !config.disabled && available},
+                    {"globally_enabled", !config.disabled},
+                    {"default_enabled", !config.disabled},
+                    {"expert_selectable", true}, {"configurable", true},
+                    {"runtime_available", available},
+                    {"status", config.disabled ? "disabled" : present ? mcp_status_name(running->state) : "unavailable"},
+                    {"disabled_reason", config.disabled ? "globally_disabled"
+                        : present ? mcp_disabled_reason(running->state) : "runtime_unavailable"},
+                    {"tool_count", present ? running->tool_count : 0},
                 });
             }
-        } else if (config_snapshot) {
-            // Tests and reduced embedders may not own a live manager. Return
-            // configured IDs and safe state only; never serialize config
-            // command lines, environment, headers, or credentials.
-            for (const auto& [id, config] :
-                 config_snapshot->mcp_servers) {
-                const bool disabled = config.disabled;
-                mcp_servers.push_back({
-                    {"id", id},
-                    {"description", std::string{}},
-                    {"transport",
-                     mcp_transport_name(config.transport)},
-                    {"available", false},
-                    {"globally_enabled", !disabled},
-                    {"default_enabled", !disabled},
-                    {"expert_selectable", true},
-                    {"configurable", true},
-                    {"runtime_available", false},
-                    {"status", disabled ? "disabled" : "unavailable"},
-                    {"disabled_reason",
-                     disabled ? "globally_disabled"
-                              : "runtime_unavailable"},
-                    {"tool_count", 0},
-                });
-            }
+        } catch (const McpConfigError& error) {
+            crow::response response(400, error.payload().dump());
+            response.add_header("Content-Type", "application/json");
+            return with_cors(req, std::move(response));
         }
 
         json tools = json::array();

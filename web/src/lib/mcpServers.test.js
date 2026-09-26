@@ -5,6 +5,8 @@ import {
   applyMcpToggle,
   mcpTransportLabel,
   mcpCommandLine,
+  mcpScopeQuery,
+  mcpConfigErrorMessage,
 } from './mcpServers.js';
 
 function run(name, fn) {
@@ -93,4 +95,15 @@ run('applyMcpToggle flips disabled without mutating the source', () => {
   assert.equal(src.b.disabled, true);
   // 未点到的 server 原样保留
   assert.deepEqual(off.b, { command: 'b', disabled: true });
+});
+
+run('MCP scope queries preserve the global default and encode workspace identity', () => {
+  assert.equal(mcpScopeQuery(), '');
+  assert.equal(mcpScopeQuery('a&b'), '?workspace=a%26b');
+});
+
+run('MCP validation diagnostics display paths without dumping schemas or secrets into toast text', () => {
+  const error = { body: { errors: [{ path: '/server/args/0', message: 'must be string' }], schema: { title: 'large schema' } } };
+  assert.equal(mcpConfigErrorMessage(error), '/server/args/0: must be string');
+  assert.equal(mcpConfigErrorMessage(new Error('offline')), 'offline');
 });

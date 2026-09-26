@@ -25,6 +25,7 @@ struct ThreadScope {
 struct ThreadWaitTarget {
     std::string thread_id;
     std::uint64_t after_cursor = 0;
+    std::string workspace_hash;
 };
 
 struct ThreadServiceResult {
@@ -42,8 +43,9 @@ struct ThreadServiceResult {
 };
 
 // In-process thread domain service shared by model tools and host surfaces.
-// It resolves persistent and active sessions in the calling workspace and
-// never loops back through ACECode's HTTP API.
+// Discovery reads persistent and active sessions across all ACECode projects.
+// Mutations retain the calling workspace scope. No operation loops back
+// through ACECode's HTTP API.
 class ThreadService {
 public:
     struct Deps {
@@ -54,13 +56,16 @@ public:
     explicit ThreadService(Deps deps);
 
     ThreadServiceResult list(const ThreadScope& scope,
-                             std::size_t limit = 20) const;
+                             std::size_t limit = 20,
+                             const std::string& cursor = {},
+                             bool include_archived = false) const;
     ThreadServiceResult read(const ThreadScope& scope,
                              const std::string& thread_id,
                              const std::string& cursor = {},
                              std::size_t turn_limit = 8,
                              bool include_outputs = false,
-                             std::size_t max_chars_per_item = 2000) const;
+                             std::size_t max_chars_per_item = 2000,
+                             const std::string& workspace_hash = {}) const;
     ThreadServiceResult wait(const ThreadScope& scope,
                              const std::vector<ThreadWaitTarget>& targets,
                              int timeout_ms,

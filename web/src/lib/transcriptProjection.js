@@ -7,6 +7,8 @@ import {
 } from './toolSummaryFallback.js';
 import { isImageAttachment, normalizeAttachmentList } from './messageAttachments.js';
 import { questionFeedbackForItem } from './questionFeedback.js';
+import { isShellCommand } from './shellCommandPresentation.js';
+import { mergeLegacyGoalNotices } from './systemNotice.js';
 
 function isUserMessage(item) {
   return item?.kind === 'msg' && item.role === 'user';
@@ -30,6 +32,31 @@ function isStreamingAssistant(item) {
 
 function isToolItem(item) {
   return item?.kind === 'tool';
+}
+
+// 工具前言(add-tool-preamble):一个工具调用沿用的阶段前言。reducer 从
+// tool_start.preamble 挂到 tool.preamble;历史里的工具项没有它(落定后不显示,
+// 这是用户决定)。kind(read / write)只透传,给以后的效果留位。
+function preambleOfItem(item) {
+  if (!isToolItem(item)) return null;
+  const p = item.tool?.preamble;
+  if (!p || typeof p !== 'object') return null;
+  const title = String(p.title || '').trim();
+  return title
+    ? { title, source: String(p.source || ''), kind: String(p.kind || '') }
+    : null;
+}
+
+// 实时分组的前言 = 正在运行的最新一个工具的前言;工具都跑完(模型在想下一步)
+// 时不沿用旧前言,让阶段文案接管。
+function liveToolPreamble(items) {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (!isCollapsibleToolItem(item) || item.tool?.isDone === true) continue;
+    const preamble = preambleOfItem(item);
+    if (preamble) return preamble;
+  }
+  return null;
 }
 
 function isAskUserQuestionResultTool(item) {
@@ -374,6 +401,10 @@ function toolActivityLabel(item) {
     return count > 0 ? `正在运行 ${count} 个智能体` : '正在运行智能体';
   }
   const tool = item?.tool || {};
+  // 工具前言优先:正在运行的工具有前言时实时标题就是那句话;跑完的工具不再
+  // 沿用前言,免得模型思考下一步时活动行还挂着上一步的文案。
+  const preamble = preambleOfItem(item);
+  if (preamble && item.tool?.isDone !== true) return preamble.title;
   const direct = cleanSummaryText(tool.title || tool.displayOverride);
   if (direct) return direct;
   const verb = cleanSummaryText(tool.summary?.verb);
@@ -405,11 +436,17 @@ function liveToolActivityTitle(items) {
 function makeToolSummaryItem(items, options = {}) {
   const { startTs, endTs } = collapsedTimestamps(items);
   const live = options.live === true;
+  // 工具前言只影响实时行:正在运行的工具有前言时,活动行标题就是它(并行计数与
+  // 阶段文案退到 detail);落定后的汇总仍是按工具统计的模板文案。
+  const preamble = live ? liveToolPreamble(items) : null;
   return {
     kind: 'activity_summary',
     mode: live ? 'live' : 'tools',
     id: options.id || collapsedId('tools', items),
-    title: live ? liveToolActivityTitle(items) : summarizeToolItems(items),
+    title: preamble
+      ? preamble.title
+      : (live ? liveToolActivityTitle(items) : summarizeToolItems(items)),
+    ...(preamble ? { preamble } : {}),
     live,
     runningToolCount: runningToolCount(items),
     collapsedItems: items.slice(),
@@ -580,7 +617,11 @@ function collapseCompletedCompactNoticeGroups(items) {
         compact_notice_id: group.id,
         compact_notice_stage: 'complete',
         compact_notice_complete: true,
-        compact_label: 'Context compacted',
+        system_notice: {
+          version: 1,
+          code: 'context_compacted',
+          params: { entries: group.items.map(({ content, metadata }) => ({ content, metadata })) },
+        },
       },
       coveredItemIds: collectCoveredIds(group.items),
       ts: itemTimestamp(first) || Date.now(),
@@ -689,7 +730,19 @@ function suppressStructuredToolWrappers(items) {
     .map((item, index) => {
       if (hiddenIndexes.has(index)) return null;
       const extras = coveredExtras.get(index);
-      return extras ? attachCoveredItems(item, extras) : item;
+      if (!extras) return item;
+      const call = extras.find(isToolCallTranscriptMessage);
+      const invocation = call ? parseLegacyToolCall(call.content, transcriptToolName(call)) : null;
+      // 历史结构化结果没有 args，配对后先恢复命令，再移除调用包装。
+      // 已有实时参数优先，且不修改原始消息或其它工具的专用展示。
+      const restored = invocation && (isShellCommand(item.tool) || isShellCommand({ tool: invocation.toolName }))
+        ? { ...item, tool: {
+            ...item.tool,
+            tool: item.tool.tool || invocation.toolName,
+            args: item.tool.args ?? (invocation.malformed ? null : invocation.args),
+          } }
+        : item;
+      return attachCoveredItems(restored, extras);
     })
     .filter(Boolean);
 }
@@ -767,6 +820,8 @@ function makeLegacyInvocationItem(call, result, betweenItems) {
       elapsed: 0,
       summary,
       output: legacyInvocationContent(call, result),
+      ...(isShellCommand({ tool: toolName }) && !invocation.malformed
+        ? { resultOutput: legacyResultText(result) } : {}),
       hunks: [],
       attachments: [],
       metadata,
@@ -1004,7 +1059,7 @@ function projectGenericTurn(items, options = {}) {
       continue;
     }
 
-    if (isActivityBufferItem(item)) {
+    if (options.messageAutoCollapse !== false && isActivityBufferItem(item)) {
       tools.push(item);
       continue;
     }
@@ -1318,15 +1373,17 @@ function projectTurn(items, options = {}) {
   const normalizedItems = groupMediaTools(
     groupSubagentTools(visibleItems),
   );
+  if (options.messageAutoCollapse === false) {
+    return projectGenericTurn(normalizedItems, options);
+  }
   const finalCollapsed = projectFinalCollapsedTurn(normalizedItems, options);
   if (finalCollapsed) return finalCollapsed;
   return projectCompletionTurn(normalizedItems, options);
 }
 
 export function projectCollapsedTranscriptItems(items, options = {}) {
-  const source = collapseCompletedCompactNoticeGroups(
-    Array.isArray(items) ? items : [],
-  );
+  const raw = Array.isArray(items) ? items : [];
+  const source = collapseCompletedCompactNoticeGroups(mergeLegacyGoalNotices(raw));
   if (source.length === 0) {
     return options.ensureLiveActivity && options.deferTrailingToolSummary
       ? [makeToolSummaryItem([], {
@@ -1344,6 +1401,7 @@ export function projectCollapsedTranscriptItems(items, options = {}) {
       out.push(...projectTurn(turn, {
         ...turnOptions,
         filterNormalizedItem: options.filterNormalizedItem,
+        messageAutoCollapse: options.messageAutoCollapse,
       }));
       turn = [];
     }
@@ -1381,4 +1439,6 @@ export const __test__ = {
   groupMediaTools,
   isMediaToolItem,
   collapseCompletedCompactNoticeGroups,
+  preambleOfItem,
+  liveToolPreamble,
 };

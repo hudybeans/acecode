@@ -849,6 +849,13 @@ TEST(LocalSessionClient, GoalCreatePersistsVisibleAuditBeforeHiddenContext) {
     EXPECT_FALSE(messages[audit_idx].is_meta);
     EXPECT_NE(messages[audit_idx].content.find("[Goal] Started: finish visible audit"),
               std::string::npos);
+    const auto& notice = messages[audit_idx].metadata.at("system_notice");
+    EXPECT_EQ(notice.at("code"), "goal_started");
+    EXPECT_EQ(notice.at("params").at("goal").at("objective"), "finish visible audit");
+    EXPECT_EQ(notice.at("params").at("goal").at("tokens_used"), 0);
+    EXPECT_EQ(std::count_if(messages.begin(), messages.end(), [](const auto& msg) {
+        return is_goal_audit(msg, "create");
+    }), 1);
     EXPECT_FALSE(provider->saw_transcript_only_message());
 
     fx.registry.destroy(id);

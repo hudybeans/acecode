@@ -5,6 +5,7 @@
 
 import { getToken } from './auth.js';
 import { createSideChatStream } from './sideChatStream.js';
+import { mcpScopeQuery } from './mcpServers.js';
 
 export class ApiError extends Error {
   constructor(status, body) {
@@ -195,6 +196,16 @@ export function sessionDraftPath(id, workspaceHash = '') {
   return `/api/sessions/${sid}/draft`;
 }
 
+export function workspaceDraftPath(workspaceHash = '') {
+  return `/api/workspaces/${encodeURIComponent(workspaceHash || '__no_workspace__')}/draft`;
+}
+
+export function workspaceDraftRequestOptions(draft) {
+  // Fetch keepalive bodies are limited to 64 KiB. Larger pasted drafts must
+  // still autosave normally instead of failing every request with TypeError.
+  return { keepalive: new TextEncoder().encode(JSON.stringify(draft)).byteLength <= 64 * 1024 };
+}
+
 export function sessionTodosPath(id, workspaceHash = '') {
   const sid = encodeURIComponent(id);
   const hash = String(workspaceHash || '').trim();
@@ -226,6 +237,26 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 // 其余端点一律走默认超时。
 const NO_TIMEOUT = 0;
 const LLM_ROUNDTRIP_TIMEOUT_MS = 600000;
+// 粘贴的文本块上传 / 读取:单段最多 24 MiB(base64 后约 32 MB),远程 Web 慢网
+// 下默认 30 秒传不完。仍用有限值,不归入上面「合法地会阻塞很久」的无超时端点。
+// pastedText.js 以同名常量重新导出,粘贴相关代码统一从那里取。
+export const PASTED_TEXT_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+function workspaceDraftAttachmentsPath(workspaceHash = '') {
+  return `${workspaceDraftPath(workspaceHash)}/attachments`;
+}
+
+export function workspaceDraftAttachmentBlobPath(workspaceHash, attachmentId) {
+  return `${workspaceDraftAttachmentsPath(workspaceHash)}/${encodeURIComponent(attachmentId)}/blob`;
+}
+
+function timeoutOptions(options = {}, defaultTimeoutMs = undefined) {
+  const timeoutMs = options?.timeoutMs !== undefined ? options.timeoutMs : defaultTimeoutMs;
+  return {
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  };
+}
 
 async function request(method, path, body, base, options = {}) {
   const headers = {};
@@ -269,6 +300,8 @@ async function request(method, path, body, base, options = {}) {
         : (externalSignal ? { signal: externalSignal } : {})),
     });
     if (resp.ok && options.responseType === 'blob') return await resp.blob();
+    // 附件正文按原样读成字符串,不按 Content-Type 猜 JSON(粘贴的文本可能恰好是 JSON)。
+    if (resp.ok && options.responseType === 'text') return await resp.text();
     const ctype = resp.headers.get('Content-Type') || '';
     let parsed = null;
     if (resp.status !== 204 && ctype.includes('application/json')) {
@@ -301,7 +334,8 @@ export function createApi(base = null) {
     modelPoolStatus:  ()             => request('GET',    '/api/model-pool-status', undefined, base),
     // 控制台 PTY(add-console-dock):loopback-only,daemon 端 16 会话上限(429)。
     createPty:        (opts={})      => request('POST',   '/api/pty', opts, base),
-    listPty:          ()             => request('GET',    '/api/pty', undefined, base),
+    listPty:          (owner)        => request('GET', `/api/pty${owner == null ? '' : `?owner_id=${encodeURIComponent(owner)}`}`, undefined, base),
+    transferPtyOwner: (from, to)     => request('POST', '/api/pty/transfer-owner', { from_owner: from, to_owner: to }, base),
     deletePty:        (id)           => request('DELETE', `/api/pty/${encodeURIComponent(id)}`, undefined, base),
     resizePty:        (id, cols, rows) =>
       request('POST', `/api/pty/${encodeURIComponent(id)}/resize`, { cols, rows }, base),
@@ -314,6 +348,10 @@ export function createApi(base = null) {
     listWorkspaces:   (options={})   => request(
       'GET', '/api/workspaces', undefined, base, { signal: options.signal },
     ),
+    setWorkspaceOrder: (hashes)      => request('PUT', '/api/workspaces/order', { hashes }, base),
+    getWorkspaceDraft: (hash = '') => request('GET', workspaceDraftPath(hash), undefined, base),
+    setWorkspaceDraft: (hash, draft) => request('PUT', workspaceDraftPath(hash), draft, base, workspaceDraftRequestOptions(draft)),
+    clearWorkspaceDraft: (hash, submitted) => request('DELETE', workspaceDraftPath(hash), submitted, base, workspaceDraftRequestOptions(submitted)),
     listLoops:        ()             => request('GET',    '/api/loops', undefined, base),
     listExperts:      (workspace='') => request('GET',    expertsPath(workspace), undefined, base),
     listExpertCapabilities: (workspace='') =>
@@ -329,6 +367,9 @@ export function createApi(base = null) {
     deleteLoop:       (id)           => request('DELETE', `/api/loops/${encodeURIComponent(id)}`, undefined, base),
     listLoopRuns:     (id, limit=100) => request('GET',   `/api/loops/${encodeURIComponent(id)}/runs?limit=${encodeURIComponent(String(limit))}`, undefined, base),
     registerWorkspace:(cwd)          => request('POST',   '/api/workspaces', {cwd}, base),
+    // 「编辑项目」:名称 / 图标 / 附加文件夹整体保存;移除 = 从项目列表隐藏(不删文件)。
+    updateWorkspace:  (hash, profile) => request('PUT',   `/api/workspaces/${encodeURIComponent(hash)}`, profile, base),
+    removeWorkspace:  (hash)         => request('DELETE', `/api/workspaces/${encodeURIComponent(hash)}`, undefined, base),
     // 后端弹原生目录选择框并阻塞到用户选完 —— 不能设超时。
     pickWorkspaceFolder:()           => request('POST',   '/api/workspaces/pick-folder', undefined, base,
       { timeoutMs: NO_TIMEOUT }),
@@ -428,6 +469,12 @@ export function createApi(base = null) {
         : { text: payload };
       return request('POST', `/api/sessions/${encodeURIComponent(id)}/messages`, body, base);
     },
+    retryLastUserMessage: (id, expectedUserMessageId) => request(
+      'POST',
+      `/api/sessions/${encodeURIComponent(id)}/messages/retry`,
+      { expected_user_message_id: expectedUserMessageId },
+      base,
+    ),
     steerTurn:        (id, payload)  => request(
       'POST',
       `/api/sessions/${encodeURIComponent(id)}/turn/steer`,
@@ -455,8 +502,26 @@ export function createApi(base = null) {
         : { text: payload },
       base,
     ),
-    uploadSessionAttachment: (id, attachment) =>
-      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base),
+    uploadSessionAttachment: (id, attachment, options = {}) =>
+      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base,
+        timeoutOptions(options)),
+    // 首页(还没有会话)粘贴的大段文本落到工作区草稿附件区,刷新不丢;服务端只接受
+    // origin:"pasted_text" 的 snapshot。scope 为 workspace hash 或 __no_workspace__。
+    uploadWorkspaceDraftAttachment: (scope, attachment, options = {}) =>
+      request('POST', workspaceDraftAttachmentsPath(scope), attachment, base,
+        timeoutOptions(options, PASTED_TEXT_UPLOAD_TIMEOUT_MS)),
+    // 发送前把工作区草稿附件复制成会话附件(服务端 from_workspace_draft 分支)。
+    importWorkspaceDraftAttachment: (id, { workspace, id: attachmentId } = {}, options = {}) =>
+      request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`,
+        { from_workspace_draft: { workspace: String(workspace || ''), id: String(attachmentId || '') } },
+        base, timeoutOptions(options)),
+    // 读取附件正文(粘贴的文本块查看 / 编辑)。url 是 /api/... 路径,走 request()
+    // 才能带上远程 Web 的 token 头,不能直接交给浏览器取裸 URL。
+    readAttachmentText: (url, options = {}) =>
+      request('GET', String(url || ''), undefined, base, {
+        ...timeoutOptions(options, PASTED_TEXT_UPLOAD_TIMEOUT_MS),
+        responseType: 'text',
+      }),
     createSessionAttachmentReference: (id, attachment) =>
       request('POST', `/api/sessions/${encodeURIComponent(id)}/attachments`, attachment, base),
     executeCommand:   (id, command)  => request('POST',   `/api/sessions/${encodeURIComponent(id)}/commands`, command, base),
@@ -505,16 +570,18 @@ export function createApi(base = null) {
       `/api/skills/${encodeURIComponent(name)}` + (workspaceHash ? '?workspace=' + encodeURIComponent(workspaceHash) : ''),
       {enabled: en}, base),
     getSkillBody:     (name)         => request('GET',    `/api/skills/${encodeURIComponent(name)}/body`, undefined, base),
-    getMcp:           ()             => request('GET',    '/api/mcp', undefined, base),
-    putMcp:           (cfg)          => request('PUT',    '/api/mcp', cfg, base),
-    reloadMcp:        ()             => request('POST',   '/api/mcp/reload', undefined, base),
-    toggleMcpServer:  (name, enabled) => request('POST',  '/api/mcp/toggle', {name, enabled}, base),
+    getMcp:           (workspace = '') => request('GET', '/api/mcp' + mcpScopeQuery(workspace), undefined, base),
+    getMcpSchema:     () => request('GET', '/api/mcp/schema', undefined, base),
+    putMcp:           (cfg, workspace = '') => request('PUT', '/api/mcp' + mcpScopeQuery(workspace), cfg, base),
+    reloadMcp:        (workspace = '') => request('POST', '/api/mcp/reload' + mcpScopeQuery(workspace), undefined, base),
+    toggleMcpServer:  (name, enabled, workspace = '') => request('POST', '/api/mcp/toggle' + mcpScopeQuery(workspace), {name, enabled}, base),
     listHooks:        ()             => request('GET',    '/api/hooks', undefined, base),
     refreshHooks:     ()             => request('POST',   '/api/hooks/refresh', undefined, base),
     trustHook:        (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/trust`, undefined, base),
     disableHook:      (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/disable`, undefined, base),
     enableHook:       (id)           => request('POST',   `/api/hooks/${encodeURIComponent(id)}/enable`, undefined, base),
     listModels:       ()             => request('GET',    '/api/models', undefined, base),
+    refreshModelReasoning: ()        => request('POST',   '/api/models/reasoning/refresh', {}, base),
     reorderModels:    (names)        => request('POST',   '/api/config/model-order', { names }, base),
     testModel: (draft, options = {}) => request('POST', '/api/models/test', draft, base,
       { timeoutMs: 35000, signal: options.signal }),
@@ -549,6 +616,10 @@ export function createApi(base = null) {
     getDefaultPermissionMode: ()     => request('GET',    '/api/config/default-permission-mode', undefined, base),
     setDefaultPermissionMode: (mode) => request('PUT',    '/api/config/default-permission-mode', {mode}, base),
     getDesktopNotifications: ()      => request('GET',    '/api/config/desktop-notifications', undefined, base),
+    getDesktopMultiInstance: ()      => request('GET',    '/api/config/desktop-multi-instance', undefined, base),
+    setDesktopMultiInstance: (enabled) => request('PUT', '/api/config/desktop-multi-instance', {enabled: !!enabled}, base),
+    getToolPreamble:  ()             => request('GET',    '/api/config/tool-preamble', undefined, base),
+    setToolPreamble:  (patch)        => request('PUT',    '/api/config/tool-preamble', patch, base),
     setDesktopNotifications: (enabled) => request('PUT',  '/api/config/desktop-notifications', {enabled: !!enabled}, base),
     getRemoteWeb:     ()             => request('GET',    '/api/config/remote-web', undefined, base),
     setRemoteWeb:     (enabled)      => request('PUT',    '/api/config/remote-web', {enabled: !!enabled}, base),
@@ -592,6 +663,9 @@ export function createApi(base = null) {
     setCustomInstructions: (cfg)     => request('PUT',    '/api/config/custom-instructions', cfg, base),
     getConnectors: ()                => request('GET',    '/api/config/connectors', undefined, base),
     getImageGeneration: ()           => request('GET', '/api/config/image-generation', undefined, base),
+    getComputerUse: ()               => request('GET', '/api/config/computer-use', undefined, base),
+    setComputerUse: (config)         => request('PUT', '/api/config/computer-use', config, base, { keepalive: true }),
+    requestComputerUsePermission: (permission) => request('POST', '/api/config/computer-use/permissions', { permission }, base),
     getSummaryGeneration: ()         => request('GET', '/api/config/summary-generation', undefined, base),
     setSummaryGeneration: (config)   => request('PUT', '/api/config/summary-generation', config, base, { keepalive: true }),
     setImageGeneration: (config)     => request('PUT', '/api/config/image-generation', config, base, { keepalive: true }),

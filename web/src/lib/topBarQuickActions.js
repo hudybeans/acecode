@@ -1,4 +1,9 @@
 import { DEFAULT_SINGLE_LAYOUT } from './singleLayout.js';
+import { searchPaletteShortcutLabel } from './searchPaletteShortcut.js';
+
+// 快捷操作里带默认快捷键的项:值是逻辑名而不是按键文案,按键文案随平台变
+// (macOS 显示 ⌘K),渲染时经 topBarQuickActionShortcutLabel 解析。
+export const QUICK_ACTION_SHORTCUT_SEARCH_PALETTE = 'search-palette';
 
 export const TOPBAR_QUICK_ACTIONS = Object.freeze([
   Object.freeze({
@@ -24,6 +29,7 @@ export const TOPBAR_QUICK_ACTIONS = Object.freeze([
     iconSize: 14,
     callback: 'onOpenSearch',
     group: 'navigation',
+    shortcut: QUICK_ACTION_SHORTCUT_SEARCH_PALETTE,
   }),
   Object.freeze({
     id: 'settings',
@@ -78,6 +84,14 @@ export function topBarQuickActionsMenuWidth(sidebarWidth) {
   return typeof sidebarWidth === 'number' && Number.isFinite(sidebarWidth) && sidebarWidth > 0
     ? Math.round(sidebarWidth)
     : DEFAULT_SINGLE_LAYOUT.sidebar;
+}
+
+// 菜单项右侧的按键提示;没有快捷键的项返回空串,调用方据此不渲染。
+export function topBarQuickActionShortcutLabel(action, win) {
+  if (action?.shortcut === QUICK_ACTION_SHORTCUT_SEARCH_PALETTE) {
+    return searchPaletteShortcutLabel(win);
+  }
+  return '';
 }
 
 export function invokeTopBarQuickAction(actionId, callbacks = {}) {

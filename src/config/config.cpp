@@ -2,6 +2,8 @@
 
 #include "permissions.hpp"
 #include "config_recovery.hpp"
+#include "config_mutation.hpp"
+#include "mcp_config.hpp"
 #include "model_provider_registry.hpp"
 #include "request_headers.hpp"
 #include "../themes/theme_id.hpp"
@@ -755,7 +757,17 @@ static void sanitize_disabled_model_providers(AppConfig& cfg) {
 AppConfig load_config() {
     const std::string config_path =
         path_to_utf8(path_from_utf8(get_acecode_dir()) / "config.json");
-    return load_config_from_path(config_path, true);
+    AppConfig cfg = load_config_from_path(config_path, true);
+    if (!cfg.sandbox_disable_migration_completed) {
+        const auto migration = disable_sandbox_once(config_path);
+        if (!migration.ok) {
+            throw std::runtime_error(
+                "failed to persist one-time sandbox migration: " + migration.error);
+        }
+        // Reapply runtime-only environment overrides after the locked disk update.
+        cfg = load_config_from_path(config_path, true);
+    }
+    return cfg;
 }
 
 static AppConfig load_config_from_path_once(
@@ -797,6 +809,10 @@ static AppConfig load_config_from_path_once(
             }
             active_bytes = raw_stream.str();
             nlohmann::json j = nlohmann::json::parse(*active_bytes);
+            ifs.close();
+            if (recover_mcp_config(j, config_path)) {
+                active_bytes = j.dump(2) + "\n";
+            }
 
             if (j.contains("provider") && j["provider"].is_string()) {
                 cfg.provider = j["provider"].get<std::string>();
@@ -863,6 +879,12 @@ static AppConfig load_config_from_path_once(
                 j["default_permission_mode"].is_string()) {
                 cfg.default_permission_mode = normalize_permission_mode_name(
                     j["default_permission_mode"].get<std::string>());
+            }
+            if (j.contains("migrations") && j["migrations"].is_object()) {
+                const auto& migrations = j["migrations"];
+                cfg.sandbox_disable_migration_completed =
+                    migrations.contains("disable_sandbox_once") &&
+                    migrations["disable_sandbox_once"] == true;
             }
             // 沙盒段(openspec add-auto-mode-sandbox)。缺省 → enabled、不放行
             // 网络、无额外可写根。非法条目静默跳过,不阻塞启动。
@@ -1062,6 +1084,14 @@ static AppConfig load_config_from_path_once(
                                 uij["font_size"].get<std::string>();
                         } else {
                             LOG_WARN("[config] invalid 'web_ui.font_size', using 'medium'");
+                        }
+                    }
+                    if (uij.contains("message_auto_collapse")) {
+                        if (uij["message_auto_collapse"].is_boolean()) {
+                            cfg.web_ui.message_auto_collapse =
+                                uij["message_auto_collapse"].get<bool>();
+                        } else {
+                            LOG_WARN("[config] invalid 'web_ui.message_auto_collapse', using true");
                         }
                     }
                     if (uij.contains("sidebar_session_time")) {
@@ -1487,6 +1517,11 @@ static AppConfig load_config_from_path_once(
                     LOG_WARN("[config] 'desktop' must be an object, ignoring");
                 } else {
                     const auto& dj = j["desktop"];
+                    if (dj.contains("allow_multiple_instances") &&
+                        dj["allow_multiple_instances"].is_boolean()) {
+                        cfg.desktop.allow_multiple_instances =
+                            dj["allow_multiple_instances"].get<bool>();
+                    }
                     std::optional<bool> legacy_close_to_tray;
                     if (dj.contains("close_to_tray") && dj["close_to_tray"].is_boolean()) {
                         cfg.desktop.close_to_tray = dj["close_to_tray"].get<bool>();
@@ -1630,6 +1665,28 @@ static AppConfig load_config_from_path_once(
                 }
             }
 
+            if (j.contains("computer_use")) {
+                const auto& computer = j["computer_use"];
+                if (!computer.is_object() ||
+                    (computer.contains("enabled") && !computer["enabled"].is_boolean())) {
+                    throw std::runtime_error("computer_use.enabled must be a boolean");
+                }
+                cfg.computer_use.enabled = computer.value("enabled", false);
+                if (computer.contains("pointer_style")) {
+                    if (!computer["pointer_style"].is_string() ||
+                        !computer_use::pointer_appearance::valid_style(computer["pointer_style"].get<std::string>()))
+                        throw std::runtime_error("computer_use.pointer_style must be ace or plain");
+                    cfg.computer_use.pointer_style = computer["pointer_style"].get<std::string>();
+                }
+                if (computer.contains("pointer_color")) {
+                    const auto color = computer["pointer_color"].is_string()
+                        ? computer_use::pointer_appearance::normalize_color(computer["pointer_color"].get<std::string>())
+                        : std::nullopt;
+                    if (!color) throw std::runtime_error("computer_use.pointer_color must be #RRGGBB");
+                    cfg.computer_use.pointer_color = *color;
+                }
+            }
+
             if (j.contains("summary_generation")) {
                 const auto& summary = j["summary_generation"];
                 if (!summary.is_object() ||
@@ -1703,6 +1760,16 @@ static AppConfig load_config_from_path_once(
                         v = 60;
                     }
                     cfg.agent_loop.question_timeout_seconds = v;
+                }
+                // 具体进度提示(add-tool-preamble):默认关闭;旧配置里的 mode /
+                // sidecar_* 键(提示驱动 / 推理摘要 / 旁路模型三版的遗留)静默忽略,
+                // 下次保存时稀疏序列化自然把它们去掉。
+                if (alj.contains("tool_preamble") && alj["tool_preamble"].is_object()) {
+                    const auto& tpj = alj["tool_preamble"];
+                    auto& tp = cfg.agent_loop.tool_preamble;
+                    if (tpj.contains("enabled") && tpj["enabled"].is_boolean()) {
+                        tp.enabled = tpj["enabled"].get<bool>();
+                    }
                 }
                 // Legacy keys (auto_continue, max_consecutive_empty_iterations)
                 // from the just-rolled-back agentic-loop-terminator change are
@@ -1790,90 +1857,8 @@ static AppConfig load_config_from_path_once(
                 }
             }
 
-            if (j.contains("mcp_servers") && j["mcp_servers"].is_object()) {
-                for (auto it = j["mcp_servers"].begin(); it != j["mcp_servers"].end(); ++it) {
-                    const std::string& server_name = it.key();
-                    const auto& sj = it.value();
-                    if (!sj.is_object()) {
-                        LOG_WARN("[config] mcp_servers['" + server_name + "'] is not an object, skipping");
-                        continue;
-                    }
-
-                    McpServerConfig mcfg;
-
-                    // 设置页开关持久化字段:true = 全 app 禁用。缺省视为启用。
-                    if (sj.contains("disabled") && sj["disabled"].is_boolean()) {
-                        mcfg.disabled = sj["disabled"].get<bool>();
-                    }
-
-                    // Determine transport. Missing field defaults to stdio so
-                    // pre-existing configs keep working unchanged.
-                    std::string transport_str = "stdio";
-                    if (sj.contains("transport") && sj["transport"].is_string()) {
-                        transport_str = sj["transport"].get<std::string>();
-                    }
-                    if (transport_str == "stdio") {
-                        mcfg.transport = McpTransport::Stdio;
-                    } else if (transport_str == "sse") {
-                        mcfg.transport = McpTransport::Sse;
-                    } else if (transport_str == "http") {
-                        mcfg.transport = McpTransport::Http;
-                    } else {
-                        LOG_WARN("[config] mcp_servers['" + server_name +
-                                 "'] has unknown transport '" + transport_str + "', skipping");
-                        continue;
-                    }
-
-                    if (mcfg.transport == McpTransport::Stdio) {
-                        if (!sj.contains("command") || !sj["command"].is_string() ||
-                            sj["command"].get<std::string>().empty()) {
-                            LOG_WARN("[config] mcp_servers['" + server_name +
-                                     "'] stdio entry missing required 'command', skipping");
-                            continue;
-                        }
-                        mcfg.command = sj["command"].get<std::string>();
-                        if (sj.contains("args") && sj["args"].is_array()) {
-                            for (const auto& a : sj["args"]) {
-                                if (a.is_string()) mcfg.args.push_back(a.get<std::string>());
-                            }
-                        }
-                        if (sj.contains("env") && sj["env"].is_object()) {
-                            for (auto eit = sj["env"].begin(); eit != sj["env"].end(); ++eit) {
-                                if (eit.value().is_string()) {
-                                    mcfg.env[eit.key()] = eit.value().get<std::string>();
-                                }
-                            }
-                        }
-                    } else {
-                        if (!sj.contains("url") || !sj["url"].is_string() ||
-                            sj["url"].get<std::string>().empty()) {
-                            LOG_WARN("[config] mcp_servers['" + server_name +
-                                     "'] " + transport_str + " entry missing required 'url', skipping");
-                            continue;
-                        }
-                        mcfg.url = sj["url"].get<std::string>();
-                        if (sj.contains("sse_endpoint") && sj["sse_endpoint"].is_string()) {
-                            mcfg.sse_endpoint = sj["sse_endpoint"].get<std::string>();
-                        }
-                        if (sj.contains("headers") && sj["headers"].is_object()) {
-                            for (auto hit = sj["headers"].begin(); hit != sj["headers"].end(); ++hit) {
-                                if (hit.value().is_string()) {
-                                    mcfg.headers[hit.key()] = hit.value().get<std::string>();
-                                }
-                            }
-                        }
-                        if (sj.contains("auth_token") && sj["auth_token"].is_string()) {
-                            mcfg.auth_token = sj["auth_token"].get<std::string>();
-                        }
-                        if (sj.contains("timeout_seconds") && sj["timeout_seconds"].is_number_integer()) {
-                            int t = sj["timeout_seconds"].get<int>();
-                            if (t > 0) mcfg.timeout_seconds = t;
-                        }
-                    }
-
-                    cfg.mcp_servers[server_name] = std::move(mcfg);
-                }
-            }
+            cfg.mcp_servers = parse_mcp_config(
+                j.value("mcp_servers", nlohmann::json::object()));
         } catch (const nlohmann::json::parse_error& e) {
             throw ConfigLoadFailure(
                 "json_parse",
@@ -2271,6 +2256,9 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             normalize_permission_mode_name(cfg.default_permission_mode);
     }
 
+    if (cfg.sandbox_disable_migration_completed) {
+        j["migrations"]["disable_sandbox_once"] = true;
+    }
     {
         SandboxConfig sandbox_d;
         nlohmann::json sbj = nlohmann::json::object();
@@ -2352,6 +2340,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             web_uij["font_size"] = cfg.web_ui.font_size;
         if (cfg.web_ui.sidebar_session_time != web_ui_d.sidebar_session_time)
             web_uij["sidebar_session_time"] = cfg.web_ui.sidebar_session_time;
+        if (cfg.web_ui.message_auto_collapse != web_ui_d.message_auto_collapse)
+            web_uij["message_auto_collapse"] = cfg.web_ui.message_auto_collapse;
         if (!web_uij.empty()) j["web_ui"] = std::move(web_uij);
 
         MemoryConfig mem_d;
@@ -2418,6 +2408,13 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
             alj["question_policy"] = cfg.agent_loop.question_policy;
         if (cfg.agent_loop.question_timeout_seconds != al_d.question_timeout_seconds)
             alj["question_timeout_seconds"] = cfg.agent_loop.question_timeout_seconds;
+        {
+            const ToolPreambleConfig tp_d;
+            const auto& tp = cfg.agent_loop.tool_preamble;
+            nlohmann::json tpj = nlohmann::json::object();
+            if (tp.enabled != tp_d.enabled) tpj["enabled"] = tp.enabled;
+            if (!tpj.empty()) alj["tool_preamble"] = tpj;
+        }
         if (!alj.empty()) j["agent_loop"] = alj;
 
         AskConfig ask_d;
@@ -2464,6 +2461,8 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         nlohmann::json deskj = nlohmann::json::object();
         if (cfg.desktop.close_to_tray != desk_d.close_to_tray)
             deskj["close_to_tray"] = cfg.desktop.close_to_tray;
+        if (cfg.desktop.allow_multiple_instances != desk_d.allow_multiple_instances)
+            deskj["allow_multiple_instances"] = cfg.desktop.allow_multiple_instances;
         if (cfg.desktop.close_behavior != desk_d.close_behavior) {
             deskj["close_behavior"] = std::string(
                 desktop_close_behavior_value(cfg.desktop.close_behavior));
@@ -2504,6 +2503,15 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
         UiConfig ui_d;
         if (cfg.ui.locale != ui_d.locale) {
             j["ui"]["locale"] = cfg.ui.locale;
+        }
+
+        const auto pointer_color = computer_use::pointer_appearance::normalize_color(cfg.computer_use.pointer_color);
+        if (!computer_use::pointer_appearance::valid_style(cfg.computer_use.pointer_style) || !pointer_color)
+            throw std::runtime_error("refusing to save invalid computer_use pointer appearance");
+        if (cfg.computer_use.enabled || cfg.computer_use.pointer_style != computer_use::pointer_appearance::kDefaultStyle
+            || *pointer_color != computer_use::pointer_appearance::kDefaultColor) {
+            j["computer_use"] = {{"enabled", cfg.computer_use.enabled},
+                {"pointer_style", cfg.computer_use.pointer_style}, {"pointer_color", *pointer_color}};
         }
 
         nlohmann::json summary = nlohmann::json::object();
@@ -2720,52 +2728,14 @@ nlohmann::json build_config_json(const AppConfig& cfg) {
     }
 
     if (!cfg.mcp_servers.empty()) {
-        nlohmann::json mj = nlohmann::json::object();
-        for (const auto& [name, srv] : cfg.mcp_servers) {
-            nlohmann::json sj = nlohmann::json::object();
-            if (srv.transport == McpTransport::Stdio) {
-                // Omit the transport field for stdio so the resulting config
-                // stays readable by older acecode builds.
-                sj["command"] = srv.command;
-                if (!srv.args.empty()) {
-                    sj["args"] = srv.args;
-                }
-                if (!srv.env.empty()) {
-                    nlohmann::json ej = nlohmann::json::object();
-                    for (const auto& [k, v] : srv.env) ej[k] = v;
-                    sj["env"] = ej;
-                }
-            } else {
-                sj["transport"] = (srv.transport == McpTransport::Sse) ? "sse" : "http";
-                sj["url"] = srv.url;
-                if (srv.sse_endpoint != "/sse") {
-                    sj["sse_endpoint"] = srv.sse_endpoint;
-                }
-                if (!srv.headers.empty()) {
-                    nlohmann::json hj = nlohmann::json::object();
-                    for (const auto& [k, v] : srv.headers) hj[k] = v;
-                    sj["headers"] = hj;
-                }
-                if (!srv.auth_token.empty()) {
-                    sj["auth_token"] = srv.auth_token;
-                }
-                if (srv.timeout_seconds != 30) {
-                    sj["timeout_seconds"] = srv.timeout_seconds;
-                }
-            }
-            // 仅在禁用时写出,启用态保持配置稀疏(与其它布尔字段一致)。
-            if (srv.disabled) {
-                sj["disabled"] = true;
-            }
-            mj[name] = sj;
-        }
-        j["mcp_servers"] = mj;
+        j["mcp_servers"] = serialize_mcp_config(cfg.mcp_servers);
     }
 
     return j;
 }
 
 std::string serialize_valid_config(const AppConfig& cfg) {
+    require_valid_mcp_config(serialize_mcp_config(cfg.mcp_servers));
     const auto validation_errors = validate_config(cfg);
     if (!validation_errors.empty()) {
         throw std::runtime_error(
@@ -2797,9 +2767,8 @@ void save_config(const AppConfig& cfg) {
     }
 
     const std::string bytes = serialize_valid_config(cfg);
-    if (!atomic_write_file(config_path, bytes, true)) {
-        throw std::runtime_error("failed to write config file: " + config_path);
-    }
+    write_validated_config_file(
+        config_path, bytes, serialize_mcp_config(cfg.mcp_servers));
     std::string snapshot_error;
     if (!write_last_good_config(config_path, bytes, &snapshot_error)) {
         init_config_recovery_logging();
@@ -2817,10 +2786,8 @@ void save_config(const AppConfig& cfg, const std::string& explicit_path) {
 
     const std::string config_path = path_to_utf8(p);
     const std::string bytes = serialize_valid_config(cfg);
-    if (!atomic_write_file(config_path, bytes, true)) {
-        throw std::runtime_error("failed to write config file: " +
-                                 config_path);
-    }
+    write_validated_config_file(
+        config_path, bytes, serialize_mcp_config(cfg.mcp_servers));
     std::string snapshot_error;
     if (!write_last_good_config(config_path, bytes, &snapshot_error)) {
         init_config_recovery_logging();

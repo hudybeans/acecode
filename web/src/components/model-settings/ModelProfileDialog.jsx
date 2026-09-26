@@ -35,7 +35,7 @@ function inputClass(extra = '') {
 
 function fieldLabel(id, label, optional = false) {
   return (
-    <label htmlFor={id} className="mb-1.5 block text-[11px] font-medium text-fg-2">
+    <label htmlFor={id} className="mb-1.5 block text-[11px] font-normal text-fg-2">
       {label}
       {optional && <span className="ml-1 font-normal text-fg-mute">可选</span>}
     </label>
@@ -517,7 +517,7 @@ export function ModelProfileDialog({
               onClick={toggleAdvancedSettings}
               aria-expanded={advancedOpen}
               aria-controls="model-profile-advanced-settings"
-              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[11px] font-medium text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent"
+              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[11px] font-normal text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent"
             >
               <VsIcon name={advancedOpen ? 'expandDown' : 'expandRight'} size={12} />
               高级设置
@@ -529,7 +529,7 @@ export function ModelProfileDialog({
               >
                 {policy?.show_endpoint_mode && (
                   <fieldset>
-                    <legend className="mb-1.5 text-[11px] font-medium text-fg-2">端点模式</legend>
+                    <legend className="mb-1.5 text-[11px] font-normal text-fg-2">端点模式</legend>
                     <div className="flex flex-wrap gap-2">
                       {provider.endpoint_modes.map((modeValue) => (
                         <button
@@ -587,7 +587,7 @@ export function ModelProfileDialog({
                 </div>
 
                 <fieldset>
-                  <legend className="mb-1.5 text-[11px] font-medium text-fg-2">模型能力</legend>
+                  <legend className="mb-1.5 text-[11px] font-normal text-fg-2">模型能力</legend>
                   <div className="flex flex-wrap gap-1.5">
                     {MODEL_CAPABILITY_OPTIONS.map((option) => {
                       const active = selectedCapabilities.has(option.id);
@@ -613,7 +613,7 @@ export function ModelProfileDialog({
 
                 {policy?.show_reasoning && reasoning.supported && (
                   <fieldset className="space-y-3 rounded-md border border-border bg-surface-alt px-3 py-2.5">
-                    <legend className="px-1 text-[11px] font-medium text-fg-2">推理设置</legend>
+                    <legend className="px-1 text-[11px] font-normal text-fg-2">推理设置</legend>
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <div className="text-[11px] text-fg">启用推理</div>
@@ -630,7 +630,7 @@ export function ModelProfileDialog({
                     </div>
                     {isCustomReasoningDraft(draft) && (
                       <fieldset>
-                        <legend className="mb-1.5 text-[11px] font-medium text-fg-2">可选思考深度</legend>
+                        <legend className="mb-1.5 text-[11px] font-normal text-fg-2">可选思考深度</legend>
                         <div className="flex flex-wrap gap-x-3 gap-y-2">
                           {MODEL_REASONING_EFFORTS.map((effort) => (
                             <label key={effort} className="flex items-center gap-1.5 text-[11px] text-fg">
@@ -698,7 +698,7 @@ export function ModelProfileDialog({
 
           {conflict && (
             <div role="alert" className="rounded-md border border-warn bg-warn-bg px-3.5 py-3 text-[11px] text-warn">
-              <div className="font-semibold">{`已存在名为“${conflict.payload.name}”的预设`}</div>
+              <div className="font-normal">{`已存在名为“${conflict.payload.name}”的预设`}</div>
               <div className="mt-1 leading-5">请选择覆盖已有预设、另存为新名称，或取消本次冲突处理。</div>
               {conflictMode === 'save-as' ? (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -715,7 +715,7 @@ export function ModelProfileDialog({
                     type="button"
                     onClick={() => resolveConflict('save-as', saveAsName)}
                     disabled={!saveAsName.trim() || submitting}
-                    className="h-8 rounded-md bg-accent px-3 text-[11px] font-semibold text-white disabled:opacity-50"
+                    className="h-8 rounded-md bg-accent px-3 text-[11px] font-normal text-white disabled:opacity-50"
                   >
                     使用此名称保存
                   </button>
@@ -734,7 +734,7 @@ export function ModelProfileDialog({
                     type="button"
                     onClick={() => resolveConflict('overwrite')}
                     disabled={submitting}
-                    className="h-8 rounded-md border border-warn bg-surface px-3 text-[11px] font-semibold text-warn transition hover:bg-surface-hi disabled:opacity-50"
+                    className="h-8 rounded-md border border-warn bg-surface px-3 text-[11px] font-normal text-warn transition hover:bg-surface-hi disabled:opacity-50"
                   >
                     覆盖已有预设
                   </button>
@@ -742,7 +742,7 @@ export function ModelProfileDialog({
                     type="button"
                     onClick={startSaveAs}
                     disabled={submitting}
-                    className="h-8 rounded-md bg-accent px-3 text-[11px] font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                    className="h-8 rounded-md bg-accent px-3 text-[11px] font-normal text-white transition hover:opacity-90 disabled:opacity-50"
                   >
                     另存为
                   </button>
@@ -771,7 +771,7 @@ export function ModelProfileDialog({
             type="button"
             onClick={() => onClose?.()}
             disabled={submitting}
-            className="h-8 rounded-md border border-border bg-surface px-3.5 text-[11px] font-medium text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+            className="h-8 rounded-md border border-border bg-surface px-3.5 text-[11px] font-normal text-fg-2 transition hover:bg-surface-hi focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
           >
             取消
           </button>
@@ -780,7 +780,7 @@ export function ModelProfileDialog({
             data-ace-dialog-primary="true"
             onClick={submit}
             disabled={submitting || !provider || !draft.model}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[11px] font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[11px] font-normal text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting && <span className="ace-spinner" />}
             {editing ? '保存修改' : '保存模型'}

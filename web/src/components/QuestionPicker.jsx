@@ -70,8 +70,14 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
   const copiedTimerRef = useRef(null);
   // 记录 Esc「取消选中」与「拒绝作答」之间的连按窗口。
   const escTimerRef = useRef(null);
+  // 记录上一次执行重置的请求 id:只有切换到新请求才重置;
+  // 同一请求因重渲染产生新的 questions 引用时,不清空答案、不跳回第一题。
+  const lastResetRequestIdRef = useRef(null);
 
   useEffect(() => {
+    // requestId 未变化(首次挂载除外)说明是同一请求的重渲染,保留已答内容。
+    if (lastResetRequestIdRef.current === normalized.requestId) return;
+    lastResetRequestIdRef.current = normalized.requestId;
     setAnswers(makeInitialAnswers(questions));
     setCurrentIndex(0);
     setFocusIndex(-1);
@@ -571,7 +577,7 @@ export function QuestionPicker({ request, onResolve, originLabel = '', className
                   className="h-8 px-3 rounded-md text-[12px] bg-accent text-white hover:opacity-90 transition flex items-center gap-1.5 whitespace-nowrap"
                 >
                   {primaryBtnLabel}
-                  <span className="text-[11px] opacity-70 px-1 py-0.5 rounded">
+                  <span className="ace-action-shortcut-hint">
                     {primaryKeyHint}
                   </span>
                 </button>

@@ -67,8 +67,10 @@ run('App owns navigation-lifetime drafts and ChatView keeps home/session paths s
   assert.match(app, /const \[homeComposerDrafts, setHomeComposerDrafts\] = useState\(\{\}\)/);
   assert.match(app, /onHomeComposerDraftChange=\{updateHomeComposerDraft\}/);
   assert.match(app, /onHomeComposerDraftAccepted=\{acceptHomeComposerDraft\}/);
-  assert.match(chat, /if \(!sid\) onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, composerDraftSnapshot/);
-  assert.match(chat, /restoreComposerDraft\(homeComposerDraft\(homeComposerDrafts, homeDraftWorkspaceHash\)\)/);
+  // 首页草稿写入仍只在 !sid 分支;旧长文本折叠的文件块上传完成前跳过(legacyFoldUploadPending)。
+  assert.match(chat, /if \(!sid\) \{\s*const snapshot = composerDraftSnapshot\(next, normalized, composerAttachmentsRef\.current\);[^}]*?onHomeComposerDraftChange\?\.\(homeDraftWorkspaceHash, snapshot, api\)/);
+  assert.match(chat, /loading\?\.draft \?\? homeComposerDraft\(homeComposerDrafts, homeDraftWorkspaceHash\)/);
+  assert.match(app, /onHomeComposerDraftLoad=\{loadHomeComposerDraft\}/);
   assert.match(chat, /if \(sid \|\| !stagedExpertDraft\.present\) return/);
   assert.match(chat, /onHomeComposerDraftAccepted\?\.\(\s+submittedHomeDraftWorkspaceHash,\s+submittedHomeDraftText/s);
   assert.match(chat, /if \(!targetSid \|\| !targetKey\)[\s\S]*api\.getSessionDraft\(targetSid, targetWorkspaceHash\)/);

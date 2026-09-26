@@ -24,6 +24,7 @@ import {
 import { clsx } from '../lib/format.js';
 import { DEFAULT_SUBAGENT_PANEL_WIDTH } from '../lib/singleLayout.js';
 import { useSessionTranscript } from '../lib/sessionTranscript.js';
+import { createApi } from '../lib/api.js';
 import {
   CHAT_TAIL_FOLLOW_STATE,
   chatScrollMetrics,
@@ -44,6 +45,7 @@ import {
 } from '../lib/subagentTasks.js';
 import { VsIcon } from './Icon.jsx';
 import { TranscriptItems } from './TranscriptItems.jsx';
+import { AttachmentTextLoaderContext } from './AttachmentTextLoaderContext.jsx';
 
 function TaskCard({ task, nowMs, onAbort, onOpenTranscript }) {
   const running = task.status === SUBAGENT_TASK_STATUS.RUNNING;
@@ -96,21 +98,24 @@ function TaskCard({ task, nowMs, onAbort, onOpenTranscript }) {
   );
 }
 
-function SubagentTranscriptView({ task }) {
+function SubagentTranscriptView({ task, messageAutoCollapse }) {
   const sessionRef = useMemo(() => ({
     sessionId: task.id,
     busy: task.status === SUBAGENT_TASK_STATUS.RUNNING,
     title: taskDisplayTitle(task),
   }), [task.id, task.status, task.title, task.summary]);
   const transcript = useSessionTranscript(sessionRef, { live: 'auto' });
+  // 子会话记录里的附件 blob_url 本来就在子会话 id 下;loader 走 request() 带 token。
+  const attachmentApi = useMemo(() => createApi(sessionRef), [sessionRef]);
   const running = transcript.busy || task.status === SUBAGENT_TASK_STATUS.RUNNING;
   const items = useMemo(
     () => projectSubagentTranscriptItems(transcript.items, {
+      messageAutoCollapse,
       deferTrailingToolSummary: running,
       ensureLiveActivity: running,
       liveTurnId: `subagent:${task.id}`,
     }),
-    [running, task.id, transcript.items],
+    [messageAutoCollapse, running, task.id, transcript.items],
   );
 
   const [expandedActivityKeys, setExpandedActivityKeys] = useState(() => new Set());
@@ -242,16 +247,19 @@ function SubagentTranscriptView({ task }) {
         {transcript.loadState === 'error' && (
           <div className="text-[12px] text-danger px-1 py-2">加载失败:{transcript.error || ''}</div>
         )}
-        <TranscriptItems
-          items={items}
-          capabilities={READ_ONLY_TRANSCRIPT_CAPABILITIES}
-          expandedActivityKeys={expandedActivityKeys}
-          collapsedMediaKeys={collapsedMediaKeys}
-          onToggleActivity={toggleActivitySummary}
-          onToggleMedia={toggleMediaGroup}
-          sessionRunning={running}
-          onReviewToggle={pauseTailFollowForReview}
-        />
+        <AttachmentTextLoaderContext.Provider value={attachmentApi.readAttachmentText}>
+          <TranscriptItems
+            items={items}
+            messageAutoCollapse={messageAutoCollapse}
+            capabilities={READ_ONLY_TRANSCRIPT_CAPABILITIES}
+            expandedActivityKeys={expandedActivityKeys}
+            collapsedMediaKeys={collapsedMediaKeys}
+            onToggleActivity={toggleActivitySummary}
+            onToggleMedia={toggleMediaGroup}
+            sessionRunning={running}
+            onReviewToggle={pauseTailFollowForReview}
+          />
+        </AttachmentTextLoaderContext.Provider>
         {transcript.loadState === 'loaded' && items.length === 0 && (
           <div className="text-[12px] text-fg-mute px-1 py-2">暂无会话内容</div>
         )}
@@ -260,7 +268,7 @@ function SubagentTranscriptView({ task }) {
   );
 }
 
-export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focus, onClose, tasks, onAbort, onClearSettled }) {
+export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focus, onClose, tasks, onAbort, onClearSettled, messageAutoCollapse = true }) {
   const [transcriptTaskId, setTranscriptTaskId] = useState('');
   const [clearing, setClearing] = useState(false);
 
@@ -343,7 +351,7 @@ export function SubagentPanel({ open, width = DEFAULT_SUBAGENT_PANEL_WIDTH, focu
       </div>
 
       {transcriptTask ? (
-        <SubagentTranscriptView key={transcriptTask.id} task={transcriptTask} />
+        <SubagentTranscriptView key={transcriptTask.id} task={transcriptTask} messageAutoCollapse={messageAutoCollapse} />
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
           {tasks.length === 0 && (

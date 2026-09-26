@@ -62,3 +62,15 @@ export function applyMcpToggle(cfgMap, name, enabled) {
   }
   return next;
 }
+
+export function mcpScopeQuery(workspace = '') {
+  return workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+}
+
+export function mcpConfigErrorMessage(error) {
+  const issues = error?.body?.errors;
+  if (Array.isArray(issues) && issues.length > 0) {
+    return issues.map((issue) => `${issue.path || '/'}: ${issue.message || ''}`).join('\n');
+  }
+  return error?.message || '';
+}

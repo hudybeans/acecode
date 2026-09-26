@@ -6,11 +6,13 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -119,6 +121,114 @@ class DevDesktopTest(unittest.TestCase):
             self.assertEqual(dev_desktop._c("x", "36"), "\x1b[36mx\x1b[0m")
         finally:
             dev_desktop._COLOR = original
+
+    def test_desktop_instance_identity_matches_web_runtime_naming(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "my.worktree"
+            # 目录名需要真实存在，否则 git 调用无从谈起
+            repo.mkdir()
+            identity = "0123456789abcdef0123456789abcdef01234567"
+            with mock.patch.object(dev_desktop, "desktop_instance_identity",
+                                   wraps=dev_desktop.desktop_instance_identity):
+                actual = self._identity_with_commit(repo, identity)
+            self.assertEqual(actual, "my.worktree-0123456789ab")
+            self.assertEqual(re.sub(r"[^A-Za-z0-9_.-]", "-", actual), actual)
+
+    def test_desktop_instance_identity_sanitizes_unsafe_worktree_names(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "fix dev launcher+identity"
+            repo.mkdir()
+            actual = self._identity_with_commit(repo, "a" * 40)
+            self.assertEqual(actual, "fix-dev-launcher-identity-aaaaaaaaaaaa")
+
+    def _identity_with_commit(self, repo: Path, commit: str) -> str:
+        """`desktop_instance_identity` 依赖 git，测试里替换掉 commit 查询。"""
+        import dev_environment
+
+        with mock.patch.object(dev_environment, "current_commit", return_value=commit):
+            return dev_desktop.desktop_instance_identity(repo)
+
+    def test_falls_back_to_worktree_name_when_commit_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "detached"
+            repo.mkdir()
+            self.assertEqual(
+                self._identity_with_commit(repo, None),
+                "detached-detached",
+            )
+
+    def test_desktop_environment_injects_process_level_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "acecode"
+            repo.mkdir()
+            web = repo / "web" / "dist"
+            web.mkdir(parents=True)
+
+            with mock.patch.dict(os.environ, {"ACECODE_TEST_SENTINEL": "kept"}, clear=False):
+                environment, identity = dev_desktop.desktop_environment(repo, web)
+
+            self.assertEqual(identity, "acecode-acecode")
+            self.assertEqual(environment["ACECODE_DESKTOP_INSTANCE_ID"], identity)
+            self.assertEqual(environment["ACECODE_DESKTOP_ALLOW_MULTIPLE_INSTANCES"], "1")
+            self.assertEqual(environment["ACECODE_DEV_WEB_DIR"], str(web.resolve()))
+            # 继承父进程环境，而不是另起一份干净环境
+            self.assertEqual(environment["ACECODE_TEST_SENTINEL"], "kept")
+
+    def test_desktop_environment_is_identical_across_repeated_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "acecode"
+            repo.mkdir()
+            web = repo / "web" / "dist"
+            web.mkdir(parents=True)
+
+            first, first_identity = dev_desktop.desktop_environment(repo, web)
+            second, second_identity = dev_desktop.desktop_environment(repo, web)
+            self.assertEqual(first_identity, second_identity)
+            self.assertEqual(first["ACECODE_DESKTOP_INSTANCE_ID"],
+                             second["ACECODE_DESKTOP_INSTANCE_ID"])
+
+    def test_launch_desktop_passes_overrides_to_child_process(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "acecode"
+            repo.mkdir()
+            web = repo / "web" / "dist"
+            web.mkdir(parents=True)
+            binary = repo / "build" / "acecode-desktop.exe"
+            binary.parent.mkdir()
+            binary.write_bytes(b"")
+
+            environment, identity = dev_desktop.desktop_environment(repo, web)
+            with mock.patch.object(dev_desktop.subprocess, "Popen") as popen:
+                dev_desktop.launch_desktop(binary, web, instance_id=identity,
+                                           environment=environment)
+
+            self.assertEqual(popen.call_count, 1)
+            _, kwargs = popen.call_args
+            passed = kwargs["env"]
+            self.assertEqual(passed["ACECODE_DESKTOP_INSTANCE_ID"], identity)
+            self.assertEqual(passed["ACECODE_DESKTOP_ALLOW_MULTIPLE_INSTANCES"], "1")
+            self.assertEqual(passed["ACECODE_DEV_WEB_DIR"], str(web.resolve()))
+            self.assertEqual(popen.call_args.args[0], [str(binary)])
+
+    def test_launch_desktop_never_writes_user_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root_text:
+            repo = Path(root_text) / "acecode"
+            repo.mkdir()
+            web = repo / "web" / "dist"
+            web.mkdir(parents=True)
+            binary = repo / "build" / "acecode-desktop.exe"
+            binary.parent.mkdir()
+            binary.write_bytes(b"")
+
+            with mock.patch.object(dev_desktop.subprocess, "Popen"), \
+                    mock.patch.object(dev_desktop, "desktop_instance_identity",
+                                      return_value="acecode-deadbeef1234"):
+                dev_desktop.launch_desktop(binary, web, project_root=repo)
+
+            # 开发期覆盖只走进程环境，任何配置文件都不应被创建或改写
+            leftovers = [path for path in repo.rglob("*") if path.is_file()
+                         and path != binary]
+            self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":

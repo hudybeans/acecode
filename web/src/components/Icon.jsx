@@ -14,11 +14,13 @@ const ICONS = {
   bug: 'Bug',
   chat: 'ChatBubble',
   check: 'Check',
+  sliders: 'Sliders',
   clearAll: 'ClearAll',
   close: 'Close',
   code: 'Code',
   command: 'TerminalReadWrite',
   collapseAll: 'CollapseAll',
+  columns: 'Columns',
   computer: 'Computer',
   copy: 'Copy',
   darkTheme: 'DarkTheme',
@@ -160,6 +162,7 @@ export function FileTypeIcon({
   path,
   size = 20,
   className = '',
+  glyphClassName = '',
   fallback = 'file',
   style,
   ...props
@@ -178,6 +181,7 @@ export function FileTypeIcon({
           width: size,
           height: size,
           color: icon.color,
+          '--ace-file-type-color': icon.color,
           ...style,
         }}
         {...props}
@@ -202,11 +206,12 @@ export function FileTypeIcon({
         height: size,
         fontSize: size,
         color: icon.color,
+        '--ace-file-type-color': icon.color,
         ...style,
       }}
       {...props}
     >
-      {icon.glyph}
+      {glyphClassName ? <span className={glyphClassName}>{icon.glyph}</span> : icon.glyph}
     </span>
   );
 }
@@ -235,8 +240,10 @@ export function RefreshIcon({ size = 16, className = '', ...props }) {
 }
 
 // Slash-command badge icon. It inherits currentColor inside the accent badge.
-export function CommandGlyph({ kind = 'skill', size = 12, className = '', ...props }) {
-  const name = kind === 'builtin' ? 'tool' : kind === 'command' ? 'command' : 'lightbulb';
+export function CommandGlyph({ kind = 'skill', command = '', size = 12, className = '', ...props }) {
+  const name = kind === 'builtin'
+    ? (String(command).toLowerCase() === 'goal' ? 'Goal' : 'tool')
+    : kind === 'command' ? 'command' : 'lightbulb';
   return (
     <VsIcon
       name={name}

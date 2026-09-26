@@ -239,10 +239,18 @@ update their transcript presentation.
 | POST | `/api/history` | append input history |
 | GET | `/api/workspaces` | list registered workspaces |
 | POST | `/api/workspaces` | register cwd as workspace |
+| PUT | `/api/workspaces/order` | persist visible workspace order |
+| PUT | `/api/workspaces/:hash` | save the Edit Project dialog: name, icon, additional folders |
+| DELETE | `/api/workspaces/:hash` | remove a local project from the list (hide; no files deleted) |
 | POST | `/api/workspaces/pick-folder` | desktop native folder picker |
 | GET | `/api/projects/defaults` | new-project default parent directory |
 | POST | `/api/projects` | create and register a new project directory |
 | POST | `/api/open-in-explorer` | open a folder or reveal a file in the OS file manager |
+| GET | `/api/workspaces/:hash/draft` | read the workspace's single new-session draft |
+| PUT | `/api/workspaces/:hash/draft` | replace the new-session draft without creating a session |
+| DELETE | `/api/workspaces/:hash/draft` | clear only a matching submitted new-session draft |
+| POST | `/api/workspaces/:hash/draft/attachments` | store pasted text for the new-session draft |
+| GET | `/api/workspaces/:hash/draft/attachments/:attachment_id/blob` | download a new-session draft attachment |
 | GET | `/api/workspaces/:hash/sessions` | list sessions in workspace; `limit=N` returns `{sessions,total,total_exact,has_more}` |
 | POST | `/api/workspaces/:hash/sessions` | create workspace session |
 | POST | `/api/workspaces/:hash/sessions/:id/resume` | resume workspace session |
@@ -283,7 +291,7 @@ update their transcript presentation.
 | POST | `/api/sessions/:id/turn/steer` | append input to the matching active turn |
 | POST | `/api/sessions/:id/turn/interrupt` | interrupt the matching active turn and start a priority replacement turn |
 | POST | `/api/sessions/:id/questions/interject` | resolve a pending AskUserQuestion with a free-form message and continue the same turn |
-| POST | `/api/sessions/:id/attachments` | upload a session snapshot or create a Desktop source reference |
+| POST | `/api/sessions/:id/attachments` | upload a session snapshot, create a Desktop source reference, or import a new-session draft attachment |
 | GET | `/api/sessions/:id/attachments/:attachment_id/blob` | download attachment bytes |
 | POST | `/api/sessions/:id/commands` | run daemon builtin slash command |
 | POST | `/api/sessions/:id/side-question` | run isolated one-turn `/btw` question |
@@ -330,6 +338,7 @@ update their transcript presentation.
 | PUT | `/api/models/:name` | update saved model profile |
 | DELETE | `/api/models/:name` | remove saved model profile |
 | POST | `/api/models/probe` | probe provider model ids |
+| POST | `/api/models/reasoning/refresh` | queue background reasoning metadata refresh for saved models |
 | POST | `/api/models/test` | test an unsaved model with a short conversation |
 | GET | `/api/models/catalog` | read local model catalog summary and reviewed recommendations |
 | GET | `/api/models/catalog/:provider_id` | search one provider's local model catalog |
@@ -347,9 +356,11 @@ update their transcript presentation.
 | GET | `/api/ui/onboarding/desktop` | read Desktop guided-tour status |
 | POST | `/api/ui/onboarding/desktop/dismiss` | dismiss the current Desktop guided-tour version |
 | GET | `/api/config/ui-preferences` | read UI preferences |
+| GET | `/api/config/desktop-multi-instance` | read global desktop multi-instance preference |
+| PUT | `/api/config/desktop-multi-instance` | save global desktop multi-instance preference |
 | PUT | `/api/config/ui-preferences` | write UI preferences |
 | GET | `/api/themes` | downloadable catalogue plus installed local AI themes |
-| POST | `/api/themes/first-run` | durably claim the one-time National Day startup attempt |
+| POST | `/api/themes/first-run` | legacy compatibility: durably claim the one-time National Day startup attempt |
 | POST | `/api/themes/import/preview` | validate a raw theme ZIP and return a read-only preview |
 | POST | `/api/themes/import?sha256=<digest>` | import the same previewed ZIP after confirmation |
 | GET | `/api/themes/job` | current theme download progress |
@@ -368,12 +379,17 @@ update their transcript presentation.
 | PUT | `/api/config/custom-instructions` | write custom instructions |
 | GET | `/api/config/connectors` | read connector settings |
 | GET | `/api/config/image-generation` | read sanitized image generation settings |
+| GET | `/api/config/computer-use` | read computer control availability and pointer appearance |
+| PUT | `/api/config/computer-use` | partially update the switch or pointer appearance |
+| POST | `/api/config/computer-use/permissions` | explicitly request one macOS system permission |
 | GET | `/api/config/summary-generation` | read summary-model override and available models |
 | PUT | `/api/config/summary-generation` | save summary-model override for automatic session titles |
 | PUT | `/api/config/image-generation` | save image generation settings and refresh the tool |
 | POST | `/api/config/image-generation/test` | explicitly generate one standard-quality test image |
 | GET | `/api/config/tool-rewrites` | read tool rewrite settings plus the built-in tool catalog |
 | PUT | `/api/config/tool-rewrites` | replace tool rewrite settings, persist `tool-rewrites.json`, apply live |
+| GET | `/api/config/tool-preamble` | read the concrete progress text switch (work mode) |
+| PUT | `/api/config/tool-preamble` | set the concrete progress text switch in `config.json`, push to active sessions |
 | GET | `/api/config/sandbox` | read sandbox switches, filesystem lists, defaults and platform probe |
 | PUT | `/api/config/sandbox` | save sandbox switches / lists to `config.json`, push to active sessions |
 | GET | `/api/security/exec-rules` | list `<data_dir>/rules/*.rules` (managed files editable) |
@@ -405,8 +421,10 @@ update their transcript presentation.
 | GET | `/api/update/jobs/:id` | poll one WebUI update job |
 | POST | `/api/update/jobs/:id/cancel` | cancel one WebUI update job before installation |
 | GET | `/api/mcp` | read MCP config |
-| PUT | `/api/mcp` | write MCP config |
-| POST | `/api/mcp/reload` | currently returns 501 |
+| GET | `/api/mcp/schema` | read MCP configuration JSON schemas |
+| PUT | `/api/mcp` | validate, persist, and apply MCP config |
+| POST | `/api/mcp/toggle` | validate and persist one server's enabled state |
+| POST | `/api/mcp/reload` | validate/recover persisted config and apply it |
 | GET | `/api/feedback/desktop/recent-sessions` | list sessions for feedback attachment |
 | POST | `/api/feedback/desktop` | package and upload desktop feedback |
 | GET | `/api/pty/shells` | list console shell choices |
@@ -524,6 +542,29 @@ disabled, the write is silently ignored.
 Returns `Workspace[]`. The registry is scanned before listing. If no registry
 is available, the compatibility workspace may be returned.
 
+When a workspace order has been saved, visible workspaces follow that order;
+new workspaces are appended. Hidden workspaces retain their saved positions
+without appearing in this response. The same order is used by the Desktop
+workspace bridge and survives daemon restarts and loopback port changes.
+
+### `PUT /api/workspaces/order`
+
+Body and successful response:
+
+```json
+{"hashes":["workspace-hash-b","workspace-hash-a"]}
+```
+
+The request must contain every currently visible workspace hash exactly once.
+The registry atomically saves the order in `projects/workspace_order.json`;
+existing workspace markers and sessions are unchanged. Hidden hashes keep
+their saved slots when visible workspaces are reordered. Errors:
+
+- `400` malformed JSON, missing/non-array `hashes`, non-string, empty or duplicate hashes
+- `409` `WORKSPACE_ORDER_CONFLICT` for unknown/hidden hashes or an incomplete visible list
+- `500` save failure; the previously confirmed order remains intact
+- `503` workspace registry unavailable
+
 ### `POST /api/workspaces`
 
 Body:
@@ -536,6 +577,43 @@ Registers the cwd and returns `201` plus a `Workspace`. Errors:
 
 - `400` bad JSON or missing `cwd`
 - `503` workspace registry unavailable
+
+`Workspace` objects from `GET`/`POST`/`PUT` also carry the Edit Project
+fields: `icon` (`{"id","color"}` or `null` = default folder icon) and
+`extra_folders` (absolute paths, possibly empty).
+
+### `PUT /api/workspaces/:hash`
+
+Saves the Web UI "Edit Project" dialog. The main folder (`cwd`) cannot be
+changed. Body:
+
+```json
+{"name":"acecode","icon":{"id":"music","color":"blue"},"extra_folders":["D:/shared/lib"]}
+```
+
+`name` is required and trimmed. Omitting `icon` or `extra_folders` keeps the
+stored value; `"icon": null` restores the default icon. `id`/`color` are opaque
+keys from the Web icon table (`[a-z0-9-]`). Every additional folder must be an
+existing absolute directory; the main folder and duplicates (case/separator
+insensitive on Windows) are dropped silently; at most 32. The marker is re-read
+from disk before writing so fields saved by another process (Desktop vs daemon
+registry caches) survive. Returns `200` plus the updated `Workspace`. Errors:
+
+- `400` `BAD_REQUEST` bad JSON, empty name, invalid icon, relative/missing folder
+- `404` `WORKSPACE_NOT_FOUND` unknown hash or a marker whose `cwd` does not hash to `:hash`
+- `500` `PERSIST_FAILED`
+- `503` workspace registry unavailable
+
+Additional folders take effect from the next agent turn: the system prompt's
+`# Environment` lists them, file tools accept paths inside them, and the bash
+sandbox adds them as writable roots. Sessions with a write boundary (worktree /
+LOOP / inherited) keep folders that overlap the main checkout read-only.
+
+### `DELETE /api/workspaces/:hash`
+
+Web-mode counterpart of the Desktop `aceDesktop_removeWorkspace` bridge: sets
+`desktop_visible=false` in the marker. Sessions, the marker's other fields and
+all project files are kept. Returns `{"ok":true}`; `404` for unknown hashes.
 
 ### `POST /api/workspaces/pick-folder`
 
@@ -639,6 +717,10 @@ the raw array:
 `sessions` is the newest N rows, ordered by `updated_at` descending — the same
 order the unlimited list uses. Omitting `limit`, or passing `0`, keeps the
 original array body and never adds the paging fields.
+
+`updated_at` records persisted conversation activity. Resuming, switching, or
+closing a session and saving metadata such as titles or model preferences do
+not advance it; appending or replacing conversation history does.
 
 A bounded page stops reading the project directory as soon as it has enough
 rows, so it does not learn the exact post-filter count:
@@ -931,16 +1013,32 @@ storage directly; they do not call the daemon HTTP API:
 |---|---|
 | `create_thread` | create a background thread and queue its initial prompt |
 | `fork_thread` | fork completed persisted history into a new thread |
-| `list_threads` | return pinned threads plus a bounded recent list |
-| `read_thread` | read bounded, cursor-paginated turns |
+| `list_threads` | globally list pinned threads plus cursor-paginated recent threads |
+| `read_thread` | read bounded, cursor-paginated turns from any workspace |
 | `send_message_to_thread` | queue a follow-up prompt |
-| `wait_threads` | wait for up to eight targets using event cursors |
+| `wait_threads` | wait for up to eight targets across workspaces using event cursors |
 | `set_thread_title` | rename a thread |
 | `set_thread_pinned` | update the existing pinned-session state |
 | `set_thread_archived` | archive or unarchive a thread |
 | `delete_thread` | permanently delete a thread and all descendants |
 | `repair_thread` | append a deterministic repair checkpoint to another thread |
 | `create_workspace` | register an existing absolute directory as a visible workspace |
+
+`list_threads`, `read_thread`, and `wait_threads` discover sessions across the
+entire ACECode data directory, including hidden/unregistered workspaces and
+workspace-free sessions. A caller cwd is not required. List rows include
+`workspaceHash` (the storage project hash, also for workspace-free sessions),
+`cwd`, `noWorkspace`, `workspaceName`, and `workspaceVisible` as metadata.
+Child sessions retain `parentThreadId`. The list excludes archived sessions
+unless `includeArchived:true`; explicit reads can access archived sessions.
+All non-archived pins are returned in `pinnedThreads`, ordered by project hash
+and then that project's persisted pin order. Only `threads` is subject to
+`limit` (default 20, maximum 50). Pass `nextCursor` back as `cursor` to read
+the next page; it is an offset into the current ordering, not a frozen snapshot.
+`errors` reports incomplete project scans. `read_thread` and each `wait_threads`
+target accept optional `workspaceHash` from the list for direct lookup and
+disambiguation when the same `threadId` exists in multiple projects.
+Creation and mutation tools retain their existing calling-workspace semantics.
 
 `delete_thread` also removes search-index and pin records. It may target its
 calling thread, including a cascade whose tree contains the caller. In that
@@ -986,6 +1084,72 @@ the archived-session settings page. Guard rails:
 
 ### Archive, title, draft, and todos
 
+New-session drafts use `GET/PUT/DELETE /api/workspaces/:hash/draft`, independently
+of existing-session drafts. Use `__no_workspace__` for the separate no-workspace
+draft. Unknown workspace hashes return `404`; the usual authentication and CORS
+rules apply. Each workspace owns one `input_draft.json` in its project data
+directory (no-workspace uses its cache root). Saving does not create a session,
+metadata entry, or transcript, and drafts survive page and daemon restarts.
+
+PUT takes `{"text":"...","composer_content":{...}}` with optional structured
+content, using the same normalization as session drafts. GET/PUT return
+`{"workspace_hash":"...","text":"...","composer_content"?:{...}}`.
+DELETE takes the submitted draft in the same format, atomically clears only
+when the stored content matches, and returns the current draft with
+`"cleared":true/false`. Invalid input returns `400`; disk failures return `500`.
+A stored draft this build cannot read (for example one written by a later
+version with unknown part types) makes GET return `500`, while PUT and DELETE
+log a warning and treat it as empty: PUT overwrites it and DELETE reports
+`"cleared":false` without touching it.
+
+The home composer autosaves in order and restores on entry. A late response
+cannot replace newer edits; failed sends retain the draft. Structured references
+are durable, but unsent browser File bytes keep their existing in-memory
+lifetime: after reload an unavailable upload must be attached again. Pasted text
+too large to stay inline is the exception: it is stored on the server as a
+new-session draft attachment and survives reloads (below).
+
+#### New-session draft attachments
+
+`POST /api/workspaces/:hash/draft/attachments` stores one pasted-text file for
+the new-session draft (`hash` may be `__no_workspace__`). The body is a snapshot
+upload that must be pasted text:
+
+```json
+{"name":"pasted-text-20260924-101010.txt","mime_type":"text/plain",
+ "data_base64":"...","origin":"pasted_text",
+ "paste":{"chars":120000,"lines":2400,"part":1,"parts":2}}
+```
+
+`origin:"pasted_text"` is required and the MIME type must be `text/plain`;
+`source_path`, `reference_only` and `from_workspace_draft` are rejected (`400`).
+`paste` follows the session upload rules below. Returns `201 {"attachment":{...}}`
+whose `blob_url` is
+`/api/workspaces/:hash/draft/attachments/:attachment_id/blob`; that `GET` route
+returns the raw bytes like the session blob route. The `blob_url` stored in the
+attachment's own metadata file is session-shaped and is never served: clients
+compute the workspace URL from the draft part's `store_scope` and `id`.
+
+Storage: a real workspace uses `projects/<hash>/attachments/.workspace-draft/`.
+No-workspace drafts use `attachments/.workspace-draft/` under the project data
+directory of the no-workspace cache root, not the cache root itself (every
+subdirectory there is read as a no-workspace session cwd). The owner name starts
+with a dot, so it can never equal a session ID.
+
+The draft references the file through an attachment part with
+`"store":"workspace_draft"` and `"store_scope"`. Before sending, the client copies
+it into the target session with `POST /api/sessions/:id/attachments`
+`{"from_workspace_draft":{"workspace":"<store_scope>","id":"..."}}` and sends the
+new session attachment ID. The scope comes from the part, not from the session:
+a no-workspace draft may be sent into a real workspace. The message route never
+accepts a draft attachment ID directly (`404`).
+
+Cleanup: after a successful draft PUT, or a DELETE that cleared the draft, the
+daemon removes draft attachments that the saved draft no longer references and
+whose metadata file is older than 10 minutes. The age gate protects an upload
+whose referencing draft save is still debounced or in flight. Failures are only
+logged.
+
 Workspace-scoped and compatibility paths share the same behavior:
 
 | Method | Path shape | Body | Response |
@@ -1020,6 +1184,9 @@ When `since=0` or omitted, returns a full snapshot object:
   "messages": [],
   "busy": false,
   "active_turn_id": "",
+  "title": "Investigate daemon routes",
+  "title_source": "generated",
+  "summary": "latest user summary",
   "turn_count": 4,
   "permission_mode": "default",
   "token_usage": null,
@@ -1032,6 +1199,18 @@ When `since=0` or omitted, returns a full snapshot object:
 
 Hidden file checkpoints, compact checkpoints, and hidden goal context messages
 are filtered from `messages`.
+
+Visible system messages may include `metadata.system_notice` with
+`{ "version": 1, "code": "goal_started", "params": { "goal": { ... } } }`.
+The stable event code and structured parameters describe the notice; Web and
+Desktop localize its title and fixed detail fields at render time. The original
+`content` remains the fallback for older clients and diagnostics. Existing
+metadata (for example `transcript_only`, `goal_audit` and `compact_notice_id`)
+is preserved. Unknown codes or versions must retain the full fallback text.
+Creating a goal emits one visible audit message containing the complete goal
+snapshot, rather than a separate overview followed by a start notice. System
+notices start collapsed independently of the general message-collapse setting;
+unrelated notices are never folded into tool activity summaries.
 
 Compact checkpoints are append-only. Version 2 records the Codex-shaped
 replacement model history together with `window_number`, `first_window_id`,
@@ -1187,7 +1366,8 @@ must successfully load that record from the target session. Display name, kind,
 MIME and path are then hydrated from those verified records. Client preview URLs
 and unknown fields are stripped.
 
-The limit is 4096 parts and 2 MiB of declared string fields. Path/token fields
+The limit is 4096 parts and one shared 2 MiB budget for all declared string
+fields, including pasted text (drafts and messages use the same budget). Path/token fields
 allow 64 KiB, names 16 KiB, MIME 1024 bytes, kind 64 bytes and key/id 256 bytes.
 Unknown versions/types, invalid field types or unresolved attachment identities
 return HTTP 400. Canonical text concatenates text parts and path/skill tokens;
@@ -1195,6 +1375,35 @@ attachment parts contribute no text. Messages normally derive their text from
 this structure; the compatibility `text` is retained when `session_references`
 requires its existing display projection. Skills activate through the existing
 explicit-mention mechanism; their visual order does not define execution order.
+
+Pasted text uses two part shapes that the Web composer shows as the same card:
+
+- **Inline block** `{"type":"pasted_text","key":"...","text":"..."}`. `key` is
+  optional (at most 256 bytes); `text` must be a string without NUL, and an empty
+  block is dropped. It is **not** part of the canonical (editor) text, so draft
+  responses, `restored_prompt` and input history never contain it. The message
+  body is the *submission text*: text parts, path/skill tokens and inline blocks
+  in part order, where each inline block is separated from neighbouring non-empty
+  pieces by a blank line (`"\n\n"`). Examples: `[text "A", pasted "B"]` →
+  `"A\n\nB"`; `[pasted "A", text "B", pasted "C"]` → `"A\n\nB\n\nC"`; a single
+  block → its text. When the first non-empty piece is a pasted block (nothing was
+  typed before it), the message never triggers skill or OpenCode slash-command
+  expansion, whatever the pasted text starts with. The Web client keeps inline
+  blocks at or below 256 KiB in total and turns larger pastes into files.
+- **File-backed block**: an ordinary `attachment` part with an optional
+  `paste` descriptor `{"title","chars","lines","part","parts"}`. `title` is a
+  string of at most 1024 bytes (counted in the budget); `chars` and `lines` are
+  non-negative integers; `part`/`parts` appear together for a paste split into
+  several files, with `1 <= part <= parts <= 1024`. Other descriptor keys are
+  dropped. The text lives in the uploaded file and reaches the model as the usual
+  attachment file reference.
+
+A home (new-session) draft attachment may also carry
+`"store":"workspace_draft"` with `"store_scope"` set to the draft's workspace
+hash or `__no_workspace__` (`[A-Za-z0-9_]{1,128}`, required whenever `store` is
+present; no other `store` value is accepted). A submitted message resolves every
+attachment part against the session's verified records, which removes
+`store`/`store_scope` and keeps `paste`.
 
 The sanitized structure is persisted as `metadata.composer_content` and returned
 in live message events and history. Provider `content_parts` retain their existing
@@ -1204,10 +1413,49 @@ Draft GET/PUT responses return optional `composer_content`; PUT derives its text
 from the content and saves both atomically. A text-only PUT or explicit null
 clears the structured draft. Forking a structured user prompt returns
 `restored_composer_content` plus `restored_attachments`, copies referenced uploads
-into the new session with new IDs, and saves the restored structured draft.
+into the new session with new IDs, and saves the restored structured draft. For
+such a prompt `restored_prompt` (and the new session's plain draft text) is the
+canonical editor text, without inline pasted blocks, which are restored only
+through `restored_composer_content`.
 Structured attachment references in the retained history are also copied and
 remapped, including their provider content parts and preview records; recalling
 those messages does not depend on the source session's attachment storage.
+
+### `POST /api/sessions/:id/messages/retry`
+
+Retries the trailing user message, or the last user message of a manually
+stopped turn, in an idle live session. Body:
+
+```json
+{"expected_user_message_id":"persisted-user-message-id"}
+```
+
+The request accepts only this field. The backend verifies the full visible
+transcript and model history end with that user message, with no active or
+queued work. It checks again when the worker starts. Hidden bookkeeping
+records do not count as transcript messages; assistant (including empty
+messages), tool, system and error messages prevent ordinary retry.
+
+A completed manual stop persists a transcript-only system message with
+`metadata.user_aborted: true` and `metadata.retry_user_message_id`. If that
+marker is the final visible transcript entry, the backend may retry its
+specified last user message even after partial assistant output or tool
+results. A stop request alone, an interjection, or plain interruption text
+does not grant this exception. Later visible events invalidate it.
+Already streamed text is saved as an assistant message with
+`metadata.transcript_only: true` and `metadata.interrupted_output: true`, so
+history reloads retain it without sending incomplete output/tool calls back
+to the provider.
+
+The original message, attachments and context are reused. If model history
+still ends with that user, no user record is appended. If an aborted turn
+already has assistant/tool records, they are preserved and the original
+structured user content is appended with a new identity, without expanding
+skills again or creating adjacent user messages. The stop marker is never
+sent to the model. Returns `202 {"queued":true,"user_message_id":"..."}`;
+malformed requests return `400`, and unavailable sessions, stale message IDs
+or active/queued work return `409`. This endpoint does not create or resume a
+session, expand commands, or accept new input.
 
 ### `POST /api/sessions/:id/messages`
 
@@ -1247,6 +1495,12 @@ deduplicate backend execution; callers that omit it retain the existing behavior
 
 If the text is a skill slash command for the session workspace, the daemon
 expands it to the skill invocation prompt and records `metadata.display_text`.
+Skill and OpenCode command expansion is skipped when the message has
+`attachments` or `contexts`, except when every attachment is a stored pasted-text
+attachment (`metadata.origin == "pasted_text"`, read from the session's records):
+such a file is the user's own material, so `/<skill> args` expands the same way
+whether a paste stayed inline or became a file. Expansion is also skipped when
+the first non-empty composer piece is an inline pasted block.
 Returns `202 {"queued":true}`.
 
 ### `POST /api/sessions/:id/turn/steer`
@@ -1540,6 +1794,20 @@ bytes. There is no 25 MiB snapshot limit for this form:
   "reference_only": true
 }
 ```
+
+A snapshot upload may be marked as pasted text with `"origin":"pasted_text"`
+and an optional `"paste":{"chars","lines","part","parts"}` (non-negative
+integers; `part`/`parts` together, `1 <= part <= parts <= 1024`; other keys
+dropped). The MIME type must then be `text/plain`. The record's `metadata` gets
+`"origin":"pasted_text"` and `"pasted_text":{...}`. Any other `origin`, `paste`
+without `origin`, or `origin` on a `reference_only` request returns `400`.
+
+To import a new-session draft attachment (see "New-session draft attachments"),
+send only `{"from_workspace_draft":{"workspace":"<hash or __no_workspace__>","id":"att-..."}}`.
+The pasted-text file is copied into this session under a new ID, keeping its
+metadata. Combining it with `data_base64`, `source_path`, `reference_only`,
+`origin` or `paste`, or a malformed value, returns `400`; an unknown workspace,
+attachment or missing file returns `404`.
 
 Returns `201`:
 
@@ -2501,6 +2769,22 @@ returns `409 MODEL_IN_USE`. On success:
 {"ok":true}
 ```
 
+### `POST /api/models/reasoning/refresh`
+
+认证后将全部已保存且可使用 OpenAI 兼容 `/models` 探测的连接加入后台同步队列，立即返回 `202 {"accepted":true}`，不等待远端请求。同一端点、凭据、请求头和目录身份的模型合并探测；完整聊天 URL、Anthropic 和受管 Provider 不套用此协议。
+
+Web/Desktop 服务启动后自动执行一次；模型新增或编辑保存成功后自动排队同步该模型。同步不阻塞启动、保存或界面操作；失败、缺失模型及缺失/非法声明静默保留已有配置，不自动重试。
+
+有效声明只更新推理档位、默认值及对应能力标记，保留用户显式 `enabled`、仍有效的 `effort` 与预算设置，以及其他模型字段。请求过程中被编辑、重命名或删除的条目不接受旧响应。无实际变化时不写入配置。
+
+持久化成功后发布模型版本并在安全边界刷新会话，同时向已认证 WebSocket 连接广播：
+
+```json
+{"type":"model_profiles_updated","payload":{"names":["ACEModel-moonlight"]}}
+```
+
+事件不包含密钥或远端错误。客户端收到事件或连接恢复后重读本地列表和会话模型状态；模型设置的刷新按钮调用此接口，无需进入探测弹窗重新选择模型。
+
 ### `POST /api/models/test`
 
 Tests one OpenAI-compatible or Anthropic model using the current unsaved draft.
@@ -2902,6 +3186,23 @@ Idempotently marks the current Desktop guided-tour version as dismissed and
 returns the same payload with `dismissed:true`. A state-file write failure
 returns HTTP `500` with `error:"PERSIST_FAILED"`.
 
+### `GET /api/config/desktop-multi-instance`
+
+读取当前用户全局配置中的 `desktop.allow_multiple_instances`，返回
+`{"enabled": false}`（默认关闭）。接口要求认证，并设置 `Cache-Control: no-store`。
+每次从磁盘读取，其他桌面实例保存后的选择会在下次读取时生效。
+
+### `PUT /api/config/desktop-multi-instance`
+
+请求体为 `{"enabled": true}` 或 `{"enabled": false}`，成功返回已持久化的同形响应。
+使用跨进程配置锁，重新读取最新配置后只变更多进程选项；内存状态在保存成功后更新。
+非法 JSON 返回 `400 BAD_JSON`，缺少布尔字段返回 `400 BAD_REQUEST`，读写失败返回
+`500 CONFIG_FAILED`。未通过认证的请求遵循公共认证规则。
+
+该开关只影响以后启动的 `acecode-desktop`，不停止当前实例。主实例继续持有单实例锁，
+允许启动的附加实例使用各自的后台运行目录；每个壳内部仍由一个 daemon 服务多个工作区。
+开发者页在设置面板内依次输入 `↑↑↓↓←→←→BABA` 后显示，解锁本身不改变开关。
+
 ### `GET /api/config/ui-preferences`
 
 Returns:
@@ -2911,7 +3212,9 @@ Returns:
   "show_acecode_avatar": false,
   "theme": "system",
   "color_theme": "blue",
-  "font_size": "medium"
+  "font_size": "medium",
+  "sidebar_session_time": true,
+  "message_auto_collapse": true
 }
 ```
 
@@ -2920,6 +3223,11 @@ Returns:
 are stored in `~/.acecode/config.json`, so Desktop restores them even when its
 managed daemon uses a different loopback port. The avatar preference is kept
 for compatibility and is always normalized to `false`.
+
+`message_auto_collapse` is a boolean, defaulting to `true` for new and legacy
+configurations. When `false`, main and subagent conversations display messages
+without activity/turn folding; individual tool calls remain collapsible.
+The preference is persisted and included in the Desktop appearance bootstrap.
 
 ### `PUT /api/config/ui-preferences`
 
@@ -3048,9 +3356,13 @@ migration. It atomically creates `themes/.national-day-2026-attempted` and retur
 `{"id":"national-day-2026","claimed":true}` only to the first claimant; later
 requests return `claimed:false`. It neither downloads nor changes appearance.
 The marker persists across failures, process restarts and application upgrades.
-After restoring canonical appearance preferences, the first Web/Desktop client
-automatically installs the National Day package using the same exact integrity
-metadata with `automatic:true`, or reuses a valid installation. Automatic jobs
+当前 Web/Desktop 客户端恢复外观后不再调用此接口，也不自动下载或应用国庆节主题。
+新配置使用蓝色和跟随系统的明暗模式，已有配置保留已保存的主题。接口继续保留，
+兼容旧版客户端；以下自动任务行为仅适用于仍调用此接口的旧版启动流程。
+
+After restoring canonical appearance preferences, a legacy Web/Desktop client
+can automatically install the National Day package using the same exact integrity
+metadata with `automatic:true`, or reuse a valid installation. Automatic jobs
 retain that flag so every observing client suppresses their failure notifications.
 Application follows successful resource preparation. A later explicit theme
 choice wins, and persistence failures silently roll back the original appearance.
@@ -3335,6 +3647,49 @@ without substituting another model. Disabling retains `model_name` and restores
 the previous title-resolution behavior, including the legacy override. This
 setting does not change the conversation model or disable automatic titles.
 
+### Computer use settings
+
+`GET /api/config/computer-use` returns `enabled` (default `false`),
+`supported` (Windows or macOS 14+), `platform` (`windows`, `macos`,
+or `linux`), `pointer_style` (`ace` by default, or `plain`), and `pointer_color`
+(default `#2563eb`). `PUT` accepts any subset of boolean `enabled`,
+`pointer_style`, and `pointer_color`; omitted fields keep their current values.
+Colors must be six-digit `#RRGGBB` and are normalized to lowercase. Both
+endpoints require authentication and return the persisted settings plus live `availability`.
+Malformed JSON returns `400 BAD_JSON`, invalid fields return `400 BAD_REQUEST`,
+and enabling on another platform returns `400 COMPUTER_USE_PLATFORM_UNSUPPORTED`.
+Persistence errors return `500 PERSIST_FAILED` without changing the live switch.
+Pointer appearance can be saved while the tool is disabled and never enables it
+implicitly. The WebUI synchronizes the current theme accent color outside the
+settings panel too. Changes apply on the helper's next request without ending
+its session lease or invalidating an existing observation.
+
+On macOS, `availability` contains `supported`, `minimum_macos` (`14.0`),
+`helper_available`, `helper_path`, `accessibility`, `screen_recording`, and `ready`.
+Each permission is `granted`, `required`, or `unknown`; both must be granted for
+`ready: true`. Missing helpers, unsupported systems, failed probes and timeouts
+include an `error` code. Non-macOS permission states are `not_required`.
+`enabled` remains the saved user intent and does not imply system authorization.
+GET, PUT and readiness refreshes never request system permission.
+
+Authenticated `POST /api/config/computer-use/permissions` accepts exactly one
+field: `{"permission":"accessibility"}` or `{"permission":"screen_recording"}`.
+It prompts from the actual helper process and opens the relevant macOS settings
+pane when needed, then returns settings with refreshed `availability`. It never
+changes `enabled`. Only invoke it following a user permission-button action.
+Invalid bodies return `400 COMPUTER_USE_INVALID_PERMISSION`; HTTP 200 does not
+imply permission was granted. Probe/OS errors are reported in `availability.error`.
+
+Enabling registers the `computer_*` tools for subsequent model requests;
+disabling unregisters them and terminates the active desktop helper. An
+in-flight handler also checks the live gate, so stale calls cannot bypass a
+disabled setting. The UI reconciles uncertain save outcomes with a fresh GET.
+Window observations and PNG attachment metadata include a `cursor` object:
+`visible`, and when visible, `source` (`agent` or `system`), `x`, `y`,
+`hotspot_x`, `hotspot_y`, `width`, and `height`. All dimensions use that
+screenshot's pixels, including when the native window image was resized.
+See [Computer Use](computer-use.md) for native capabilities and platform limits.
+
 ### Image generation settings
 
 `GET /api/config/image-generation` returns `enabled`, `source` (`inline` or
@@ -3422,6 +3777,56 @@ file or the live mapping; write failures return 500 `PERSIST_FAILED`. Success
 writes the file atomically, publishes the mapping to the process so the next
 model request uses it, and returns the same shape as GET. Hook matchers accept
 the rewritten names as aliases of the native tool while a rewrite is active.
+
+### Tool preamble / concrete progress text (`openspec add-tool-preamble`)
+
+Settings > General > Work mode: "适合日常工作" (daily) turns it on, "用于编程"
+(coding) turns it off; off by default. The config key is still
+`agent_loop.tool_preamble.enabled`. When on, the loading text only says what the
+agent is doing right now, in present progressive and without tool arguments
+(arguments stay on the tool rows), and the vague "正在推理" / "正在等待模型响应"
+labels no longer appear. Nothing is asked of the model: every label is produced
+by the daemon, in this priority order:
+
+1. **Reasoning bold title** of the current model step: the first `**bold**` span
+   of the provider's reasoning summary (OpenAI Responses / Codex app-server /
+   Gemini summaries start with one). Valid for that step only. There is no
+   first-sentence fallback (raw chains of thought start with "The user wants me
+   to…").
+2. **Tool template** for the batch, from native tool names:
+   `正在读取 3 个文件`, `正在搜索代码`, `正在运行 2 条命令`, `正在修改文件`, …;
+   same-kind calls are counted, two kinds are joined with 并, three or more take
+   the first two plus 等; MCP and unknown tools become `正在调用工具`.
+3. **Context label**: `正在分析你的请求` at the start of a turn; after a batch,
+   one based on that batch's first tool kind (`正在分析文件内容`,
+   `正在分析搜索结果`, `正在分析命令输出`, `正在检查修改结果`, …); `正在撰写回复`
+   once visible text starts streaming.
+
+Delivery: the daemon rewrites the `label` of `model_waiting`, `reasoning`,
+`preamble` (bold title just appeared), `responding` (new phase, text started),
+`tool_planning` and `tool_running` frames and clears their `detail`
+(command preview, byte counts, fragment counts); `permission_waiting`,
+`question_waiting`, `compacting` and `model_retry` keep their own labels. Every
+rewritten frame carries `preamble: {title, source, kind}` with `source` one of
+`reasoning` / `template` / `context` and `kind` `read` / `write` / `""`
+(derived from the tool kinds; reserved for a future read/write visual effect).
+Each `tool_start` of the batch carries `preamble`, `preamble_source` and
+`preamble_kind`; its own `args` / `display_override` are unchanged, so tool rows
+keep showing arguments. `metadata.tool_preamble = {source, title, kind}` is
+persisted on the `assistant` message that carries the `tool_calls`, as a record
+only. There is no `tool_preamble` event.
+
+Older builds asked the model to emit `<text_preamble>` tags; those tags may still
+be present in persisted assistant `content`. They are always stripped from
+`token` and `message` frames (on or off), never used as labels, and clients strip
+them when rendering history.
+
+`GET /api/config/tool-preamble` returns `{enabled}`.
+`PUT /api/config/tool-preamble` is a patch: `{enabled: bool}`. A non-boolean
+`enabled` returns 400 `BAD_REQUEST` with `message`; legacy `mode` /
+`sidecar_model` / `sidecar_wait_ms` keys are ignored. Success writes
+`agent_loop.tool_preamble` to `config.json`, pushes the new config to every
+active session and returns the GET shape.
 
 ### Security center (`openspec add-security-center`)
 
@@ -3683,16 +4088,18 @@ packages also verify the installed backend before reporting success; a failed
 post-copy verification rolls back the installation. Version mismatch, timeout,
 invalid output and unsuccessful probe exit fail the job with an actionable error.
 
-On macOS, a daemon running from either the current-user
-`~/Applications/ACECode.app/Contents/MacOS/acecode-daemon` location or the
-supported system `/Applications/ACECode.app/Contents/MacOS/acecode-daemon`
-location installs a complete
+On macOS, a daemon running from `ACECode.app/Contents/MacOS/acecode-daemon`
+installs a complete
 `ACECode.app` update ZIP rather than copying files into `Contents/MacOS`. Before
-replacement, the daemon requires one of those exact non-symlinked install paths,
-a writable containing directory, a strict nested Apple signature, bundle
+replacement, the daemon requires an absolute, canonical, real `ACECode.app`
+with a real, writable containing directory, a strict nested Apple signature, bundle
 identifier `dev.acecode.desktop`, the selected manifest version, and the same
-Developer Team ID as the installed app. An app running from any other location
-fails the job without mutating that bundle.
+Developer Team ID and designated signing requirement as the installed app.
+Custom folders are supported as well as `~/Applications` and `/Applications`;
+App Translocation, symlinked paths, and apps nested in another `.app` are rejected.
+Read-only or otherwise unwritable locations require moving the app to a writable
+folder or installing manually; the updater does not elevate privileges. This does
+not change the separate personal-install destination policy.
 
 ### `GET /api/update/job`
 
@@ -3738,11 +4145,19 @@ Choosing restart later leaves the current process running. Normal browser and
 Edge-app compatibility clients do not own the desktop lifecycle, so they show
 manual full-exit-and-relaunch guidance instead of an automatic restart action.
 For a successful macOS bundle update, `backup_dir` identifies the retained
-`.ACECode.previous.app` beside the running installation.
+`.ACECode-<UUID>.previous.app` beside the running installation. Existing backups
+are not deleted or overwritten; retained backups require manual cleanup when no
+longer needed. The updater lock is opened without following symlinks and must be
+a regular, singly linked file owned by the current user.
 
 ### `GET /api/mcp`
 
-Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
+Reads global `mcp_servers` by default. Add `?workspace=<registered-workspace-hash>`
+to read only that project's `.acecode/mcp.json` entries. The same optional query
+applies to PUT, toggle, and reload. Unknown workspaces return `404`; filesystem
+paths are not accepted as workspace identifiers. `auth_token` is not returned.
+All MCP endpoints require the server's normal authentication and return
+`Cache-Control: no-store`.
 
 ```json
 {
@@ -3761,18 +4176,69 @@ Reads `mcp_servers` from config. `auth_token` is intentionally not returned.
 
 ### `PUT /api/mcp`
 
-Overwrites `mcp_servers`. Body is an object keyed by server name. Success:
+Replaces the selected scope's server map. The body is an object keyed by server
+name, without a `mcp_servers` wrapper. Project files on disk use the wrapper;
+project definitions override matching global names only in that project,
+including disabled definitions. An empty project map removes those overrides.
+
+The raw body must pass the ACECode configuration JSON Schema before any
+persistence, in-memory publication, or runtime update. Omitted `auth_token`
+fields preserve previously saved tokens for the same server; an explicit empty
+string clears a token. Successful writes reconcile the runtime when available:
 
 ```json
-{"saved":true,"reload_required":true}
+{"saved":true,"reload_required":false,"applied":true}
 ```
+
+Without a runtime, saving still succeeds with `applied:false` and
+`reload_required:true`. Persistence failures return `500` without publishing the
+candidate to application configuration. Invalid JSON or schema violations
+return `400` with the complete schema and JSON Pointer diagnostics:
+
+```json
+{
+  "error": "MCP_CONFIG_INVALID",
+  "message": "MCP configuration failed schema validation",
+  "errors": [{"path": "/example/command", "message": "must be string"}],
+  "schema": {"$schema": "http://json-schema.org/draft-07/schema#", "title": "ACECode MCP server configuration"},
+  "specification_url": "https://modelcontextprotocol.io/specification/2026-07-28/schema"
+}
+```
+
+The schema above is abbreviated for documentation; responses include all
+validation rules. Diagnostics do not echo rejected configuration values.
+
+### `GET /api/mcp/schema`
+
+Returns `schema` (the server map accepted by PUT) and `document_schema` (the
+project file wrapper). These are ACECode client configuration schemas; the
+linked MCP specification describes protocol messages. Validation works offline.
+
+### `POST /api/mcp/toggle`
+
+Body: `{"name":"example","enabled":false}`. Both fields are required with
+their declared types. The complete resulting scope is validated and saved
+before updating runtime state. Unknown names return `404`. Success:
+
+```json
+{"name":"example","enabled":false,"applied":true,"retained_for_expert":false}
+```
+
+An explicitly selected expert may retain its server connection after disabling
+the default. Retention is scoped to the exact global/project owner.
 
 ### `POST /api/mcp/reload`
 
-Currently returns `501`:
+Re-reads the selected persisted configuration, validates it, and reconciles its
+runtime registrations and session capability policies. Invalid external edits
+restore the validated `<config-file>.mcp-last-good` snapshot and archive the
+invalid input. Global recovery replaces only `mcp_servers`; project recovery
+affects only that project file. If no valid snapshot exists, returns the schema
+error and starts no servers from the invalid configuration. Returns `503` when
+no runtime is available. Success:
 
 ```json
-{"error":"mcp reload not implemented in v1; restart daemon to pick up changes"}
+{"reloaded":true}
 ```
 
 ### `GET /api/feedback/desktop/recent-sessions?limit=N`
@@ -3783,6 +4249,10 @@ Returns recent sessions for optional feedback attachment. `limit` defaults to
 ```json
 {"sessions":[{"id":"sid","session_id":"sid","title":"...","workspace_hash":"abc123"}]}
 ```
+
+Sessions that belong to no workspace (the sidebar task list) are included with
+`workspace_hash: ""` and `no_workspace: true`; submit them with the same empty
+hash.
 
 ### `POST /api/feedback/desktop`
 
@@ -3796,12 +4266,17 @@ Body fields are optional strings:
 }
 ```
 
-The package always carries the newest rotated log of every runtime that writes
-into the logs directory: the desktop shell (`desktop-<date>.log`) and the daemon
-that serves the request (`daemon-<date>.log`). Each is truncated to its last
-512 KiB and stored as `logs/desktop.log.tail.txt` / `logs/daemon.log.tail.txt`.
-A runtime with no log file present is skipped silently, so a browser-only
-deployment uploads the daemon log alone. Upgrade diagnostics
+`workspace_hash` scopes the session lookup to one workspace. When it is empty,
+the daemon searches every registered workspace and then the no-workspace session
+cache, so a session without a workspace attaches its transcript like any other.
+
+The package carries the newest rotated Desktop shell log (`desktop-<date>.log`)
+and the daemon log (`daemon-<date>.log`) that serves the request. Each is
+truncated to its last 512 KiB and stored as `logs/desktop.log.tail.txt` /
+`logs/daemon.log.tail.txt`. A runtime with no log file present is skipped
+silently, so a browser-only deployment uploads the daemon log alone. Desktop
+feedback does not attach `tui-<date>.log`; terminal `/feedback` instead carries
+`tui-<date>.log` plus the daemon log and does not attach the Desktop log. Upgrade diagnostics
 (`upgrade-<date>-<pid>.log`, one file per process) are handled as a window
 rather than a single newest file: every upgrade log modified within the last
 three days (72 hours) is merged oldest-first into `logs/upgrade.log.tail.txt`,
@@ -3925,28 +4400,78 @@ These endpoints use the normal authenticated API access policy.
 `redirect_target`, `migrated_at_ms`, `cleanup_pending` and `migration` (null or the
 job below). Existing backups add `previous_dir` and `previous_size_bytes`. After
 restart, a pending backup larger than 100 MiB also adds
-`cleanup:{previous_dir,size_bytes}`.
+`cleanup:{previous_dir,size_bytes}`. `previous_size_bytes` is the old directory's
+footprint at migration time: every enumerated file plus the excluded entries and
+skipped Agent Browser caches listed below, which stay in the old directory until it
+is cleaned up (it is not the copied byte count).
 
 `POST /api/config/data-dir/migrate` accepts `{target:"<absolute path>"}` and returns
-`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`, `error`,
-`restart_required`, `started_at_ms` and `finished_at_ms`. Poll
+`202` with a job containing `state`, `target`, `copied_bytes`, `total_bytes`,
+`skipped_files`, `error`, `restart_required`, `started_at_ms` and `finished_at_ms`.
+`skipped_files` counts Agent Browser profile files that could not be copied (see
+below); when it is greater than zero the Agent Browser may need to sign in again
+after restart. Poll
 `GET /api/config/data-dir/migration`; states are `running`, `done` or `failed`.
 Before any job has started the poll endpoint returns `404 MIGRATION_NOT_FOUND`.
 
 Target validation returns `400` with `TARGET_REQUIRED`, `TARGET_NOT_ABSOLUTE`,
 `TARGET_SAME_AS_CURRENT`, `TARGET_INSIDE_CURRENT`, `TARGET_CONTAINS_CURRENT`,
 `TARGET_NOT_A_DIRECTORY`, `TARGET_NOT_EMPTY` or `TARGET_NOT_WRITABLE`. Paths are
-compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY`, another
+compared after canonicalization. A busy Agent returns `409 SESSIONS_BUSY` with an
+additional sorted `busy_sessions:[<session id>, ...]` field, another
 live daemon returns `409 OTHER_INSTANCES_ACTIVE`, and open console terminals return
-`409 CONSOLES_ACTIVE`.
+`409 CONSOLES_ACTIVE`. Every refusal of the migrate and cleanup routes is logged as
+`[data-dir] migration refused: <CODE> ...` / `[data-dir] cleanup refused: <CODE> ...`
+with the busy session ids, the blocking `daemon.pid` (`pid=<n> file=<path>
+legacy=<yes|no>`, `legacy` meaning it lives under `projects/*/run`), the running
+console ids or the rejected target.
+
+A `daemon.pid` under `run/**` or `projects/*/run/**` blocks migration (and cleanup
+delete of the previous directory) only when its process is alive, is not the
+current process, and PID reuse is not proven. Reuse is proven, with the same rule
+the Desktop daemon pool uses, when the live process image is not ACECode or the
+process started more than 2 seconds after the heartbeat recorded in that run
+directory; such pid files are ignored and logged at INFO. An unreadable process
+identity without a usable heartbeat still blocks (fail-closed). This keeps stale
+pid files left under the legacy `projects/*/run` directories from blocking
+migration forever once Windows reassigns their PID to an unrelated process.
 
 The job pauses the scheduler and copies through a private staging directory,
-excluding top-level `run/`, `tmp/`, the redirect pointer and lock files. SQLite
-databases use online backups, including committed WAL transactions. Symlinks are
+excluding top-level `run/`, `tmp/`, `edge-app-profile/` (the Edge `--app` profile of
+webapp compatibility mode, recreated on every launch), the redirect pointer, lock
+files and `cache/no-workspace/<id>/.acecode/tmp` (the scratch `ACECODE_TMPDIR` of
+no-workspace sessions; other files in that session directory are copied). Once the
+old directory is deleted, history references to those scratch files (including
+Agent Browser screenshots) no longer resolve. SQLite databases use online backups,
+including committed WAL transactions; after a database is snapshotted its `-wal`,
+`-shm` and `-journal` files are not copied, because a hot journal next to a
+consistent snapshot would roll it back. Symlinks are
 preserved (internal targets follow the new root); inability to preserve them fails
-the copy. Source changes and a newly occupied target abort publication. Failure
+the copy. Source changes and a newly occupied target abort publication; the error
+names the changed or new entry by its relative path. Failure
 removes only private staging, preserves the source and existing target files,
 and re-enables writes. A pointer-write failure retains the copied target for recovery.
+The staging directory is a sibling of the target named `.acecode-mig-<8 hex>`.
+
+`agent-browser/webview2` (the Desktop Agent Browser profile, open and written for
+the whole Desktop lifetime) is copied best-effort: it is enumerated separately and
+tolerates entries vanishing mid-walk, skips rebuildable caches (`Cache`,
+`Code Cache`, `GPUCache`, `GrShaderCache`, `GraphiteDawnCache`, `DawnCache`,
+`DawnGraphiteCache`, `DawnWebGPUCache`, `ShaderCache`, `Crashpad`) and `lockfile` /
+`LOCK`, snapshots SQLite files with a 500 ms busy timeout and falls back to a raw
+copy, and counts a file in `skipped_files` only when that also fails (a file that
+disappeared is not counted). The subtree is excluded from the source-change
+recheck. Data written after the snapshot is lost, so the worst case is signing in
+to the Agent Browser again; ACECode's own data is never copied best-effort.
+
+On Windows, migration and cleanup perform file IO (enumeration, stat, directory
+creation, copy, rename and recursive removal) through extended-length `\\?\` paths,
+so files beyond `MAX_PATH` (260 characters) can be copied and deleted. Extended
+paths never appear in responses, the redirect pointer or logs. SQLite databases are
+still opened by their normal path unless it reaches 240 characters. The ACECode
+runtime is not long-path aware: a copied file whose final path reaches 260
+characters may be unreadable at runtime, and completion logs a warning with the
+count and one sample path.
 
 Success atomically publishes the copied directory, writes `data-dir.redirect.json`
 in the platform default data directory, and sets `restart_required:true`. The
@@ -3966,17 +4491,22 @@ return `409 NO_MIGRATION`, `409 SESSIONS_BUSY`, `500 CLEANUP_FAILED` or
 Body:
 
 ```json
-{"cwd":"C:/repo","title":"Terminal","shell":"powershell"}
+{"cwd":"C:/repo","title":"Terminal","shell":"powershell","owner_id":"session:abc"}
 ```
 
 `shell` is a shell id from `/api/pty/shells`. The daemon enforces a 16-session
 limit and returns `429` when exceeded.
+
+`owner_id` identifies the conversation (`session:<id>`) or temporary new-chat
+state (`draft:<id>`), independently of `cwd`. It is limited to 512 bytes.
+Omitting it preserves the legacy unowned terminal behavior.
 
 Session info:
 
 ```json
 {
   "id": "pty-1",
+  "owner_id": "session:abc",
   "title": "Terminal 1",
   "shell": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
   "cwd": "C:/repo",
@@ -3991,11 +4521,28 @@ Session info:
 
 ### `GET /api/pty`
 
+Optional `owner_id` query parameter filters by owner. Omitted means all terminals;
+an explicit empty value selects legacy unowned terminals. The WebUI always sends
+the current owner and never attaches legacy terminals to an arbitrary conversation.
+
 Returns:
 
 ```json
 {"backend":"conpty","sessions":[]}
 ```
+
+### `POST /api/pty/transfer-owner`
+
+```json
+{"from_owner":"draft:unique-id","to_owner":"session:new-session-id"}
+```
+
+Moves a new-chat draft's terminals to the newly created conversation without
+restarting processes, clearing buffers or disconnecting subscribers. Late creates
+with the old draft owner follow the transfer. Identical retries return `204`;
+invalid owner prefixes, an already occupied target or a conflicting prior transfer
+return `409`. A malformed body returns `400`. Existing conversation-to-conversation
+transfers are rejected. Uses the same loopback/auth checks as all PTY endpoints.
 
 ### `DELETE /api/pty/:id`
 
@@ -4088,6 +4635,17 @@ Session event `type` values from `SessionEventKind`:
 - `done`
 - `error`
 
+`session_updated` carries the session's display-title fields, which are the
+only source clients may use for a session's name. A rename or a generated title
+sends `{"title", "title_source"}`. After each visible user message is persisted
+the daemon sends `{"summary"}`: the latest user message's display text
+(`metadata.display_text` when present, otherwise `content`) collapsed to one
+line and truncated to 80 UTF-8 bytes plus `...`. The same three fields appear in
+session listings and in the `GET .../messages?since=0` snapshot. Clients show
+`title` when it is non-empty (ignoring generated titles that start with
+`[Error]`) and `summary` otherwise, in both the session list and the chat
+header; they must not derive a title from message bodies.
+
 For a successful `task_complete` call, the `tool_end` payload also includes
 `message_id`, the canonical id of the persisted tool-role result. Live and
 trajectory/replay records use the same id so clients can attach copy, fork, and
@@ -4116,11 +4674,36 @@ shape is persisted under the tool message's `metadata.tool_hunks`.
 The start of a regular agent turn includes
 `{"busy":true,"turn_id":"initial-user-message-uuid"}`. That id stays stable
 across tool calls, model retries, and accepted steering input. For the terminal
-transition, `busy_changed` includes
-`{"busy":false,"outcome":"completed|error|aborted","turn_id":"..."}`
-and the following `done` frame repeats the same `outcome`. Other busy cycles
-such as compaction may omit it. Clients should only treat `completed` as a
-successful turn.
+transition, `busy_changed` includes the turn-wide usage summary:
+
+```json
+{
+  "busy": false,
+  "outcome": "completed",
+  "turn_id": "initial-user-message-uuid",
+  "usage": {
+    "prompt_tokens": 44100,
+    "completion_tokens": 2100,
+    "total_tokens": 46200,
+    "cache_read_tokens": 32000,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 500,
+    "has_data": true
+  }
+}
+```
+
+The following `done` frame repeats the same `outcome`, `turn_id`, and `usage`.
+The summary adds every accounted model step in the turn, including tool-call
+round trips. It is not another incremental delta to add to preceding `usage`
+or `model_step_finish` events. `has_data` is true only when at least one model
+step was accounted and every included step used provider-reported usage; if
+ACECode estimated any included step, counts still include that estimate but
+`has_data` is false. `context_breakdown`, when present, is also summed across
+included steps.
+
+Other busy cycles such as compaction may omit `outcome`, `turn_id`, and
+`usage`. Clients should only treat `completed` as a successful turn.
 
 Transient pure-sampling failures use `agent_progress` rather than transcript
 messages. While waiting, the payload is:
@@ -4181,6 +4764,7 @@ All client frames are JSON:
 | `status_subscribe` | `{workspace_hash}` or `{session_id}` | subscribes workspace attention status and sends snapshot |
 | `status_unsubscribe` | `{workspace_hash}` | unsubscribes; ack is `status_unsubscribe_ack` |
 | `mark_session_read` | `{session_id,workspace_hash,cursor}` | persists read cursor; ack is `mark_session_read_ack` |
+| `mark_session_unread` | `{session_id,workspace_hash}` | rewinds the read cursor just before the latest output (a session with no output yet gets `update_cursor=1`), persists it and broadcasts `session_status`; a later `mark_session_read` restores `read`. A busy session still reports `in_progress` until its turn ends. Ack is `mark_session_unread_ack` with the same status payload |
 | `user_input` | `{session_id,text}` | queues plain user input |
 | `decision` | `{session_id,request_id,choice}` | responds to permission request; `choice` is `allow`, `deny`, `allow_session`, `allow_scoped`, or `allow_remember` |
 | `question_answer` | `{session_id,request_id,cancelled,answers}` | responds to AskUserQuestion |

@@ -65,6 +65,22 @@
       }
     },
     {
+      "name": "windows-arm64-release",
+      "displayName": "Windows ARM64 Release",
+      "inherits": "release-base",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-windows-static"
+      }
+    },
+    {
+      "name": "windows-arm64-desktop-release",
+      "displayName": "Windows ARM64 Desktop Release",
+      "inherits": "desktop-release-base",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-windows-static"
+      }
+    },
+    {
       "name": "windows-x64-winlibs-debug",
       "displayName": "Windows x64 WinLibs Debug",
       "description": "Self-contained GCC, Ninja, and GDB build. Set ACECODE_WINLIBS_ROOT to the extracted mingw64 directory.",

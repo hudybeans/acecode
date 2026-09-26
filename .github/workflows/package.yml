@@ -136,6 +136,7 @@ jobs:
             cmake_extra_args: -DACECODE_BUILD_DESKTOP=ON
           - id: macos-x64
             os: macos-15
+            installer_arch: x64
             triplet: x64-osx
             executable: acecode
             archive_extension: tar.gz
@@ -143,11 +144,12 @@ jobs:
             cmake_extra_args: -DCMAKE_OSX_ARCHITECTURES=x86_64 -DACECODE_BUILD_DESKTOP=ON
           - id: macos-arm64
             os: macos-15
+            installer_arch: arm64
             triplet: arm64-osx
             executable: acecode
             archive_extension: tar.gz
             build_desktop: true
-            cmake_extra_args: -DACECODE_BUILD_DESKTOP=ON
+            cmake_extra_args: -DCMAKE_OSX_ARCHITECTURES=arm64 -DACECODE_BUILD_DESKTOP=ON
 
     steps:
       - name: Checkout
@@ -227,6 +229,10 @@ jobs:
               echo "pkg_enabled=false" >> "$GITHUB_OUTPUT"
             fi
           else
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Tagged macOS releases require MACOS_INSTALLER_CERTIFICATE_BASE64 and MACOS_INSTALLER_CERTIFICATE_PASSWORD to build both PKGs"
+              exit 1
+            fi
             echo "::notice::macOS PKG creation disabled; Developer ID Installer credentials are not configured"
             echo "pkg_enabled=false" >> "$GITHUB_OUTPUT"
           fi
@@ -497,6 +503,7 @@ jobs:
             --identity "${{ steps.macos-keychain.outputs.identity }}" \
             --keychain "${{ steps.macos-keychain.outputs.keychain }}" \
             --binary "build/${{ matrix.executable }}" \
+            --binary "build/acecode-computer-use" \
             --app "build/ACECode.app"
 
       - name: Notarize and staple macOS app
@@ -507,6 +514,61 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: scripts/macos_notarize_app.sh --app "build/ACECode.app"
+
+      - name: Test macOS installer integration
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash tests/scripts/macos_installer_test.sh
+          python3 tests/scripts/macos_installer_release_test.py
+
+      - name: Create current-user macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        id: macos-pkg
+        shell: bash
+        run: |
+          pkg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.pkg"
+          scripts/macos_create_pkg.sh \
+            --app "build/ACECode.app" \
+            --output "$pkg_path" \
+            --installer-identity "${{ steps.macos-keychain.outputs.installer_identity }}" \
+            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
+          echo "path=$pkg_path" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize and validate macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: scripts/macos_notarize_pkg.sh --pkg "${{ steps.macos-pkg.outputs.path }}"
+
+      - name: Upload macOS PKG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: acecode-${{ matrix.id }}-pkg
+          path: ${{ steps.macos-pkg.outputs.path }}
+          if-no-files-found: error
+
+      - name: Build signed and notarized macOS installer DMG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.enabled == 'true'
+        id: macos-dmg
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          dmg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.dmg"
+          bash scripts/macos_create_installer_dmg.sh \
+            --app "build/ACECode.app" \
+            --output "$dmg_path" \
+            --arch "${{ matrix.installer_arch }}" \
+            --identity "${{ steps.macos-keychain.outputs.identity }}" \
+            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
+          echo "path=$dmg_path" >> "$GITHUB_OUTPUT"
 
       - name: Create macOS self-update archive
         if: runner.os == 'macOS'
@@ -565,6 +627,11 @@ jobs:
             --prefix "$PWD/$package_dir" \
             --component default_seed_bundle
           cmake --install build --config MinSizeRel --prefix "$PWD/$package_dir" --component whatsapp_channel
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cmake --install build --config MinSizeRel --prefix "$PWD/$package_dir" --component computer_use_runtime
+            test -x "$package_dir/acecode-computer-use"
+            test -x "build/ACECode.app/Contents/MacOS/acecode-computer-use"
+          fi
           validate_models_dev_registry "$package_dir/share/acecode/models_dev"
           python3 scripts/verify_seed_bundle.py \
             --source assets/seed \
@@ -601,6 +668,8 @@ jobs:
             --source assets/seed \
             --packaged "$extracted_package/share/acecode/seed"
           if [ "$RUNNER_OS" = "macOS" ]; then
+            test -x "$extracted_package/acecode-computer-use"
+            test -x "$extracted_package/ACECode.app/Contents/MacOS/acecode-computer-use"
             validate_models_dev_registry \
               "$extracted_package/ACECode.app/Contents/Resources/share/acecode/models_dev"
             python3 scripts/verify_seed_bundle.py \
@@ -620,28 +689,6 @@ jobs:
             --output "$update_path" \
             --expected-version "${{ steps.package-version.outputs.version }}"
           echo "path=$update_path" >> "$GITHUB_OUTPUT"
-
-      - name: Create current-user macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
-        id: macos-pkg
-        shell: bash
-        run: |
-          pkg_path="ACECode-${{ steps.package-version.outputs.version }}-${{ matrix.id }}.pkg"
-          scripts/macos_create_pkg.sh \
-            --app "build/ACECode.app" \
-            --output "$pkg_path" \
-            --installer-identity "${{ steps.macos-keychain.outputs.installer_identity }}" \
-            --keychain "${{ steps.macos-keychain.outputs.keychain }}"
-          echo "path=$pkg_path" >> "$GITHUB_OUTPUT"
-
-      - name: Notarize and validate macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: scripts/macos_notarize_pkg.sh --pkg "${{ steps.macos-pkg.outputs.path }}"
 
       - name: Clean up macOS signing material
         if: always() && runner.os == 'macOS'
@@ -701,6 +748,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to install the WhatsApp channel bridge"
           }
+          & cmake --install build --config MinSizeRel --prefix $packageRoot --component computer_use_runtime
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install the Computer Use runtime"
+          }
+          $computerUseExe = Join-Path $packageRoot "acecode-computer-use.exe"
+          if (-not (Test-Path -LiteralPath $computerUseExe -PathType Leaf) -or
+              (Get-Item -LiteralPath $computerUseExe).Length -eq 0) {
+            throw "Missing Computer Use runtime: $computerUseExe"
+          }
           Assert-ModelsDevRegistry (Join-Path $packageDir "share/acecode/models_dev")
           & python scripts/verify_seed_bundle.py `
             --source assets/seed `
@@ -737,6 +793,12 @@ jobs:
           $verifyRoot = Join-Path $env:RUNNER_TEMP ("acecode-package-verify-" + [Guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Path $verifyRoot | Out-Null
           Expand-Archive -LiteralPath "acecode-${{ matrix.id }}.zip" -DestinationPath $verifyRoot
+          $archivedComputerUseExe = Join-Path $verifyRoot "acecode-computer-use.exe"
+          if (-not (Test-Path -LiteralPath $archivedComputerUseExe -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $archivedComputerUseExe -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $computerUseExe -Algorithm SHA256).Hash) {
+            throw "Archived Computer Use runtime is missing or does not match the build"
+          }
           Assert-ModelsDevRegistry (Join-Path $verifyRoot "share/acecode/models_dev")
           & python scripts/verify_seed_bundle.py `
             --source assets/seed `
@@ -752,7 +814,8 @@ jobs:
           $packageDir = "dist/acecode-${{ matrix.id }}"
           $expectedExecutables = @(
             "acecode.exe",
-            "acecode-desktop.exe"
+            "acecode-desktop.exe",
+            "acecode-computer-use.exe"
           )
           foreach ($name in $expectedExecutables) {
             $path = Join-Path $packageDir $name
@@ -781,12 +844,12 @@ jobs:
           path: ${{ steps.linux-update.outputs.path }}
           if-no-files-found: error
 
-      - name: Upload macOS PKG
-        if: runner.os == 'macOS' && steps.macos-release.outputs.pkg_enabled == 'true'
+      - name: Upload macOS installer DMG
+        if: runner.os == 'macOS' && steps.macos-release.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: acecode-${{ matrix.id }}-pkg
-          path: ${{ steps.macos-pkg.outputs.path }}
+          name: acecode-${{ matrix.id }}-dmg
+          path: ${{ steps.macos-dmg.outputs.path }}
           if-no-files-found: error
 
       - name: Upload macOS self-update archive
@@ -847,7 +910,7 @@ jobs:
             build/acecode-daemon.dSYM
           if-no-files-found: warn
 
-  build-linux-old-package:
+  build-linux-deepin-package:
     name: ${{ matrix.id }}
     needs: build-web-ui
     runs-on: ${{ matrix.os }}
@@ -861,7 +924,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: linux-old-x64
+          - id: linux-deepin-x64
             os: ubuntu-22.04
             triplet: x64-linux
             executable: acecode
@@ -869,8 +932,9 @@ jobs:
             build_desktop: true
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=ON
+              -DACECODE_DEEPIN=ON
               -DWEBVIEW_WEBKITGTK_API=4.0
-          - id: linux-old-arm64
+          - id: linux-deepin-arm64
             os: ubuntu-22.04-arm
             triplet: arm64-linux
             executable: acecode
@@ -878,8 +942,9 @@ jobs:
             build_desktop: true
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=ON
+              -DACECODE_DEEPIN=ON
               -DWEBVIEW_WEBKITGTK_API=4.0
-          - id: linux-old-armv7
+          - id: linux-deepin-armv7
             os: ubuntu-22.04
             triplet: arm-linux
             executable: acecode
@@ -887,6 +952,7 @@ jobs:
             build_desktop: false
             cmake_extra_args: >-
               -DACECODE_BUILD_DESKTOP=OFF
+              -DACECODE_DEEPIN=ON
               -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/toolchains/linux.cmake"
               -DVCPKG_TARGET_ARCHITECTURE=arm
               -DCMAKE_C_COMPILER=clang-11
@@ -902,7 +968,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install old Linux dependencies
+      - name: Install Deepin build dependencies
         shell: bash
         run: |
           sed -i \
@@ -929,9 +995,15 @@ jobs:
             zip
           )
           if [ "${{ matrix.build_desktop }}" = "true" ]; then
-            packages+=(libgtk-3-dev libwebkit2gtk-4.0-dev)
+            packages+=(
+              libgtk-3-dev libwebkit2gtk-4.0-dev libx11-dev
+              qtbase5-dev qtbase5-private-dev qttools5-dev-tools qtmultimedia5-dev
+              libqt5x11extras5-dev libqt5svg5-dev libgsettings-qt-dev
+              libstartup-notification0-dev libxcb-util0-dev libmtdev-dev
+              libegl1-mesa-dev libudev-dev libxi-dev libcups2-dev librsvg2-dev
+            )
           fi
-          if [ "${{ matrix.id }}" = "linux-old-armv7" ]; then
+          if [ "${{ matrix.id }}" = "linux-deepin-armv7" ]; then
             packages+=(
               binutils-arm-linux-gnueabihf
               clang-11
@@ -948,6 +1020,16 @@ jobs:
         with:
           cmake-version: '3.29.x'
 
+      - name: Build pinned DTK 5 SDK
+        if: matrix.build_desktop
+        shell: bash
+        run: |
+          sdk_prefix="$RUNNER_TEMP/acecode-dtk-sdk"
+          bash scripts/build_deepin_dtk_sdk.sh "$sdk_prefix" "$RUNNER_TEMP/acecode-dtk-build"
+          printf 'CMAKE_PREFIX_PATH=%s\n' "$sdk_prefix" >> "$GITHUB_ENV"
+          printf 'PKG_CONFIG_PATH=%s/lib/pkgconfig\n' "$sdk_prefix" >> "$GITHUB_ENV"
+          printf 'LD_LIBRARY_PATH=%s/lib\n' "$sdk_prefix" >> "$GITHUB_ENV"
+
       - name: Run vcpkg
         uses: lukka/run-vcpkg@v11
 
@@ -955,9 +1037,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-v2-buster-${{ matrix.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
+          key: vcpkg-v3-deepin-buster-${{ matrix.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
           restore-keys: |
-            vcpkg-v2-buster-${{ matrix.os }}-${{ matrix.triplet }}-
+            vcpkg-v3-deepin-buster-${{ matrix.os }}-${{ matrix.triplet }}-
 
       - name: Download web UI
         uses: actions/download-artifact@v4
@@ -973,6 +1055,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" \
             -DBUILD_TESTING=OFF \
+            -DCMAKE_SKIP_BUILD_RPATH=ON \
             ${{ matrix.cmake_extra_args }}
 
       - name: Build
@@ -984,7 +1067,7 @@ jobs:
         shell: bash
         run: cmake --build build --config MinSizeRel --target acecode-desktop
 
-      - name: Verify old Linux ABI
+      - name: Verify Deepin ABI
         shell: bash
         run: |
           abi_binaries=(build/acecode)
@@ -1004,21 +1087,27 @@ jobs:
           fi
           echo "Max GLIBC symbol: GLIBC_$max_glibc"
           if [ "$(printf '%s\n%s\n' "$max_glibc" "2.28" | sort -V | tail -n1)" != "2.28" ]; then
-            echo "Old Linux package requires GLIBC_$max_glibc, expected <= GLIBC_2.28" >&2
+            echo "Deepin package requires GLIBC_$max_glibc, expected <= GLIBC_2.28" >&2
             exit 1
           fi
 
           if [ "${{ matrix.build_desktop }}" = "true" ]; then
             ldd build/acecode-desktop | tee build/acecode-desktop.ldd
             grep -E 'libwebkit2gtk-4\.0\.so\.37' build/acecode-desktop.ldd
+            grep -E 'libdtkwidget\.so\.5' build/acecode-desktop.ldd
+            grep -E 'libdtkgui\.so\.5' build/acecode-desktop.ldd
+            if grep -F 'not found' build/acecode-desktop.ldd; then
+              echo "Deepin desktop has unresolved runtime dependencies" >&2
+              exit 1
+            fi
             if grep -E 'libwebkit2gtk-4\.1|libwebkitgtk-6' build/acecode-desktop.ldd; then
-              echo "Old Linux desktop linked against a newer WebKitGTK ABI" >&2
+              echo "Deepin desktop linked against a newer WebKitGTK ABI" >&2
               exit 1
             fi
           fi
 
-      - name: Verify old Linux ARMv7 executable
-        if: matrix.id == 'linux-old-armv7'
+      - name: Verify Deepin ARMv7 executable
+        if: matrix.id == 'linux-deepin-armv7'
         shell: bash
         run: |
           export LC_ALL=C
@@ -1043,7 +1132,7 @@ jobs:
         shell: bash
         run: |
           binutils_prefix=""
-          if [ "${{ matrix.id }}" = "linux-old-armv7" ]; then
+          if [ "${{ matrix.id }}" = "linux-deepin-armv7" ]; then
             binutils_prefix="arm-linux-gnueabihf-"
           fi
           "${binutils_prefix}objcopy" --only-keep-debug \
@@ -1088,6 +1177,7 @@ jobs:
           fi
           cp "build/${{ matrix.executable }}" "$package_dir/"
           cp README.md README_CN.md "$package_dir/"
+          cp docs/deepin-desktop.md "$package_dir/DEEPIN.md"
           cmake --install build \
             --config MinSizeRel \
             --prefix "$PWD/$package_dir" \
@@ -1116,10 +1206,12 @@ jobs:
             echo "Legacy browser artifact must not be packaged: $legacy" >&2
             exit 1
           fi
+          python3 scripts/verify_deepin_package.py "$package_dir"
           tar -C dist -czf "acecode-${{ matrix.id }}.tar.gz" "acecode-${{ matrix.id }}"
 
           verify_root="$(mktemp -d)"
           tar -xzf "acecode-${{ matrix.id }}.tar.gz" -C "$verify_root"
+          python3 scripts/verify_deepin_package.py "$verify_root/acecode-${{ matrix.id }}"
           validate_models_dev_registry \
             "$verify_root/acecode-${{ matrix.id }}/share/acecode/models_dev"
           python3 scripts/verify_seed_bundle.py \
@@ -1153,9 +1245,41 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-and-package
-      - build-linux-old-package
+      - build-linux-deepin-package
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
     steps:
+      - name: Require passing tests for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Packaging can run alongside tests, but publication must wait for
+          # the master push checks of this exact commit to succeed.
+          for attempt in $(seq 1 180); do
+            result="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&event=push" \
+              --jq '.workflow_runs | map(select(.head_branch == "master")) | sort_by(.id) | last | if . == null then "missing pending" else "\(.status) \(.conclusion // "pending")" end')"
+            read -r status conclusion <<< "$result"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Required tests passed for $GITHUB_SHA"
+                exit 0
+              fi
+              echo "::error::Required tests for $GITHUB_SHA ended with $conclusion; refusing publication"
+              exit 1
+            fi
+            echo "Waiting for required tests for $GITHUB_SHA ($status)"
+            sleep 20
+          done
+          echo "::error::Timed out waiting for tests for $GITHUB_SHA"
+          exit 1
+
+      - name: Checkout release asset selector
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1167,11 +1291,25 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          unexpected_dmg="$(find artifacts -type f -name '*.dmg' -print -quit)"
-          if [ -n "$unexpected_dmg" ]; then
-            echo "::error::DMG artifacts are no longer permitted in tagged releases: $unexpected_dmg"
+          release_version="${GITHUB_REF_NAME#v}"
+          # A successful matrix job may still upload no artifact. Require the
+          # complete inventory before copying or publishing any download.
+          python3 scripts/verify_release_assets.py artifacts "$release_version"
+          # Only exact update ZIPs may be selected for updater publication.
+          python3 scripts/select_macos_update_assets.py artifacts "$release_version"
+          dmg_count="$(find artifacts -type f -iname '*.dmg' | wc -l | tr -d '[:space:]')"
+          if [ "$dmg_count" -ne 2 ]; then
+            echo "::error::Tagged releases require exactly two signed macOS installer DMGs; found $dmg_count"
             exit 1
           fi
+          for arch in x64 arm64; do
+            expected_dmg="ACECode-${release_version}-macos-${arch}.dmg"
+            matching_count="$(find artifacts -type f -name "$expected_dmg" | wc -l | tr -d '[:space:]')"
+            if [ "$matching_count" -ne 1 ]; then
+              echo "::error::Expected exactly one $expected_dmg; found $matching_count"
+              exit 1
+            fi
+          done
 
           unsigned_pkg="$(find artifacts -type f -name '*-unsigned.pkg' -print -quit)"
           if [ -n "$unsigned_pkg" ]; then
@@ -1187,8 +1325,8 @@ jobs:
 
           release_version="${GITHUB_REF_NAME#v}"
           pkg_count="$(find artifacts -type f -name '*.pkg' | wc -l | tr -d '[:space:]')"
-          if [ "$pkg_count" -ne 0 ] && [ "$pkg_count" -ne 2 ]; then
-            echo "::error::Tagged releases allow either zero or two signed macOS PKGs; found $pkg_count"
+          if [ "$pkg_count" -ne 2 ]; then
+            echo "::error::Tagged releases require exactly two signed macOS PKGs; found $pkg_count"
             exit 1
           fi
           if [ "$pkg_count" -eq 2 ]; then
@@ -1200,11 +1338,9 @@ jobs:
                 exit 1
               fi
             done
-          else
-            echo "::notice::No macOS PKGs were produced; publishing the remaining trusted assets"
           fi
 
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' \) -print0 |
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.dmg' \) -print0 |
             while IFS= read -r -d '' file; do
               cp "$file" "release-assets/$(basename "$file")"
             done
@@ -1213,7 +1349,7 @@ jobs:
             while IFS= read -r -d '' file; do
               relative="${file#artifacts/}"
               artifact_name="${relative%%/*}"
-              cp "$file" "release-assets/[dev_only]${artifact_name}-$(basename "$file")"
+              cp "$file" "release-assets/dev_only.${artifact_name}-$(basename "$file")"
             done
 
           # Package dSYM directories as tar.gz
@@ -1222,7 +1358,7 @@ jobs:
               relative="${dsym#artifacts/}"
               artifact_name="${relative%%/*}"
               dsym_name="$(basename "$dsym")"
-              tar -czf "release-assets/[dev_only]${artifact_name}-${dsym_name}.tar.gz" -C "$(dirname "$dsym")" "$dsym_name"
+              tar -czf "release-assets/dev_only.${artifact_name}-${dsym_name}.tar.gz" -C "$(dirname "$dsym")" "$dsym_name"
             done
 
           (

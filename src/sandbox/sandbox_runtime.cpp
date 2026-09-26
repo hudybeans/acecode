@@ -95,10 +95,18 @@ void SandboxRuntime::clear_session_grants() {
     session_grants_ = {};
 }
 
+void SandboxRuntime::set_workspace_writable_roots(std::vector<std::string> roots) {
+    std::lock_guard<std::mutex> lk(mu_);
+    workspace_writable_roots_ = std::move(roots);
+}
+
 SandboxPolicyOptions SandboxRuntime::policy_options(const AdditionalPermissions* extra) const {
     std::lock_guard<std::mutex> lk(mu_);
     SandboxPolicyOptions options;
     options.extra_writable_roots = cfg_.writable_roots;
+    options.extra_writable_roots.insert(options.extra_writable_roots.end(),
+                                        workspace_writable_roots_.begin(),
+                                        workspace_writable_roots_.end());
     options.readable_roots = cfg_.readable_roots;
     options.denied_entries = cfg_.denied_entries;
     if (cfg_.deny_defaults) {

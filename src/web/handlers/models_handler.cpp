@@ -5,6 +5,9 @@
 #include "../../provider/builtin_model_catalog.hpp"
 #include "../../provider/model_context_metadata.hpp"
 #include "../../utils/sha256.hpp"
+#include "../../network/proxy_resolver.hpp"
+
+#include <cpr/cpr.h>
 
 #include <algorithm>
 #include <cctype>
@@ -12,6 +15,41 @@
 #include <string>
 
 namespace acecode::web {
+
+OpenAiModelsProbeResult probe_openai_models(
+    const ModelProbeRequest& request, const std::atomic<bool>* cancel) {
+    if (cancel && cancel->load()) return {};
+    std::string base = request.base_url;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    const std::string url = base + "/models";
+    cpr::Header headers = {{"Content-Type", "application/json"}};
+    if (!request.api_key.empty()) headers["Authorization"] = "Bearer " + request.api_key;
+    std::string header_error;
+    const auto resolved = resolve_request_headers(request.request_headers, header_error);
+    if (!resolved) return {{}, "INVALID_REQUEST_HEADER", header_error};
+    for (const auto& [key, value] : *resolved) headers[key] = value;
+    const auto proxy = network::proxy_options_for(url);
+    const auto response = cpr::Get(
+        cpr::Url{url}, headers, network::build_ssl_options(proxy),
+        proxy.proxies, proxy.auth, cpr::Timeout{10000},
+        cpr::ProgressCallback{[cancel](cpr::cpr_off_t, cpr::cpr_off_t,
+                                     cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) {
+            return !cancel || !cancel->load();
+        }});
+    if (cancel && cancel->load()) return {};
+    if (response.status_code == 0) return {{}, "PROBE_FAILED", response.error.message};
+    if (response.status_code < 200 || response.status_code >= 300) {
+        return {{}, "PROBE_HTTP_ERROR",
+                "upstream returned HTTP " + std::to_string(response.status_code)};
+    }
+    try {
+        auto models = parse_openai_models(nlohmann::json::parse(response.text));
+        if (is_acemodel_base_url(request.base_url)) apply_acemodel_context_fallbacks(models);
+        return {std::move(models), {}, {}};
+    } catch (const std::exception& error) {
+        return {{}, "PROBE_BAD_JSON", error.what()};
+    }
+}
 
 namespace {
 

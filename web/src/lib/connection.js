@@ -231,6 +231,13 @@ export class AceConnection extends EventTarget {
       payload: { session_id: sessionId, workspace_hash: workspaceHash || '', cursor: cursor || 0 },
     });
   }
+  markSessionUnread({ sessionId=this.sessionId, workspaceHash='' } = {}) {
+    if (!sessionId) return;
+    this._send({
+      type: 'mark_session_unread',
+      payload: { session_id: sessionId, workspace_hash: workspaceHash || '' },
+    });
+  }
   ping()                           { this._send({ type: 'ping' }); }
 
   _send(msg) {

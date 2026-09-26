@@ -4,6 +4,7 @@
 // multiple route TUs.
 
 #include "server_impl.hpp"
+#include "../computer_use/runtime.hpp"
 #include "remote_control_session_event.hpp"
 #include "session_status_routing.hpp"
 #include "../config/saved_models_revision.hpp"
@@ -79,6 +80,7 @@ json ui_preferences_to_json(const WebUiPreferencesConfig& cfg) {
         {"color_theme", cfg.color_theme},
         {"font_size", cfg.font_size},
         {"sidebar_session_time", cfg.sidebar_session_time},
+        {"message_auto_collapse", cfg.message_auto_collapse},
     };
 }
 
@@ -595,6 +597,28 @@ std::optional<acecode::desktop::WorkspaceMeta> WebServer::Impl::resolve_workspac
     return std::nullopt;
 }
 
+std::optional<WorkspaceDraftLocation> WebServer::Impl::workspace_draft_location(
+    const std::string& hash) const {
+    WorkspaceDraftLocation location;
+    if (hash == "__no_workspace__") {
+        // The draft file keeps its historical place in the cache root; its
+        // attachments must not create a subdirectory there (each one would be
+        // listed as a no-workspace session cwd), so they use the root's
+        // project dir instead.
+        const std::string root = no_workspace_cache_root();
+        location.draft_dir = path_from_utf8(root);
+        location.attachment_project_dir =
+            path_from_utf8(SessionStorage::get_project_dir(root));
+        return location;
+    }
+    const auto workspace = resolve_workspace(hash);
+    if (!workspace) return std::nullopt;
+    location.workspace_hash = workspace->hash;
+    location.draft_dir = path_from_utf8(projects_dir()) / workspace->hash;
+    location.attachment_project_dir = location.draft_dir;
+    return location;
+}
+
 bool WebServer::Impl::archived_query_requested(const crow::request& req) const {
     auto raw = req.url_params.get("archived");
     if (!raw) return false;
@@ -695,6 +719,10 @@ json WebServer::Impl::workspace_to_json(const acecode::desktop::WorkspaceMeta& m
     o["cwd"] = m.cwd;
     o["name"] = m.name;
     o["available"] = cwd_is_directory(m.cwd);
+    o["icon"] = m.icon.empty()
+        ? json(nullptr)
+        : json{{"id", m.icon.id}, {"color", m.icon.color}};
+    o["extra_folders"] = m.extra_folders;
     return o;
 }
 
@@ -803,7 +831,6 @@ json WebServer::Impl::session_info_to_json(const SessionInfo& s, const SessionMe
     // workspace binding. File preview needs the real directory regardless of
     // workspace membership, so it is published separately instead of overloading
     // `cwd` and disturbing workspace attribution.
-    o["working_cwd"]   = storage_cwd;
     o["session_path"]  = existing_session_jsonl_path(storage_cwd, s.id);
     o["no_workspace"]  = no_workspace;
     // A user rename persisted by another process (Desktop keeps one daemon per
@@ -850,6 +877,7 @@ json WebServer::Impl::session_info_to_json(const SessionInfo& s, const SessionMe
         if (!s.worktree_name.empty()) worktree.worktree_name = s.worktree_name;
         if (!s.worktree_branch.empty()) worktree.worktree_branch = s.worktree_branch;
     }
+    o["working_cwd"] = worktree.active() ? worktree.worktree_path : storage_cwd;
     append_worktree_session(o, worktree);
     if (m) {
         append_loop_execution(o, m->loop_id, m->loop_run_id);
@@ -910,6 +938,7 @@ json WebServer::Impl::session_meta_to_json(const SessionMeta& m, const std::stri
     o["status"]         = "idle";
     o["workspace_hash"] = effective_workspace_hash;
     o["cwd"]            = effective_cwd;
+    o["working_cwd"]    = m.worktree.active() ? m.worktree.worktree_path : m.cwd;
     o["session_path"]   = existing_session_jsonl_path(m.cwd, m.id);
     o["no_workspace"]   = m.no_workspace;
     o["title"]          = m.title;
@@ -982,6 +1011,17 @@ void WebServer::Impl::append_session_runtime_snapshot(json& wrapper,
             if (entry->sm) {
                 meta = entry->sm->load_session_meta(session_id);
                 have_meta = !meta.id.empty();
+                // 显示标题三件套与会话列表同源(session_info_to_json 同款
+                // 优先级:磁盘上的 user 改名压过过期的内存标题)。前端顶部
+                // 标题栏从这里取初值,不再从消息正文现推。
+                const bool meta_user_title = have_meta &&
+                    (meta.title_source == "user" || meta.title_source == "user-cleared");
+                wrapper["title"] = meta_user_title ? meta.title : entry->sm->current_title();
+                wrapper["title_source"] = meta_user_title
+                    ? meta.title_source
+                    : entry->sm->current_title_source();
+                const std::string live_summary = entry->sm->current_summary();
+                wrapper["summary"] = !live_summary.empty() ? live_summary : meta.summary;
                 wrapper["turn_count"] = entry->sm->current_turn_count();
                 wrapper["permission_mode"] = entry->sm->current_permission_mode();
                 wrapper["token_usage"] = token_usage_or_null(entry->sm->current_last_token_usage());
@@ -1015,6 +1055,11 @@ void WebServer::Impl::append_session_runtime_snapshot(json& wrapper,
             wrapper["workspace_hash"] = "";
             wrapper["cwd"] = "";
         }
+        if (!wrapper.contains("title")) {
+            wrapper["title"] = meta.title;
+            wrapper["title_source"] = meta.title_source;
+        }
+        if (!wrapper.contains("summary")) wrapper["summary"] = meta.summary;
         if (!wrapper.contains("turn_count")) wrapper["turn_count"] = meta.turn_count;
         if (!wrapper.contains("permission_mode")) {
             wrapper["permission_mode"] = meta.permission_mode.empty() ? "default" : meta.permission_mode;
@@ -2255,6 +2300,38 @@ json WebServer::Impl::mark_session_read_status(
     return payload;
 }
 
+json WebServer::Impl::mark_session_unread_status(
+    const std::string& session_id,
+    const std::string& workspace_hash,
+    const std::string& cwd) {
+    json payload;
+    bool changed = false;
+    bool current_busy = false;
+    if (deps.session_registry) {
+        if (auto entry = deps.session_registry->acquire(session_id)) {
+            current_busy = entry->loop && entry->loop->is_busy();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(attention_mu);
+        load_attention_workspace_locked(workspace_hash, cwd);
+        auto& record = attention_by_workspace[workspace_hash][session_id];
+        record.busy = current_busy;
+        const auto before_record = record;
+        record = mark_session_attention_unread(record, now_unix_ms());
+        // 运行中的会话状态仍是 in_progress,但游标已退回,回合结束后照样显示未读;
+        // 所以这里按游标判断是否变化,而不只看状态。
+        changed = before_record.read_cursor != record.read_cursor ||
+                  before_record.update_cursor != record.update_cursor;
+        if (changed || before_record.updated_at_ms != record.updated_at_ms) {
+            save_attention_workspace_locked(workspace_hash);
+        }
+        payload = attention_payload_for_record(session_id, workspace_hash, cwd, record);
+    }
+    if (changed) broadcast_session_status(payload);
+    return payload;
+}
+
 void WebServer::Impl::send_status_snapshot(crow::websocket::connection& conn,
                                              const acecode::desktop::WorkspaceMeta& ws) {
     json sessions = json::array();
@@ -2291,6 +2368,14 @@ void WebServer::Impl::refresh_saved_models_from_disk() {
         AppConfig disk = deps.config_path.empty()
             ? load_config()
             : load_config_from_path(deps.config_path, false);
+        const bool computer_enabled_changed = deps.app_config->computer_use.enabled != disk.computer_use.enabled;
+        if (computer_enabled_changed ||
+            deps.app_config->computer_use.pointer_style != disk.computer_use.pointer_style ||
+            deps.app_config->computer_use.pointer_color != disk.computer_use.pointer_color) {
+            deps.app_config->computer_use = disk.computer_use;
+            if (computer_enabled_changed) refresh_computer_use_tool_locked();
+            else computer_use::set_pointer_appearance(disk.computer_use.pointer_style, disk.computer_use.pointer_color);
+        }
         if (publish_live_saved_models(
                 *deps.app_config, std::move(disk.saved_models))) {
             LOG_INFO("saved_models refreshed from disk after connector hook");

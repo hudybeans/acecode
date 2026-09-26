@@ -32,7 +32,11 @@ namespace {
 crow::response json_response(int status, const json& body) {
     crow::response r(status);
     r.add_header("Content-Type", "application/json");
-    r.body = body.dump();
+    // 出口兜底:错误文本里混进非法 UTF-8(GBK 的 OS 错误文本、BAD_JSON 里 nlohmann
+    // parse_error 原样带出的请求体字节)时,默认 dump 抛 type_error.316,整个请求变 500;
+    // 迁移失败的 progress 会一直留着那条错误,/migration 与 /data-dir 于是每次都 500,
+    // 前端永远停在「迁移中」。replace 把非法字节换成 U+FFFD,响应永远是合法 JSON。
+    r.body = body.dump(-1, ' ', false, json::error_handler_t::replace);
     return r;
 }
 
@@ -58,6 +62,7 @@ json migration_progress_json(const env::MigrationProgress& p) {
         {"target", p.target},
         {"copied_bytes", p.copied_bytes},
         {"total_bytes", p.total_bytes},
+        {"skipped_files", p.skipped_files},
         {"error", p.error},
         {"restart_required", p.restart_required},
         {"started_at_ms", p.started_at_ms},
@@ -333,37 +338,68 @@ void WebServer::Impl::register_environment() {
         json body;
         try { body = json::parse(req.body); }
         catch (const std::exception& e) {
+            // 不把 e.what() 写进日志:nlohmann 会把请求体原始字节(可能是非法 UTF-8)带进来。
+            LOG_WARN("[data-dir] migration refused: BAD_JSON");
             return with_cors(req, error_response(400, "BAD_JSON", std::string("bad json: ") + e.what()));
         }
         if (!body.is_object() || !body.contains("target") || !body["target"].is_string()) {
+            LOG_WARN("[data-dir] migration refused: TARGET_REQUIRED (not a string)");
             return with_cors(req, error_response(400, "TARGET_REQUIRED", "target must be a string"));
         }
         const std::string target = trim_copy(body["target"].get<std::string>());
         if (target.empty()) {
+            LOG_WARN("[data-dir] migration refused: TARGET_REQUIRED (empty)");
             return with_cors(req, error_response(400, "TARGET_REQUIRED", "target is required"));
         }
+        // 每个拒绝分支都记一条 WARN:这些 409/400 曾经一个字都不落日志,用户反馈
+        // 「提示程序占用」时无从判断是哪条分支、被谁占着。
         if (data_dir_migration->active()) {
+            LOG_WARN("[data-dir] migration refused: MIGRATION_ACTIVE");
             return with_cors(req, error_response(
                 409, "MIGRATION_ACTIVE", "a data directory migration is already running"));
         }
         std::unique_lock<std::shared_mutex> migration_lock(env::data_dir_write_mutex());
-        if (deps.session_registry && deps.session_registry->any_busy()) {
-            return with_cors(req, error_response(
-                409, "SESSIONS_BUSY",
-                "a session is still running; wait for it to finish before migrating"));
+        if (deps.session_registry) {
+            const auto busy = deps.session_registry->busy_session_ids();
+            if (!busy.empty()) {
+                std::string joined;
+                for (const auto& id : busy) {
+                    if (!joined.empty()) joined += ",";
+                    joined += id;
+                }
+                LOG_WARN("[data-dir] migration refused: SESSIONS_BUSY sessions=" + joined);
+                return with_cors(req, json_response(409, json{
+                    {"error", "SESSIONS_BUSY"},
+                    {"message", "a session is still running; wait for it to finish before migrating"},
+                    {"busy_sessions", busy}}));
+            }
         }
-        if (env::data_dir_has_other_daemons(resolve_data_dir(get_run_mode()))) {
-            return with_cors(req, error_response(409, "OTHER_INSTANCES_ACTIVE", "close other ACECode instances before migrating"));
+        {
+            std::string holder;
+            if (env::data_dir_has_other_daemons(resolve_data_dir(get_run_mode()), &holder)) {
+                LOG_WARN("[data-dir] migration refused: OTHER_INSTANCES_ACTIVE " + holder);
+                return with_cors(req, error_response(409, "OTHER_INSTANCES_ACTIVE", "close other ACECode instances before migrating"));
+            }
         }
         if (deps.pty_registry) {
+            std::string running;
             for (const auto& session : deps.pty_registry->list()) {
-                if (session.status == "running") return with_cors(req, error_response(409, "CONSOLES_ACTIVE", "close console tabs before migrating"));
+                if (session.status != "running") continue;
+                if (!running.empty()) running += ",";
+                running += session.id;
+            }
+            if (!running.empty()) {
+                LOG_WARN("[data-dir] migration refused: CONSOLES_ACTIVE ptys=" + running);
+                return with_cors(req, error_response(409, "CONSOLES_ACTIVE", "close console tabs before migrating"));
             }
         }
         const std::string current_dir = resolve_data_dir(get_run_mode());
         const std::string default_dir = resolve_default_data_dir(get_run_mode());
         const auto check = env::validate_migration_target(current_dir, target);
         if (check.error != env::MigrationTargetError::None) {
+            LOG_WARN(std::string("[data-dir] migration refused: ") +
+                     env::migration_target_error_code(check.error) + " message=" + check.message +
+                     " target=" + target);
             return with_cors(req, json_response(400, json{
                 {"error", env::migration_target_error_code(check.error)},
                 {"message", check.message},
@@ -372,6 +408,7 @@ void WebServer::Impl::register_environment() {
         std::string error;
         if (!data_dir_migration->start(current_dir, default_dir, check.normalized_target, &error,
                 deps.before_data_dir_copy, deps.on_data_dir_copy_failure)) {
+            LOG_WARN("[data-dir] migration refused: MIGRATION_ACTIVE " + error);
             return with_cors(req, error_response(409, "MIGRATION_ACTIVE", error));
         }
         LOG_INFO("[data-dir] migration started: target=" + check.normalized_target);
@@ -395,13 +432,16 @@ void WebServer::Impl::register_environment() {
         json body;
         try { body = json::parse(req.body); }
         catch (const std::exception& e) {
+            LOG_WARN("[data-dir] cleanup refused: BAD_JSON");
             return with_cors(req, error_response(400, "BAD_JSON", std::string("bad json: ") + e.what()));
         }
         if (!body.is_object() || !body.contains("action") || !body["action"].is_string()) {
+            LOG_WARN("[data-dir] cleanup refused: INVALID_ACTION (not a string)");
             return with_cors(req, error_response(400, "INVALID_ACTION", "action must be a string"));
         }
         const std::string action = body["action"].get<std::string>();
         if (action != "delete" && action != "keep") {
+            LOG_WARN("[data-dir] cleanup refused: INVALID_ACTION action=" + action);
             return with_cors(req, error_response(400, "INVALID_ACTION",
                                                  "action must be \"delete\" or \"keep\""));
         }
@@ -409,14 +449,20 @@ void WebServer::Impl::register_environment() {
         const auto status = env::data_dir_status(get_run_mode());
         if (action == "delete") {
             if (!status.redirect_active) {
+                LOG_WARN("[data-dir] cleanup refused: NO_MIGRATION");
                 return with_cors(req, error_response(
                     409, "NO_MIGRATION",
                     "the data directory has not been migrated; nothing to delete"));
             }
             if (status.previous_exists) {
-                if (env::data_dir_has_other_daemons(status.previous_dir)) return with_cors(req, error_response(409, "SESSIONS_BUSY", "the previous workspace is still in use"));
+                std::string holder;
+                if (env::data_dir_has_other_daemons(status.previous_dir, &holder)) {
+                    LOG_WARN("[data-dir] cleanup refused: SESSIONS_BUSY " + holder);
+                    return with_cors(req, error_response(409, "SESSIONS_BUSY", "the previous workspace is still in use"));
+                }
                 const std::string err = env::cleanup_previous_data_dir(status.previous_dir, default_dir);
                 if (!err.empty()) {
+                    LOG_WARN("[data-dir] cleanup failed: CLEANUP_FAILED " + err);
                     return with_cors(req, error_response(500, "CLEANUP_FAILED", err));
                 }
                 LOG_INFO("[data-dir] previous data directory removed: " + status.previous_dir);
@@ -424,6 +470,7 @@ void WebServer::Impl::register_environment() {
         }
         const std::string ack = env::acknowledge_data_dir_cleanup(default_dir);
         if (!ack.empty()) {
+            LOG_WARN("[data-dir] cleanup failed: PERSIST_FAILED " + ack);
             return with_cors(req, error_response(500, "PERSIST_FAILED", ack));
         }
         return with_cors(req, json_response(200, data_dir_status_json(

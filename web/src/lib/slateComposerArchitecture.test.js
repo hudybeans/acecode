@@ -50,7 +50,8 @@ run('composer command tag reuses the sent-message badge without a visible slash'
   const styles = source('styles/globals.css');
 
   assert.match(composer, /replace\(\/\^\\\/\+\/, ''\)/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag"/);
+  assert.match(composer, /className="ace-cmd-token"/);
   assert.match(composer, /<CommandGlyph[^>]*className="ace-cmd-token-glyph"/s);
   assert.match(composer, /className="ace-cmd-token-name">\{displayName\}/);
   assert.match(message, /className="ace-cmd-token"/);
@@ -61,16 +62,16 @@ run('composer command tag reuses the sent-message badge without a visible slash'
 run('path tags keep canonical text while using the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="path"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-path-tag"/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-path-tag"/);
   assert.match(composer, /element\?\.directory\s+\? <VsIcon name="folder"/s);
-  assert.match(composer, /<FileTypeIcon path=\{path\} size=\{12\}/);
+  assert.match(composer, /<FileTypeIcon path=\{path\} size="1em"/);
 });
 
 run('session tags keep stable identity while reusing the compact badge surface', () => {
   const composer = source('components/RichComposer.jsx');
   assert.match(composer, /data-composer-inline-tag="session"/);
-  assert.match(composer, /className="ace-cmd-token ace-slate-inline-tag ace-slate-session-tag"/);
-  assert.match(composer, /<VsIcon name="newSession" size=\{12\}/);
+  assert.match(composer, /className="ace-slate-inline-tag ace-slate-session-tag"/);
+  assert.match(composer, /<VsIcon name="newSession" size="1em"/);
 });
 
 run('atomic deletion is routed through the plain-text tag range helper', () => {
@@ -130,7 +131,7 @@ run('slash candidate confirmation commits the command with a trailing space and 
   assert.match(handler, /if \(!commandQuery\.leading\) return/);
   assert.match(handler, /insertSkill\?\.\(item, commandQuery\.begin, commandQuery\.end\)/);
   assert.match(handler, /value\.slice\(commandQuery\.end\)/);
-  assert.match(handler, /updateValue\(next, undefined, commandQuery\)/);
+  assert.match(handler, /updateValue\(next, undefined, commandQuery, \{ goalMode: selectedGoal \}\)/);
   assert.match(handler, /setSelectionRange\(cursor, cursor\)/);
 });
 
@@ -144,7 +145,8 @@ run('composer external sync is composition-safe, generation-aware, and semantic'
 
   assert.ok(effectStart >= 0);
   assert.ok(effectEnd > effectStart);
-  assert.match(inputBar, /syncKey=\{currentSessionId\}/);
+  assert.match(inputBar, /syncKey=\{fileIntakeScope\}/);
+  assert.match(inputBar, /fileIntakeScope = JSON\.stringify\(\[cwd, currentSessionId\]\)/);
   assert.doesNotMatch(inputBar, /<RichComposer[\s\S]*?key=\{currentSessionId\}/);
   assert.match(composer, /syncIdentityRef\.current\.generation \+ 1/);
   assert.match(composer, /documentSyncGenerationRef\.current !== activeSyncGeneration/);
@@ -160,7 +162,7 @@ run('composer external sync is composition-safe, generation-aware, and semantic'
   assert.match(syncEffect, /classifyComposerExternalSync\(\{/);
   assert.match(
     syncEffect,
-    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*commandSignature,\s*editor,\s*externalSignature,\s*hasExternalContent,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
+    /\}, \[\s*activeSyncGeneration,\s*attachmentSignature,\s*cancelFileTransfers,\s*commandSignature,\s*editor,\s*externalSignature,\s*hasExternalContent,\s*normalizedValue,\s*publishSelection,\s*syncRevision,\s*\]\);/s,
   );
   assert.doesNotMatch(syncEffect, /\[attachmentSignature, attachments/);
   assert.doesNotMatch(syncEffect, /commandSignature, commands/);
@@ -227,13 +229,13 @@ run('image previews retain image rendering, file-link metadata, and existing tra
   assert.match(preview, /removeAttachment\(context\.key\)/);
   assert.match(composer, /data-desktop-attachment-id=\{`composer:\$\{attachmentKey\}`\}/);
   assert.match(composer, /data-desktop-attachment-preview-url=\{element\?\.url \|\| undefined\}/);
-  assert.match(composer, /onClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
+  assert.match(composer, /onDoubleClick=\{previewable \? \(\) => onPreviewAttachment\?\.\(element\) : undefined\}/);
   assert.match(inputBar, /onPreviewAttachment=\{previewComposerAttachment\}/);
-  assert.match(inputBar, /onPasteFiles=\{addMediaFiles\}/);
+  assert.match(inputBar, /onPasteFilesystemItems=\{handleFilesystemPaste\}/);
   assert.match(inputBar, /postWindowsNativeFilesystemDrop\(event\.dataTransfer\)/);
   assert.match(
     inputBar,
-    /addMaterializedPaths\(paths, savedCursor, \{ requestNativeFocus: false \}\)/,
+    /acceptFileIntake\(\{ source: 'drop', paths \}\)/,
   );
 });
 
@@ -265,7 +267,7 @@ run('rich context paste mutates Slate state while send gating reads the controll
   assert.match(composer, /INSERT_TEXT[\s\S]*applyPlainTextPaste\(detail\.text, detail\.selection\)/);
   assert.match(composer, /const applyPlainTextPaste = useCallback\([\s\S]*ensureLegalEditorDocument\(editor\)[\s\S]*Transforms\.select[\s\S]*insertPlainText\(editor, normalizedText\)/);
   assert.doesNotMatch(composer, /execCommand/);
-  assert.match(inputBar, /getInputBarActionState\(\{ value, disabled, busy, hasExtras, submitting \}\)/);
+  assert.match(inputBar, /getInputBarActionState\(\{ value: draftValue, disabled, busy, hasExtras, submitting, canRetryLastUserMessage, queuePaused \}\)/);
   assert.match(inputBar, /<RichComposer[\s\S]*onChange=\{handleComposerChange\}/);
   assert.match(chatView, /const handleComposerChange = useCallback\(\(next, content[^)]*\) => \{[\s\S]*setComposerValue\(next, normalized\)/);
 });

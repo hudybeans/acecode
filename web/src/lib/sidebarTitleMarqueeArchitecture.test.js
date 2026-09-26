@@ -19,9 +19,15 @@ function test(name, fn) {
   }
 }
 
+// 触发场景:侧栏会话行的标题过长时 hover 走跑马灯。
+// 期望行为:跑马灯滚动的就是显示标题本身(sessionDisplayTitle 派生的 title /
+// summary),行内不再另拉消息全文「水合」成更长的标题。
+// 回归(bug 表现):旧实现在 summary 以 "..." 结尾时请求整份消息、把最后一条 user
+// 消息全文塞进跑马灯 —— 对 @session 引用展开的 9k 字符消息,侧栏 hover 会滚出一段
+// 与顶部标题栏不一致、且长度不受限的文本。
 test('SessionRow measures only its non-editing title viewport', () => {
   const sidebar = source('components/Sidebar.jsx');
-  const titleStart = sidebar.indexOf('function SidebarSessionTitle({ title, marqueeReady = true })');
+  const titleStart = sidebar.indexOf('function SidebarSessionTitle({ title })');
   const rowStart = sidebar.indexOf('\nfunction SessionRow({', titleStart);
   const rowEnd = sidebar.indexOf('\nfunction OpencodeImportSelectAllCheckbox(', rowStart);
   assert.ok(titleStart >= 0 && rowStart > titleStart && rowEnd > rowStart);
@@ -29,34 +35,26 @@ test('SessionRow measures only its non-editing title viewport', () => {
   const titleComponent = sidebar.slice(titleStart, rowStart);
   const row = sidebar.slice(rowStart, rowEnd);
   assert.match(sidebar, /import \{ sidebarTitleMarqueeMetrics \} from '\.\.\/lib\/sidebarTitleMarquee\.js';/);
-  assert.match(sidebar, /sidebarTitleHydrationState/);
-  assert.match(sidebar, /loadSidebarFullTitle/);
+  assert.doesNotMatch(sidebar, /sidebarFullTitle|sidebarTitleHydrationState|loadSidebarFullTitle|marqueeTitle|marqueeReady/);
   assert.match(titleComponent, /sidebarTitleMarqueeMetrics\(content\.scrollWidth, viewport\.clientWidth\)/);
   assert.match(titleComponent, /new ResizeObserver\(measure\)/);
   assert.match(titleComponent, /observer\?\.observe\(viewport\)/);
   assert.match(titleComponent, /observer\?\.observe\(content\)/);
   assert.match(titleComponent, /document\.fonts\?\.ready/);
   assert.match(titleComponent, /metrics\.overflowing && 'is-overflowing'/);
-  assert.match(titleComponent, /metrics\.overflowing && marqueeReady && 'is-marquee-ready'/);
-  assert.match(titleComponent, /data-sidebar-session-title-complete=\{marqueeReady \? 'true' : 'false'\}/);
+  assert.match(titleComponent, /metrics\.overflowing && 'is-marquee-ready'/);
   assert.doesNotMatch(titleComponent, /\btitle=\{/);
-  assert.match(row, /sidebarTitleHydrationState\(s, title\)/);
+  assert.match(row, /const title = sessionDisplayTitle\(s, s\.name \|\| ''\);/);
   assert.match(
     row,
-    /const hydratedTitle = titleHydration\.needsFullTitle\s*&& resolvedFullTitle\.key === fullTitleRequestKey/,
-  );
-  assert.match(row, /loadSidebarFullTitle\(api, s\)/);
-  assert.match(row, /onMouseEnter=\{\(\) => \{[\s\S]*ensureCompleteMarqueeTitle\(\)/);
-  assert.match(row, /onFocusCapture=\{\(event\) => \{[\s\S]*ensureCompleteMarqueeTitle\(\)/);
-  assert.match(
-    row,
-    /aria-label=\{remoteControlBound[\s\S]*\? tr\('remoteControl\.connectedSessionAria', \{ title: marqueeTitle \|\| title \}\)[\s\S]*: \(marqueeTitle \|\| title\)\}/,
+    /aria-label=\{remoteControlBound[\s\S]*\? tr\('remoteControl\.connectedSessionAria', \{ title \}\)[\s\S]*: title\}/,
   );
   assert.match(
     row,
-    /\{editing \? \([\s\S]*?<input[\s\S]*?\) : \([\s\S]*?<SidebarSessionTitle title=\{marqueeTitle\} marqueeReady=\{marqueeReady\} \/>/,
+    /\{editing \? \([\s\S]*?<input[\s\S]*?\) : \([\s\S]*?<SidebarSessionTitle title=\{title\} \/>/,
   );
   assert.doesNotMatch(row, /className="block min-w-0 truncate"/);
+  assert.doesNotMatch(row, /getMessages\(/);
 });
 
 test('overflow styling clips with a fade and animates only measured overflow', () => {

@@ -174,7 +174,11 @@ std::string current_target() {
 #elif defined(__APPLE__)
     constexpr const char* os = "macos";
 #elif defined(__linux__)
+#if defined(ACECODE_DEEPIN)
+    constexpr const char* os = "linux-deepin";
+#else
     constexpr const char* os = "linux";
+#endif
 #else
     constexpr const char* os = "unknown";
 #endif
@@ -185,6 +189,8 @@ std::string current_target() {
     constexpr const char* arch = "arm64";
 #elif defined(_M_IX86) || defined(__i386__)
     constexpr const char* arch = "x86";
+#elif defined(__arm__)
+    constexpr const char* arch = "armv7";
 #else
     constexpr const char* arch = "unknown";
 #endif

@@ -109,6 +109,19 @@ void WebServer::Impl::register_models() {
             return cors_preflight(req);
         });
 
+        CROW_ROUTE(app, "/api/models/reasoning/refresh").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req) { return cors_preflight(req); });
+        CROW_ROUTE(app, "/api/models/reasoning/refresh").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (!deps.app_config) return crow::response(503);
+            request_model_reasoning_sync();
+            crow::response response(202);
+            response.add_header("Content-Type", "application/json");
+            response.body = R"({"accepted":true})";
+            return with_cors(req, std::move(response));
+        });
+
         // GET /api/models: 返回 saved_models
         CROW_ROUTE(app, "/api/models").methods(crow::HTTPMethod::GET)
         ([this](const crow::request& req) {
@@ -693,6 +706,7 @@ void WebServer::Impl::register_models() {
                 });
             refresh_image_generation_tool_locked();
             r.body = profile_to_json(*added).dump();
+            request_model_reasoning_sync(added->name);
             return with_cors(req, std::move(r));
         });
 
@@ -764,6 +778,7 @@ void WebServer::Impl::register_models() {
             crow::response r(200);
             r.add_header("Content-Type", "application/json");
             r.body = profile_to_json(updated).dump();
+            request_model_reasoning_sync(updated.name);
             return with_cors(req, std::move(r));
         });
 

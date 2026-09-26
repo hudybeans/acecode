@@ -89,4 +89,15 @@ SessionAttentionRecord mark_session_attention_read(
     return record;
 }
 
+SessionAttentionRecord mark_session_attention_unread(
+    SessionAttentionRecord record,
+    std::int64_t timestamp_ms) {
+    if (record.update_cursor == 0) record.update_cursor = 1;
+    if (record.read_cursor >= record.update_cursor) {
+        record.read_cursor = record.update_cursor - 1;
+    }
+    record.updated_at_ms = std::max(record.updated_at_ms, timestamp_ms);
+    return record;
+}
+
 } // namespace acecode

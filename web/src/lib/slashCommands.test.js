@@ -439,6 +439,7 @@ run('resolveLeadingSlashCommand:命中 opencode command 返回 command kind', ()
 });
 
 run('resolveLeadingSlashCommand:输入框 chip 可从首段命令取回对应 glyph', () => {
+  assert.equal(slashCommandKindPresentation({ kind: 'builtin', name: 'goal' }).icon, 'Goal');
   const selectedBuiltin = resolveLeadingSlashCommand('/init ', ITEMS);
   const typedSkill = resolveLeadingSlashCommand('/code-review 看看第三个改动', ITEMS);
   assert.equal(slashCommandKindPresentation(selectedBuiltin).icon, 'tool');

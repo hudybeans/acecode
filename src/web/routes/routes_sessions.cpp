@@ -5,6 +5,7 @@
 #include "../../session/compact_checkpoint.hpp"
 #include "../../session/composer_content.hpp"
 #include "../../session/fork_attachment_context.hpp"
+#include "../../session/pasted_text_attachment.hpp"
 #include "../../session/global_session_catalog.hpp"
 #include "../../session/session_rewind.hpp"
 #include "../../session/session_trajectory.hpp"
@@ -62,6 +63,12 @@ bool valid_search_request_id(const std::string& value) {
 
 json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
     const auto& meta = entry.meta;
+    WorktreeSessionInfo worktree = meta.worktree;
+    if (entry.active) {
+        worktree.worktree_path = entry.active->worktree_path;
+        worktree.worktree_name = entry.active->worktree_name;
+        worktree.worktree_branch = entry.active->worktree_branch;
+    }
     const auto title = entry.active && !entry.active->title.empty()
         ? entry.active->title
         : meta.title;
@@ -76,9 +83,7 @@ json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
         {"created_at", meta.created_at},
         {"updated_at", updated_at},
         {"cwd", meta.no_workspace ? std::string{} : meta.cwd},
-        // Real working directory, published regardless of workspace membership so
-        // file preview works in no-workspace sessions too (see session_info_to_json).
-        {"working_cwd", meta.cwd},
+        {"working_cwd", worktree.active() ? worktree.worktree_path : meta.cwd},
         {"workspace_hash", meta.no_workspace ? std::string{} : entry.workspace_hash},
         {"workspaceName", meta.no_workspace
             ? std::string{"\u65e0\u5de5\u4f5c\u533a"}
@@ -91,6 +96,13 @@ json global_search_entry_to_json(const GlobalSessionCatalogEntry& entry) {
         {"active", entry.active.has_value()},
         {"busy", entry.active ? entry.active->busy : false},
     };
+    if (worktree.active()) {
+        item["worktree"] = {
+            {"name", worktree.worktree_name},
+            {"branch", worktree.worktree_branch},
+            {"path", worktree.worktree_path},
+        };
+    }
     if (entry.content_match) {
         item["search_match"] = json{
             {"kind", "user_message"},
@@ -184,6 +196,7 @@ WebServer::Impl::parse_session_user_input_request(
     json contexts = json::array();
     json composer_content;
     std::string composer_text;
+    bool leads_with_pasted_text = false;
     std::vector<SessionReferenceDescriptor> session_references;
     bool swarm_mode = false;
 
@@ -219,7 +232,11 @@ WebServer::Impl::parse_session_user_input_request(
                 return result;
             }
             composer_content = std::move(normalized.content);
-            composer_text = std::move(normalized.text);
+            // The message body is the submission text: editor pieces plus
+            // inline pasted blocks. normalized.text (editor text only) is
+            // for drafts and restore, never the body.
+            composer_text = std::move(normalized.submission_text);
+            leads_with_pasted_text = normalized.leads_with_pasted_text;
             // Session-reference tokens have a separately normalized display
             // string. Preserve that compatibility projection when supplied.
             if (session_references.empty() || !payload.contains("text")) text = composer_text;
@@ -415,7 +432,43 @@ WebServer::Impl::parse_session_user_input_request(
     const bool session_references_expanded =
         !session_reference_context.prompt.empty();
 
-    if (attachment_refs.empty() && contexts.empty() &&
+    // Attachments normally keep a slash command literal (the files are extra
+    // input the command does not know about). Pasted-text attachments are the
+    // exception: they are the user's own material that the composer moved into
+    // a file only because it is large, so "/<skill> analyse this" must expand
+    // the same way whether the pasted log stayed inline or became a file.
+    // Judged from the stored records, never from client-side markers. A
+    // lookup failure here is not reported: the attachment loop below returns
+    // the proper 404.
+    bool only_pasted_text_attachments = false;
+    if (!attachment_refs.empty() && contexts.empty() && !leads_with_pasted_text &&
+        deps.session_registry) {
+        if (auto entry = deps.session_registry->acquire(session_id)) {
+            const std::string project_dir = SessionStorage::get_project_dir(entry->cwd);
+            only_pasted_text_attachments = true;
+            for (const auto& ref : attachment_refs) {
+                std::string attachment_id;
+                if (ref.is_string()) {
+                    attachment_id = ref.get<std::string>();
+                } else if (ref.is_object() && ref.contains("id") && ref["id"].is_string()) {
+                    attachment_id = ref["id"].get<std::string>();
+                }
+                const auto record = attachment_id.empty()
+                    ? std::nullopt
+                    : load_attachment(project_dir, session_id, attachment_id);
+                if (!record || !is_pasted_text_attachment(*record)) {
+                    only_pasted_text_attachments = false;
+                    break;
+                }
+            }
+        }
+    }
+    const bool attachments_allow_expansion =
+        attachment_refs.empty() || only_pasted_text_attachments;
+
+    // A message whose first piece is a pasted block is pasted material, not a
+    // typed command: pasting a log that starts with "/<skill>" must not expand.
+    if (attachments_allow_expansion && contexts.empty() && !leads_with_pasted_text &&
         deps.session_registry && deps.app_config) {
         if (auto entry = deps.session_registry->acquire(session_id)) {
             if (!entry->cwd.empty()) {
@@ -429,8 +482,8 @@ WebServer::Impl::parse_session_user_input_request(
             }
         }
     }
-    if (!expanded && attachment_refs.empty() && contexts.empty() &&
-        deps.session_registry) {
+    if (!expanded && attachments_allow_expansion && contexts.empty() &&
+        !leads_with_pasted_text && deps.session_registry) {
         if (auto skills =
                 deps.session_registry->skill_registry_snapshot(session_id)) {
             auto skill = web::try_expand_skill_command(text, *skills);
@@ -825,6 +878,11 @@ void WebServer::Impl::register_sessions() {
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
         });
+
+        CROW_ROUTE(app, "/api/sessions/<string>/messages/retry").methods(crow::HTTPMethod::Options)
+        ([this](const crow::request& req, const std::string&) {
+            return cors_preflight(req);
+        });
         CROW_ROUTE(app, "/api/sessions/<string>/trajectory").methods(crow::HTTPMethod::Options)
         ([this](const crow::request& req, const std::string&) {
             return cors_preflight(req);
@@ -1176,16 +1234,30 @@ void WebServer::Impl::register_sessions() {
                 r.add_header("Content-Type", "application/json");
                 return with_cors(req, std::move(r));
             }
-            crow::response r(200);
-            r.body = json{
+            auto resumed_entry = deps.session_registry
+                ? deps.session_registry->acquire(id)
+                : nullptr;
+            const WorktreeSessionInfo worktree = resumed_entry && resumed_entry->sm
+                ? resumed_entry->sm->active_worktree()
+                : WorktreeSessionInfo{};
+            json body{
                 {"session_id", id},
                 {"id", id},
                 {"active", true},
                 {"workspace_hash", opts.no_workspace ? std::string{} : ws.hash},
                 {"cwd", opts.no_workspace ? std::string{} : ws.cwd},
-                {"working_cwd", opts.cwd.empty() ? ws.cwd : opts.cwd},
+                {"working_cwd", worktree.active()
+                    ? worktree.worktree_path : (opts.cwd.empty() ? ws.cwd : opts.cwd)},
+                {"worktree", nullptr},
                 {"no_workspace", opts.no_workspace}
-            }.dump();
+            };
+            if (worktree.active()) {
+                body["worktree"] = {{"name", worktree.worktree_name},
+                                    {"branch", worktree.worktree_branch},
+                                    {"path", worktree.worktree_path}};
+            }
+            crow::response r(200);
+            r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
         });
@@ -1708,8 +1780,10 @@ void WebServer::Impl::register_sessions() {
         });
 
         // POST /api/sessions/:id/attachments: either upload a session snapshot
-        // as JSON {name,mime_type,data_base64}, or create a Desktop source-path
-        // reference with {name,mime_type,source_path,reference_only:true}.
+        // as JSON {name,mime_type,data_base64[,origin,paste]}, create a Desktop
+        // source-path reference with {name,mime_type,source_path,
+        // reference_only:true}, or copy a home draft pasted-text attachment
+        // into this session with {from_workspace_draft:{workspace,id}}.
         CROW_ROUTE(app, "/api/sessions/<string>/attachments").methods(crow::HTTPMethod::POST)
         ([this](const crow::request& req, const std::string& id) {
             if (auto rej = require_auth(req)) return std::move(*rej);
@@ -1732,8 +1806,16 @@ void WebServer::Impl::register_sessions() {
             std::string data_base64;
             std::string source_path;
             bool reference_only = false;
+            json upload_body;
             try {
-                auto j = json::parse(req.body);
+                upload_body = json::parse(req.body);
+                auto& j = upload_body;
+                if (!j.is_object()) {
+                    crow::response r(400);
+                    r.body = R"({"error":"request body must be an object"})";
+                    r.add_header("Content-Type", "application/json");
+                    return with_cors(req, std::move(r));
+                }
                 if (j.contains("name") && j["name"].is_string()) {
                     name = j["name"].get<std::string>();
                 }
@@ -1741,7 +1823,8 @@ void WebServer::Impl::register_sessions() {
                     mime_type = j["mime_type"].get<std::string>();
                 }
                 if (j.contains("data_base64") && j["data_base64"].is_string()) {
-                    data_base64 = j["data_base64"].get<std::string>();
+                    // Move out: the parsed body stays alive for the origin/import checks.
+                    data_base64 = std::move(j["data_base64"].get_ref<std::string&>());
                 }
                 if (j.contains("source_path")) {
                     if (!j["source_path"].is_string()) {
@@ -1771,7 +1854,57 @@ void WebServer::Impl::register_sessions() {
             const std::string project_dir = SessionStorage::get_project_dir(entry->cwd);
             std::string error;
             std::optional<AttachmentRecord> record;
+            const auto respond_json = [&](int status, json body) {
+                crow::response r(status);
+                r.body = body.dump();
+                r.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(r));
+            };
+            if (upload_body.contains("from_workspace_draft") &&
+                !upload_body["from_workspace_draft"].is_null()) {
+                // Import a home draft pasted-text attachment. The workspace is
+                // the draft's own scope (store_scope on the composer part),
+                // which can differ from this session's workspace: a
+                // no-workspace home draft may be sent into a real workspace.
+                if (upload_body.contains("data_base64") || !source_path.empty() ||
+                    upload_body.contains("reference_only") ||
+                    upload_body.contains("origin") || upload_body.contains("paste")) {
+                    return respond_json(400, {{"error",
+                        "from_workspace_draft cannot be combined with attachment data"}});
+                }
+                const auto& import = upload_body["from_workspace_draft"];
+                if (!import.is_object() || !import.contains("workspace") ||
+                    !import["workspace"].is_string() || !import.contains("id") ||
+                    !import["id"].is_string()) {
+                    return respond_json(400, {{"error",
+                        "from_workspace_draft requires string workspace and id"}});
+                }
+                const auto location = workspace_draft_location(
+                    import["workspace"].get<std::string>());
+                if (!location) return respond_json(404, {{"error", "workspace not found"}});
+                const auto source = load_attachment(
+                    path_to_utf8(location->attachment_project_dir),
+                    kWorkspaceDraftAttachmentOwner, import["id"].get<std::string>(), &error);
+                if (!source || !is_pasted_text_attachment(*source)) {
+                    return respond_json(404, {{"error", "workspace draft attachment not found"}});
+                }
+                std::error_code exists_ec;
+                if (!std::filesystem::exists(path_from_utf8(source->path), exists_ec)) {
+                    return respond_json(404, {{"error",
+                        "workspace draft attachment is no longer available"}});
+                }
+                record = copy_attachment_to_session(project_dir, id, *source, error);
+                if (!record) {
+                    return respond_json(500, {{"error", error.empty()
+                        ? "failed to import workspace draft attachment" : error}});
+                }
+                return respond_json(201, {{"attachment", attachment_to_json(*record)}});
+            }
             if (reference_only) {
+                if (upload_body.contains("origin") && !upload_body["origin"].is_null()) {
+                    return respond_json(400, {{"error",
+                        "pasted text attachments must include their data"}});
+                }
                 if (source_path.empty()) {
                     crow::response r(400);
                     r.body = R"({"error":"source_path is required for an attachment reference"})";
@@ -1794,8 +1927,15 @@ void WebServer::Impl::register_sessions() {
                     r.add_header("Content-Type", "application/json");
                     return with_cors(req, std::move(r));
                 }
+                std::string().swap(data_base64);  // large pastes: free the encoded copy
 
                 json initial_metadata = json::object();
+                if (!apply_pasted_text_upload_metadata(upload_body, initial_metadata, error)) {
+                    crow::response r(400);
+                    r.body = json{{"error", error}}.dump();
+                    r.add_header("Content-Type", "application/json");
+                    return with_cors(req, std::move(r));
+                }
                 if (!source_path.empty()) {
                     auto verified = verified_attachment_source_path(source_path, error);
                     if (!verified.has_value()) {
@@ -1909,6 +2049,36 @@ void WebServer::Impl::register_sessions() {
             r.body = body.dump();
             r.add_header("Content-Type", "application/json");
             return with_cors(req, std::move(r));
+        });
+
+        CROW_ROUTE(app, "/api/sessions/<string>/messages/retry").methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req, const std::string& id) {
+            if (auto rej = require_auth(req)) return std::move(*rej);
+            if (auto rej = reject_if_migrating(req)) return std::move(*rej);
+            auto respond = [&](int status, const json& body) {
+                crow::response response(status);
+                response.body = body.dump();
+                response.add_header("Content-Type", "application/json");
+                return with_cors(req, std::move(response));
+            };
+            if (!deps.session_client) {
+                return respond(503, {{"error", "session client unavailable"}});
+            }
+            const auto payload = json::parse(req.body, nullptr, false);
+            if (!payload.is_object() || payload.size() != 1 ||
+                !payload.contains("expected_user_message_id") ||
+                !payload["expected_user_message_id"].is_string()) {
+                return respond(400, {{"error", "expected_user_message_id is required"}});
+            }
+            const auto message_id = payload["expected_user_message_id"].get<std::string>();
+            if (message_id.empty() || message_id.size() > 256) {
+                return respond(400, {{"error", "invalid expected_user_message_id"}});
+            }
+            std::string error;
+            if (!deps.session_client->retry_last_user_message(id, message_id, error)) {
+                return respond(409, {{"error", error}});
+            }
+            return respond(202, {{"queued", true}, {"user_message_id", message_id}});
         });
 
         // Soft steer: append structured input to the matching active turn and
@@ -2412,6 +2582,12 @@ void WebServer::Impl::register_sessions() {
                         r.add_header("Content-Type", "application/json");
                         return with_cors(req, std::move(r));
                     }
+                    // The composer restores its pasted blocks from
+                    // restored_composer_content; the plain prompt (and the
+                    // new session's input_draft) is the editor text only, so
+                    // pasted bodies are neither duplicated in the draft meta
+                    // nor typed back into the editor.
+                    restored_prompt = std::move(normalized.text);
                     restored_composer_content = std::move(normalized.content);
                     // Validate source records before creating the target session.
                     std::unordered_set<std::string> seen;

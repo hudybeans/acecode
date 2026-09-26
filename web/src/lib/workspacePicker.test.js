@@ -3,6 +3,12 @@ import {
   parseWorkspacePickerResult,
   pickExistingWorkspace,
 } from './workspacePicker.js';
+import {
+  currentPathPickRequest,
+  resetPathPickerHostForTests,
+  resolvePathPick,
+  subscribePathPickRequests,
+} from './pathPickerHost.js';
 
 async function test(name, fn) {
   try {
@@ -98,23 +104,136 @@ await test('web picker propagates registration failures', async () => {
 });
 
 await test('desktop registration failure does not hide a valid picker result', async () => {
+  let webPickerCalls = 0;
   const workspace = await pickExistingWorkspace({
     api: { registerWorkspace: async () => { throw new Error('already registered'); } },
     desktopBridge: {
       aceDesktop_addWorkspace: async () => ({ hash: 'abc', cwd: 'C:/repo' }),
     },
+    webPicker: async () => { webPickerCalls += 1; return null; },
   });
   assert.equal(workspace.hash, 'abc');
+  assert.equal(webPickerCalls, 0);
 });
 
-await test('visible desktop picker errors are propagated', async () => {
-  await assert.rejects(
-    pickExistingWorkspace({
-      api: { registerWorkspace: async () => {} },
-      desktopBridge: {
-        aceDesktop_addWorkspace: async () => ({ error: 'picker unavailable' }),
+const nativeFailures = [
+  ['error response', async () => ({ error: 'picker unavailable' })],
+  ['JSON error response', async () => JSON.stringify({ error: 'zenity/kdialog unavailable' })],
+  ['rejected bridge call', async () => { throw new Error('bridge rejected'); }],
+  ['synchronous bridge exception', () => { throw new Error('bridge unavailable'); }],
+  ['invalid JSON', async () => '{invalid'],
+  ['missing workspace identity', async () => ({ cwd: '/home/me/repo' })],
+];
+
+for (const [name, nativePicker] of nativeFailures) {
+  await test(`desktop ${name} falls back to the web folder picker once`, async () => {
+    const calls = [];
+    const api = {
+      registerWorkspace: async (cwd) => {
+        calls.push(['register', cwd]);
+        return { hash: 'fallback-hash', cwd };
       },
-    }),
-    /picker unavailable/,
-  );
+      pickWorkspaceFolder: async () => { throw new Error('native REST picker must not be used'); },
+    };
+    const workspace = await pickExistingWorkspace({
+      api,
+      desktopBridge: {
+        aceDesktop_addWorkspace: () => { calls.push('native'); return nativePicker(); },
+      },
+      webPicker: async (options) => {
+        calls.push('web');
+        assert.deepEqual(options, { mode: 'folder', purpose: 'workspace', api });
+        return { path: '/home/me/fallback', kind: 'dir' };
+      },
+    });
+    assert.deepEqual(workspace, { hash: 'fallback-hash', cwd: '/home/me/fallback' });
+    assert.deepEqual(calls, ['native', 'web', ['register', '/home/me/fallback']]);
+  });
+}
+
+await test('desktop cancellation never opens a second picker or registers a directory', async () => {
+  for (const result of [null, undefined, 'null', ' null ', '', '  ']) {
+    const calls = [];
+    const workspace = await pickExistingWorkspace({
+      api: { registerWorkspace: async () => { calls.push('register'); } },
+      desktopBridge: { aceDesktop_addWorkspace: async () => result },
+      webPicker: async () => { calls.push('web'); return null; },
+    });
+    assert.equal(workspace, null);
+    assert.deepEqual(calls, []);
+  }
+});
+
+await test('cancelling the fallback picker ends the operation without registration', async () => {
+  const calls = [];
+  const workspace = await pickExistingWorkspace({
+    api: { registerWorkspace: async () => { calls.push('register'); } },
+    desktopBridge: {
+      aceDesktop_addWorkspace: async () => { calls.push('native'); return { error: 'picker unavailable' }; },
+    },
+    webPicker: async () => { calls.push('web'); return null; },
+  });
+  assert.equal(workspace, null);
+  assert.deepEqual(calls, ['native', 'web']);
+});
+
+for (const failure of ['web picker', 'registration rejection', 'registration error response']) {
+  await test(`fallback propagates ${failure} without retrying either picker`, async () => {
+    const calls = [];
+    const error = new Error(failure);
+    await assert.rejects(pickExistingWorkspace({
+      api: {
+        registerWorkspace: async () => {
+          calls.push('register');
+          if (failure === 'registration error response') return { error: error.message };
+          throw error;
+        },
+      },
+      desktopBridge: {
+        aceDesktop_addWorkspace: async () => { calls.push('native'); return { error: 'picker unavailable' }; },
+      },
+      webPicker: async () => {
+        calls.push('web');
+        if (failure === 'web picker') throw error;
+        return { path: '/home/me/repo', kind: 'dir' };
+      },
+    }), (actual) => {
+      assert.equal(actual.message, error.message);
+      if (failure !== 'registration error response') assert.equal(actual, error);
+      return true;
+    });
+    assert.deepEqual(calls, failure === 'web picker' ? ['native', 'web'] : ['native', 'web', 'register']);
+  });
+}
+
+await test('native failure reaches the mounted path picker host and registers its selection', async () => {
+  resetPathPickerHostForTests();
+  const requests = [];
+  const unsubscribe = subscribePathPickRequests((request) => requests.push(request));
+  const registered = [];
+  const api = {
+    registerWorkspace: async (cwd) => {
+      registered.push(cwd);
+      return { hash: 'host-hash', cwd };
+    },
+  };
+  try {
+    const result = pickExistingWorkspace({
+      api,
+      desktopBridge: { aceDesktop_addWorkspace: async () => ({ error: 'picker unavailable' }) },
+    });
+    await Promise.resolve();
+    const request = currentPathPickRequest();
+    assert.ok(request);
+    assert.deepEqual(request.options, { mode: 'folder', purpose: 'workspace', api });
+    assert.deepEqual(registered, []);
+    assert.equal(resolvePathPick(request.id, { path: '/home/me/from-host', kind: 'dir' }), true);
+    assert.deepEqual(await result, { hash: 'host-hash', cwd: '/home/me/from-host' });
+    assert.deepEqual(registered, ['/home/me/from-host']);
+    assert.deepEqual(requests, [request, null]);
+    assert.equal(currentPathPickRequest(), null);
+  } finally {
+    unsubscribe();
+    resetPathPickerHostForTests();
+  }
 });

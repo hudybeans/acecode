@@ -41,6 +41,12 @@ public:
     std::string model() const override { return model_; }
     void set_model(const std::string& m) override { model_ = m; }
 
+    void set_vision_routing(bool model_has_vision, bool any_vision_model_available) {
+        model_has_vision_ = model_has_vision;
+        any_vision_model_available_ = any_vision_model_available;
+    }
+    bool supports_vision() const override { return model_has_vision_; }
+
     void reconfigure(const std::string& base_url,
                      const std::string& api_key,
                      int stream_timeout_ms = OpenAiConfig::kDefaultStreamTimeoutMs,
@@ -98,6 +104,8 @@ private:
     std::map<std::string, std::string> request_headers_;
     ProviderRequestOptions request_options_;
     int stream_timeout_ms_ = OpenAiConfig::kDefaultStreamTimeoutMs;
+    bool model_has_vision_ = true;
+    bool any_vision_model_available_ = false;
 };
 
 } // namespace acecode

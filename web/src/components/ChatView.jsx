@@ -20,7 +20,30 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { flushSync } from 'react-dom';
-import { appendComposerImageAttachments } from '../lib/composerImagePresentation.js';
+import { appendComposerImageAttachments, appendPasteFileAttachments } from '../lib/composerImagePresentation.js';
+import {
+  PASTED_TEXT_UPLOAD_TIMEOUT_MS,
+  WORKSPACE_DRAFT_STORE,
+  appendPastedTextPart,
+  appendPastedTextToSubmission,
+  homeDraftAttachmentScope,
+  inputHistoryTextForPayload,
+  legacyFoldUploadPending,
+  legacyTextNeedsFold,
+  normalizePastedText,
+  pastedTextFileMeta,
+  pastedTextFileName,
+  pastedTextUploadBody,
+  payloadWithImportedPastes,
+  planPastedTextInsertion,
+  reconcileHomeDraftUpload,
+  registerPastedTextFile,
+  removePastedTextPart,
+  replacePasteBlock,
+  replacePastedTextPart,
+  sessionTitleSeedForPayload,
+  workspaceDraftPasteRefs,
+} from '../lib/pastedText.js';
 import { createApi } from '../lib/api.js';
 import { connection } from '../lib/connection.js';
 import { tr } from '../i18n/index.js';
@@ -32,6 +55,7 @@ import {
   clearComposerAttachmentReservations,
   composerAttachmentFilesForLocalIds,
   createComposerAttachmentReservations,
+  releaseComposerAttachmentFile,
   reserveComposerAttachmentFiles,
 } from '../lib/composerAttachmentReservations.js';
 import { ActivityLine } from './ActivityLine.jsx';
@@ -51,7 +75,9 @@ import { LspIndicator } from './LspIndicator.jsx';
 import { QuestionPicker } from './QuestionPicker.jsx';
 import { PermissionCard } from './PermissionCard.jsx';
 import { StickyUserContext } from './StickyUserContext.jsx';
+import { AttachmentTextLoaderContext } from './AttachmentTextLoaderContext.jsx';
 import { SessionContentLoading } from './SessionContentLoading.jsx';
+import { sessionContentLoadingPhase } from '../lib/sessionContentLoading.js';
 import { SidePanel } from './SidePanel.jsx';
 import { SubagentPanel } from './SubagentPanel.jsx';
 import { TranscriptItems } from './TranscriptItems.jsx';
@@ -61,7 +87,7 @@ import { CreateProjectModal } from './CreateProjectModal.jsx';
 import { ChangeGlassDock } from './ChangeReview.jsx';
 import { TurnFileList } from './TurnFileList.jsx';
 import { toast } from './Toast.jsx';
-import { clsx } from '../lib/format.js';
+import { clsx, formatBytes } from '../lib/format.js';
 import {
   aggregateHunksFromMessages,
   changeGroupsSignature,
@@ -81,20 +107,26 @@ import {
   createChatInputQueueState,
   enqueueQueuedInput,
   shouldDrainQueuedInput,
+  shouldPauseQueuedInputAfterAbort,
   finishQueuedGuidance,
   hasSendingQueuedInput,
+  isQueuedInputPaused,
   markQueuedGuidanceAccepted,
   markQueuedInputCompleted,
   markQueuedInputFailed,
   markQueuedInputSending,
   nextQueuedInput,
+  pauseQueuedInput,
   QUEUED_INPUT_STATE,
+  queuedInputPause,
   queuedInputRequestPayload,
+  resumeQueuedInput,
   retryQueuedInput,
   updateQueuedInputContent,
 } from '../lib/chatInputQueue.js';
 import { findStickyUserContext, sameStickyUserContext, scrollTopForStickySourceRow } from '../lib/stickyUserContext.js';
 import { loadTranscriptHistory, useSessionTranscript } from '../lib/sessionTranscript.js';
+import { trailingUserMessageRetryId } from '../lib/trailingUserMessageRetry.js';
 import { createSingleWriterStore } from '../lib/singleWriterStore.js';
 import { projectCollapsedTranscriptItems } from '../lib/transcriptProjection.js';
 import {
@@ -112,7 +144,7 @@ import { usePreference } from '../lib/usePreference.js';
 import { pickExistingWorkspace } from '../lib/workspacePicker.js';
 import { refreshWorkspaceGitInfo } from '../lib/gitInfoCache.js';
 import { createPendingActionGuard } from '../lib/pendingActionGuard.js';
-import { homeComposerDraft, homeComposerDraftText } from '../lib/homeComposerDrafts.js';
+import { homeComposerDraft } from '../lib/homeComposerDrafts.js';
 import {
   composerContentAttachments, composerContentFromText, composerContentSignature,
   normalizeComposerContent, reconcileComposerContentAttachments,
@@ -175,7 +207,7 @@ import { VsIcon } from './Icon.jsx';
 import { commandWorkspaceHashForInput } from '../lib/slashCommandWorkspace.js';
 import { consoleCwdForContext } from '../lib/consoleDock.js';
 import {
-  inputRouteForText,
+  inputRouteForPayload,
   remoteControlSessionRefreshForCommand,
   sessionCreateOptionsForText,
 } from '../lib/builtinCommandRouting.js';
@@ -206,6 +238,7 @@ import {
   closePreviewTabsToRight,
   closeVisiblePreviewTabs,
   defaultBrowserTabTitle,
+  discardFileTabDraft,
   openFileTab,
   openBrowserTab,
   openGitChangesTab,
@@ -213,7 +246,6 @@ import {
   previewFileLocation,
   previewScopeKey,
   previewTabContext,
-  previewTabsWithUnsavedDrafts,
   refreshPreviewTab,
   reorderPreviewTab,
   sessionWorkingCwd,
@@ -231,6 +263,10 @@ import {
   editableFileError,
   saveEditableFileDraftBatch,
 } from '../lib/editableFileDraft.js';
+import { createUnsavedFileGuard, runAfterFileApproval } from '../lib/unsavedFileGuard.js';
+import { sessionWorkbench } from '../lib/sessionWorkbench.js';
+import { useWorkbenchState } from '../lib/useWorkbenchState.js';
+import { transferPreviewTabs } from '../lib/previewTabs.js';
 import {
   AGENT_BROWSER_STATE_EVENT,
   agentBrowserActivityFromItems,
@@ -265,9 +301,12 @@ import {
 import {
   closeDesktopContextMenu,
   openDesktopContextMenu,
+  CONTEXT_MENU_DELEGATE_EVENT,
   DESKTOP_CONTEXT_ACTION_EVENT,
   DESKTOP_CONTEXT_ACTIONS,
+  SESSION_HEADER_CONTEXT_MENU_DELEGATE,
 } from '../lib/desktopContextMenu.js';
+import { resolveSessionTitleRename, sessionTitleRenameWorkspaceHash } from '../lib/sessionTitleRename.js';
 import { normalizeReferencePath } from '../lib/pathReference.js';
 import {
   createSelectionAnnotation,
@@ -340,20 +379,45 @@ function fileToBase64(file) {
 
 function normalizeComposerPayload(text, attachments = [], contexts = [], swarmMode = false, composerContent = null) {
   const sessionReferences = extractSessionReferences(String(text || ''));
+  const content = reconcileComposerContentAttachments(composerContent, attachments);
   const payload = {
-    text: sessionReferences.displayText,
+    // 消息正文 = 编辑器文本 + 内联粘贴块(以 "\n\n" 拼在编辑器内容之后);文件块不进
+    // 正文,走 attachments → [Attached file reference]。
+    text: appendPastedTextToSubmission(sessionReferences.displayText, content),
+    // 首页草稿附件(粘贴的文件块)留在 attachments 里并带 store / store_scope:这样
+    // payloadHasExtras 原样就把「只有文件块」「/compact + 文件块」算作 extras;发送前
+    // 由 materializeWorkspaceDraftPastes 这一个导入点复制成会话附件。
     attachments: attachments
       .filter((item) => item && !item.uploading && item.id)
-      .map((item) => ({ id: item.id })),
+      .map((item) => (item.store === WORKSPACE_DRAFT_STORE && item.store_scope
+        ? { id: item.id, store: item.store, store_scope: item.store_scope }
+        : { id: item.id })),
     contexts: contexts.map(normalizeComposerContext).filter(Boolean),
   };
   if (sessionReferences.references.length > 0) {
     payload.session_references = sessionReferences.references;
   }
   if (swarmMode) payload.swarm_mode = true;
-  const content = reconcileComposerContentAttachments(composerContent, attachments);
   if (content) payload.composer_content = content;
   return payload;
+}
+
+// 粘贴文本分类结果为文件块时,按字节区间造 File(一次 TextEncoder 编码,各段直接
+// subarray,不再重复编码);描述挂在 File 上(WeakMap),任何持有 File 的路径都能取回。
+function pastedTextFilesForPlan(plan, now = new Date()) {
+  const multi = plan.chunks.length > 1;
+  return plan.chunks.map((chunk, index) => registerPastedTextFile(
+    new File(
+      [plan.bytes.subarray(chunk.start, chunk.end)],
+      pastedTextFileName(now, multi ? index + 1 : 0),
+      { type: 'text/plain' },
+    ),
+    chunk.paste,
+  ));
+}
+
+function largePasteNotice(plan) {
+  return `粘贴内容较大（${formatBytes(plan.byteLength)}），将分 ${plan.chunks.length} 段上传`;
 }
 
 function payloadWithAttachmentIds(payload, attachments = []) {
@@ -377,10 +441,6 @@ function payloadHasExtras(payload) {
   return (Array.isArray(payload?.attachments) && payload.attachments.length > 0) ||
     (Array.isArray(payload?.contexts) && payload.contexts.length > 0) ||
     (Array.isArray(payload?.session_references) && payload.session_references.length > 0);
-}
-
-function payloadText(payload) {
-  return typeof payload === 'string' ? payload : String(payload?.text || '');
 }
 
 function nextSelectionContextId() {
@@ -550,9 +610,10 @@ const EXPERT_SWITCH_CANONICAL_POLL_ATTEMPTS = 6;
 const EXPERT_SWITCH_CANONICAL_POLL_INTERVAL_MS = 160;
 const FORK_ACTION_KEY = 'fork-session';
 
-export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftChange, onHomeComposerDraftAccepted, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, nativeSurfacesVisible = true }) {
+export function ChatView({ titleTarget, actionsTarget, children, sessionRef, sessionId, homeLogoEffectEnabled = true, homeComposerDrafts = {}, homeComposerAttentionRequest = 0, onHomeComposerDraftLoad, onHomeComposerDraftChange, onHomeComposerDraftAccepted, onHomeComposerDraftPatch, modelProfileRevision = 0, onSessionPromoted, onSessionExpertChanged, onHomeWorkspaceChange, onCommandWorkspaceChange, onConsoleCwdChange, onFindInConversation, onOpenModelSettings, health, autoFocusOnDesktopWindowFocus = false, onPermissionRequest, onQuestionRequest, permissionRequests = [], onPermissionDecision, questionRequest, onQuestionResolve, onPermissionModeChanged, onSubagentTasksChange, recentExpertIds = [], onRememberExpert, onInitialDraftConsumed, showSidePanel = false, sidePanelWidth = 280, onSidePanelResize, previewPanelWidth = 640, previewPanelAutoFit = false, onPreviewPanelResize, subagentPanelWidth = DEFAULT_SUBAGENT_PANEL_WIDTH, onSubagentPanelResize, onPreviewPanelVisibleChange, onRegisterPreviewLeaveGuard, sidePanelCollapsed = false, sidePanelListCollapsed = false, onToggleSidePanel, onToggleSidePanelList, onRevealSidePanelList, sidePanelMaximized = false, onToggleSidePanelMaximized, showAceCodeAvatar = false, messageAutoCollapse = true, nativeSurfacesVisible = true }) {
   const ref = useMemo(() => normalizeSessionRef(sessionRef, sessionId), [sessionRef, sessionId]);
   const sid = ref?.sessionId || ref?.id || '';
+  const workbenchOwner = sessionWorkbench.ownerFor(ref);
   const sessionRuntimeUnavailable = ref?.resumePending === true || ref?.resumeFailed === true;
   const remoteControlBound = Boolean(ref?.remote_control_bound ?? ref?.remoteControlBound);
   const stagedExpertDraft = expertDispatchDraftFromRef(ref);
@@ -601,6 +662,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     status: transcriptStatus,
     loadState: transcriptLoadState,
     streamingId,
+    abortPending,
+    lastTurnOutcome,
     trajectoryPartial,
     tokenUsage,
     goal,
@@ -608,7 +671,6 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     todoSummary,
     activity,
     applyEvent,
-    setTitle: setTranscriptTitle,
   } = transcript;
 
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false);
@@ -790,11 +852,18 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const [modelRefreshing, setModelRefreshing] = useState(false);
   const [permissionMode, setPermissionMode] = useState('default');
   const [permissionSwitching, setPermissionSwitching] = useState(false);
-  const [reviewRequest, setReviewRequest] = useState(0);
-  const [fileLocateRequest, setFileLocateRequest] = useState({ path: '', token: 0 });
-  const [previewTabState, setPreviewTabState] = useState({});
+  const [reviewRequest, setReviewRequest] = useWorkbenchState(workbenchOwner, 'reviewRequest', 0);
+  const [fileLocateRequest, setFileLocateRequest] = useWorkbenchState(workbenchOwner, 'fileLocate', () => ({ path: '', token: 0 }));
+  const [previewTabState, setPreviewTabState] = useWorkbenchState(workbenchOwner, 'previews', () => ({}));
+  const getPreviewTabState = useCallback(() => sessionWorkbench.get(workbenchOwner, 'previews', () => ({})), [workbenchOwner]);
+  const previewContextRef = useRef(null);
+  const previewLeaveRequestRef = useRef(() => true);
   const [previewCloseConfirm, setPreviewCloseConfirm] = useState(null);
-  const [previewPanelHidden, setPreviewPanelHidden] = useState(false);
+  const previewFileGuardRef = useRef(null);
+  if (!previewFileGuardRef.current) {
+    previewFileGuardRef.current = createUnsavedFileGuard(setPreviewCloseConfirm);
+  }
+  const [previewPanelHidden, setPreviewPanelHidden] = useWorkbenchState(workbenchOwner, 'previewHidden', false);
   const [dismissedDockSignatures, setDismissedDockSignatures] = usePreference(
     CHANGE_DOCK_DISMISSALS_STORAGE_KEY,
     {},
@@ -856,6 +925,14 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const [composerContent, setComposerContent] = useState(null);
   const composerContentRef = useRef(null);
   const composerAttachmentsRef = useRef([]);
+  const homeDraftWorkspaceHashRef = useRef('');
+  // 上箭头翻到旧超长历史时暂存在内存里、尚未上传的粘贴文件块({reserved, localIds}),
+  // 只保留一组:开始编辑或发送时上传,翻到别的条目时释放。
+  const deferredHistoryPasteRef = useRef(null);
+  // 旧草稿 / fork 回填的超长文本折叠成文件块时暂存的块 { localIds }。这些块拿到服务端 id
+  // 之前服务端草稿里的旧全文是唯一持久副本,首页与会话草稿保存都要跳过(legacyFoldUploadPending)。
+  const legacyFoldGuardRef = useRef(null);
+  const handleLargeTextPasteRef = useRef(null);
   const setComposerValue = useCallback((text, content = null) => {
     const normalized = normalizeComposerContent(content);
     composerValueRef.current = String(text || '');
@@ -868,6 +945,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const [selectionPreview, setSelectionPreview] = useState(null);
   const [selectionAction, setSelectionAction] = useState(null);
   const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const retrySubmissionRef = useRef(null);
+  useEffect(() => () => { retrySubmissionRef.current = null; }, [sid, api]);
   const [draftReadyKey, setDraftReadyKey] = useState('');
   const [acceptedHomeSubmission, setAcceptedHomeSubmission] = useState(null);
   const draftEditVersionRef = useRef(0);
@@ -950,6 +1029,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   // 排队消息从 transcript 中分离出来,只喂给 InputBar 上方的 QueueCardList。
   // transcript 只渲染后端真实落库的消息,避免把"草稿/未发送"和"已发送"混在一起。
   const visibleQueuedItems = useMemo(() => buildQueuedMessageItems(queueState, sid), [queueState, sid]);
+  // 当前会话的队列暂停态(用户中断回合后置位):卡片栈横幅与输入栏「继续」按钮共用。
+  const queuePause = useMemo(() => queuedInputPause(queueState, sid), [queueState, sid]);
   const draftWorkspaceHash = isRealWorkspaceHash(ref?.workspaceHash) ? ref.workspaceHash : '';
   const draftSessionKey = sid ? `${draftWorkspaceHash}:${sid}` : '';
   const explicitHomeDraftWorkspaceHash = !sid && ref?.homeWorkspaceExplicit
@@ -960,13 +1041,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     : (explicitHomeDraftWorkspaceHash ?? (
         isRealWorkspaceHash(homeWorkspaceHash) ? homeWorkspaceHash : ''
       )), sid ? '' : ref?.composerDraftScope);
-  const currentHomeDraftText = homeComposerDraftText(
-    homeComposerDrafts,
-    homeDraftWorkspaceHash,
-  );
   composerValueRef.current = composerValue;
   composerContentRef.current = composerContent;
   composerAttachmentsRef.current = composerAttachments;
+  homeDraftWorkspaceHashRef.current = homeDraftWorkspaceHash;
   const rawItems = useMemo(
     () => withPendingNewSessionFirstUserMessage(
       items,
@@ -986,11 +1064,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const composerHistory = useMemo(() => composerHistoryEntries.map((entry) => entry.text), [composerHistoryEntries]);
   const renderedItems = useMemo(
     () => projectCollapsedTranscriptItems(rawItems, {
+      messageAutoCollapse,
       deferTrailingToolSummary: busy,
       ensureLiveActivity: busy,
       liveTurnId: currentTurnActivityId(rawItems, activeTurnId, sid),
     }),
-    [rawItems, busy, activeTurnId, sid],
+    [rawItems, busy, activeTurnId, sid, messageAutoCollapse],
   );
   // 尾部窗口(渐进虚拟化,见 lib/transcriptWindow.js):大会话初始只渲染
   // 最近的一段投影行,DOM 行数从数百降到 ≤ INITIAL_TAIL_ITEMS。窗口状态
@@ -1258,13 +1337,30 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   useEffect(() => { sidRef.current = sid; }, [sid]);
   useEffect(() => { draftSessionKeyRef.current = draftSessionKey; }, [draftSessionKey]);
   useEffect(() => {
-    setPreviewPanelHidden(false);
-    setPreviewCloseConfirm(null);
-  }, [sid]);
+    previewFileGuardRef.current.cancelPending();
+  }, [workbenchOwner]);
+  useEffect(() => () => previewFileGuardRef.current.cancelPending(), []);
+
+  const releaseDeferredPastes = useCallback(() => {
+    const group = deferredHistoryPasteRef.current;
+    deferredHistoryPasteRef.current = null;
+    if (!group) return;
+    const ids = new Set(group.localIds);
+    for (const id of ids) releaseComposerAttachmentFile(attachmentReservationsRef.current, id);
+    composerAttachmentsRef.current = composerAttachmentsRef.current.filter((item) => !ids.has(item?.local_id));
+    setComposerAttachments((items) => items.filter((item) => !ids.has(item?.local_id)));
+  }, []);
 
   const handleComposerChange = useCallback((next, content = null) => {
     const normalized = normalizeComposerContent(content);
     if (composerDraftFingerprint(next, normalized) === composerDraftFingerprint(composerValueRef.current, composerContentRef.current)) return;
+    const deferred = deferredHistoryPasteRef.current;
+    if (deferred && !(normalized?.parts || []).some((part) => (
+      part.type === 'attachment' && deferred.localIds.includes(part.key)
+    ))) {
+      // 翻到了别的历史条目(或块被删掉):释放暂存的 File,不再上传。
+      releaseDeferredPastes();
+    }
     const userEdit = composerDraftEditFingerprint(next, normalized)
       !== composerDraftEditFingerprint(composerValueRef.current, composerContentRef.current);
     if (userEdit) {
@@ -1274,11 +1370,25 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     setComposerValue(next, normalized);
     const restored = composerContentAttachments(normalized, composerAttachmentsRef.current, { sessionId: sid });
     setComposerAttachments((current) => mergeComposerAttachmentResources(current, restored));
-    if (!sid) onHomeComposerDraftChange?.(homeDraftWorkspaceHash, composerDraftSnapshot(next, normalized, composerAttachmentsRef.current));
-  }, [homeDraftWorkspaceHash, onHomeComposerDraftChange, setComposerValue, sid]);
+    if (!sid) {
+      const snapshot = composerDraftSnapshot(next, normalized, composerAttachmentsRef.current);
+      // 旧长文本折叠的文件块还没上传完:不写首页草稿,保留旧全文(上传完成的回填会再走这里)。
+      if (!legacyFoldUploadPending(legacyFoldGuardRef.current, snapshot.composer_content)) {
+        onHomeComposerDraftChange?.(homeDraftWorkspaceHash, snapshot, api);
+      }
+    }
+  }, [api, homeDraftWorkspaceHash, onHomeComposerDraftChange, releaseDeferredPastes, setComposerValue, sid]);
 
   const restoreComposerDraft = useCallback((draft, targetSid = '') => {
-    const content = normalizeComposerContent(draft?.composer_content);
+    const storedContent = normalizeComposerContent(draft?.composer_content);
+    const storedText = String(draft?.text || '');
+    // 本版之前的旧草稿(没有 composer_content)与从旧消息 fork 回填的超长文本:以空
+    // 编辑器恢复,正文整段走粘贴块分类(文件块立即上传)。否则几 MB 文本直接进 Slate 卡死。
+    const foldLegacy = typeof handleLargeTextPasteRef.current === 'function'
+      && legacyTextNeedsFold(storedText, storedContent);
+    const content = foldLegacy ? null : storedContent;
+    deferredHistoryPasteRef.current = null;
+    legacyFoldGuardRef.current = null;
     const resources = composerContentAttachments(content, draft?.attachments || [], { sessionId: targetSid });
     for (const resource of composerAttachmentsRef.current) {
       if (resource?.preview_url?.startsWith('blob:')) URL.revokeObjectURL(resource.preview_url);
@@ -1292,7 +1402,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     }
     setComposerAttachments(resources);
     composerAttachmentsRef.current = resources;
-    setComposerValue(String(draft?.text || ''), content);
+    setComposerValue(foldLegacy ? '' : storedText, content);
+    if (foldLegacy) handleLargeTextPasteRef.current(storedText, { legacyDraft: true });
   }, [setComposerValue]);
 
   const clearAttachmentReservations = useCallback(() => {
@@ -1334,6 +1445,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     title = '',
   } = {}) => {
     if (homeSubmitting || reasoningSwitching) return null;
+    const sourcePreviewContext = previewContextRef.current;
+    if (!await previewLeaveRequestRef.current()) return null;
     const target = selectedHomeWorkspace || fallbackWorkspaceOption(ref, health);
     const targetHash = target?.hash || '';
     const targetNoWorkspace = !!target?.noWorkspace;
@@ -1369,7 +1482,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       // 首轮生成的文件就靠它才能预览。
       const nextWorkingCwd = r.working_cwd || r.cwd || target?.cwd || '';
       if (nextWorkingCwd) next.workingCwd = nextWorkingCwd;
-      next.title = title || text;
+      next.title = title || sessionTitleSeedForPayload({ text });
       if (homeExpertId) {
         const selectedExpert = experts.find((expert) => expert.id === homeExpertId) || ref?.expert || null;
         next.expertId = homeExpertId;
@@ -1389,6 +1502,14 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       if (pendingFirstUserMessage) {
         setPendingNewSessionFirstUserMessage(pendingFirstUserMessage);
       }
+      const nextOwner = sessionWorkbench.ownerFor(next);
+      if (health?.console?.available) await api.transferPtyOwner(workbenchOwner, nextOwner);
+      sessionWorkbench.transfer(workbenchOwner, nextOwner, (record) => ({
+        ...record,
+        previews: sourcePreviewContext ? transferPreviewTabs(record.previews || {}, sourcePreviewContext, {
+          ...sourcePreviewContext, sessionId: id,
+        }) : {},
+      }));
       onSessionPromoted?.(next);
       notifySessionListChanged({
         reason: 'session-created',
@@ -1406,7 +1527,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     } finally {
       setHomeSubmitting(false);
     }
-  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace]);
+  }, [api, experts, health, homeExpertId, homeModelName, homeReasoningEffort, homeSubmitting, reasoningSwitching, onSessionPromoted, permissionMode, ref, selectedHomeWorkspace, workbenchOwner]);
 
   const stageMediaFiles = useCallback((reservedFiles) => {
     const stagedItems = [];
@@ -1450,11 +1571,13 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const persistOne = async (reserved) => {
       const { file, identity, localId } = reserved || {};
       if (!file || !identity || !localId) return null;
+      // 粘贴的文本块:描述挂在 File 上(上传回填会整体替换资源,资源上的标记靠不住)。
+      const paste = pastedTextFileMeta(file);
       const sourceReference = fileSourceReference(file);
       const sourcePath = sourceReference?.sourcePath || fileSourcePath(file);
       setComposerAttachments((items) => items.map((item) => (
         item.local_id === localId
-          ? { ...item, pending_upload: false, uploading: true, upload_error: '' }
+          ? { ...item, pending_upload: false, uploading: true, upload_error: '', upload_deferred: false }
           : item
       )));
       try {
@@ -1482,7 +1605,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
                 mime_type: uploadMime,
                 data_base64: dataBase64,
                 ...(sourcePath ? { source_path: sourcePath } : {}),
-              });
+                ...(paste ? pastedTextUploadBody(paste) : {}),
+              }, paste ? { timeoutMs: PASTED_TEXT_UPLOAD_TIMEOUT_MS } : {});
             });
         const result = await Promise.resolve(persistAttachment);
         const attachment = result?.attachment || {};
@@ -1500,7 +1624,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         };
         setComposerAttachments((items) => items.map((item) => (
           item.local_id === localId
-            ? { ...uploadedItem, preview_url: item.preview_url || '' }
+            ? { ...uploadedItem, preview_url: item.preview_url || '', ...(paste ? { paste } : {}) }
             : item
         )));
         if (sidRef.current === targetSid) {
@@ -1539,8 +1663,31 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       }
     };
 
-    const uploaded = await Promise.all(Array.from(reservedFiles || []).map(persistOne));
-    return uploaded.filter(Boolean);
+    // 粘贴的文本分段顺序上传,其它附件照旧并行:服务端单个上传请求的峰值内存约为
+    // 正文的 4~5 倍(请求体、解析后的 JSON、解码字节、落盘拷贝),9 段 24 MiB 并发就是
+    // 1 GB 级别。一段失败不影响后面的段,全部跑完再抛出第一个错误。结果保持原顺序。
+    const list = Array.from(reservedFiles || []);
+    const results = new Array(list.length).fill(null);
+    const pasteIndexes = [];
+    const otherIndexes = [];
+    list.forEach((reserved, index) => (
+      pastedTextFileMeta(reserved?.file) ? pasteIndexes : otherIndexes
+    ).push(index));
+    let pasteError = null;
+    await Promise.all([
+      Promise.all(otherIndexes.map(async (index) => { results[index] = await persistOne(list[index]); })),
+      (async () => {
+        for (const index of pasteIndexes) {
+          try {
+            results[index] = await persistOne(list[index]);
+          } catch (error) {
+            pasteError ||= error;
+          }
+        }
+      })(),
+    ]);
+    if (pasteError) throw pasteError;
+    return results.filter(Boolean);
   }, [api, setComposerValue]);
 
   const handleMediaFiles = useCallback((files) => {
@@ -1558,6 +1705,293 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     sid,
     stageMediaFiles,
   ]);
+
+  // ---- 粘贴的文本块(第 2 条反馈 f300) ----------------------------------------
+  // 达到折叠阈值的粘贴不进 Slate:小的成为内联块({type:'pasted_text'}),大的
+  // (UTF-8 >= 128 KiB,或内联合计 > 256 KiB)落成 text/plain 附件,composer 里是带
+  // paste 描述的 attachment 部件。会话内上传为会话附件;首页(还没有会话)上传到
+  // 工作区草稿附件区,刷新不丢,发送前经 materializeWorkspaceDraftPastes 复制成会话附件。
+
+  // 文件块的暂存资源:与 stageMediaFiles 同形,另带 paste 描述(与 File 上登记的一致)。
+  // replaceId 非空时替换该块(编辑 / 用剪贴板替换),否则追加在末尾。
+  const stagePastedTextFiles = useCallback((reservedFiles, { deferUpload = false, replaceId = '' } = {}) => {
+    const stagedItems = [];
+    for (const reserved of Array.from(reservedFiles || [])) {
+      const { file, identity, localId } = reserved || {};
+      if (!file || !identity || !localId) continue;
+      const paste = pastedTextFileMeta(file);
+      stagedItems.push({
+        file,
+        local_id: localId,
+        name: file.name || 'pasted-text.txt',
+        kind: 'file',
+        mime_type: 'text/plain',
+        size_bytes: file.size ?? 0,
+        preview_url: '',
+        source_path: '',
+        attachment_identity: identity,
+        pending_upload: true,
+        uploading: false,
+        ...(paste ? { paste } : {}),
+        ...(deferUpload ? { upload_deferred: true } : {}),
+      });
+    }
+    if (stagedItems.length === 0) return stagedItems;
+    setComposerAttachments((items) => [...items, ...stagedItems]);
+    composerAttachmentsRef.current = [...composerAttachmentsRef.current, ...stagedItems];
+    const current = composerContentRef.current || composerContentFromText(composerValueRef.current);
+    const next = replaceId
+      ? replacePasteBlock(current, replaceId, appendPasteFileAttachments(composerContentFromText(''), stagedItems).parts)
+      : appendPasteFileAttachments(current, stagedItems);
+    handleComposerChange(composerValueRef.current, next);
+    return stagedItems;
+  }, [handleComposerChange]);
+
+  // 首页粘贴的文件块上传到工作区草稿附件区(各段顺序上传)。完成时仍在同一个首页
+  // scope 就直接回填 id + store;已经离开首页则经 App 的草稿 store 回填最新草稿
+  // (reconcileHomeDraftUpload:块已删除 / 已发送时不写,不会复活)。
+  const persistPastedTextToWorkspaceDraft = useCallback(async (hash, scope, reservedFiles) => {
+    const uploaded = [];
+    let firstError = null;
+    for (const reserved of Array.from(reservedFiles || [])) {
+      const { file, identity, localId } = reserved || {};
+      if (!file || !localId) continue;
+      const paste = pastedTextFileMeta(file);
+      setComposerAttachments((items) => items.map((item) => (
+        item.local_id === localId
+          ? { ...item, pending_upload: false, uploading: true, upload_error: '', upload_deferred: false }
+          : item
+      )));
+      try {
+        const dataBase64 = await fileToBase64(file);
+        const result = await api.uploadWorkspaceDraftAttachment(scope, {
+          name: file.name || 'pasted-text.txt',
+          mime_type: 'text/plain',
+          data_base64: dataBase64,
+          ...pastedTextUploadBody(paste),
+        }, { timeoutMs: PASTED_TEXT_UPLOAD_TIMEOUT_MS });
+        const attachment = result?.attachment || {};
+        if (!attachment.id) throw new Error(tr('composerAttachment.missingId'));
+        const uploadedItem = {
+          ...attachment,
+          local_id: localId,
+          attachment_identity: identity,
+          store: WORKSPACE_DRAFT_STORE,
+          store_scope: scope,
+          pending_upload: false,
+          uploading: false,
+          upload_error: '',
+          ...(paste ? { paste } : {}),
+        };
+        uploaded.push(uploadedItem);
+        if (!sidRef.current && homeDraftWorkspaceHashRef.current === hash) {
+          composerAttachmentsRef.current = composerAttachmentsRef.current.map((item) => (
+            item.local_id === localId ? uploadedItem : item
+          ));
+          setComposerAttachments((items) => items.map((item) => (item.local_id === localId ? uploadedItem : item)));
+          const content = reconcileComposerContentAttachments(composerContentRef.current, [uploadedItem]);
+          if (composerContentSignature(content) !== composerContentSignature(composerContentRef.current)) {
+            handleComposerChange(composerValueRef.current, content);
+          }
+        } else {
+          onHomeComposerDraftPatch?.(hash, (draft) => reconcileHomeDraftUpload(draft, uploadedItem, scope), api);
+        }
+      } catch (error) {
+        firstError ||= error;
+        setComposerAttachments((items) => items.map((item) => (
+          item.local_id === localId
+            ? {
+                ...item,
+                pending_upload: true,
+                uploading: false,
+                upload_error: error?.message || tr('composerAttachment.uploadFailed'),
+              }
+            : item
+        )));
+      }
+    }
+    if (firstError) throw firstError;
+    return uploaded;
+  }, [api, handleComposerChange, onHomeComposerDraftPatch]);
+
+  // 按当前目标上传粘贴的文件块:会话内 → 会话附件;首页 → 工作区草稿附件区;
+  // AI 主题等临时首页(本来就不落盘)不上传,留给发送时的现有流程。
+  const uploadPasteReservations = useCallback((reservedFiles) => {
+    const targetSid = sidRef.current;
+    let upload;
+    if (targetSid) {
+      upload = persistMediaFilesToSession(targetSid, reservedFiles);
+    } else {
+      const hash = homeDraftWorkspaceHashRef.current;
+      const scope = homeDraftAttachmentScope(hash);
+      if (!scope) return;
+      upload = persistPastedTextToWorkspaceDraft(hash, scope, reservedFiles);
+    }
+    upload.catch((error) => {
+      toast({ kind: 'err', text: '粘贴的文本上传失败:' + (error?.message || '') });
+    });
+  }, [persistMediaFilesToSession, persistPastedTextToWorkspaceDraft]);
+
+  // RichComposer 的 onLargeTextPaste:达到折叠阈值的文本到这里分类。返回 false 表示
+  // 不折叠(照常进编辑器)。deferUpload:来自上箭头翻到的旧历史,文件块只在内存暂存、
+  // 显示「待上传」,开始编辑或发送时才上传(commitDeferredPastes)。
+  // legacyDraft:来自 restoreComposerDraft 的旧长文本折叠,落文件时登记 legacyFoldGuardRef,
+  // 在块拿到 id 之前不覆盖服务端草稿里的旧全文。
+  const handleLargeTextPaste = useCallback((text, { deferUpload = false, legacyDraft = false } = {}) => {
+    const normalized = normalizePastedText(text);
+    const current = composerContentRef.current || composerContentFromText(composerValueRef.current);
+    const plan = planPastedTextInsertion(current, normalized);
+    if (plan.kind === 'plain') return false;
+    if (plan.kind === 'inline') {
+      handleComposerChange(composerValueRef.current, appendPastedTextPart(current, plan.text));
+      return true;
+    }
+    if (plan.notice) toast({ kind: 'info', text: largePasteNotice(plan) });
+    const reservedFiles = reserveUniqueComposerFiles(pastedTextFilesForPlan(plan));
+    if (reservedFiles.length === 0) return true;
+    if (deferUpload) releaseDeferredPastes();
+    // 必须在 stagePastedTextFiles 之前登记:暂存会同步触发 handleComposerChange(首页草稿写入)。
+    if (legacyDraft) legacyFoldGuardRef.current = { localIds: reservedFiles.map((reserved) => reserved.localId) };
+    stagePastedTextFiles(reservedFiles, { deferUpload });
+    if (deferUpload) {
+      deferredHistoryPasteRef.current = {
+        reserved: reservedFiles,
+        localIds: reservedFiles.map((reserved) => reserved.localId),
+      };
+      return true;
+    }
+    uploadPasteReservations(reservedFiles);
+    return true;
+  }, [handleComposerChange, releaseDeferredPastes, reserveUniqueComposerFiles, stagePastedTextFiles, uploadPasteReservations]);
+  handleLargeTextPasteRef.current = handleLargeTextPaste;
+
+  // 用户在翻出来的旧历史条目上开始编辑(或直接发送):上传仍在输入框里的暂存块。
+  const commitDeferredPastes = useCallback(() => {
+    const group = deferredHistoryPasteRef.current;
+    if (!group) return false;
+    deferredHistoryPasteRef.current = null;
+    const keys = new Set((normalizeComposerContent(composerContentRef.current)?.parts || [])
+      .filter((part) => part.type === 'attachment').map((part) => part.key));
+    const live = group.reserved.filter((reserved) => keys.has(reserved.localId));
+    for (const reserved of group.reserved) {
+      if (!keys.has(reserved.localId)) releaseComposerAttachmentFile(attachmentReservationsRef.current, reserved.localId);
+    }
+    if (live.length === 0) return false;
+    const liveIds = new Set(live.map((reserved) => reserved.localId));
+    setComposerAttachments((items) => items.map((item) => (
+      liveIds.has(item?.local_id) ? { ...item, upload_deferred: false } : item
+    )));
+    uploadPasteReservations(live);
+    return true;
+  }, [uploadPasteReservations]);
+
+  // 对话框保存 / 用剪贴板替换:删掉原块后按同一套分类在原位置放入新内容(换 key;
+  // 落文件则上传新附件、替换引用)。编辑后变短也保持为块 —— 用户是在编辑这个块。
+  const replacePasteBlockText = useCallback((id, text) => {
+    const current = composerContentRef.current;
+    if (!current) return;
+    const normalized = normalizePastedText(text);
+    if (!normalized) {
+      handleComposerChange(composerValueRef.current, removePastedTextPart(current, id));
+      return;
+    }
+    const plan = planPastedTextInsertion(removePastedTextPart(current, id), normalized);
+    if (plan.kind !== 'file') {
+      handleComposerChange(composerValueRef.current, replacePastedTextPart(current, id, normalized));
+      return;
+    }
+    if (plan.notice) toast({ kind: 'info', text: largePasteNotice(plan) });
+    const reservedFiles = reserveUniqueComposerFiles(pastedTextFilesForPlan(plan));
+    if (reservedFiles.length === 0) return;
+    stagePastedTextFiles(reservedFiles, { replaceId: id });
+    uploadPasteReservations(reservedFiles);
+  }, [handleComposerChange, reserveUniqueComposerFiles, stagePastedTextFiles, uploadPasteReservations]);
+
+  // 卡片「上传失败，点击重试」:取回保留的 File,按当前目标重新上传。
+  const retryPasteUpload = useCallback((key) => {
+    const reservedFiles = composerAttachmentFilesForLocalIds(attachmentReservationsRef.current, [key]);
+    if (reservedFiles.length === 0) {
+      toast({ kind: 'err', text: '粘贴的文本已失效，请删除后重新粘贴' });
+      return;
+    }
+    uploadPasteReservations(reservedFiles);
+  }, [uploadPasteReservations]);
+
+  // 排队消息编辑框里粘贴的大段文本:落文件时上传到当前会话,返回带 id 的附件部件。
+  const uploadPastedTextForQueue = useCallback(async (plan) => {
+    const targetSid = sidRef.current;
+    if (!targetSid) throw new Error(tr('composerAttachment.uploadFailed'));
+    const parts = [];
+    // 顺序上传,理由同 persistMediaFilesToSession。
+    for (const file of pastedTextFilesForPlan(plan)) {
+      const paste = pastedTextFileMeta(file);
+      const dataBase64 = await fileToBase64(file);
+      const result = await api.uploadSessionAttachment(targetSid, {
+        name: file.name,
+        mime_type: 'text/plain',
+        data_base64: dataBase64,
+        ...pastedTextUploadBody(paste),
+      }, { timeoutMs: PASTED_TEXT_UPLOAD_TIMEOUT_MS });
+      const attachment = result?.attachment || {};
+      if (!attachment.id) throw new Error(tr('composerAttachment.missingId'));
+      parts.push({
+        type: 'attachment',
+        key: String(attachment.id),
+        id: String(attachment.id),
+        name: String(attachment.name || file.name),
+        kind: 'file',
+        mime_type: 'text/plain',
+        ...(paste ? { paste } : {}),
+      });
+    }
+    return parts;
+  }, [api]);
+
+  // 首页草稿附件 → 会话附件的唯一导入点(sendInputOrBuiltin 开头与 /turn 的
+  // interruptTurn 之前)。导入用部件上记下的 store_scope,不能靠发送那一刻的首页
+  // workspace 推断(两者可以不同)。仍停在目标会话时把新 id 回填进输入框,发送失败
+  // 后重试不再重复导入。
+  const materializeWorkspaceDraftPastes = useCallback(async (targetSid, payload) => {
+    const refs = workspaceDraftPasteRefs(payload);
+    if (refs.length === 0) return payload;
+    const parts = normalizeComposerContent(payload?.composer_content)?.parts || [];
+    const imported = [];
+    for (const ref of refs) {
+      let result;
+      try {
+        result = await api.importWorkspaceDraftAttachment(targetSid, { workspace: ref.workspace, id: ref.id });
+      } catch (error) {
+        if (error?.status === 404) throw new Error('粘贴的文本已失效，请删除后重新粘贴');
+        throw error;
+      }
+      const attachment = result?.attachment;
+      if (!attachment?.id) throw new Error(tr('composerAttachment.missingId'));
+      const key = parts.find((part) => part.type === 'attachment' && part.id === ref.id)?.key || '';
+      imported.push({ id: ref.id, key, attachment });
+    }
+    if (sidRef.current === targetSid) {
+      const uploadedItems = imported.map(({ key, attachment }) => ({
+        ...attachment,
+        local_id: key || attachment.id,
+        pending_upload: false,
+        uploading: false,
+        upload_error: '',
+      }));
+      const byKey = new Map(uploadedItems.map((item) => [item.local_id, item]));
+      const replaceResource = (item) => {
+        const next = byKey.get(item?.local_id);
+        return next ? { ...next, ...(item.paste ? { paste: item.paste } : {}) } : item;
+      };
+      composerAttachmentsRef.current = composerAttachmentsRef.current.map(replaceResource);
+      setComposerAttachments((items) => items.map(replaceResource));
+      const content = reconcileComposerContentAttachments(composerContentRef.current, uploadedItems);
+      if (composerContentSignature(content) !== composerContentSignature(composerContentRef.current)) {
+        composerDirtyRef.current = true;
+        setComposerValue(composerValueRef.current, content);
+      }
+    }
+    return payloadWithImportedPastes(payload, imported);
+  }, [api, setComposerValue]);
 
   const removeComposerAttachment = useCallback((key) => {
     const next = removeComposerAttachmentReference(composerContentRef.current, key);
@@ -1755,17 +2189,27 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     onRemoveAttachment: removeComposerAttachment,
     onRemoveContext: removeComposerContext,
     onPinSelectionPreview: pinSelectionContext,
+    onLargeTextPaste: handleLargeTextPaste,
+    onReplacePasteBlock: replacePasteBlockText,
+    onRetryPasteUpload: retryPasteUpload,
+    onCommitDeferredPastes: commitDeferredPastes,
+    attachmentTextLoader: api.readAttachmentText,
     swarmMode: composerSwarmMode,
     onSwarmModeChange: setComposerSwarmMode,
   }), [
+    api,
+    commitDeferredPastes,
     composerAttachments,
     composerContent,
     composerContexts,
     composerSwarmMode,
+    handleLargeTextPaste,
     handleMediaFiles,
     pinSelectionContext,
     removeComposerAttachment,
     removeComposerContext,
+    replacePasteBlockText,
+    retryPasteUpload,
     selectionAnnotationPresentations,
     visibleSelectionPreview,
   ]);
@@ -1836,8 +2280,17 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     if (!preserveComposerInput) setComposerSubmitting(false);
 
     if (!targetSid || !targetKey) {
-      composerDirtyRef.current = !!currentHomeDraftText;
-      restoreComposerDraft(homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash));
+      const loading = onHomeComposerDraftLoad?.(homeDraftWorkspaceHash, api);
+      const initial = loading?.draft ?? homeComposerDraft(homeComposerDrafts, homeDraftWorkspaceHash);
+      composerDirtyRef.current = !!initial.text;
+      restoreComposerDraft(initial);
+      if (loading) {
+        void loading.ready.then((draft) => {
+          if (cancelled || draftEditVersionRef.current !== editVersionAtLoad) return;
+          composerDirtyRef.current = !!draft.text;
+          restoreComposerDraft(draft);
+        });
+      }
       draftLastSavedRef.current = { key: '', text: '' };
       return () => { cancelled = true; };
     }
@@ -1881,7 +2334,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     return () => { cancelled = true; };
   // Home edits update App's draft store without triggering restoration again.
   // Only session/workspace changes should reset or load the scoped draft.
-  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, restoreComposerDraft, sid]);
+  }, [api, draftSessionKey, draftWorkspaceHash, homeDraftWorkspaceHash, onHomeComposerDraftLoad, restoreComposerDraft, sid]);
 
   useEffect(() => {
     if (!acceptedHomeSubmission || acceptedHomeSubmission.sessionId !== sid
@@ -1902,14 +2355,19 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const targetKey = draftSessionKey;
     return () => {
       if (!targetSid || !targetKey || !composerDirtyRef.current) return;
-      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, composerValueRef.current,
-        reconcileComposerContentAttachments(composerContentRef.current, composerAttachmentsRef.current));
+      const content = reconcileComposerContentAttachments(composerContentRef.current, composerAttachmentsRef.current);
+      // 旧长文本折叠的文件块还没上传完就离开:保留服务端草稿里的旧全文,下次打开重新折叠。
+      if (legacyFoldUploadPending(legacyFoldGuardRef.current, content)) return;
+      void persistDraftValue(targetSid, targetWorkspaceHash, targetKey, composerValueRef.current, content);
     };
   }, [draftSessionKey, draftWorkspaceHash, persistDraftValue, sid]);
 
   useEffect(() => {
     if (!sid || !draftSessionKey || draftReadyKey !== draftSessionKey) return undefined;
     const content = reconcileComposerContentAttachments(composerContent, composerAttachments);
+    // 旧长文本折叠的文件块还没拿到 id:不保存,服务端草稿里的旧全文是唯一持久副本。上传
+    // 完成回填资源后 composerAttachments 变化,本 effect 重跑再保存。
+    if (legacyFoldUploadPending(legacyFoldGuardRef.current, content)) return undefined;
     if (draftLastSavedRef.current.key === draftSessionKey &&
         draftLastSavedRef.current.fingerprint === composerDraftFingerprint(composerValue, content)) {
       return undefined;
@@ -2418,10 +2876,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     draftEditVersionRef.current += 1;
     composerDirtyRef.current = !!stagedExpertDraft.text;
     setComposerValue(stagedExpertDraft.text);
-    onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text);
+    onHomeComposerDraftChange?.(homeDraftWorkspaceHash, stagedExpertDraft.text, api);
     onInitialDraftConsumed?.();
     restoreChatInputFocusSoon(true);
   }, [
+    api,
     sid,
     stagedExpertDraft.present,
     stagedExpertDraft.text,
@@ -2734,18 +3193,33 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const enqueueInput = useCallback((payload) => {
     if (!sid) return;
-    const text = payloadText(payload);
+    // cwd 输入历史只记编辑器文本:内联粘贴块的正文不进历史。
+    const text = typeof payload === 'string' ? payload : inputHistoryTextForPayload(payload);
     updateQueueState((prev) => enqueueQueuedInput(prev, { sessionId: sid, payload }));
     if (text.trim()) recordInputHistory(text);
-    if (!ref?.title) setTranscriptTitle(text || '附件消息');
-  }, [recordInputHistory, ref?.title, setTranscriptTitle, sid, updateQueueState]);
+    // 标题不在本地用消息全文改写:服务端落盘后经 session_updated{summary} 下发
+    // 截断后的摘要,顶部与侧栏同源。
+  }, [recordInputHistory, sid, updateQueueState]);
 
   const cancelQueued = useCallback((queuedId) => {
     updateQueueState((prev) => cancelQueuedInput(prev, queuedId));
   }, [updateQueueState]);
 
+  // 解除「用户中断回合」带来的队列暂停。实际出队仍由下面的 drain effect 在
+  // queueState 变化后接管(busy=false 且不再 paused 才会发),这里只改标记。
+  const resumeQueue = useCallback(() => {
+    const targetSid = sidRef.current;
+    if (!targetSid) return;
+    updateQueueState((prev) => resumeQueuedInput(prev, targetSid));
+  }, [updateQueueState]);
+
   const retryQueued = useCallback((queuedId) => {
-    updateQueueState((prev) => retryQueuedInput(prev, queuedId));
+    // 点「重试」是用户明确要发这条消息,暂停态一并解除,否则按钮按了没反应。
+    updateQueueState((prev) => {
+      const next = retryQueuedInput(prev, queuedId);
+      const sessionId = next.items.find((item) => item?.queued?.id === queuedId)?.queued?.sessionId;
+      return sessionId ? resumeQueuedInput(next, sessionId) : next;
+    });
   }, [updateQueueState]);
 
   const saveQueuedEdit = useCallback((queuedId, text, composerContent) => {
@@ -2756,10 +3230,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         queuedItem?.queued?.state !== QUEUED_INPUT_STATE.FAILED) {
       return;
     }
-    const nextText = String(text ?? '');
+    // 编辑框给的是编辑器文本;消息正文还要拼上内联粘贴块(与 normalizeComposerPayload 一致)。
+    const nextText = appendPastedTextToSubmission(String(text ?? ''), composerContent);
     const payload = queuedItem.queued.payload || {};
     const hasExtras = (Array.isArray(payload.attachments) && payload.attachments.length > 0)
-      || (Array.isArray(payload.contexts) && payload.contexts.length > 0);
+      || (Array.isArray(payload.contexts) && payload.contexts.length > 0)
+      || normalizeComposerContent(composerContent)?.parts.some((part) => part.type === 'attachment');
     if (!nextText.trim() && !hasExtras) {
       toast({ kind: 'err', text: '消息不能为空' });
       return;
@@ -2769,7 +3245,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const runSideQuestion = useCallback((
     rawQuestion,
-    { command = 'btw', recordHistory = false } = {},
+    { command = 'btw', recordHistory = false, historyText = null } = {},
   ) => {
     const question = String(rawQuestion || '').trim();
     const targetSid = sidRef.current;
@@ -2785,7 +3261,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       return false;
     }
     const started = sideChat.submit(question);
-    if (started && recordHistory) recordInputHistory(`/${command} ${question}`);
+    // historyText:输入框提交时的编辑器文本(不含内联粘贴块正文,见 inputHistoryTextForPayload)。
+    // question 里已经拼上了内联块正文,不能直接进 cwd 历史。
+    if (started && recordHistory) {
+      const entry = typeof historyText === 'string' ? historyText : `/${command} ${question}`;
+      if (entry.trim()) recordInputHistory(entry);
+    }
     return started;
   }, [sideChat, recordInputHistory]);
 
@@ -2880,15 +3361,23 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     })
   ), [api, commandWorkspaceHash, ref?.noWorkspace, ref?.no_workspace, selectedHomeWorkspace?.noWorkspace, sid]);
 
-  const sendInputOrBuiltin = useCallback((targetSid, payload) => {
-    const text = payloadText(payload);
-    const hasExtras = payloadHasExtras(payload);
-    const route = inputRouteForText(text);
+  const retryUserMessageId = trailingUserMessageRetryId({
+    sessionId: sid, items, loadState: transcriptLoadState, busy,
+    status: transcriptStatus, streamingId, abortPending,
+    disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+  });
+
+  // 首页发送、会话内发送、排队出队三条路径都经过这里。
+  const sendInputOrBuiltin = useCallback(async (targetSid, payload) => {
+    const requestPayload = typeof payload === 'string' ? { text: payload } : payload;
+    const hasExtras = payloadHasExtras(requestPayload);
+    const route = inputRouteForPayload(requestPayload);
     if (!hasExtras && route.kind === 'builtin') {
       return executeBuiltinCommand(targetSid, route.command);
     }
-    return api.sendInput(targetSid, payload);
-  }, [api, executeBuiltinCommand]);
+    const materialized = await materializeWorkspaceDraftPastes(targetSid, payload);
+    return api.sendInput(targetSid, materialized);
+  }, [api, executeBuiltinCommand, materializeWorkspaceDraftPastes]);
 
   const submit = useCallback((text) => {
     if (sessionRuntimeUnavailable) return;
@@ -2915,6 +3404,14 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       return;
     }
     if (sid && hasPendingAttachments) {
+      const pendingItems = activeAttachments.filter((item) => item?.pending_upload && item?.local_id);
+      if (pendingItems.every((item) => item.upload_deferred)) {
+        // 翻到旧历史、还没上传的粘贴块:现在开始上传,完成后由用户再发送一次。
+        // 暂存组已不在(例如从首页草稿带过来)时按保留的 File 直接上传。
+        if (!commitDeferredPastes()) uploadPasteReservations(pendingAttachmentFiles);
+        toast({ kind: 'info', text: '粘贴的文本正在上传，完成后请再发送' });
+        return;
+      }
       toast({ kind: 'err', text: tr('composerAttachment.uploadRequired') });
       return;
     }
@@ -2931,8 +3428,43 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     const submittedComposerContent = composerContentRef.current;
     const hasExtras = payloadHasExtras(payload) || hasPendingAttachments;
     const hasSwarmMode = payload.swarm_mode === true;
-    if (!payload.text.trim() && !hasExtras) return;
-    const route = inputRouteForText(payload.text);
+    if (!payload.text.trim() && !hasExtras) {
+      if (!retryUserMessageId || composerSubmitting || retrySubmissionRef.current) return;
+      const latest = transcript.getState();
+      const latestRetryId = trailingUserMessageRetryId({
+        ...latest, sessionId: sid, loadState: transcriptLoadState,
+        disabled: readOnlyExternalSession || sessionRuntimeUnavailable,
+      });
+      if (latestRetryId !== retryUserMessageId) return;
+      const request = { sessionId: sid };
+      retrySubmissionRef.current = request;
+      setComposerSubmitting(true);
+      setTailFollowFromAction({ type: 'new_turn' });
+      dockAutoDismissRef.current();
+      api.retryLastUserMessage(sid, latestRetryId)
+        .catch((error) => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          toast({ kind: 'err', text: '发送失败:' + (error.message || '') });
+        })
+        .finally(() => {
+          if (retrySubmissionRef.current !== request || sidRef.current !== request.sessionId) return;
+          retrySubmissionRef.current = null;
+          setComposerSubmitting(false);
+          restoreChatInputFocusSoon(false);
+        });
+      return;
+    }
+    const route = inputRouteForPayload(payload);
+    if (route.kind === 'paste_too_long') {
+      // /goal、/btw 带文件块或合并后超过服务端上限:明确提示并保留输入框,不偷偷改发
+      // 成一条字面的「/goal …」普通消息。
+      toast({
+        kind: 'err',
+        text: `粘贴的文本太长，超出 /${route.command} 的上限（${route.limitBytes} 字节）。去掉命令可作为普通消息发送，或缩短内容`,
+      });
+      return;
+    }
+    const historyText = inputHistoryTextForPayload(payload);
     if (route.kind === 'desktop_feedback') {
       if (!sid) {
         toast({ kind: 'err', text: tr('feedbackCommand.requiresSession') });
@@ -2960,7 +3492,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       setComposerSubmitting(true);
       api.submitDesktopFeedback(requestPayload)
         .then((result) => {
-          recordInputHistory(route.display_text);
+          // cwd 历史只记编辑器文本(route.display_text 拼上了内联粘贴块正文)。
+          if (historyText.trim()) recordInputHistory(historyText);
           clearCurrentSessionDraft();
           const packageName = String(result?.package_filename || '').trim();
           toast({
@@ -2992,6 +3525,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       const started = runSideQuestion(route.question, {
         command: route.command,
         recordHistory: true,
+        historyText,
       });
       if (started) {
         clearCurrentSessionDraft();
@@ -3028,12 +3562,17 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       };
       turnInterruptInFlightRef.current.add(interruptRequestKey);
       setComposerSubmitting(true);
-      api.interruptTurn(targetSid, steerPayload)
-        .then(() => {
-          recordInputHistory(route.display_text);
-          if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
-          toast({ kind: 'ok', text: '插话已提交，正在打断当前回合' });
-        })
+      // 首页草稿里的粘贴文件块先导入成会话附件(唯一导入点),再提交插话。
+      materializeWorkspaceDraftPastes(targetSid, steerPayload)
+        // eslint-disable-next-line no-shadow -- 导入后的请求体就是要提交的插话
+        .then((steerPayload) => api.interruptTurn(targetSid, steerPayload)
+          .then(() => {
+            // cwd 历史只记编辑器文本(带 /turn 前缀),不含内联粘贴块正文 —— 否则翻回
+            // 这条历史时整段(含 /turn)被折叠成粘贴块,发出去就不再是插话。
+            if (historyText.trim()) recordInputHistory(historyText);
+            if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
+            toast({ kind: 'ok', text: '插话已提交，正在打断当前回合' });
+          }))
         .catch((e) => {
           toast({ kind: 'err', text: '插话提交失败:' + (e?.message || '未知错误') });
         })
@@ -3079,10 +3618,12 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         firstUserMessageText: !isBuiltin ? payload.text : '',
         firstUserMessageContent: !isBuiltin ? payload.composer_content : null,
         firstUserMessageAttachments: !isBuiltin ? activeAttachments : [],
-        preserveExtras: hasExtras || hasSwarmMode || !!payload.composer_content,
-        title: !payload.text.trim() && hasPendingAttachments
+        preserveExtras: !isBuiltin && (hasExtras || hasSwarmMode || !!payload.composer_content),
+        // 标题种子只用编辑器文本(截 200 字符),没有就用第一个粘贴块的标题:payload.text
+        // 里拼着内联块的正文,不能拿来当标题。
+        title: sessionTitleSeedForPayload(payload) || (hasPendingAttachments
           ? (activeAttachments[0]?.name || '附件消息')
-          : '',
+          : ''),
       })
         .then(async (created) => {
           const id = created?.id;
@@ -3130,8 +3671,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               });
             }
           }
-          if (payload.text.trim()) recordInputHistory(payload.text);
-          if (!isBuiltin && explicitHomeSend) {
+          if (historyText.trim()) recordInputHistory(historyText);
+          if (explicitHomeSend || isBuiltin) {
+            // builtin 命令（/goal、/init、/compact 等）在首页发送后也需要清空输入框。
+            // 会话切换时 preserveExtras 为 false，仍需设置 acceptedHomeSubmission 触发清空 effect。
             setAcceptedHomeSubmission({
               sessionId: id,
               text: submittedComposerText,
@@ -3142,6 +3685,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           onHomeComposerDraftAccepted?.(
             submittedHomeDraftWorkspaceHash,
             submittedHomeDraftText,
+            api,
           );
         })
         .catch((e) => {
@@ -3165,6 +3709,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       return;
     }
     if (composerSubmitting) return;
+    // 用户再次主动发送 / 排队 = 解除「中断回合」带来的队列暂停:这条新消息先走,
+    // 排队里的旧消息在它之后照常出队(与卡片栈上的「继续」同义)。
+    updateQueueState((prev) => resumeQueuedInput(prev, sid));
     if (busy && !isBuiltin) {
       enqueueInput(payload);
       clearCurrentSessionDraft();
@@ -3207,8 +3754,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             noWorkspace,
           });
         }
-        if (payload.text.trim()) recordInputHistory(payload.text);
-        if (!ref?.title) setTranscriptTitle(payload.text || activeAttachments[0]?.name || '附件消息');
+        if (historyText.trim()) recordInputHistory(historyText);
         if (clearCurrentSessionDraft({ expectedText: submittedComposerText, expectedContent: submittedComposerContent })) clearComposerExtras();
       })
       .catch((e) => {
@@ -3216,7 +3762,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         applyEvent({ type: 'busy_changed', payload: { busy: false } }, { emitEffects: false });
       })
       .finally(() => setComposerSubmitting(false));
-  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, applyEvent, setTranscriptTitle, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable]);
+  }, [sid, busy, activeTurnId, api, homeSubmitting, recordInputHistory, enqueueInput, updateQueueState, applyEvent, sendInputOrBuiltin, executeBuiltinCommand, composerSubmitting, clearCurrentSessionDraft, composerAttachments, composerContexts, composerSwarmMode, clearComposerExtras, createHomeComposerSession, persistMediaFilesToSession, restoreChatInputFocusSoon, setTailFollowFromAction, runSideQuestion, draftWorkspaceHash, homeDraftWorkspaceHash, homeComposerDrafts, onHomeComposerDraftAccepted, ref?.noWorkspace, ref?.no_workspace, ref?.workspaceHash, ref?.workspace_hash, sessionRuntimeUnavailable, retryUserMessageId, transcript.getState, transcriptLoadState, readOnlyExternalSession, commitDeferredPastes, materializeWorkspaceDraftPastes, uploadPasteReservations]);
 
   const drainQueuedInput = useCallback(() => {
     const targetSid = sidRef.current;
@@ -3236,7 +3782,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     setTailFollowFromAction({ type: 'new_turn' });
     const queuedPayload = queuedItem.queued?.payload || queuedItem.content;
     const queuedIsBuiltin = !payloadHasExtras(queuedPayload) &&
-      inputRouteForText(payloadText(queuedPayload)).kind === 'builtin';
+      inputRouteForPayload(typeof queuedPayload === 'string' ? { text: queuedPayload } : queuedPayload).kind === 'builtin';
     const sendPayload = queuedIsBuiltin
       ? queuedPayload
       : (queuedInputRequestPayload(queuedItem) || queuedPayload);
@@ -3274,13 +3820,25 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       sessionId: sid,
       busy,
       loadState: transcriptLoadState,
+      paused: isQueuedInputPaused(queueState, sid),
     })) {
+      return;
+    }
+    // 回合是被中断收尾的:排队消息不能替用户「继续」,转入暂停等用户明确操作。
+    // 本端点停止已在 abort() 里先行暂停;这里兜住 TUI / 其它客户端 / IM 通道
+    // 发起的中断 —— 它们只以 outcome=aborted 的 busy_changed / done 到达。
+    if (wasBusy && shouldPauseQueuedInputAfterAbort({
+      state: queueState,
+      sessionId: sid,
+      lastTurnOutcome,
+    })) {
+      updateQueueState((prev) => pauseQueuedInput(prev, sid));
       return;
     }
     if (wasBusy || !hasSendingQueuedInput(queueState, sid)) {
       drainQueuedInput();
     }
-  }, [busy, drainQueuedInput, queueState, sid, transcriptLoadState, updateQueueState]);
+  }, [busy, drainQueuedInput, lastTurnOutcome, queueState, sid, transcriptLoadState, updateQueueState]);
 
   useEffect(() => {
     if (!sid || items.length === 0) return;
@@ -3303,13 +3861,17 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const abort = useCallback(() => {
     if (!sid) return;
+    // 用户点了停止:排队消息不能跟着自动出队。先暂停队列,再让 turn_aborted 把
+    // busy 翻成 false —— 顺序反过来 drain effect 会先看到 busy=false 把下一条发出去。
+    // 回归(bug 表现):排了一堆消息后点停止,下一条排队消息立刻上屏。
+    updateQueueState((prev) => pauseQueuedInput(prev, sid));
     applyEvent({
       type: 'turn_aborted',
       payload: { reason: '用户已终止本轮任务' },
       timestamp_ms: Date.now(),
     }, { emitEffects: false });
     connection.sendAbort(sid);
-  }, [applyEvent, sid]);
+  }, [applyEvent, sid, updateQueueState]);
 
   const stopCurrentWork = useCallback(() => {
     if (!sid || !busy) return;
@@ -3816,24 +4378,63 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   useEffect(() => () => closeDesktopContextMenu(), [sid]);
   const sessionPath = ref?.sessionPath || ref?.session_path || '';
   const sessionPinned = !!(ref?.pinned || ref?.isPinned || ref?.is_pinned);
-  const openSessionContextMenu = useCallback((event) => {
+  // 顶栏就地重命名:从会话头部菜单(「会话菜单」按钮左键 / 顶栏任意处右键)进入时,
+  // 输入框出现在顶部标题位置,而不是跳去侧栏那一行里编辑。
+  const [headerRenaming, setHeaderRenaming] = useState(false);
+  useEffect(() => { setHeaderRenaming(false); }, [sid]);
+  const sessionTitleLabelRef = useRef(null);
+  const sessionMenuButtonRef = useRef(null);
+  const startHeaderRename = useCallback(() => {
+    if (!sid || readOnlyExternalSession) return;
+    setHeaderRenaming(true);
+  }, [sid, readOnlyExternalSession]);
+  const cancelHeaderRename = useCallback(() => setHeaderRenaming(false), []);
+  const commitHeaderRename = useCallback(async (draft) => {
+    setHeaderRenaming(false);
+    const targetSid = sid;
+    const next = resolveSessionTitleRename(draft, title);
+    if (!targetSid || !next.changed) return;
+    try {
+      const updated = await api.setSessionTitle(targetSid, next.title, sessionTitleRenameWorkspaceHash({
+        workspaceHash: sessionWorkspaceHash,
+        noWorkspace: !!(ref?.noWorkspace || ref?.no_workspace),
+      }));
+      const nextTitle = updated?.title ?? next.title;
+      // daemon 也会经 session_updated 推送新标题(侧栏据此同步);这里先本地合并,
+      // 顶栏不必等 WS 往返才变。
+      if (sidRef.current === targetSid) {
+        applyEvent({
+          type: 'session_updated',
+          payload: {
+            session_id: targetSid,
+            title: nextTitle,
+            title_source: updated?.title_source ?? (nextTitle ? 'user' : ''),
+          },
+        }, { emitEffects: false });
+      }
+      toast({ kind: 'ok', text: next.title ? '已重命名' : '已清除标题' });
+    } catch (e) {
+      toast({ kind: 'err', text: '重命名失败:' + (e?.message || '') });
+    }
+  }, [api, applyEvent, ref?.noWorkspace, ref?.no_workspace, sessionWorkspaceHash, sid, title]);
+
+  // 「会话菜单」按钮左键、按钮右键、顶栏其它位置右键共用这一份菜单。
+  const openSessionMenu = useCallback(({ x, y, placement, anchorRect }) => {
     if (!sid || typeof window === 'undefined') return;
-    event.preventDefault();
-    event.stopPropagation();
-    const button = event.currentTarget;
-    const rect = button.getBoundingClientRect();
+    const button = sessionMenuButtonRef.current;
     const target = readOnlyExternalSession ? button : sidebarSessionContextTarget(sid, sessionWorkspaceHash, button);
     openDesktopContextMenu({
       target,
       trigger: button,
-      x: rect.right,
-      y: rect.bottom + 4,
+      x,
+      y,
+      placement,
       leadingItems: [
         ...(!readOnlyExternalSession ? [{
           id: 'side_chat', label: '侧边聊天', icon: 'chat', group: 'session-view',
           onSelect: () => {
             openSideQuestionComposer();
-            setSideChatAnchor({ left: rect.left, top: rect.top });
+            setSideChatAnchor({ left: anchorRect.left, top: anchorRect.top });
           },
         }] : []),
         ...(onFindInConversation ? [{
@@ -3842,8 +4443,37 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         }] : []),
       ],
       includeContextActions: !readOnlyExternalSession,
+      actionOverrides: readOnlyExternalSession ? null : {
+        [DESKTOP_CONTEXT_ACTIONS.RENAME_SESSION]: startHeaderRename,
+      },
     });
-  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation]);
+  }, [sessionWorkspaceHash, sid, readOnlyExternalSession, openSideQuestionComposer, onFindInConversation, startHeaderRename]);
+  const openSessionContextMenu = useCallback((event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    openSessionMenu({ x: rect.right, y: rect.bottom + 4, anchorRect: rect });
+  }, [openSessionMenu]);
+  useEffect(() => {
+    if (!sid) return undefined;
+    const handler = (event) => {
+      const detail = event.detail || {};
+      if (detail.handled || detail.name !== SESSION_HEADER_CONTEXT_MENU_DELEGATE) return;
+      // 同一时刻可能有多个 ChatView(网格视图),只认领标题渲染在这块头部里的那个。
+      const label = sessionTitleLabelRef.current;
+      if (!label || !detail.element?.contains?.(label)) return;
+      detail.handled = true;
+      const button = sessionMenuButtonRef.current;
+      openSessionMenu({
+        x: detail.x,
+        y: detail.y,
+        placement: 'pointer',
+        anchorRect: button?.getBoundingClientRect?.() || { left: detail.x, top: detail.y },
+      });
+    };
+    window.addEventListener(CONTEXT_MENU_DELEGATE_EVENT, handler);
+    return () => window.removeEventListener(CONTEXT_MENU_DELEGATE_EVENT, handler);
+  }, [openSessionMenu, sid]);
 
   const modelListEmptyLoaded = modelListLoaded && modelOptions.length === 0;
   const noModelLabel = '未配置模型';
@@ -4524,9 +5154,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     [ref?.workspaceHash, sessionWorktree?.path, sid, sidePanelCwd, sidePanelFilesEnabled],
   );
   const previewContext = useMemo(
-    () => previewTabContext({ scopeKey: previewScope, sessionId: sid }),
-    [previewScope, sid],
+    () => previewTabContext({ scopeKey: previewScope, sessionId: sid || workbenchOwner }),
+    [previewScope, sid, workbenchOwner],
   );
+  previewContextRef.current = previewContext;
   const previewTabs = useMemo(
     () => visiblePreviewTabs(previewTabState, previewContext),
     [previewContext, previewTabState],
@@ -4535,12 +5166,67 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     () => activePreviewTab(previewTabState, previewContext),
     [previewContext, previewTabState],
   );
+  const requestPreviewApproval = useCallback((getTabs, kind = 'switch') => (
+    previewFileGuardRef.current.request({
+      kind,
+      getTabs,
+      discard: (tabs) => {
+        setPreviewTabState((state) => tabs.reduce((next, tab) => discardFileTabDraft(next, {
+          ...previewContext, tabKey: tab.key,
+        }), state));
+      },
+      save: async (tabs) => {
+        const updateDraft = (tab, patch) => setPreviewTabState((state) => updateFileTabDraft(state, {
+          ...previewContext, tabKey: tab.key, patch,
+        }));
+        const result = await saveEditableFileDraftBatch(api, {
+          tabs,
+          fallbackCwd: sidePanelCwd,
+          onSaving: (tab) => updateDraft(tab, { saving: true, error: '' }),
+          onSaved: (tab, saved) => updateDraft(tab, saved.patch),
+        });
+        if (!result.ok) {
+          const message = editableFileError(result.error, '保存失败');
+          updateDraft(result.tab, {
+            saving: false,
+            externalChanged: editableFileConflict(result.error),
+            error: message,
+          });
+          throw new Error(`${result.tab.title || result.tab.path}：${message}`);
+        }
+      },
+    })
+  ), [api, previewContext, setPreviewTabState, sidePanelCwd]);
+  const requestPreviewLeave = useCallback(() => requestPreviewApproval(
+    () => visiblePreviewTabs(getPreviewTabState(), previewContext),
+  ), [getPreviewTabState, previewContext, requestPreviewApproval]);
+  previewLeaveRequestRef.current = requestPreviewLeave;
+  useLayoutEffect(() => onRegisterPreviewLeaveGuard?.(requestPreviewLeave), [
+    onRegisterPreviewLeaveGuard, requestPreviewLeave,
+  ]);
+  const requestActiveFileLeave = useCallback(() => {
+    const key = activePreviewTab(getPreviewTabState(), previewContext)?.key;
+    return requestPreviewApproval(() => visiblePreviewTabs(getPreviewTabState(), previewContext)
+      .filter((tab) => tab.key === key));
+  }, [getPreviewTabState, previewContext, requestPreviewApproval]);
+  const selectPreview = useCallback((producer, afterSelect) => {
+    if (previewFileGuardRef.current.isPending()) return false;
+    const state = getPreviewTabState();
+    const current = activePreviewTab(state, previewContext);
+    const next = activePreviewTab(producer(state), previewContext);
+    const approval = current?.key === next?.key ? true : requestActiveFileLeave();
+    return runAfterFileApproval(approval, () => {
+      setPreviewTabState(producer);
+      afterSelect?.();
+      return true;
+    });
+  }, [getPreviewTabState, previewContext, requestActiveFileLeave, setPreviewTabState]);
   const previewTabsOpen = previewTabs.length > 0;
   // 总开关必须连最大化详情一起隐藏;恢复时仍保留最大化偏好与原页签。
   const previewPanelVisible = previewTabsOpen && !sidePanelCollapsed && !previewPanelHidden;
   const previewPanelMaximized = sidePanelMaximized && previewPanelVisible;
   const previewCloseConfirmMessage = previewCloseConfirm
-    ? `${previewCloseConfirm.dirtyCount} 个文件含有未保存的修改。请选择保存后关闭或不保存直接关闭；取消会保留所有页签。`
+    ? `${previewCloseConfirm.dirtyCount} 个文件有未保存的修改。是否保存后继续？`
     : '';
   const selectedChangeFile = activePreview?.type === PREVIEW_TAB_TYPES.SESSION_CHANGES
     ? activePreview.expandedFile || ''
@@ -4596,27 +5282,22 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     onPreviewPanelVisibleChange?.(previewPanelVisible);
   }, [onPreviewPanelVisibleChange, previewPanelVisible]);
 
-  useEffect(() => {
-    if (previewCloseConfirm && previewTabs.length === 0) {
-      setPreviewCloseConfirm(null);
-    }
-  }, [previewCloseConfirm, previewTabs.length]);
-
   // line 由聊天正文的文件链接(foo.cpp:42)带入,预览打开后滚动到该行并高亮;
   // 文件树等其它入口不带 line,走原「只打开」语义。
   const openFilePreview = useCallback((path, line = null) => {
     const location = previewFileLocation({ cwd: sidePanelCwd, path });
     if (!previewScope || !location.cwd || !location.path) return;
     // 侧栏折叠时开预览 tab 也不会显示(previewPanelVisible 依赖非折叠),先展开。
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openFileTab(prev, {
+    return selectPreview((prev) => openFileTab(prev, {
       ...previewContext,
       cwd: location.cwd,
       path: location.path,
       line,
-    }));
-  }, [previewContext, previewScope, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [previewContext, previewScope, selectPreview, sidePanelCwd, sidePanelCollapsed, onToggleSidePanel]);
 
   // transcript 里本地文件链接的兜底入口。assistant 气泡在 Message.jsx 里自带
   // 拦截,但同一片区域还有别的 markdown 渲染位置没有各自的拦截器
@@ -4649,28 +5330,32 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const showBrowserPage = useCallback((pageId, title, favicon) => {
     if (!sid || !pageId) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openBrowserTab(prev, {
+    return selectPreview((prev) => openBrowserTab(prev, {
       scopeKey: previewScope,
       sessionId: sid,
       pageId,
       title,
       favicon,
-    }));
-  }, [onToggleSidePanel, previewScope, sid, sidePanelCollapsed]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+      void selectAgentBrowserPage(pageId);
+    });
+  }, [onToggleSidePanel, previewScope, selectPreview, sid, sidePanelCollapsed]);
 
   const openBrowserPreview = useCallback(async () => {
     if (!sid || !hasNativeAgentBrowser()) return;
+    if (!await requestActiveFileLeave()) return;
     if (sidePanelCollapsed) onToggleSidePanel?.();
     const created = await createAgentBrowserPage(agentBrowserOwnerForSession(ref));
     if (created?.ok === false || !created?.page_id) return;
+    if (sidRef.current !== sid) return;
     showBrowserPage(
       created.page_id,
       created.title || defaultBrowserTabTitle(),
       created.favicon,
     );
-  }, [onToggleSidePanel, ref, showBrowserPage, sid, sidePanelCollapsed]);
+  }, [onToggleSidePanel, ref, requestActiveFileLeave, showBrowserPage, sid, sidePanelCollapsed]);
 
   // 切会话时向 Desktop 对账一次 native 页面池;事件流已经在 App 级持续镜像。
   useEffect(() => {
@@ -4700,6 +5385,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const revealedBrowserPagesRef = useRef(new Map());
   useEffect(() => {
     if (!sid) return;
+    const restoredPages = visiblePreviewTabs(getPreviewTabState(), previewContext)
+      .filter((tab) => tab.type === PREVIEW_TAB_TYPES.BROWSER).map((tab) => tab.pageId);
     setPreviewTabState((prev) => syncBrowserTabsForSession(prev, {
       scopeKey: previewScope,
       sessionId: sid,
@@ -4707,7 +5394,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     }));
     let revealed = revealedBrowserPagesRef.current.get(sid);
     if (!revealed) {
-      revealed = new Set();
+      revealed = new Set(restoredPages);
       revealedBrowserPagesRef.current.set(sid, revealed);
     }
     for (const page of sessionBrowserPages) {
@@ -4720,7 +5407,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         revealed.delete(pageId);
       }
     }
-  }, [previewScope, sessionBrowserPages, showBrowserPage, sid]);
+  }, [getPreviewTabState, previewContext, previewScope, sessionBrowserPages, showBrowserPage, sid]);
 
   // Agent 切换默认目标页(browser_open / 显式选页)且有浏览器工具正在执行时,把
   // 那一页的页签激活到前台;目标不属于本会话(显式操作别的会话的页)则不动。
@@ -4735,17 +5422,14 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
     agentBrowserTargetRef.current = scoped;
     if (!sessionBrowserPages.some((page) => page.pageId === agentBrowserActivePageId)) return;
     showBrowserPage(agentBrowserActivePageId);
-    void selectAgentBrowserPage(agentBrowserActivePageId);
   }, [agentBrowserActivePageId, sessionBrowserPages, showBrowserPage, sid]);
 
   const openSessionChangePreview = useCallback((filePath, turnUserMessageId = '') => {
     if (!sid || !filePath) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
     const turnChangeSet = turnUserMessageId
       ? turnChangeSets.find((set) => set.userMessageId === turnUserMessageId)
       : null;
-    setPreviewTabState((prev) => openSessionChangesTab(prev, {
+    return selectPreview((prev) => openSessionChangesTab(prev, {
       scopeKey: previewScope,
       sessionId: sid,
       expandedFile: filePath,
@@ -4753,24 +5437,28 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         ? (turnChangeSet?.summary?.fileCount || 0)
         : changeSummary.fileCount,
       turnUserMessageId,
-    }));
-  }, [changeSummary.fileCount, onToggleSidePanel, previewScope, sid, sidePanelCollapsed, turnChangeSets]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [changeSummary.fileCount, onToggleSidePanel, previewScope, selectPreview, sid, sidePanelCollapsed, turnChangeSets]);
 
   // git 变更点击文件 → 在中间详情栏开/聚焦「变更」页签(复刻会话级变更旧行为)。
   // gitBase 只有从 SidePanel 导航列表点击时才带;详情栏内点文件不带,由
   // openGitChangesTab 保留页签原 base。
   const openGitChangePreview = useCallback((filePath, gitBase, gitFileCount) => {
     if (!previewContext.sessionId || !filePath) return;
-    if (sidePanelCollapsed) onToggleSidePanel?.();
-    setPreviewPanelHidden(false);
-    setPreviewTabState((prev) => openGitChangesTab(prev, {
+    return selectPreview((prev) => openGitChangesTab(prev, {
       ...previewContext,
       cwd: sidePanelCwd,
       base: gitBase,
       expandedFile: filePath,
       fileCount: gitFileCount,
-    }));
-  }, [onToggleSidePanel, previewContext, sidePanelCollapsed, sidePanelCwd]);
+    }), () => {
+      if (sidePanelCollapsed) onToggleSidePanel?.();
+      setPreviewPanelHidden(false);
+    });
+  }, [onToggleSidePanel, previewContext, selectPreview, sidePanelCollapsed, sidePanelCwd]);
 
   // SidePanel 切基线时,若「变更」页签已打开则同步其 base(详情栏跟着换比较对象)。
   const updateGitChangeBase = useCallback((gitBase) => {
@@ -4780,14 +5468,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const activatePreview = useCallback((tabKey) => {
     const tab = previewTabs.find((candidate) => candidate.key === tabKey);
-    if (tab?.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
-      void selectAgentBrowserPage(tab.pageId);
-    }
-    setPreviewTabState((prev) => activatePreviewTab(prev, {
+    return selectPreview((prev) => activatePreviewTab(prev, {
       ...previewContext,
       tabKey,
-    }));
-  }, [previewContext, previewTabs]);
+    }), () => {
+      if (tab?.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
+        void selectAgentBrowserPage(tab.pageId);
+      }
+    });
+  }, [previewContext, previewTabs, selectPreview]);
 
   const refreshPreview = useCallback((tabKey) => {
     setPreviewTabState((prev) => refreshPreviewTab(prev, {
@@ -4798,11 +5487,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const updateFilePreviewDraft = useCallback((tabKey, patch) => {
     setPreviewTabState((prev) => updateFileTabDraft(prev, {
-      scopeKey: previewScope,
+      ...previewContext,
       tabKey,
       patch,
     }));
-  }, [previewScope]);
+  }, [previewContext, setPreviewTabState]);
 
   useEffect(() => {
     const transition = nextAutoPreviewRefresh(previewAutoRefreshRef.current, {
@@ -4828,10 +5517,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
 
   const performPreviewClose = useCallback((kind, tabKey = '') => {
     const affected = previewTabsForCloseAction(kind, tabKey);
-    if (affected.length === 0) {
-      setPreviewCloseConfirm(null);
-      return;
-    }
+    if (affected.length === 0) return;
     affected.forEach((tab) => {
       if (tab.type === PREVIEW_TAB_TYPES.BROWSER && tab.pageId) {
         void closeAgentBrowserPage(tab.pageId);
@@ -4844,7 +5530,6 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       if (kind === 'right') return closePreviewTabsToRight(prev, options);
       return closeVisiblePreviewTabs(prev, options);
     });
-    setPreviewCloseConfirm(null);
     if (affected.length >= previewTabs.length && sidePanelMaximized) {
       onToggleSidePanelMaximized?.();
     }
@@ -4859,67 +5544,18 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   const requestPreviewClose = useCallback((kind, tabKey = '') => {
     const affected = previewTabsForCloseAction(kind, tabKey);
     if (affected.length === 0) return;
-    const dirty = previewTabsWithUnsavedDrafts(affected);
-    if (dirty.length > 0) {
-      setPreviewCloseConfirm({
-        kind,
-        tabKey,
-        affectedCount: affected.length,
-        dirtyCount: dirty.length,
-        saving: false,
-        error: '',
-      });
-      return;
-    }
-    performPreviewClose(kind, tabKey);
-  }, [performPreviewClose, previewTabsForCloseAction]);
-
-  const saveAndClosePreviews = useCallback(async () => {
-    const pending = previewCloseConfirm;
-    if (!pending || pending.saving) return;
-    const affected = previewTabsForCloseAction(pending.kind, pending.tabKey);
-    const dirtyTabs = previewTabsWithUnsavedDrafts(affected);
-    if (dirtyTabs.length === 0) {
-      performPreviewClose(pending.kind, pending.tabKey);
-      return;
-    }
-
-    setPreviewCloseConfirm((current) => (current ? {
-      ...current,
-      saving: true,
-      error: '',
-    } : current));
-
-    const saveResult = await saveEditableFileDraftBatch(api, {
-      tabs: dirtyTabs,
-      fallbackCwd: sidePanelCwd,
-      onSaving: (tab) => updateFilePreviewDraft(tab.key, { saving: true, error: '' }),
-      onSaved: (tab, saved) => updateFilePreviewDraft(tab.key, saved.patch),
-    });
-    if (!saveResult.ok) {
-      const message = editableFileError(saveResult.error, '保存失败');
-      updateFilePreviewDraft(saveResult.tab.key, {
-        saving: false,
-        externalChanged: editableFileConflict(saveResult.error),
-        error: message,
-      });
-      setPreviewCloseConfirm((current) => (current ? {
-        ...current,
-        saving: false,
-        error: `${saveResult.tab.title || saveResult.tab.path}：${message}`,
-      } : current));
-      toast({ kind: 'err', text: message });
-      return;
-    }
-
-    performPreviewClose(pending.kind, pending.tabKey);
+    const keys = new Set(affected.map((tab) => tab.key));
+    return runAfterFileApproval(requestPreviewApproval(
+      () => visiblePreviewTabs(getPreviewTabState(), previewContext)
+        .filter((tab) => keys.has(tab.key)),
+      'close',
+    ), () => performPreviewClose(kind, tabKey));
   }, [
-    api,
+    getPreviewTabState,
     performPreviewClose,
-    previewCloseConfirm,
+    previewContext,
     previewTabsForCloseAction,
-    sidePanelCwd,
-    updateFilePreviewDraft,
+    requestPreviewApproval,
   ]);
 
   const closePreview = useCallback((tabKey) => {
@@ -4939,8 +5575,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
   }, [requestPreviewClose]);
 
   const hidePreviewPanel = useCallback(() => {
-    setPreviewPanelHidden(true);
-  }, []);
+    return runAfterFileApproval(requestActiveFileLeave(), () => setPreviewPanelHidden(true));
+  }, [requestActiveFileLeave]);
 
   const reorderPreview = useCallback((sourceKey, targetKey, placement) => {
     setPreviewTabState((prev) => reorderPreviewTab(prev, {
@@ -5118,7 +5754,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               )}
             </div>
             <GitSessionPill
-              key={`home-${homeWorkspaceHash}`}
+              key={workbenchOwner}
+              owner={workbenchOwner}
               api={api}
               cwd={selectedHomeWorkspace?.cwd || ''}
               variant="hero"
@@ -5126,7 +5763,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               onIntentChange={handleGitPillIntentChange}
             />
             </div>
-            <div className="ace-home-hints">
+            {/* 暂时隐藏首页底部四个快捷提示卡片，保留数据和渲染代码便于恢复。 */}
+            <div className="ace-home-hints hidden" aria-hidden="true">
               {homeHints.map((c) => (
                 <div key={c.title} className="ace-home-hint-card">
                   <VsIcon name={c.icon} size={22} className="mb-1" />
@@ -5204,7 +5842,11 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         />
       )}
       <SessionTitleBar titleTarget={titleTarget} actionsTarget={actionsTarget}
-        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}>
+        title={title} workspaceLabel={workspaceLabel} remoteControlBound={remoteControlBound}
+        labelRef={sessionTitleLabelRef}
+        renaming={headerRenaming && !!sid && !readOnlyExternalSession}
+        onRenameCommit={commitHeaderRename}
+        onRenameCancel={cancelHeaderRename}>
           {sid && (
             <button
               type="button"
@@ -5252,6 +5894,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           )}
           {sid && (
             <button
+              ref={sessionMenuButtonRef}
               type="button"
               data-desktop-session-id={readOnlyExternalSession ? undefined : sid || undefined}
               data-desktop-session-workspace={sessionWorkspaceHash || undefined}
@@ -5307,8 +5950,10 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               </button>
             </div>
           )}
+          <AttachmentTextLoaderContext.Provider value={api.readAttachmentText}>
           <TranscriptItems
             items={windowedItems}
+            messageAutoCollapse={messageAutoCollapse}
             assistantRunDirectives={assistantRunDirectives}
             expandedActivityKeys={expandedActivityKeys}
             collapsedMediaKeys={collapsedMediaKeys}
@@ -5345,6 +5990,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
               ))
             )}
           />
+          </AttachmentTextLoaderContext.Provider>
           {/* tail = 当前最后一轮的文件列表。回合进行中(busy)不渲染 ——
               流式期间变更集随 tool_end 实时增长,列表会先于/夹着正文出现,
               观感突兀;等整轮吐完(busy 结束)再一次性显示在正文之后。
@@ -5433,6 +6079,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           />
         )}
         <SubagentPanel
+          messageAutoCollapse={messageAutoCollapse}
           open={subagentPanelOpen}
           width={renderedSubagentPanelWidth}
           focus={subagentFocus}
@@ -5476,11 +6123,16 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       />
       <QueueCardList
         items={visibleQueuedItems}
+        paused={queuePause}
+        onResume={resumeQueue}
         onCancel={cancelQueued}
         onRetry={retryQueued}
         onGuide={guideQueued}
         onSaveEdit={saveQueuedEdit}
         guideDisabled={!busy || !activeTurnId}
+        onUploadPastedText={uploadPastedTextForQueue}
+        sessionId={sid}
+        attachmentTextLoader={api.readAttachmentText}
       />
       {readOnlyExternalSession ? (
         <div
@@ -5530,6 +6182,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             fileDropManagedExternally
             onFileDragActiveChange={setChatFileDropActive}
             submitting={composerSubmitting || reasoningSwitching}
+            canRetryLastUserMessage={!!retryUserMessageId}
+            queuePaused={!!queuePause}
+            onResumeQueue={resumeQueue}
             // 提问期间输入框整体被提问框替换(方案 A):不渲染 composer,
             // 避免出现「直接输入=插话」的入口与反馈卡冲突。
             sessionControls={{
@@ -5552,6 +6207,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             }}
           />
           <GitSessionPill
+            owner={workbenchOwner}
             key={`session-${sid}`}
             api={api}
             cwd={sidePanelCwd}
@@ -5564,15 +6220,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           />
           </>
           )}
-          <SessionContentLoading
-            phase={ref?.resumeFailed ? 'error' : (ref?.resumePending ? 'loading' : '')}
-          />
         </div>
       )}
       <SessionContentLoading
-        phase={transcriptLoadState === 'loading'
-          ? 'transcript'
-          : (transcriptLoadState === 'error' ? 'error' : '')}
+        phase={sessionContentLoadingPhase({
+          transcriptLoadState,
+          resumePending: ref?.resumePending,
+          resumeFailed: ref?.resumeFailed,
+          readOnly: readOnlyExternalSession,
+        })}
       />
       <ChatFileDropOverlay active={chatFileDropActive} />
       </div>
@@ -5597,12 +6253,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
           style={previewShellStyle}
         >
           <PreviewDetailsPanel
+            key={workbenchOwner}
+            owner={workbenchOwner}
             api={api}
             cwd={sidePanelCwd}
             tabs={previewTabs}
             activeTab={activePreview}
             changeGroups={changeGroups}
             changeSummary={changeSummary}
+            sessionChangesReady={transcriptLoadState === 'loaded'}
             turnChangeSets={turnChangeSets}
             maximized={previewPanelMaximized}
             busy={busy}
@@ -5633,14 +6292,15 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
       )}
       {previewCloseConfirm && (
         <Modal
-          onClose={() => {
-            if (!previewCloseConfirm.saving) setPreviewCloseConfirm(null);
-          }}
+          onClose={() => previewFileGuardRef.current.choose('cancel')}
+          dismissOnBackdrop={false}
+          dismissOnEscape={!previewCloseConfirm.saving}
+          labelledBy="unsaved-file-dialog-title"
           width={440}
         >
           {() => (
             <div className="p-4">
-              <div className="text-[14px] font-semibold mb-2">保存文件后关闭？</div>
+              <div id="unsaved-file-dialog-title" className="text-[14px] font-semibold mb-2">有未保存的修改</div>
               <div className="text-[12.5px] text-fg-mute leading-relaxed mb-4">
                 {previewCloseConfirmMessage}
               </div>
@@ -5654,7 +6314,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
                   type="button"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-border hover:bg-surface-hi transition-colors disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={() => setPreviewCloseConfirm(null)}
+                  onClick={() => previewFileGuardRef.current.choose('cancel')}
                 >
                   取消
                 </button>
@@ -5662,10 +6322,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
                   type="button"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg border border-border hover:bg-surface-hi transition-colors disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={() => performPreviewClose(
-                    previewCloseConfirm.kind,
-                    previewCloseConfirm.tabKey,
-                  )}
+                  onClick={() => previewFileGuardRef.current.choose('discard')}
                 >
                   不保存
                 </button>
@@ -5674,9 +6331,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
                   data-ace-dialog-primary="true"
                   className="px-3 py-1.5 text-[12.5px] rounded-lg bg-accent text-white hover:opacity-90 transition-opacity disabled:opacity-50"
                   disabled={previewCloseConfirm.saving}
-                  onClick={saveAndClosePreviews}
+                  onClick={() => previewFileGuardRef.current.choose('save')}
                 >
-                  {previewCloseConfirm.saving ? '保存中...' : '保存并关闭'}
+                  {previewCloseConfirm.saving ? '保存中...' : '保存'}
                 </button>
               </div>
             </div>
@@ -5723,6 +6380,8 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             style={sidePanelShellStyle}
           >
             <SidePanel
+              key={workbenchOwner}
+              owner={workbenchOwner}
               sessionRef={ref}
               sessionId={sid}
               cwd={sidePanelCwd}

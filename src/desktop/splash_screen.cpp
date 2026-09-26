@@ -15,6 +15,11 @@
 #  include <cstdint>
 #  include <filesystem>
 #  include <string>
+#elif !defined(__APPLE__)
+#  include "application_icon.hpp"
+#  include "linux_desktop.hpp"
+#  include <gtk/gtk.h>
+#  include <algorithm>
 #endif
 
 namespace acecode::desktop {
@@ -439,6 +444,93 @@ struct SplashScreen::Impl {
         ::DeleteObject(bitmap);
         ::DeleteDC(mem);
         ::ReleaseDC(nullptr, screen);
+    }
+};
+
+#elif !defined(__APPLE__)
+
+struct SplashScreen::Impl {
+    GtkWidget* window = nullptr;
+    GtkWidget* status_label = nullptr;
+
+    static void flush_events() {
+        // Startup also waits synchronously for the daemon. Paint the logo and
+        // status at each milestone without starting a second GUI event loop.
+        for (int i = 0; i < 64 && gtk_events_pending(); ++i) {
+            gtk_main_iteration_do(FALSE);
+        }
+        if (auto* display = gdk_display_get_default()) gdk_display_flush(display);
+    }
+
+    void show() {
+        if (window || !gtk_init_check(nullptr, nullptr)) return;
+        const auto area = linux_active_work_area();
+        const int icon_size = std::clamp(
+            std::min(area.right - area.left, area.bottom - area.top) / 6,
+            160, 256);
+        const auto icon_path = application_icon_path();
+        GdkPixbuf* icon = gdk_pixbuf_new_from_file_at_scale(
+            icon_path.c_str(), icon_size, icon_size, TRUE, nullptr);
+        if (!icon) return;
+
+        window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(window), "ACECode");
+        gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+        gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
+        gtk_window_set_skip_taskbar_hint(GTK_WINDOW(window), TRUE);
+        gtk_window_set_skip_pager_hint(GTK_WINDOW(window), TRUE);
+        gtk_window_set_accept_focus(GTK_WINDOW(window), FALSE);
+        gtk_window_set_focus_on_map(GTK_WINDOW(window), FALSE);
+        gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_SPLASHSCREEN);
+        gtk_window_set_icon(GTK_WINDOW(window), icon);
+        gtk_widget_set_app_paintable(window, TRUE);
+        if (auto* visual = gdk_screen_get_rgba_visual(gtk_widget_get_screen(window))) {
+            gtk_widget_set_visual(window, visual);
+        }
+        g_signal_connect(window, "draw", G_CALLBACK(+[](GtkWidget*, cairo_t* cr, gpointer) -> gboolean {
+            cairo_save(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+            cairo_set_source_rgba(cr, 0, 0, 0, 0);
+            cairo_paint(cr);
+            cairo_restore(cr);
+            return FALSE;
+        }), nullptr);
+        g_signal_connect(window, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+            auto* self = static_cast<Impl*>(data);
+            self->window = nullptr;
+            self->status_label = nullptr;
+        }), this);
+
+        auto* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        gtk_container_add(GTK_CONTAINER(window), box);
+        gtk_box_pack_start(GTK_BOX(box), gtk_image_new_from_pixbuf(icon), FALSE, FALSE, 0);
+        g_object_unref(icon);
+        status_label = gtk_label_new("ACECode");
+        gtk_label_set_ellipsize(GTK_LABEL(status_label), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_size_request(status_label, icon_size + 160, 36);
+        auto* css = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(css,
+            "label { color: white; background-color: rgba(27,24,24,0.7);"
+            " border-radius: 12px; padding: 4px 16px; font-size: 13px; }",
+            -1, nullptr);
+        gtk_style_context_add_provider(gtk_widget_get_style_context(status_label),
+            GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        g_object_unref(css);
+        gtk_box_pack_start(GTK_BOX(box), status_label, FALSE, FALSE, 0);
+        gtk_window_set_default_size(GTK_WINDOW(window), icon_size + 160, icon_size + 44);
+        center_linux_window(window, area);
+        gtk_widget_show_all(window);
+        flush_events();
+    }
+
+    void set_status(const std::string& message, std::uint64_t) {
+        if (!status_label) return;
+        gtk_label_set_text(GTK_LABEL(status_label), message.c_str());
+        flush_events();
+    }
+
+    void close() {
+        if (window) gtk_widget_destroy(window);
     }
 };
 

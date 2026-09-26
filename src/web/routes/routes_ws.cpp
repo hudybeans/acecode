@@ -133,6 +133,28 @@ void WebServer::Impl::handle_ws_message(crow::websocket::connection& conn, const
         return;
     }
 
+    if (type == "mark_session_unread") {
+        auto sid = payload.value("session_id", std::string{});
+        if (sid.empty()) {
+            conn.send_text(R"({"type":"error","payload":{"reason":"missing session_id"}})");
+            return;
+        }
+        auto workspace_hash = payload.value("workspace_hash", std::string{});
+        auto ws = resolve_session_workspace(sid, workspace_hash);
+        if (!ws.has_value()) {
+            conn.send_text(R"({"type":"error","payload":{"reason":"unknown workspace"}})");
+            return;
+        }
+        auto status = mark_session_unread_status(sid, ws->hash, ws->cwd);
+        json ack;
+        ack["type"] = "mark_session_unread_ack";
+        ack["session_id"] = sid;
+        ack["workspace_hash"] = ws->hash;
+        ack["payload"] = status;
+        conn.send_text(ack.dump());
+        return;
+    }
+
     if (type == "hello" || type == "subscribe") {
         auto sid = payload.value("session_id", std::string{});
         std::uint64_t since = payload.value("since", static_cast<std::uint64_t>(0));

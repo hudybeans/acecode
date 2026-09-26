@@ -57,8 +57,8 @@ enum class SessionEventKind {
     GoalCleared,       // payload: {"session_id":"..."}
     TodoUpdated,       // payload: {"session_id":"...", "todos": [...], "summary": {...}}
     SessionUpdated,    // payload: {"session_id":"...", "title":"...", ...}
-    BusyChanged,       // payload: {"busy": bool,"outcome"?:completed|error|aborted}
-    Done,              // payload: {"outcome"?:completed|error|aborted}
+    BusyChanged,       // payload: {"busy":bool,"outcome"?:...,"turn_id"?:...,"usage"?:{...}}
+    Done,              // regular turn: {"outcome":...,"turn_id":"...","usage":{...}}
     Error,             // payload: {"reason":"...", "request_id":"..."(可选)}
 };
 
@@ -352,6 +352,17 @@ public:
     // not understand attachments degrade to the visible text.
     virtual bool send_input(const std::string& session_id, const UserInput& input) {
         return send_input(session_id, input.text, input.display_text);
+    }
+
+    // Reuse the exact trailing user message without appending new input.
+    // Implementations must check the transcript and worker queue atomically.
+    virtual bool retry_last_user_message(const std::string& session_id,
+                                         const std::string& expected_user_message_id,
+                                         std::string& error) {
+        (void)session_id;
+        (void)expected_user_message_id;
+        error = "retrying the last user message is unavailable";
+        return false;
     }
 
     // Append input to the currently running regular turn. Implementations must

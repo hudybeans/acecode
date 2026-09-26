@@ -110,6 +110,45 @@ function completeSummaryTool(id, summary = 'done', ts = id * 1000) {
   };
 }
 
+run('关闭自动折叠保留完整轮次、单个工具与完成总结，重新开启恢复原投影', () => {
+  const raw = [user(1), assistant(2, '先检查文件'), tool(3), tool(4), assistant(5, '检查完成'), taskComplete(6, '已完成检查')];
+  const original = structuredClone(raw);
+  const automatic = projectCollapsedTranscriptItems(raw);
+  assert.ok(automatic.some((item) => item.kind === 'activity_summary'));
+  const flat = projectCollapsedTranscriptItems(raw, { messageAutoCollapse: false });
+  assert.deepEqual(flat.map((item) => item.kind), ['msg', 'msg', 'tool', 'tool', 'msg', 'completion_summary']);
+  assert.deepEqual(flat.slice(0, 5).map((item) => item.id), [1, 2, 3, 4, 5]);
+  assert.equal(flat.at(-1).summary, '已完成检查');
+  assert.deepEqual(projectCollapsedTranscriptItems(raw, { messageAutoCollapse: true }), automatic);
+  assert.deepEqual(raw, original);
+});
+
+run('关闭自动折叠对所有历史轮次生效，继续将调用与返回配对而不重复展示', () => {
+  const raw = [
+    user(1), assistant(2, '第一轮过程'), tool(3), assistant(4, '第一轮完成'),
+    user(5), toolWrapper(6, 'tool_call', '[Tool: file_read] {"path":"README.md"}', { metadata: { tool_call_id: 'read-1' } }),
+    tool(7, { toolCallId: 'read-1' }),
+    toolWrapper(8, 'tool_result', 'file contents', { metadata: { tool_call_id: 'read-1' } }), assistant(9, '第二轮完成'),
+  ];
+  const flat = projectCollapsedTranscriptItems(raw, { messageAutoCollapse: false });
+  assert.deepEqual(flat.map((item) => item.id), [1, 2, 3, 4, 5, 7, 9]);
+  assert.deepEqual(flat.find((item) => item.id === 7).coveredItemIds, [6, 7, 8]);
+});
+
+run('关闭自动折叠不吞掉实时工具或等待状态，系统通知保持独立规则', () => {
+  const options = { messageAutoCollapse: false, ensureLiveActivity: true, deferTrailingToolSummary: true, liveTurnId: 'turn-live' };
+  const flat = projectCollapsedTranscriptItems([user(1), tool(2, { isDone: false })], options);
+  assert.equal(flat[1].kind, 'tool');
+  assert.equal(flat[1].tool.isDone, false);
+  assert.equal(flat.at(-1).live, true);
+  assert.deepEqual(flat.at(-1).collapsedItems, []);
+  assert.equal(projectCollapsedTranscriptItems([], options)[0].live, true);
+  const notices = [compactNotice(3, 'compact-1', 'start', '正在压缩'), compactNotice(4, 'compact-1', 'complete', '压缩完成', true)];
+  const result = projectCollapsedTranscriptItems(notices, { messageAutoCollapse: false });
+  assert.deepEqual(result, projectCollapsedTranscriptItems(notices, { messageAutoCollapse: true }));
+  assert.equal(result[0].content, '正在压缩\n\n压缩完成');
+});
+
 function askQuestionTool(id, ts = id * 1000) {
   return {
     kind: 'tool',
@@ -264,7 +303,7 @@ run('完成的压缩通知投影为一个可展开 Context compacted 消息', ()
   const compacted = projected[1];
   assert.equal(compacted.kind, 'msg');
   assert.equal(compacted.role, 'system');
-  assert.equal(compacted.metadata.compact_label, 'Context compacted');
+  assert.equal(compacted.metadata.system_notice.code, 'context_compacted');
   assert.equal(compacted.metadata.compact_notice_complete, true);
   assert.deepEqual(compacted.coveredItemIds, [2, 3, 4, 5]);
   assert.equal(

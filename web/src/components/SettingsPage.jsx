@@ -2,8 +2,7 @@
 //
 // 左侧导航按 Codex 风格分组,section key 与深链行为保持稳定。
 // 后端真实接入的 section:常规 (权限模式) / 外观 (主题) / 配置 / 个性化 / 技能 / 模型 / 工具。
-// 其余 section (MCP / 使用情况) 当前部分为 UI 占位
-// — 状态走本地 useState,提交按钮无网络副作用,待后端接口就绪后接入。
+// MCP 配置按公共/项目范围通过 API 校验、持久化并应用到运行时。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,10 +12,20 @@ import { ThemeLibraryActions } from './ThemeLibraryActions.jsx';
 import { isInstalledColorTheme } from '../lib/colorTheme.js';
 import { localePreference } from '../i18n/index.js';
 import { api } from '../lib/api.js';
+import { normalizeToolPreambleState } from '../lib/toolPreamble.js';
+import {
+  WORK_MODES,
+  WORK_MODE_CODING,
+  toolPreambleUpdateForWorkMode,
+  workModeFromToolPreamble,
+} from '../lib/workMode.js';
+import { DeveloperSettings } from './DeveloperSettings.jsx';
+import { createDeveloperModeUnlock, loadDeveloperModeUnlocked, rememberDeveloperModeUnlocked } from '../lib/developerMode.js';
+import { McpSchemaDetails } from './McpSchemaDetails.jsx';
 import { SettingsConfigSection } from './SettingsConfigSection.jsx';
 import { FeedbackForm } from './FeedbackForm.jsx';
-import { SettingsSearch } from './SettingsSearch.jsx';
-import { settingsSearchEntries, searchSettings, locateSetting } from '../lib/settingsSearch.js';
+import { SettingsSearch, SettingsSearchResults } from './SettingsSearch.jsx';
+import { settingsSearchEntries, searchSettings, locateSetting, settingsSearchResultIndex } from '../lib/settingsSearch.js';
 import { openExternalUrl } from '../lib/externalUrl.js';
 import { copyTextToSystemClipboard } from '../lib/systemClipboard.js';
 import {
@@ -42,12 +51,13 @@ import {
 import { Modal, Toggle } from './Modal.jsx';
 import { ModelSettingsSection } from './model-settings/ModelSettingsSection.jsx';
 import { ImageGenerationSettings } from './ImageGenerationSettings.jsx';
+import { ComputerUseSettings } from './ComputerUseSettings.jsx';
 import { SummaryGenerationSettings } from './SummaryGenerationSettings.jsx';
 import { ToolRewriteSettings } from './ToolRewriteSettings.jsx';
 import { SecurityCenterSettings } from './SecurityCenterSettings.jsx';
 import { clsx, formatCount, relativeTime } from '../lib/format.js';
 import { lookupErrorMessage } from '../lib/errors.js';
-import { buildMcpServerList, countEnabledMcp, applyMcpToggle } from '../lib/mcpServers.js';
+import { buildMcpServerList, countEnabledMcp, applyMcpToggle, mcpConfigErrorMessage } from '../lib/mcpServers.js';
 import { normalizeConnectorList, applyConnectorToggle } from '../lib/connectors.js';
 import { PERMISSION_MODES, normalizePermissionMode } from '../lib/permissionMode.js';
 import { sessionDisplayTitle } from '../lib/sessionTitle.js';
@@ -87,8 +97,8 @@ import {
   workspaceAutoExpand,
 } from '../lib/skillsSettings.js';
 import {
-  SETTINGS_NAV_GROUPS,
-  SETTINGS_NAV_ITEMS,
+  getSettingsNavGroups,
+  getSettingsNavItems,
   settingsNavIndexForKey,
 } from '../lib/settingsNavigation.js';
 import { useSlashCommands } from './SlashCommandsContext.jsx';
@@ -140,6 +150,9 @@ export function SettingsPage({
   onCheckUpdates,
   onReplayGuidedTour,
   initialNavKey = 'general',
+  // 全局搜索面板带来的搜索种子 {query, resultId, section, label, nonce};
+  // nonce 变化即视为一次新的跳转(设置窗口已开着时也能再次定位)。
+  initialSearch = null,
   fontSize = 'medium',
   onThemeChange,
   onColorThemeChange,
@@ -148,6 +161,8 @@ export function SettingsPage({
   onFontSizeChange = () => {},
   sidebarSessionTime = true,
   onSidebarSessionTimeChange = () => {},
+  messageAutoCollapse = true,
+  onMessageAutoCollapseChange = () => {},
 }) {
   const {
     theme,
@@ -157,8 +172,13 @@ export function SettingsPage({
   } = useTheme();
   const setTheme = onThemeChange || setThemeCache;
   const setColorTheme = onColorThemeChange || setColorThemeCache;
+  const [developerModeUnlocked, setDeveloperModeUnlocked] = useState(loadDeveloperModeUnlocked);
+  const unlockSequenceRef = useRef(createDeveloperModeUnlock());
+  const developerNavRef = useRef(null);
+  const navGroups = getSettingsNavGroups(developerModeUnlocked);
+  const navItems = getSettingsNavItems(developerModeUnlocked);
   const [activeNav, setActiveNav] = useState(
-    () => settingsNavIndexForKey(initialNavKey),
+    () => settingsNavIndexForKey(initialNavKey, developerModeUnlocked),
   );
   const [show, setShow] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -170,20 +190,43 @@ export function SettingsPage({
   const [searchNavigation, setSearchNavigation] = useState(0);
   const contentRef = useRef(null);
   const windowRef = useRef(null);
-  const searchEntries = useMemo(() => settingsSearchEntries(), [i18n.language]);
+  const searchEntries = useMemo(() => settingsSearchEntries(developerModeUnlocked), [i18n.language, developerModeUnlocked]);
   const searchResults = useMemo(() => searchSettings(searchEntries, searchTerm), [searchEntries, searchTerm]);
   const selectedResult = !composing && searchQuery.trim() && searchQuery === searchTerm ? searchResults[searchIndex] : null;
   const closeTimerRef = useRef(null);
-  const activeNavKey = SETTINGS_NAV_ITEMS[activeNav]?.key || 'general';
+  const activeNavKey = navItems[activeNav]?.key || 'general';
 
   useEffect(() => {
+    if (developerModeUnlocked) developerNavRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [developerModeUnlocked]);
+
+  // 防抖提交搜索词。选中项只在搜索词真的变了才回到第 0 条:从全局搜索面板跳进来时
+  // 查询与选中项是一起种下的,首轮防抖若无条件清零会把种下的选中项冲掉。
+  const appliedSearchTermRef = useRef('');
+  useEffect(() => {
     if (composing) return undefined;
-    const timer = setTimeout(() => { setSearchTerm(searchQuery); setSearchIndex(0); }, 180);
+    const timer = setTimeout(() => {
+      setSearchTerm(searchQuery);
+      if (appliedSearchTermRef.current !== searchQuery) {
+        appliedSearchTermRef.current = searchQuery;
+        setSearchIndex(0);
+      }
+    }, 180);
     return () => clearTimeout(timer);
   }, [searchQuery, composing]);
   useEffect(() => {
-    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section));
-  }, [selectedResult]);
+    const query = String(initialSearch?.query || '').trim();
+    if (!query) return;
+    appliedSearchTermRef.current = query;
+    setSearchQuery(query);
+    setSearchTerm(query);
+    setSearchIndex(settingsSearchResultIndex(searchSettings(searchEntries, query), initialSearch));
+    setSearchNavigation((value) => value + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSearch?.nonce]);
+  useEffect(() => {
+    if (selectedResult) setActiveNav(settingsNavIndexForKey(selectedResult.section, developerModeUnlocked));
+  }, [selectedResult, developerModeUnlocked]);
   useEffect(() => {
     const root = contentRef.current;
     if (!root || !selectedResult || selectedResult.section !== activeNavKey) return undefined;
@@ -209,7 +252,7 @@ export function SettingsPage({
 
   useEffect(() => { requestAnimationFrame(() => setShow(true)); }, []);
   useEffect(() => {
-    setActiveNav(settingsNavIndexForKey(initialNavKey));
+    setActiveNav(settingsNavIndexForKey(initialNavKey, developerModeUnlocked));
   }, [initialNavKey]);
   useEffect(() => () => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
@@ -245,6 +288,11 @@ export function SettingsPage({
     if (event.target === event.currentTarget) close();
   };
   const toggleExpanded = () => setExpanded((value) => !value);
+  const selectSearchResult = (index) => {
+    setSearchIndex(index);
+    setSearchNavigation((value) => value + 1);
+    setActiveNav(settingsNavIndexForKey(searchResults[index].section, developerModeUnlocked));
+  };
 
   return (
     <div
@@ -262,6 +310,20 @@ export function SettingsPage({
         aria-modal="true"
         aria-labelledby="settings-window-title"
         data-settings-window="true"
+        onKeyDownCapture={(event) => {
+          if (developerModeUnlocked) return;
+          if (!windowRef.current?.contains(event.target)
+            || document.querySelector('[data-ace-modal-dialog="true"]')) {
+            unlockSequenceRef.current = createDeveloperModeUnlock();
+            return;
+          }
+          if (unlockSequenceRef.current(event)) {
+            rememberDeveloperModeUnlocked();
+            setSearchQuery('');
+            setSearchTerm('');
+            setDeveloperModeUnlocked(true);
+          }
+        }}
         data-expanded={expanded ? 'true' : 'false'}
         tabIndex={-1}
         className={clsx(
@@ -270,51 +332,57 @@ export function SettingsPage({
         )}
       >
         <span id="settings-window-title" className="sr-only">设置</span>
-        <nav className="ace-settings-nav overflow-y-auto shrink-0 select-none">
+        <nav className="ace-settings-nav shrink-0 select-none">
+          {/* 搜索框固定在顶部,只有下面的导航 / 搜索结果在 ace-settings-nav-list 里滚动。 */}
           <SettingsSearch query={searchQuery} onQuery={setSearchQuery} results={searchResults} selected={searchIndex}
-            onSelect={(index) => { setSearchIndex(index); setSearchNavigation((value) => value + 1); setActiveNav(settingsNavIndexForKey(searchResults[index].section)); }} onComposing={setComposing} />
-          {!searchQuery.trim() && SETTINGS_NAV_GROUPS.map((group, groupIndex) => {
-            const headingId = `settings-nav-group-${group.key}`;
-            return (
-              <div
-                key={group.key}
-                role="group"
-                aria-labelledby={headingId}
-              >
-                <div
-                  id={headingId}
-                  className={clsx(
-                    'block px-3 pb-1 text-[11px] font-medium text-fg-mute',
-                    groupIndex === 0 ? 'pt-0' : 'pt-2',
-                  )}
-                >
-                  {group.label}
-                </div>
-                {group.items.map((item) => {
-                  const itemIndex = settingsNavIndexForKey(item.key);
-                  const active = activeNav === itemIndex;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
-                      onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+            onSelect={selectSearchResult} onComposing={setComposing} />
+          <div className="ace-settings-nav-list overflow-y-auto">
+            {searchQuery.trim()
+              ? <SettingsSearchResults results={searchResults} selected={searchIndex} onSelect={selectSearchResult} />
+              : navGroups.map((group, groupIndex) => {
+                const headingId = `settings-nav-group-${group.key}`;
+                return (
+                  <div
+                    key={group.key}
+                    role="group"
+                    aria-labelledby={headingId}
+                  >
+                    <div
+                      id={headingId}
                       className={clsx(
-                        'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
-                        active
-                          ? 'text-fg font-semibold'
-                          : 'text-fg-2',
+                        'block px-3 pb-1 text-[11px] font-normal text-fg-mute',
+                        groupIndex === 0 ? 'pt-0' : 'pt-2',
                       )}
                     >
-                      <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+                      {group.label}
+                    </div>
+                    {group.items.map((item) => {
+                      const itemIndex = settingsNavIndexForKey(item.key, developerModeUnlocked);
+                      const active = activeNav === itemIndex;
+                      return (
+                        <button
+                          key={item.key}
+                          ref={item.key === 'developer' ? developerNavRef : undefined}
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          aria-label={item.label}
+                          onClick={() => { setActiveNav(itemIndex); contentRef.current?.scrollTo(0, 0); }}
+                          className={clsx(
+                            'ace-settings-nav-item w-full min-h-8 px-3 py-1 text-[13px] transition flex items-center gap-2 text-left',
+                            active
+                              ? 'text-fg font-normal'
+                              : 'text-fg-2',
+                          )}
+                        >
+                          <VsIcon name={item.icon} size={18} className="shrink-0 opacity-80" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+          </div>
         </nav>
         <div
           className="ace-settings-main flex-1 min-w-0 min-h-0 flex flex-col"
@@ -365,6 +433,8 @@ export function SettingsPage({
               onFontSizeChange={onFontSizeChange}
               sidebarSessionTime={sidebarSessionTime}
               onSidebarSessionTimeChange={onSidebarSessionTimeChange}
+              messageAutoCollapse={messageAutoCollapse}
+              onMessageAutoCollapseChange={onMessageAutoCollapseChange}
             />
           )}
           {activeNavKey === 'config' && <SettingsConfigSection />}
@@ -382,6 +452,7 @@ export function SettingsPage({
           {activeNavKey === 'usage' && <SectionUsage />}
           {activeNavKey === 'feedback' && <FeedbackForm />}
           {activeNavKey === 'about' && <SectionAbout health={health} />}
+          {developerModeUnlocked && activeNavKey === 'developer' && <DeveloperSettings />}
         </div>
         </div>
       </div>
@@ -391,8 +462,9 @@ export function SettingsPage({
 
 // ─── 常规 ──────────────────────────────────────────────────────────────────
 // 真实接入:默认权限模式(api.getDefaultPermissionMode / setDefaultPermissionMode)、
-// Daemon 状态(/api/health 透传 health prop)。其余字段(工作模式 / 默认打开目标 /
-// 最大轮次)目前是 UI 占位,本地 state。
+// Daemon 状态(/api/health 透传 health prop)、工作模式(= daemon 的具体进度提示
+// 开关,lib/workMode.js)。
+// 其余字段(默认打开目标 / 最大轮次)目前是 UI 占位,本地 state。
 
 function SectionGeneral({
   health,
@@ -427,7 +499,40 @@ function SectionGeneral({
   const [closeBehaviorBusy, setCloseBehaviorBusy] = useState(closeBehaviorAvailable);
   const [closeBehaviorTrayAvailable, setCloseBehaviorTrayAvailable] = useState(true);
   const [maxTurns, setMaxTurns] = useState(50);
-  const [workMode, setWorkMode] = useState('coding');
+  // 工作模式 = daemon 的具体进度提示开关(见 lib/workMode.js):「适合日常工作」时
+  // loading 只说正在做什么、不带参数。打开设置页时读一次;点选时 PUT,以响应为准,
+  // 失败回滚并提示。读取完成前按钮禁用,避免在未知状态上切换。
+  const [workMode, setWorkMode] = useState(WORK_MODE_CODING);
+  const [workModeBusy, setWorkModeBusy] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.getToolPreamble()
+      .then((state) => {
+        if (!cancelled) setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setWorkModeBusy(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const switchWorkMode = async (nextMode) => {
+    if (workModeBusy || nextMode === workMode) return;
+    const body = toolPreambleUpdateForWorkMode(nextMode);
+    if (!body) return;
+    const previous = workMode;
+    setWorkMode(nextMode);
+    setWorkModeBusy(true);
+    try {
+      const state = await api.setToolPreamble(body);
+      setWorkMode(workModeFromToolPreamble(normalizeToolPreambleState(state)));
+    } catch (e) {
+      setWorkMode(previous);
+      toast({ kind: 'err', text: '工作模式切换失败:' + (e?.message || '') });
+    } finally {
+      setWorkModeBusy(false);
+    }
+  };
   const [openTarget, setOpenTarget] = useState('vscode');
   const [remoteWeb, setRemoteWeb] = useState(
     () => normalizeRemoteWebState(null),
@@ -841,7 +946,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <label htmlFor="settings-ui-locale" className="text-[13px] font-medium">
+          <label htmlFor="settings-ui-locale" className="text-[13px] font-normal">
             {t('locale.label')}
           </label>
         </div>
@@ -863,22 +968,21 @@ function SectionGeneral({
       <div className="text-[14px] font-semibold mb-1">工作模式</div>
       <p className="text-[12px] text-fg-mute mb-3">选择 Agent 显示多少技术细节</p>
       <div className="grid grid-cols-2 gap-3 max-w-md mb-5">
-        {[
-          { key: 'coding', label: '用于编程', desc: '更专业的回复与控制' },
-          { key: 'daily',  label: '适合日常工作', desc: '同样强大,技术细节更少' },
-        ].map((opt) => {
+        {WORK_MODES.map((opt) => {
           const active = workMode === opt.key;
           return (
             <button
               key={opt.key}
               type="button"
-              onClick={() => setWorkMode(opt.key)}
+              aria-pressed={active}
+              disabled={workModeBusy}
+              onClick={() => switchWorkMode(opt.key)}
               className={clsx(
-                'relative p-3 rounded-lg border text-left transition',
+                'relative p-3 rounded-lg border text-left transition disabled:cursor-wait',
                 active ? 'border-accent border-2 bg-accent-bg' : 'border-border bg-surface hover:border-accent/50',
               )}
             >
-              <div className="text-[13px] font-semibold">{opt.label}</div>
+              <div className="text-[13px] font-normal">{opt.label}</div>
               <div className="text-[11px] text-fg-mute mt-1">{opt.desc}</div>
               {active && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent" />}
             </button>
@@ -907,7 +1011,7 @@ function SectionGeneral({
         )}
       >
         <div>
-          <div className="text-[13px] font-medium">打开任务完成通知</div>
+          <div className="text-[13px] font-normal">打开任务完成通知</div>
           <div className="text-[11px] text-fg-mute mt-0.5">仅在 ACECode 窗口失去焦点且主任务完成时发送系统通知</div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
@@ -922,7 +1026,7 @@ function SectionGeneral({
       {macAuthorizationAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">macOS 系统通知权限</div>
+            <div className="text-[13px] font-normal">macOS 系统通知权限</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               {notificationAuthorization.description}
             </div>
@@ -979,13 +1083,13 @@ function SectionGeneral({
         <>
           <div className="flex items-center justify-between gap-4 px-3.5 py-3 rounded-md bg-surface border border-border mb-2">
             <div>
-              <div className="text-[13px] font-medium">新手指引</div>
+              <div className="text-[13px] font-normal">新手指引</div>
               <div className="text-[11px] text-fg-mute mt-0.5">从添加项目、开始新对话到模型设置</div>
             </div>
             <button
               type="button"
               onClick={onReplayGuidedTour}
-              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-semibold hover:opacity-90 transition"
+              className="h-8 shrink-0 px-3 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition"
             >
               重新查看新手指引
             </button>
@@ -1013,7 +1117,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">{p.label}</div>
+            <div className="text-[13px] font-normal">{p.label}</div>
             <div className="text-[11px] text-fg-mute mt-0.5">{p.hint}</div>
           </div>
           <div onClick={(e) => e.stopPropagation()}>
@@ -1030,7 +1134,7 @@ function SectionGeneral({
 
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">默认打开目标</div>
+          <div className="text-[13px] font-normal">默认打开目标</div>
           <div className="text-[11px] text-fg-mute mt-0.5">默认打开文件和文件夹的位置</div>
         </div>
         <select
@@ -1045,7 +1149,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">最大轮次</div>
+          <div className="text-[13px] font-normal">最大轮次</div>
           <div className="text-[11px] text-fg-mute mt-0.5">单次 agent loop 的最大迭代数</div>
         </div>
         <input
@@ -1057,7 +1161,7 @@ function SectionGeneral({
       </div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">后台进程状态</div>
+          <div className="text-[13px] font-normal">后台进程状态</div>
           <div className="text-[11px] text-fg-mute mt-0.5">{health?.cwd || '—'}</div>
         </div>
         <span className="flex items-center gap-1.5 text-[12px] text-ok">
@@ -1068,7 +1172,7 @@ function SectionGeneral({
       {closeBehaviorAvailable && (
         <div className="flex items-center justify-between gap-4 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
           <div>
-            <div className="text-[13px] font-medium">关闭窗口时</div>
+            <div className="text-[13px] font-normal">关闭窗口时</div>
             <div className="text-[11px] text-fg-mute mt-0.5">
               点击窗口右上角关闭按钮时执行的操作
             </div>
@@ -1111,7 +1215,7 @@ function SectionGeneral({
           )}
         >
           <div>
-            <div className="text-[13px] font-medium">
+            <div className="text-[13px] font-normal">
               退出 ACECode 后继续运行后台进程
             </div>
             <div className="text-[11px] text-fg-mute mt-0.5">
@@ -1136,7 +1240,7 @@ function SectionGeneral({
       >
         <div className="flex items-center justify-between gap-4">
           <div>
-            <div className="text-[13px] font-medium">远程 Web 模式</div>
+            <div className="text-[13px] font-normal">远程 Web 模式</div>
             <div className="text-[11px] text-fg-mute mt-0.5 max-w-lg">
               开启后会启动独立的反向代理进程，daemon 仍仅监听 127.0.0.1
             </div>
@@ -1212,7 +1316,7 @@ function SectionGeneral({
                   <button
                     type="button"
                     onClick={copyRemoteWebConnection}
-                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-medium hover:bg-surface-hi transition"
+                    className="h-8 shrink-0 px-3 rounded-md border border-border bg-surface-alt text-[12px] font-normal hover:bg-surface-hi transition"
                   >
                     复制连接
                   </button>
@@ -1250,6 +1354,8 @@ function SectionAppearance({
   onFontSizeChange,
   sidebarSessionTime,
   onSidebarSessionTimeChange,
+  messageAutoCollapse,
+  onMessageAutoCollapseChange,
 }) {
   return (
     <>
@@ -1265,7 +1371,7 @@ function SectionAppearance({
       <div className="h-px bg-border my-5" />
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">暗黑模式</div>
+          <div className="text-[13px] font-normal">暗黑模式</div>
           <div className="text-[11px] text-fg-mute mt-0.5">使用深色背景，关闭后使用浅色背景</div>
         </div>
         <Toggle
@@ -1287,7 +1393,7 @@ function SectionAppearance({
               aria-pressed={active}
               onClick={() => onFontSizeChange(opt.key)}
               className={clsx(
-                'h-8 rounded-md text-[13px] font-medium transition',
+                'h-8 rounded-md text-[13px] font-normal transition',
                 active
                   ? 'bg-accent text-white shadow-sm'
                   : 'text-fg-2 hover:bg-surface-hi hover:text-fg',
@@ -1302,12 +1408,25 @@ function SectionAppearance({
       <div className="text-[14px] font-semibold mb-1">侧边栏</div>
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
         <div>
-          <div className="text-[13px] font-medium">显示任务时间</div>
+          <div className="text-[13px] font-normal">显示任务时间</div>
           <div className="text-[11px] text-fg-mute mt-0.5">在任务列表每一行右侧显示最近活动时间，关闭后仍可在悬停卡片里查看</div>
         </div>
         <Toggle
           on={sidebarSessionTime}
           onChange={(enabled) => onSidebarSessionTimeChange(enabled)}
+        />
+      </div>
+      <div className="h-px bg-border my-5" />
+      <h3 className="text-[14px] font-semibold mb-1">会话</h3>
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2 max-w-md">
+        <div className="min-w-0">
+          <div id="message-auto-collapse-label" className="text-[13px] font-normal text-fg">消息自动折叠</div>
+          <div className="text-[11px] text-fg-mute mt-0.5">关闭后展开所有消息，仅保留工具调用的折叠</div>
+        </div>
+        <Toggle
+          on={messageAutoCollapse}
+          onChange={onMessageAutoCollapseChange}
+          ariaLabel="消息自动折叠"
         />
       </div>
     </>
@@ -1342,7 +1461,7 @@ function SectionAbout({ health }) {
       {/* 程序版本 */}
       <div className="flex items-center justify-between px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div>
-          <div className="text-[13px] font-medium">当前版本</div>
+          <div className="text-[13px] font-normal">当前版本</div>
           <div className="text-[11px] text-fg-mute mt-0.5">ACECode 桌面 / TUI / Daemon 同版本号</div>
         </div>
         <span className="text-[12px] text-fg-2">{programVersionLabel}</span>
@@ -1350,7 +1469,7 @@ function SectionAbout({ health }) {
 
       <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-surface border border-border mb-2">
         <div className="min-w-0">
-          <div className="text-[13px] font-medium">Web 核心</div>
+          <div className="text-[13px] font-normal">Web 核心</div>
           <div className="text-[11px] text-fg-mute mt-0.5">当前桌面 WebView / 浏览器渲染核心</div>
         </div>
         <div className="min-w-0 max-w-[62%] text-right">
@@ -1501,7 +1620,7 @@ function SkillCard({ skill, busyName, onToggle }) {
           <VsIcon name="lightbulb" size={18} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block break-words text-[13px] font-semibold leading-5 text-fg">{skill.name}</span>
+          <span className="block break-words text-[13px] font-normal leading-5 text-fg">{skill.name}</span>
           <span className="mt-0.5 block text-[10px] text-fg-mute">
             {skill.source === 'project' ? '工作区' : '全局'}
           </span>
@@ -1567,7 +1686,7 @@ function WorkspaceSkillGroup({
         <VsIcon name={expanded ? 'expandDown' : 'expandRight'} size={12} className="shrink-0 text-fg-mute" />
         <VsIcon name="folder" size={15} className="shrink-0 text-fg-2" />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium truncate">{ws.name}</div>
+          <div className="text-[13px] font-normal truncate">{ws.name}</div>
           <div className="text-[11px] text-fg-mute truncate">{ws.cwd}</div>
         </div>
         <span className="text-[11px] text-fg-mute tabular-nums shrink-0">
@@ -1828,6 +1947,10 @@ function SectionSkills() {
 }
 
 function SectionMCP() {
+  const [workspace, setWorkspace] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [schema, setSchema] = useState(null);
+  const [configSchema, setConfigSchema] = useState(null);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1854,14 +1977,15 @@ function SectionMCP() {
     setLoading(true);
     setError('');
     try {
-      const cfg = await api.getMcp();
+      const cfg = await api.getMcp(workspace);
       const loadedText = JSON.stringify(cfg || {}, null, 2);
       lastSavedTextRef.current = loadedText;
       setText(loadedText);
       setSaved(false);
     } catch (e) {
-      setError('加载 MCP 失败:' + (e?.message || ''));
-      toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setLoading(false);
     }
@@ -1869,8 +1993,24 @@ function SectionMCP() {
 
   useEffect(() => {
     let cancelled = false;
+    api.listWorkspaces().then((rows) => {
+      if (!cancelled) setWorkspaces(normalizeWorkspaceList(rows));
+    }).catch(() => {});
+    api.getMcpSchema().then((result) => {
+      if (!cancelled) setConfigSchema(result?.schema || null);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    api.getMcp()
+    setText('');
+    setError('');
+    setSchema(null);
+    setSaved(false);
+    lastSavedTextRef.current = '';
+    api.getMcp(workspace)
       .then((cfg) => {
         if (!cancelled) {
           const loadedText = JSON.stringify(cfg || {}, null, 2);
@@ -1880,18 +2020,20 @@ function SectionMCP() {
       })
       .catch((e) => {
         if (!cancelled) {
-          setError('加载 MCP 失败:' + (e?.message || ''));
-          toast({ kind: 'err', text: '加载 MCP 失败:' + (e?.message || '') });
+          setSchema(e?.body?.schema || null);
+          setError('加载 MCP 失败:' + mcpConfigErrorMessage(e));
+          toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
         }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [workspace]);
 
   const onChange = (value) => {
     setText(value);
+    setSchema(null);
     setSaved(false);
     try {
       JSON.parse(value);
@@ -1912,6 +2054,7 @@ function SectionMCP() {
   };
   const save = async (candidate = text) => {
     if (saving || loading) return false;
+    if (candidate === lastSavedTextRef.current) return true;
     let parsed;
     try {
       parsed = JSON.parse(candidate);
@@ -1924,19 +2067,19 @@ function SectionMCP() {
       setError('JSON 必须是对象');
       return false;
     }
-    if (candidate === lastSavedTextRef.current) return true;
-
     setError('');
     setSaving(true);
     setSaved(false);
     try {
-      await api.putMcp(parsed);
+      await api.putMcp(parsed, workspace);
       lastSavedTextRef.current = candidate;
+      setSchema(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
       return true;
     } catch (e) {
-      const msg = '保存失败:' + (e?.message || '');
+      const msg = '保存失败:' + mcpConfigErrorMessage(e);
+      setSchema(e?.body?.schema || null);
       setError(msg);
       toast({ kind: 'err', text: msg });
       return false;
@@ -1947,10 +2090,12 @@ function SectionMCP() {
   const reload = async () => {
     if (!await save()) return;
     try {
-      const result = await api.reloadMcp();
+      const result = await api.reloadMcp(workspace);
       toast({ kind: 'ok', text: 'Reload: ' + JSON.stringify(result) });
-    } catch {
-      toast({ kind: 'err', text: '当前 daemon 需要重启后加载 MCP 配置' });
+    } catch (e) {
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '加载 MCP 失败:' + mcpConfigErrorMessage(e) });
     }
   };
 
@@ -1973,7 +2118,7 @@ function SectionMCP() {
     setSaved(false);
     setTogglingName(name);
     try {
-      const res = await api.toggleMcpServer(name, enabled);
+      const res = await api.toggleMcpServer(name, enabled, workspace);
       if (res && res.applied === false) {
         toast({ kind: 'ok', text: `${name} 已${enabled ? '启用' : '关闭'};重启 daemon 后生效` });
       } else {
@@ -1984,7 +2129,9 @@ function SectionMCP() {
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       setText(prevText);
-      toast({ kind: 'err', text: '切换失败:' + (e?.message || '') });
+      setSchema(e?.body?.schema || null);
+      setError(mcpConfigErrorMessage(e));
+      toast({ kind: 'err', text: '切换失败:' + mcpConfigErrorMessage(e) });
     } finally {
       setTogglingName('');
     }
@@ -1996,6 +2143,29 @@ function SectionMCP() {
     <>
       <h2 className="text-xl font-bold mb-5">MCP 服务器</h2>
 
+      <label className="flex flex-wrap items-center gap-3 mb-3 text-[13px]">
+        <span>配置范围</span>
+        <select
+          aria-label="MCP 配置范围"
+          value={workspace}
+          disabled={loading || saving || Boolean(togglingName)}
+          onChange={async (event) => {
+            const next = event.target.value;
+            if (next === workspace || !await save()) return;
+            setLoading(true);
+            setWorkspace(next);
+          }}
+          className="min-w-0 max-w-full h-8 px-2 rounded-md border border-border bg-surface-alt text-fg outline-none focus:border-accent"
+        >
+          <option value="">全局（所有项目）</option>
+          {workspaces.map((ws) => <option key={ws.hash} value={ws.hash}>{ws.name || ws.cwd}</option>)}
+        </select>
+      </label>
+      {workspace && (
+        <p className="text-[12px] text-fg-mute mb-3 break-all">
+          项目配置与全局配置叠加，同名服务器以项目配置为准。
+        </p>
+      )}
       <div className="text-[14px] font-semibold mb-1">服务器配置</div>
       <p className="text-[12px] text-fg-mute mb-3">
         直接编辑 JSON 配置 MCP 服务器连接(stdio / sse / http)
@@ -2016,10 +2186,12 @@ function SectionMCP() {
         style={{ minHeight: 380, tabSize: 2 }}
       />
       {error && (
-        <div className="mt-2 text-[12px] text-danger">{error}</div>
+        <div role="alert" className="mt-2 whitespace-pre-wrap break-words text-[12px] text-danger">{error}</div>
       )}
 
-      <div className="flex items-center justify-between gap-3 mt-3">
+      <McpSchemaDetails schema={schema || (error ? configSchema : null)} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
         <div className="min-w-0 text-[12px] text-fg-mute" aria-live="polite">
           {saving ? '保存中...' : (saved ? '已保存' : '')}
         </div>
@@ -2088,7 +2260,7 @@ function SectionMCP() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
+                    <div className="text-[13px] font-normal text-fg truncate">
                       {server.name}
                     </div>
                     <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-fg-mute shrink-0">
@@ -2210,7 +2382,7 @@ function SectionConnectors() {
         </div>
       ) : connectors.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">暂无已配置插件</div>
+          <div className="text-[14px] font-normal text-fg mb-1">暂无已配置插件</div>
           <div className="text-[12px] text-fg-mute">没有可显示的插件。</div>
         </div>
       ) : (
@@ -2226,7 +2398,7 @@ function SectionConnectors() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold text-fg truncate">
+                    <div className="text-[13px] font-normal text-fg truncate">
                       {connector.name || '未命名插件'}
                     </div>
                     <span
@@ -2277,7 +2449,7 @@ function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
           <VsIcon name="globe" size={20} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium">Agent 浏览器</div>
+          <div className="text-[13px] font-normal">Agent 浏览器</div>
           <div className="text-[11px] text-fg-mute mt-0.5">
             这是一个内嵌浏览器。
           </div>
@@ -2288,6 +2460,7 @@ function SectionTools({ onCheckUpdates, onModelProfileUpdated }) {
       </div>
 
       <ImageGenerationSettings onCheckUpdates={onCheckUpdates} />
+      <ComputerUseSettings onCheckUpdates={onCheckUpdates} />
       <SummaryGenerationSettings onCheckUpdates={onCheckUpdates} onModelProfileUpdated={onModelProfileUpdated} />
 
       <ToolRewriteSettings onCheckUpdates={onCheckUpdates} />
@@ -2407,7 +2580,7 @@ function SectionHooks() {
         </div>
       ) : snapshot.isEmpty ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-4 max-w-3xl">
-          <div className="text-[14px] font-semibold text-fg mb-1">{empty.title}</div>
+          <div className="text-[14px] font-normal text-fg mb-1">{empty.title}</div>
           <div className="text-[12px] text-fg-mute">{empty.body}</div>
         </div>
       ) : (
@@ -2427,7 +2600,7 @@ function SectionHooks() {
 
       {!loading && snapshot.diagnostics.length > 0 && (
         <div className="mt-4 rounded-md border border-border bg-surface px-3.5 py-3">
-          <div className="text-[12px] font-semibold text-fg-2 mb-2">发现诊断</div>
+          <div className="text-[12px] font-normal text-fg-2 mb-2">发现诊断</div>
           <div className="space-y-1">
             {snapshot.diagnostics.slice(0, 8).map((diag, index) => (
               <div key={`${diag.code}-${index}`} className="text-[11px] text-fg-mute">
@@ -2460,7 +2633,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="text-[13px] font-semibold text-fg truncate">{hook.eventName || 'Hook'}</div>
+            <div className="text-[13px] font-normal text-fg truncate">{hook.eventName || 'Hook'}</div>
             <HookBadge hook={hook} />
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-mute">
@@ -2501,7 +2674,7 @@ function HookListItem({ hook, busyId, onTrust, onDisable, onEnable }) {
               type="button"
               onClick={onTrust}
               disabled={busyTrust || busyDisable || busyEnable}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-medium hover:opacity-90 transition disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-normal hover:opacity-90 transition disabled:opacity-50"
             >
               {busyTrust ? <span className="ace-spinner" /> : <VsIcon name="check" size={12} />}
               信任
@@ -2955,7 +3128,7 @@ function SectionArchived() {
                         className="h-4 w-4 shrink-0 accent-accent disabled:opacity-60"
                       />
                       <div className="min-w-0 flex-1 basis-32">
-                        <div className="text-[13px] font-medium truncate" title={title}>{title}</div>
+                        <div className="text-[13px] font-normal truncate" title={title}>{title}</div>
                         <div className="text-[11px] text-fg-mute mt-0.5 truncate">
                           {relativeTime(item.updated_at || item.created_at)}
                         </div>
@@ -3096,7 +3269,7 @@ function SectionUsage() {
   ];
 
   return (
-    <>
+    <div className="ace-usage-page">
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-xl font-bold">使用情况</h2>
         <button
@@ -3131,11 +3304,11 @@ function SectionUsage() {
         <UsageEmptyState text={note} />
       ) : (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
+          <div className="ace-usage-token-details grid grid-cols-2 xl:grid-cols-6 gap-2 mb-6">
             {tokenDetails.map(([label, value]) => (
               <div key={label} className="px-3 py-2.5 rounded-md bg-surface border border-border">
                 <div className="text-[11px] text-fg-mute mb-1">{label}</div>
-                <div className="text-[14px] font-semibold">{formatUsageTokens(value)}</div>
+                <div className="text-[14px] font-normal">{formatUsageTokens(value)}</div>
               </div>
             ))}
           </div>
@@ -3161,11 +3334,11 @@ function SectionUsage() {
                   <div className="flex items-center justify-between mb-2 gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
-                      <span className="text-[13px] font-semibold truncate">{m.label}</span>
+                      <span className="text-[13px] font-normal truncate">{m.label}</span>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
                       <span className="text-[12px] text-fg-mute">{formatCount(m.records, 'records')}</span>
-                      <span className="text-[13px] font-semibold">{formatUsageTokens(total)}</span>
+                      <span className="text-[13px] font-normal">{formatUsageTokens(total)}</span>
                     </div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden mb-1.5">
@@ -3200,10 +3373,10 @@ function SectionUsage() {
                 >
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div className="min-w-0">
-                      <div className="text-[13px] font-medium truncate">{w.workspaceName || 'workspace'}</div>
+                      <div className="text-[13px] font-normal truncate">{w.workspaceName || 'workspace'}</div>
                       <div className="text-[11px] text-fg-mute truncate">{w.cwd}</div>
                     </div>
-                    <div className="text-[13px] font-semibold shrink-0">{formatUsageTokens(total)}</div>
+                    <div className="text-[13px] font-normal shrink-0">{formatUsageTokens(total)}</div>
                   </div>
                   <div className="h-1.5 rounded-sm bg-surface-hi overflow-hidden">
                     <div className="h-full bg-accent" style={{ width: `${width}%`, minWidth: total > 0 ? 6 : 0, opacity: 0.85 }} />
@@ -3218,7 +3391,7 @@ function SectionUsage() {
           </div>
         </>
       ))}
-    </>
+    </div>
   );
 }
 

@@ -1,6 +1,7 @@
 #include "session_auto_title.hpp"
 
 #include "session_title_generator.hpp"
+#include "../desktop/locale.hpp"
 #include "../provider/copilot_provider.hpp"
 #include "../provider/cwd_model_override.hpp"
 #include "../provider/model_resolver.hpp"
@@ -121,7 +122,8 @@ std::optional<std::string> generate_auto_session_title(
     return generate_session_title(
         provider,
         visible_text,
-        cfg.session_title.max_input_bytes);
+        cfg.session_title.max_input_bytes,
+        desktop::resolve_ui_locale(cfg.ui.locale, desktop::detect_system_locale_tag()));
 }
 
 } // namespace acecode

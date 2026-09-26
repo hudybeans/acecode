@@ -62,6 +62,12 @@ bool init_tray_icon(TrayClickHandler on_show,
 // 这里都做了。
 void shutdown_tray_icon();
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+// Keep native GTK tray text at the system size when UOS WebView scaling
+// temporarily normalizes this process's GTK font DPI.
+void set_linux_tray_font_scale(double scale);
+#endif
+
 // Codex 风格菜单数据 + handler 注册。所有 setter 线程安全(内部 mutex)。
 // 见 openspec/changes/enhance-desktop-tray-menu。
 

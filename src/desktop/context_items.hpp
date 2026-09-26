@@ -31,10 +31,21 @@ struct ContextItemsResult {
 };
 
 // Canonicalize and classify native filesystem paths. Ordinary files are
-// represented by source-path metadata only; raster images retain their bytes
-// for the existing snapshot/vision flow. Folders are represented only by their
+// represented by source-path metadata only, including raster images.
+// Folders are represented only by their
 // absolute path and are never traversed.
 ContextItemsResult materialize_context_items(
     const std::vector<std::string>& paths);
+
+struct ContextDataFile {
+    std::string name;
+    std::string data_base64;
+};
+
+// Data without a source path (for example a screenshot) must exist on disk
+// before it can be referenced. Keep it across restarts for saved drafts.
+ContextItemsResult store_context_data_files(
+    const std::string& directory,
+    const std::vector<ContextDataFile>& files);
 
 } // namespace acecode::desktop
