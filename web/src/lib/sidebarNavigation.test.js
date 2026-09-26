@@ -112,7 +112,7 @@ test('drop index counts the other rows whose midpoint is above the pointer', () 
 
 test('sidebar sections use confirmed labels and default expanded state', () => {
   assert.deepEqual(SIDEBAR_SECTION_LABELS, {
-    pinned: '置顶任务',
+    pinned: '置顶',
     tasks: '任务',
     workspaces: '工作区',
   });
@@ -133,7 +133,7 @@ test('sidebar section counts separate pinned tasks, no-workspace tasks, and work
     workspaces: [{ hash: 'w1' }, { hash: 'w2' }, { hash: 'w3' }],
   });
   assert.deepEqual(counts, { pinned: 2, tasks: 1, workspaces: 3 });
-  assert.equal(sidebarSectionTitle(SIDEBAR_SECTION_IDS.PINNED, counts.pinned), '置顶任务 (2)');
+  assert.equal(sidebarSectionTitle(SIDEBAR_SECTION_IDS.PINNED, counts.pinned), '置顶 (2)');
   assert.equal(sidebarSectionTitle(SIDEBAR_SECTION_IDS.TASKS, counts.tasks), '任务 (1)');
   assert.equal(sidebarSectionTitle(SIDEBAR_SECTION_IDS.WORKSPACES, counts.workspaces), '工作区 (3)');
   assert.deepEqual(sidebarSectionCounts(), { pinned: 0, tasks: 0, workspaces: 0 });
