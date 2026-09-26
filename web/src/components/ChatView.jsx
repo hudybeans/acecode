@@ -3618,7 +3618,7 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
         firstUserMessageText: !isBuiltin ? payload.text : '',
         firstUserMessageContent: !isBuiltin ? payload.composer_content : null,
         firstUserMessageAttachments: !isBuiltin ? activeAttachments : [],
-        preserveExtras: hasExtras || hasSwarmMode || !!payload.composer_content,
+        preserveExtras: !isBuiltin && (hasExtras || hasSwarmMode || !!payload.composer_content),
         // 标题种子只用编辑器文本(截 200 字符),没有就用第一个粘贴块的标题:payload.text
         // 里拼着内联块的正文,不能拿来当标题。
         title: sessionTitleSeedForPayload(payload) || (hasPendingAttachments
@@ -3672,7 +3672,9 @@ export function ChatView({ titleTarget, actionsTarget, children, sessionRef, ses
             }
           }
           if (historyText.trim()) recordInputHistory(historyText);
-          if (!isBuiltin && explicitHomeSend) {
+          if (explicitHomeSend || isBuiltin) {
+            // builtin 命令（/goal、/init、/compact 等）在首页发送后也需要清空输入框。
+            // 会话切换时 preserveExtras 为 false，仍需设置 acceptedHomeSubmission 触发清空 effect。
             setAcceptedHomeSubmission({
               sessionId: id,
               text: submittedComposerText,
