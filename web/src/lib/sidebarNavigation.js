@@ -102,7 +102,7 @@ export const SIDEBAR_SECTION_IDS = Object.freeze({
 });
 
 export const SIDEBAR_SECTION_LABELS = Object.freeze({
-  [SIDEBAR_SECTION_IDS.PINNED]: '置顶任务',
+  [SIDEBAR_SECTION_IDS.PINNED]: '置顶',
   [SIDEBAR_SECTION_IDS.TASKS]: '任务',
   [SIDEBAR_SECTION_IDS.WORKSPACES]: '工作区',
 });
